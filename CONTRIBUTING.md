@@ -2,7 +2,23 @@
 
 Thanks for contributing to WeaveLit.
 
-Please base changes on `dev` and open pull requests against `dev`.
+## Branch and release workflow
+
+- `main` is the release branch. Do not commit feature work directly to it.
+- `dev` is the permanent integration branch. Never delete it.
+- Topic branches are temporary and contain one focused change.
+
+For normal development:
+
+1. Update `dev` from `origin/dev`.
+2. Create and push a topic branch from `dev`.
+3. Make, verify, commit, and push the change on the topic branch.
+4. Open a pull request targeting `dev` and merge it after checks pass.
+5. Delete the topic branch when it is no longer needed.
+
+For a release, verify the integrated work on `dev`, then open and merge a pull
+request from `dev` into `main`. Keep `dev` and continue using it for subsequent
+development.
 
 ## Branch names
 
