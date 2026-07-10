@@ -71,10 +71,3 @@ refactor(core): simplify project loading
 feat(module-zendesk): add ticket search
 chore(repo): update shared configuration
 ```
-
-Mark breaking changes with `!` before the colon, and explain the impact in the
-commit body or a `BREAKING CHANGE:` footer:
-
-```text
-feat(core)!: change the project file format
-```
