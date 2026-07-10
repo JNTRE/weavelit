@@ -19,8 +19,18 @@ using this project format:
 <type>(<scope>): <description>
 ```
 
-The scope is required. Use a short noun for the affected area, such as `editor`,
-`storage`, or `docs`. Use `repo` when a change affects the repository as a whole.
+The scope is required. Use one of these project scopes:
+
+- `cli` — the command-line interface
+- `webui` — the web user interface
+- `core` — the core application
+- `module` — shared work on Rust service-integration libraries
+- `module-<service>` — a Rust library for a specific service, such as
+  `module-zendesk` or `module-azure`
+- `repo` — repository-wide documentation, configuration, or maintenance
+
+Use lowercase kebab-case for service names. Prefer the specific
+`module-<service>` scope when a change affects only one integration.
 
 Use these common types:
 
@@ -39,9 +49,10 @@ Use these common types:
 Keep descriptions short, imperative, and specific. Examples:
 
 ```text
-feat(editor): add chapter navigation
-fix(storage): handle missing project files
-docs(contributing): define commit naming rules
+feat(cli): add project import command
+fix(webui): preserve the active project after refresh
+refactor(core): simplify project loading
+feat(module-zendesk): add ticket search
 chore(repo): update shared configuration
 ```
 
@@ -49,5 +60,5 @@ Mark breaking changes with `!` before the colon, and explain the impact in the
 commit body or a `BREAKING CHANGE:` footer:
 
 ```text
-feat(storage)!: change the project file format
+feat(core)!: change the project file format
 ```
