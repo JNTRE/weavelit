@@ -7,13 +7,13 @@ section. Later uses in that section may be plain text.
 ## Applications and Interfaces
 
 **Weavelit Server** - The Ubuntu-hosted application that owns the API, policy, audit records, provider integrations, and provider credentials.
-**Weavelit Client** - The separately packaged operations-only CLI used on a user's macOS, Linux, or Windows system.
+**Client CLI** - The separately packaged operations-only command-line application used on a user's macOS, Linux, or Windows system.
 **Web UI** - The browser-based administrative client included with the Weavelit Server and available after authentication and setup.
 **Admin CLI** - The host-local server administration tool, available only to a Unix account with `sudo` authority on the Weavelit Server host.
 **Client Module** - A reusable library within a client application that sends supported requests to the Weavelit Server.
-**Service Module** - A reusable server-side library that connects to a specific external service and implements its supported workflows and operations.
-**Workflow** - A deliberately supported business capability within a Service Module that can be assigned to users or automations.
-**Operation** - A named, validated action within a Workflow that the Server can authorize and execute.
+**Service Module** - A reusable server-side Rust library that authenticates with and communicates with one named external service and implements its supported Operations.
+**Workflow** - A human-, agent-, or automation-owned process that uses one or more Operations, potentially across Service Modules. It is not a configurable Weavelit application object.
+**Operation** - A specific named, validated, permissionable task implemented by a Service Module that the Server can authorize, audit, and execute.
 
 ## Identities and Access
 
