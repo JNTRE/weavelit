@@ -11,17 +11,20 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - `docs/` owns the canonical product and architecture documentation for Weavelit.
 - This guide covers documentation workflow and document boundaries, not implementation-specific rules that do not yet exist in this repository.
-- No child paths currently own more detailed guidance; add a child guide only when a distinct local workflow or policy boundary emerges.
+- Child guides in `client-modules/`, `clients/`, and `service-modules/` own their respective connection, client-application, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, workflow, and inventory rules for the canonical documentation set.
+- `client-modules/`: Documentation for the server-side **[Client Modules](glossary.md#applications-and-interfaces)** that provide client-facing connection surfaces to the Weavelit Server.
+- `clients/`: Documentation for individual client applications, including the **[Client CLI](glossary.md#applications-and-interfaces)** and **[Web UI](glossary.md#applications-and-interfaces)**.
 - `core-statements.md`: Current product, security, and technical truths; expand or replace statements only after a clear decision.
 - `glossary.md`: Canonical definitions for Weavelit applications, interfaces, identities, access, states, and requests.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Core Statements, Glossary, or an architecture decision record.
 - `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
+- `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
 - `vision.md`: High-level intended product, system relationships, and links to the Core Statements and Glossary.
 
 ## Usage Guidance
