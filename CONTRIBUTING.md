@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to WeaveLit.
+Thanks for contributing to Weavelit.
 
 ## Branch and release workflow
 
