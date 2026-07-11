@@ -16,7 +16,6 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for client applications.
 - `client-cli/`: Documentation for the **[Client CLI](../glossary.md#applications-and-interfaces)** application.
-- `clients.md`: Placeholder for documentation shared by client applications.
 - `web-ui/`: Documentation for the **[Web UI](../glossary.md#applications-and-interfaces)** application.
 
 ## Usage Guidance
@@ -24,7 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read the nearest `AGENTS.md`, then this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Keep material shared by client applications in `clients.md`; place Client CLI and Web UI detail in their respective child directories.
+- Place documentation shared by client applications directly in this folder; place Client CLI and Web UI detail in their respective child directories.
 - Use `../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

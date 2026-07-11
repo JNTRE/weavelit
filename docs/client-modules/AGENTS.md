@@ -15,14 +15,13 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Client Modules.
-- `client-modules.md`: Placeholder for shared Client Module documentation.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Keep shared Client Module material in `client-modules.md`; place module-specific detail in a child directory when one is introduced.
+- Place shared Client Module documentation directly in this folder; place module-specific detail in a child directory when one is introduced.
 - Use `../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 
