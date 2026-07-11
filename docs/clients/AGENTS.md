@@ -8,7 +8,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns shared client-application and client-adapter documentation and routing to individual client documentation.
 - It does not own server-side Client Module design; that belongs in the sibling `../client-modules/` directory.
-- The `mcp/`, `operations-cli/`, `stdio/`, and `web-ui/` child directories own detailed documentation for their respective clients or adapters.
+- The `mcp/`, `operations-cli/`, and `web-ui/` child directories own detailed documentation for their respective clients or adapters.
 
 ## Asset Inventory
 
@@ -17,7 +17,6 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for client applications.
 - `mcp/`: Future-only documentation boundary for the MCP adapter; it does not represent an implemented client.
 - `operations-cli/`: Documentation for the **[Operations CLI](../glossary.md#applications-and-interfaces)** application.
-- `stdio/`: Future-only documentation boundary for the standard input/output adapter; it does not represent an implemented client.
 - `web-ui/`: Documentation for the **[Web UI](../glossary.md#applications-and-interfaces)** application.
 
 ## Usage Guidance
@@ -26,7 +25,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read the nearest `AGENTS.md`, then this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Place documentation shared by client applications and adapters directly in this folder; place component-specific detail in its child directory.
-- Preserve the future-only status of `mcp/` and `stdio/`; do not add implementation artifacts or describe either adapter as currently supported.
+- Preserve the future-only status of `mcp/`; do not add implementation artifacts or describe it as currently supported.
 - Use `../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

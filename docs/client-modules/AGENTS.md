@@ -8,7 +8,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns shared documentation for Client Modules and their role at the Weavelit Server boundary.
 - It does not own Operations CLI or Web UI application documentation; those belong in the sibling `../clients/` directory.
-- The `mcp/`, `operations-cli/`, `stdio/`, and `web-ui/` child directories own detailed documentation for their respective Client Modules.
+- The `mcp/`, `operations-cli/`, and `web-ui/` child directories own detailed documentation for their respective Client Modules.
 
 ## Asset Inventory
 
@@ -17,7 +17,6 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Client Modules.
 - `mcp/`: Future-only documentation boundary for the MCP Client Module; it does not represent an implemented interface.
 - `operations-cli/`: Documentation for the server-side Client Module that provides the **[Operations CLI](../glossary.md#applications-and-interfaces)** connection surface.
-- `stdio/`: Future-only documentation boundary for the standard input/output Client Module; it does not represent an implemented interface.
 - `web-ui/`: Documentation for the server-side Client Module that provides the **[Web UI](../glossary.md#applications-and-interfaces)** connection surface.
 
 ## Usage Guidance
@@ -26,7 +25,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Place shared Client Module documentation directly in this folder; place module-specific detail in its appropriate child directory.
-- Preserve the future-only status of `mcp/` and `stdio/`; do not add implementation artifacts or describe either interface as currently supported.
+- Preserve the future-only status of `mcp/`; do not add implementation artifacts or describe it as currently supported.
 - Use `../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

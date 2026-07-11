@@ -157,8 +157,8 @@ made.
   revoked or expired by an administrator.
 - The Operations CLI and Web UI connect through
   **[Client Modules](glossary.md#applications-and-interfaces)** that translate
-  requests into the same supported operation contracts. MCP and standard
-  input/output (stdio) adapters will use separate Client Modules.
+  requests into the same supported operation contracts. MCP adapters will use
+  separate Client Modules.
 - The Operations CLI translates user or agent commands into typed
   **[Operational Requests](glossary.md#states-and-requests)** and returns
   machine-readable results.
@@ -175,5 +175,5 @@ made.
   deliberately registered operations.
 - Weavelit keeps provider credentials and provider API execution on the gateway
   side of the connection.
-- Weavelit will offer MCP and structured standard input/output adapters through
-  Client Modules that use the same supported operation contracts.
+- Weavelit will offer MCP adapters through Client Modules that use the same
+  supported operation contracts.
