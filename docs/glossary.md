@@ -7,7 +7,7 @@ section. Later uses in that section may be plain text.
 ## Applications and Interfaces
 
 **Weavelit Server** - The Ubuntu-hosted application that owns the API, policy, audit records, provider integrations, and provider credentials.
-**Weavelit Client (Client CLI)** - The separately packaged operations-only CLI used on a user's macOS, Linux, or Windows system.
+**Weavelit Client** - The separately packaged operations-only CLI used on a user's macOS, Linux, or Windows system.
 **Web UI** - The browser-based administrative client included with the Weavelit Server and available after authentication and setup.
 **Admin CLI** - The host-local server administration tool, available only to a Unix account with `sudo` authority on the Weavelit Server host.
 **Client Module** - A reusable library within a client application that sends supported requests to the Weavelit Server.
