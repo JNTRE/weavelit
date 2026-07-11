@@ -7,21 +7,23 @@ This folder documents the server-side **[Client Modules](../glossary.md#applicat
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns shared documentation for Client Modules and their role at the Weavelit Server boundary.
-- It does not own Client CLI or Web UI application documentation; those belong in the sibling `../clients/` directory.
-- A future module-specific child directory owns its detailed design and local guidance.
+- It does not own Operations CLI or Web UI application documentation; those belong in the sibling `../clients/` directory.
+- The `operations-cli/` and `web-ui/` child directories own detailed documentation for their respective Client Modules.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Client Modules.
+- `operations-cli/`: Documentation for the server-side Client Module that provides the **[Operations CLI](../glossary.md#applications-and-interfaces)** connection surface.
+- `web-ui/`: Documentation for the server-side Client Module that provides the **[Web UI](../glossary.md#applications-and-interfaces)** connection surface.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Place shared Client Module documentation directly in this folder; place module-specific detail in a child directory when one is introduced.
+- Place shared Client Module documentation directly in this folder; place module-specific detail in its appropriate child directory.
 - Use `../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

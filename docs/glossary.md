@@ -8,7 +8,7 @@ section. Later uses in that section may be plain text.
 
 **Weavelit Server** - The Ubuntu-hosted application that owns the API, policy, audit records, provider integrations, and provider credentials.
 
-**Client CLI** - The separately packaged operations-only command-line application used on a user's macOS, Linux, or Windows system.
+**Operations CLI** - The separately packaged operations-only command-line application used on a user's macOS, Linux, or Windows system.
 
 **Web UI** - The browser-based administrative client included with the **[Weavelit Server](#applications-and-interfaces)** and available after authentication and setup.
 

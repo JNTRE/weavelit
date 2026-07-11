@@ -5,7 +5,7 @@ services through deliberately built **[Service Modules](glossary.md#applications
 consistent way to invoke supported **[Operations](glossary.md#applications-and-interfaces)**, particularly where a service
 does not offer a native MCP interface that the agent can use directly.
 
-The **[Client CLI](glossary.md#applications-and-interfaces)**
+The **[Operations CLI](glossary.md#applications-and-interfaces)**
 runs on the user's system and sends supported requests to the
 **[Weavelit Server](glossary.md#applications-and-interfaces)**. The Server uses
 the relevant Service Module to perform the work with the external service and
