@@ -26,11 +26,17 @@ section. Later uses in that section may be plain text.
 
 **Host Administrator** - A person with `sudo` authority on the **[Weavelit Server](#applications-and-interfaces)** host who may run the **[Admin CLI](#applications-and-interfaces)**.
 
-**Application Administrator** - A locally or externally authenticated user with permission to administer Weavelit through the **[Web UI](#applications-and-interfaces)**.
+**Admin Role** - The built-in role that grants a human user permission to administer Weavelit through the **[Web UI](#applications-and-interfaces)**. It does not itself grant named **[Operations](#applications-and-interfaces)**.
 
-**Automation Identity** - A non-human principal with a scoped credential for scheduled or triggered work.
+**Standard Role** - The built-in role for a human user without Weavelit administrative permission. It does not itself grant named Operations.
 
-**Responsible Owner** - The active human **[Application Administrator](#identities-and-access)** accountable for an **[Automation Identity](#identities-and-access)** and its configured work.
+**Admin User** - A locally or externally authenticated human user assigned the **[Admin Role](#identities-and-access)**.
+
+**Standard User** - A locally or externally authenticated human user assigned the **[Standard Role](#identities-and-access)** who may be granted named Operations directly or through groups.
+
+**Automation Identity** - A non-human principal created and managed by an **[Admin User](#identities-and-access)** with explicitly assigned named Operations for scheduled or triggered work.
+
+**Responsible Owner** - The active human **[Admin User](#identities-and-access)** or **[Standard User](#identities-and-access)** accountable for an **[Automation Identity](#identities-and-access)** and its configured work. Responsibility does not grant authority to change the Automation Identity's permissions or credentials.
 
 **Local Authentication** - Weavelit's self-contained default authentication method for human users and Automation Identities.
 
@@ -38,6 +44,6 @@ section. Later uses in that section may be plain text.
 
 ## States and Requests
 
-**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the first local **[Application Administrator](#identities-and-access)** and configures the Server for normal use.
+**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the first local **[Admin User](#identities-and-access)** and configures the Server for normal use.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.

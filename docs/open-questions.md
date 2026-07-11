@@ -11,7 +11,7 @@ Glossary, or an architecture decision record rather than remaining here.
 
 How are local human accounts created, invited, disabled, recovered, and
 deleted? Which multifactor methods are supported, and which are required for
-**[Application Administrators](glossary.md#identities-and-access)**?
+**[Admin Users](glossary.md#identities-and-access)**?
 
 ### 2. Operations CLI login and credential storage
 
@@ -24,12 +24,12 @@ represented, and how does `logout` remove local credentials?
 
 ### 3. Automation credential lifecycle
 
-How are local **[Automation Identity](glossary.md#identities-and-access)**
-credentials generated, displayed once,
-stored by a scheduler or trigger, rotated, expired, revoked, and recovered?
-What default and maximum validity periods apply, and how is
-**[Responsible Owner](glossary.md#identities-and-access)** transfer or
-suspension handled?
+**[Admin Users](glossary.md#identities-and-access)** create and manage local
+**[Automation Identities](glossary.md#identities-and-access)**. How are their
+credentials generated, displayed once, stored by a scheduler or trigger,
+rotated, expired, revoked, and recovered? What default and maximum validity
+periods apply, and how is **[Responsible Owner](glossary.md#identities-and-access)**
+transfer or suspension handled?
 
 ## Automation and Accountability
 
@@ -45,11 +45,12 @@ retried, deduplicated, and audited?
 
 ### 5. Permission and role model
 
-What fixed roles or permission groups exist beyond
-**[Application Administrator](glossary.md#identities-and-access)**? How are
-named **[Operation](glossary.md#applications-and-interfaces)** permissions
-granted to human and Automation Identity principals, and which policy changes
-require additional confirmation or reauthentication?
+What additional fixed roles, if any, exist beyond the
+**[Admin Role](glossary.md#identities-and-access)** and
+**[Standard Role](glossary.md#identities-and-access)**? How are groups created
+and managed, how are named **[Operation](glossary.md#applications-and-interfaces)**
+permissions granted to human and Automation Identity principals, and which
+policy changes require additional confirmation or reauthentication?
 
 ### 6. Administration boundaries
 
@@ -70,7 +71,8 @@ controls apply?
 
 ### 8. API contract and compatibility policy
 
-What is the wire format and versioning policy for
+API routes are versioned under `/api/v1/`. What is the wire format and
+compatibility policy for
 **[Operational Requests](glossary.md#states-and-requests)**, results, errors,
 pagination, and idempotency keys? What server and Operations CLI versions are
 supported together?

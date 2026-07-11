@@ -2,8 +2,9 @@
 
 This directory is Weavelit's canonical record of the intended gateway: its
 vision, binding product and technical commitments, security constraints,
-terminology, and unsettled design decisions. It guides changes to the system's
-documented boundaries rather than implementation work or release planning.
+terminology, unsettled design decisions, and product path. It guides changes to
+the system's documented boundaries rather than implementation work or release
+execution.
 
 ## Purpose and Scope
 
@@ -23,6 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `core-statements.md`: Current product, security, and technical truths; expand or replace statements only after a clear decision.
 - `glossary.md`: Canonical definitions for Weavelit applications, interfaces, identities, access, states, and requests.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Core Statements, Glossary, or an architecture decision record.
+- `roadmap.md`: Non-binding guide for the intended path to MVP and beyond; it does not establish product commitments.
 - `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, audit, observability, and storage boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
@@ -36,6 +38,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Make minimal, targeted edits; avoid broad rewrites unless explicitly requested.
 - Use `glossary.md` for canonical terms and keep their usage consistent across the documentation.
 - Record settled product, security, or technical commitments in `core-statements.md`; remove a resolved item from `open-questions.md` and place its decision in the appropriate canonical document or an architecture decision record.
+- Keep `roadmap.md` non-binding; link to canonical documents for settled commitments instead of redefining them there.
 - Keep security constraints in `security-model.md` aligned with `core-statements.md`, and preserve each document's stated scope.
 
 ## Standards and Conventions

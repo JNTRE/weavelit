@@ -133,12 +133,12 @@ made.
 - The **[Admin CLI](glossary.md#applications-and-interfaces)** runs only on the
   Weavelit Server host and requires a Unix account with `sudo` authority; it is
   not a remotely callable Weavelit interface.
-- **[Initial Setup](glossary.md#states-and-requests)** and creation of the
-  first local **[Application Administrator](glossary.md#identities-and-access)**
+- **[Init](glossary.md#states-and-requests)** and creation of the
+  first local **[Admin User](glossary.md#identities-and-access)**
   are performed through the Admin CLI. External-authentication configuration is
   optional server administration.
 - The **[Web UI](glossary.md#applications-and-interfaces)** cannot perform
-  administrative functions until initial setup is complete. Thereafter, it
+  administrative functions until init is complete. Thereafter, it
   requires human authentication and Weavelit administrative permission.
 - The Operations CLI requests only supported operational tasks. The Operations
   CLI does not implement administrative commands, and the server does not
@@ -146,6 +146,10 @@ made.
 - Weavelit is an API-first application with a stable, versioned, machine-
   readable interface for explicitly supported operations.
 - Weavelit exposes its application interface as an authenticated HTTPS API.
+- One configurable HTTPS listener serves the Web UI browser routes and the
+  authenticated API routes. API routes are versioned under `/api/v1/`.
+- The Operations CLI uses the API routes on that listener; it does not use Web
+  UI browser routes.
 - Network reachability is limited by TLS, firewall and other network controls,
   and client authentication.
 - Weavelit provides local human accounts and local automation credentials as
@@ -153,8 +157,10 @@ made.
 - **[External Authentication](glossary.md#identities-and-access)** through
   OpenID Connect providers and external workload identities is optional, not a
   deployment requirement.
-- Automation credentials grant only explicitly allowed operations and can be
-  revoked or expired by an administrator.
+- Only Admin Users create, manage, and assign named
+  **[Operation](glossary.md#applications-and-interfaces)** scopes to Automation
+  Identities. Automation credentials grant only explicitly allowed operations
+  and can be revoked or expired by an administrator.
 - The Operations CLI and Web UI connect through
   **[Client Modules](glossary.md#applications-and-interfaces)** that translate
   requests into the same supported operation contracts. MCP adapters will use
@@ -163,7 +169,7 @@ made.
   **[Operational Requests](glossary.md#states-and-requests)** and returns
   machine-readable results.
 - The Web UI is an API client that authorized administrators use to manage the
-  application after initial setup.
+  application after init.
 - Weavelit derives client identity from server-validated credentials and
   authorizes every requested operation at the gateway.
 - Host-level administration is separate from Weavelit's application client
