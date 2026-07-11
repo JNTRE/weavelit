@@ -10,7 +10,7 @@ section. Later uses in that section may be plain text.
 **Client CLI** - The separately packaged operations-only command-line application used on a user's macOS, Linux, or Windows system.
 **Web UI** - The browser-based administrative client included with the Weavelit Server and available after authentication and setup.
 **Admin CLI** - The host-local server administration tool, available only to a Unix account with `sudo` authority on the Weavelit Server host.
-**Client Module** - A reusable library within a client application that sends supported requests to the Weavelit Server.
+**Client Module** - A reusable server-side Rust library that provides and maintains one client-facing connection surface to the Weavelit Server. It authenticates and translates that client's requests into the shared Operation contract, while the Server remains the final authorization authority.
 **Service Module** - A reusable server-side Rust library that authenticates with and communicates with one named external service and implements its supported Operations.
 **Workflow** - A human-, agent-, or automation-owned process that uses one or more Operations, potentially across Service Modules. It is not a configurable Weavelit application object.
 **Operation** - A specific named, validated, permissionable task implemented by a Service Module that the Server can authorize, audit, and execute.
@@ -27,4 +27,4 @@ section. Later uses in that section may be plain text.
 ## States and Requests
 
 **Initial Setup** - The state before a Host Administrator creates the first local Application Administrator and configures the Server for normal use.
-**Operational Request** - A typed request for a supported Operation sent to the Weavelit Server by a client application using a Client Module.
+**Operational Request** - A typed request for a supported Operation accepted through a Client Module and processed by the Weavelit Server.
