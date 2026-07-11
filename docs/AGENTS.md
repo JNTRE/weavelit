@@ -41,5 +41,8 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use the exact canonical names defined in `glossary.md` when documenting Weavelit concepts.
+- On first substantive use in each document section, write a canonical glossary term
+  as a bold link to its glossary category; later uses in that section may be plain
+  text.
 - Keep intended product and technical commitments in `core-statements.md`; do not leave resolved decisions in `open-questions.md`.
 - Do not restate a canonical decision in multiple documents when a link to its owning document preserves the needed context.

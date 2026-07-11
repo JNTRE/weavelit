@@ -1,6 +1,8 @@
 # Weavelit Glossary
 
 Quick reference for the canonical terms used throughout Weavelit documentation.
+Canonical terms are written as bold links on first substantive use in a document
+section. Later uses in that section may be plain text.
 
 ## Applications and Interfaces
 
