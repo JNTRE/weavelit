@@ -38,6 +38,6 @@ section. Later uses in that section may be plain text.
 
 ## States and Requests
 
-**Initial Setup** - The state before a **[Host Administrator](#identities-and-access)** creates the first local **[Application Administrator](#identities-and-access)** and configures the Server for normal use.
+**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the first local **[Application Administrator](#identities-and-access)** and configures the Server for normal use.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.
