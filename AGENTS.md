@@ -26,8 +26,7 @@ Apply instructions in this order:
 - `CONTRIBUTING.md`: Branch, pull-request, branch-name, and Conventional Commit requirements.
 - `README.md`: Concise repository identification as an AI agent service gateway.
 - `docs/`: Canonical product, security, terminology, and unresolved-decision documentation; follow `docs/AGENTS.md` for changes within it.
-- `weavelit.code-workspace`: VS Code workspace definition for this repository.
-- `.git/`: Local Git metadata, excluded from maintained project documentation inventory.
+- `docs/glossary.md`: Canonical definitions and naming for Weavelit concepts.
 
 ## 3. Usage Guidance
 
@@ -44,4 +43,6 @@ Apply instructions in this order:
 - Maintain product-specific AI instruction files only as thin shims that link or defer to this root file.
 - Keep this root `AGENTS.md` at 100 lines or fewer.
 - Preserve the terms and stated boundaries in the canonical documentation when adding or revising product claims.
+- Use the exact canonical names in `docs/glossary.md` when naming Weavelit concepts.
+- On first substantive use in a written section, format a canonical glossary term as a bold link to its glossary category; later uses in that section may be plain text.
 - Update this inventory when repository-level assets, primary folders, or compatibility shims are added, removed, renamed, or moved.
