@@ -50,27 +50,46 @@ or technical commitments. Those commitments belong in the
 - [ ] A Host Administrator can use the Admin CLI to reset MFA enrollment for
   any local Human User, including themselves. The reset immediately invalidates
   the prior enrollment, and the Admin CLI never displays or replaces the user's
-  TOTP secret.
+  MFA secret.
 - [ ] The Server stores every local human password set or reset through Init,
   the Admin CLI, or the Web UI in accordance with the
   [Security Model](security-model.md#authentication): using a modern adaptive
   password-hashing algorithm from a maintained library, never in plaintext or
   reversibly encrypted.
-- [ ] The Server supports optional
-  **[Multifactor Authentication](glossary.md#identities-and-access)** for local
-  Human Users, using password and time-based one-time password (TOTP) as the
-  initial MFA method. A Human User who enrolls in TOTP must complete TOTP
-  verification whenever they authenticate.
-- [ ] The Server prevents a local Human User whose account requires MFA from
-  obtaining a usable session until they complete TOTP enrollment. Resetting MFA
-  returns an MFA-required account to that enrollment-required state.
+- [ ] The Server evaluates each local Human User's MFA policy, enabled
+  **[MFA Modules](glossary.md#applications-and-interfaces)**, and verified MFA
+  factors before granting a usable session. A Human User whose account requires
+  MFA cannot obtain a usable session until they verify an enabled MFA method.
 - [ ] **[Init](glossary.md#states-and-requests)** generates and uses a
   self-signed TLS certificate by default.
 - [ ] One configured HTTPS listener serves both the
   **[Web UI](glossary.md#applications-and-interfaces)** browser routes and
   authenticated `/api/v1/` routes.
 
-### 2. Build the Web UI Client Module
+### 2. Build the TOTP MFA Module
+
+- [ ] The TOTP **[MFA Module](glossary.md#applications-and-interfaces)** is
+  compiled into the Weavelit Server package, registered with the Server, and
+  enabled by default after Init. An Administrator can enable or disable it
+  through server-administration functions.
+- [ ] The TOTP MFA Module uses maintained, standards-compliant TOTP libraries
+  to generate and verify TOTP factors without exposing its implementation
+  library directly to Client Modules or client applications.
+- [ ] The TOTP MFA Module generates a unique TOTP secret and provisioning value
+  for a local **[Human User](glossary.md#identities-and-access)** enrollment.
+  The provisioning value is available only during that Human User's enrollment
+  and is not returned after enrollment completes.
+- [ ] The TOTP MFA Module activates an enrollment only after the enrolling
+  Human User confirms a valid generated TOTP code, and it securely stores the
+  resulting factor data in the Server's trusted environment.
+- [ ] The TOTP MFA Module verifies valid TOTP codes and rejects invalid,
+  expired, or replayed codes. It returns a typed verification result to the
+  Server without disclosing the TOTP secret or raw implementation errors.
+- [ ] Disabling the TOTP MFA Module immediately prevents new TOTP enrollment
+  and verification. The Server applies the defined affected-user reporting,
+  session termination, and MFA-policy behavior.
+
+### 3. Build the Web UI Client Module
 
 - [ ] The **[Web UI](glossary.md#applications-and-interfaces)**
   **[Client Module](glossary.md#applications-and-interfaces)** is registered
@@ -93,7 +112,7 @@ or technical commitments. Those commitments belong in the
 - [ ] The Web UI Client Module never exposes provider credentials, automation
   credentials, or internal error traces to the browser.
 
-### 3. Build the Zendesk Service Module
+### 4. Build the Zendesk Service Module
 
 - [ ] The Zendesk **[Service Module](glossary.md#applications-and-interfaces)**
   declares one supported **[Service Connection](glossary.md#applications-and-interfaces)**
@@ -124,7 +143,7 @@ or technical commitments. Those commitments belong in the
 - [ ] Successful and failed Zendesk Operations produce the required Server
   audit records.
 
-### 4. Build the Web UI
+### 5. Build the Web UI
 
 - [ ] The initial **[Administrator](glossary.md#identities-and-access)** can
   sign in using the local username and password established during
@@ -182,7 +201,7 @@ or technical commitments. Those commitments belong in the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** web listener
   IP address and port through the Web UI.
 
-### 5. Build the Operations CLI Client Module
+### 6. Build the Operations CLI Client Module
 
 - [ ] The **[Operations CLI](glossary.md#applications-and-interfaces)**
   **[Client Module](glossary.md#applications-and-interfaces)** is registered
@@ -209,7 +228,7 @@ or technical commitments. Those commitments belong in the
 - [ ] The Operations CLI Client Module never exposes provider credentials,
   automation credentials, or internal error traces to the Operations CLI.
 
-### 6. Build the Operations CLI
+### 7. Build the Operations CLI
 
 - [ ] A **[Human User](glossary.md#identities-and-access)** can sign in to the
   **[Operations CLI](glossary.md#applications-and-interfaces)** only when a
@@ -239,7 +258,7 @@ The MVP boundary follows the Operations CLI milestone.
 
 ## Post-MVP
 
-### 7. Support Automation Identities
+### 8. Support Automation Identities
 
 - [ ] An **[Administrator](glossary.md#identities-and-access)** can create and
   manage an **[Automation Identity](glossary.md#identities-and-access)**,
@@ -250,9 +269,9 @@ The MVP boundary follows the Operations CLI milestone.
   **[Human User](glossary.md#identities-and-access)** but cannot change the
   Automation Identity's permissions or credentials through ownership alone.
 
-### 8. Add External Authentication
+### 9. Add External Authentication
 
-### 9. Support User-Associated Service Connections
+### 10. Support User-Associated Service Connections
 
 - [ ] A **[Human User](glossary.md#identities-and-access)** with Web UI
   **[Client Module](glossary.md#applications-and-interfaces)** access and a
@@ -268,4 +287,4 @@ The MVP boundary follows the Operations CLI milestone.
   without returning, retaining, or otherwise disclosing it to the Web UI,
   other Human Users, or audit records.
 
-### 10. Expand supported capabilities deliberately
+### 11. Expand supported capabilities deliberately
