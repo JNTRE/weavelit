@@ -30,7 +30,8 @@ is not a complete implementation design.
   Sensitive material may be supplied only through a declared Service Connection
   setup workflow; it is never returned to, retained by, or otherwise disclosed
   to **[Client Modules](glossary.md#applications-and-interfaces)**, client
-  applications, or audit records.
+  applications, **[Audit Logs](glossary.md#applications-and-interfaces)**, or
+  **[System Logs](glossary.md#applications-and-interfaces)**.
 
 ## Authorization
 
@@ -60,6 +61,33 @@ is not a complete implementation design.
 - The Operations CLI is operations-only. The server does not accept Operations
   CLI credentials for administrative functions.
 
+## Logging and Audit
+
+- System Logs and Audit Logs are distinct records with separate operational and
+  accountability purposes. Neither substitutes for the other.
+- The Server redacts each System Log and Audit Log before sending it to any
+  **[Log Module](glossary.md#applications-and-interfaces)**. Log Modules never
+  receive unredacted records and do not implement separate redaction behavior.
+- System Logs and Audit Logs must not contain passwords, password verifiers,
+  API keys, OAuth tokens, session identifiers, authorization headers, Service
+  Connection authentication material, or other credentials. They also exclude
+  complete request and provider payloads by default, raw stack traces, internal
+  error chains, and database errors.
+- Only an **[Administrator](glossary.md#identities-and-access)** may configure
+  a Log Module, configure its System Log or Audit Log retention and purging, or
+  view retained logs. Log viewing is read-only.
+- Before the Server begins a consequential provider action, at least one active
+  Log Module must durably persist the pre-execution Audit Log. If it cannot,
+  the Server must not contact the provider.
+- After a provider action may have occurred, if the Server cannot durably
+  persist the Audit Log outcome, it returns a structured indeterminate result
+  with the correlation identifier and recovers the missing outcome record when
+  durable Audit Log storage becomes available.
+- System Log delivery failures do not block an otherwise authorized operation
+  while durable Audit Log persistence remains available. The Server surfaces
+  those failures through its health or status state and records them when a Log
+  Module becomes available.
+
 ## Automation Accountability
 
 - Each **[Automation Identity](glossary.md#identities-and-access)** has an
@@ -70,5 +98,5 @@ is not a complete implementation design.
   **[Operation](glossary.md#applications-and-interfaces)** scopes.
 - Automation credentials are scoped to named operations and can be revoked or
   expired by an administrator.
-- Audit records identify the authenticated principal that initiated an action
+- Audit Logs identify the authenticated principal that initiated an action
   and the Responsible Owner of an Automation Identity when applicable.
