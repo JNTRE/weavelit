@@ -59,7 +59,8 @@ Which administrative functions are available in the
 which remain exclusively in the host-local
 **[Admin CLI](glossary.md#applications-and-interfaces)**? What recovery actions
 can a **[Host Administrator](glossary.md#identities-and-access)** take, and what
-audit record is required for each one?
+**[Audit Log](glossary.md#applications-and-interfaces)** is required for each
+one?
 
 ## API, Security, and Operations
 
@@ -77,11 +78,14 @@ compatibility policy for
 pagination, and idempotency keys? What server and Operations CLI versions are
 supported together?
 
-### 9. Durable data, audit retention, and backups
+### 9. Application data, log backup, and retention implementation
 
-Which storage technology holds policy, audit records, idempotency state,
-authentication state, schedules, and provider connection state? What data is
-redacted, how long is it retained, and how are backups protected and restored?
+Which storage technology holds policy, idempotency state, authentication state,
+schedules, and provider connection state? What application data is redacted, how
+long is it retained, and how are its backups protected and restored? How are the
+separate System Log and Audit Log databases and remote Log Module destinations
+backed up, protected, restored, and migrated? What configuration bounds and
+execution behavior apply to their independent retention and purge policies?
 
 ### 10. Secrets and provider credential management
 
@@ -89,7 +93,9 @@ Which **[Service Connection](glossary.md#applications-and-interfaces)** type
 does each **[Service Module](glossary.md#applications-and-interfaces)** support,
 and who may establish it? How are its authentication artifacts and local
 automation credentials encrypted or protected by the host, rotated, revoked,
-recovered, and kept out of clients and audit logs?
+recovered, and kept out of clients, System Logs, and Audit Logs? How are
+credentials used by remote Log Modules protected, rotated, revoked, and kept out
+of all log output?
 
 ## Packages and Integrations
 
