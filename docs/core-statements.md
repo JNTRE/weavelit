@@ -18,8 +18,9 @@ made.
   is attributable to an authenticated principal,
   and every **[Automation Identity](glossary.md#identities-and-access)** has an
   active **[Responsible Owner](glossary.md#identities-and-access)**.
-- Weavelit records the outcome of supported operations so those actions can be
-  understood and audited.
+- Weavelit records consequential actions as **[Audit Logs](glossary.md#applications-and-interfaces)**
+  and emits **[System Logs](glossary.md#applications-and-interfaces)** for
+  operational diagnosis.
 - Weavelit begins with Zendesk incident follow-up tickets as its reference use
   case.
 
@@ -98,10 +99,24 @@ made.
 - Provider authentication failure stops the requested action safely; normal
   agent operations do not initiate interactive provider login.
 - Weavelit applies validation, duplicate protection where appropriate, and
-  audit recording before and after consequential operations.
-- Audit records capture the caller, operation, target, time, result, and
-  correlation identifier, while excluding secrets and unnecessary sensitive
-  payloads.
+  Audit Log recording before and after consequential operations.
+- System Logs record Server lifecycle events, operational state, configuration
+  changes, authentication failures, authorization denials, dependency failures,
+  provider failures, and internal errors.
+- Audit Logs capture the caller, operation, target, time, result, and
+  correlation identifier. System Logs and Audit Logs are structured and
+  pre-redacted before they reach a Log Module, excluding secrets and
+  unnecessary sensitive payloads.
+- **[Log Modules](glossary.md#applications-and-interfaces)** are server-side
+  Rust libraries that persist or deliver System Logs, Audit Logs, or both. More
+  than one enabled Log Module may be active for either log type.
+- The MVP default Log Module uses SQLite and stores System Logs and Audit Logs
+  in a database separate from the Server's application state, including users,
+  sessions, policy, secrets, Service Connections, and operational state.
+- Init selects, configures, and activates an initial Log Module that durably
+  records Audit Logs. The Server does not begin normal operation without it.
+- Post-MVP, Administrators can independently configure System Log and Audit Log
+  retention and purging for each Log Module.
 - Each integration defines its supported operations, required permissions,
   authentication model, configuration, retry and rate-limit behavior, error
   behavior, and safety tests.
@@ -133,8 +148,8 @@ made.
   **[Weavelit Server](glossary.md#applications-and-interfaces)** and the
   **[Operations CLI](glossary.md#applications-and-interfaces)**.
 - The Weavelit Server owns the HTTPS API, operation catalog, authorization,
-  audit records, authentication configuration, provider integrations, and
-  provider credentials.
+  System Logs, Audit Logs, Log Module configuration, authentication
+  configuration, provider integrations, and provider credentials.
 - The Weavelit Server package includes the Web UI and Admin CLI.
 - The Operations CLI is a peer client application installed on a user's local
   machine; it does not contain provider credentials, provider integration
@@ -148,8 +163,9 @@ made.
 - **[Init](glossary.md#states-and-requests)**, creation of the
   **[Administrators Group](glossary.md#identities-and-access)**, creation of
   the first local **[Human User](glossary.md#identities-and-access)**, and
-  assignment of that user to the Administrators Group are performed through the
-  Admin CLI. External-authentication configuration is optional server
+  assignment of that user to the Administrators Group, and selection,
+  configuration, and activation of an initial Log Module are performed through
+  the Admin CLI. External-authentication configuration is optional server
   administration.
 - After **[Init](glossary.md#states-and-requests)**, a
   **[Human User](glossary.md#identities-and-access)** with a Group grant to the
@@ -164,6 +180,9 @@ made.
   addition to Web UI Client Module access. Browser navigation is a usability
   control only: the Server independently authorizes every Web UI request and
   rejects administrative requests without that permission.
+- Administrators can view System Logs and Audit Logs in a read-only Web UI
+  logging area and configure Log Modules through server-administration
+  functions. Future administrative surfaces may provide equivalent access.
 - The Operations CLI requests only supported operational tasks. The Operations
   CLI does not implement administrative commands, and the server does not
   accept Operations CLI credentials for administrative functions.
