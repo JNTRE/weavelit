@@ -151,10 +151,19 @@ made.
   assignment of that user to the Administrators Group are performed through the
   Admin CLI. External-authentication configuration is optional server
   administration.
-- The **[Web UI](glossary.md#applications-and-interfaces)** cannot perform
-  administrative functions until init is complete. Thereafter, it
-  requires human authentication and the
-  **[Server Administration Permission](glossary.md#identities-and-access)**.
+- After **[Init](glossary.md#states-and-requests)**, a
+  **[Human User](glossary.md#identities-and-access)** with a Group grant to the
+  **[Web UI](glossary.md#applications-and-interfaces)**
+  **[Client Module](glossary.md#applications-and-interfaces)** can use
+  self-service account functions. The Web UI provides a read-only summary of
+  the Human User's Group memberships and effective Client Module, Service
+  Module, and named Operation grants, but not Service Module configuration,
+  Service Connection details, provider identities, or credentials.
+- Web UI administrative functions require the
+  **[Server Administration Permission](glossary.md#identities-and-access)** in
+  addition to Web UI Client Module access. Browser navigation is a usability
+  control only: the Server independently authorizes every Web UI request and
+  rejects administrative requests without that permission.
 - The Operations CLI requests only supported operational tasks. The Operations
   CLI does not implement administrative commands, and the server does not
   accept Operations CLI credentials for administrative functions.
