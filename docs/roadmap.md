@@ -69,7 +69,7 @@ or technical commitments. Those commitments belong in the
 ### 3. Build the Zendesk Service Module
 
 - [ ] The Zendesk **[Service Module](glossary.md#applications-and-interfaces)**
-  can establish and use a supported
+  can establish and use its one supported
   **[Service Connection](glossary.md#applications-and-interfaces)** with
   Zendesk.
 - [ ] The Zendesk Service Module can create a ticket.
@@ -156,9 +156,8 @@ or technical commitments. Those commitments belong in the
 - [ ] A Human User with Group grants to an enabled
   **[Service Module](glossary.md#applications-and-interfaces)** and a named
   Operation can invoke that Operation through the Operations CLI when the
-  Service Module's compatible
-  **[Service Connection](glossary.md#applications-and-interfaces)** is
-  authenticated.
+  applicable configured **[Service Connection](glossary.md#applications-and-interfaces)**
+  of that Service Module's one supported type is authenticated.
 - [ ] A Human User with the required grants can invoke a supported Operation
   through the Operations CLI and receive the expected structured result.
 
