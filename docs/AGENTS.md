@@ -53,5 +53,11 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - On first substantive use in each document section, write a canonical glossary term
   as a bold link to its glossary category; later uses in that section may be plain
   text.
+- Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
+- Every production document must include a `## Related Documents` section at the end of the document.
+- `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
+- Include only valid, repository-relative links to existing canonical documents.
+- Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
+- Remove stale links and add canonical links so the section reflects current source-of-truth references.
 - Keep intended product and technical commitments in `core-statements.md`; do not leave resolved decisions in `open-questions.md`.
 - Do not restate a canonical decision in multiple documents when a link to its owning document preserves the needed context.
