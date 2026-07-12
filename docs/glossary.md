@@ -10,6 +10,16 @@ now **Weavelit Server** - The Ubuntu-hosted application that owns the API, polic
 
 **Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for the module selected during **[Init](#states-and-requests)**, and configured only through server-administration functions.
 
+**MFA Module** - A compiled-in server-side Rust library that implements one
+specific **[Multifactor Authentication (MFA)](#identities-and-access)** method,
+such as time-based one-time password (TOTP) or a passkey. An MFA Module owns
+method-specific enrollment, verification, and protected factor-data handling;
+the **[Weavelit Server](#applications-and-interfaces)** owns MFA policy,
+authorization, session usability, recovery, audit records, and method
+enablement. MFA Modules use maintained third-party libraries where appropriate,
+are released as part of the Server package, and are not runtime-installable
+plugins.
+
 **System Log** - A structured, pre-redacted diagnostic record of Weavelit Server lifecycle events, operational state, configuration changes, authentication failures, authorization denials, dependency failures, provider failures, or internal errors. A System Log supports operation and diagnosis; it is not an Audit Log.
 
 **Audit Log** - A structured, pre-redacted accountability record for a consequential action. It identifies the authenticated principal, **[Responsible Owner](#identities-and-access)** when applicable, action or **[Operation](#applications-and-interfaces)**, target, time, result, and correlation identifier. An Audit Log is distinct from a System Log.

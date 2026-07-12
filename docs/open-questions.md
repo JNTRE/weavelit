@@ -11,7 +11,14 @@ Glossary, or an architecture decision record rather than remaining here.
 
 How are local human accounts invited, disabled, recovered, and deleted?
 
-### 2. Operations CLI login and credential storage
+### 2. MFA method expansion
+
+Which additional compiled-in **[MFA Modules](glossary.md#applications-and-interfaces)**
+will Weavelit support after TOTP, and how can a Human User enroll, replace, or
+retire multiple MFA methods without weakening an MFA requirement or creating an
+account-recovery gap?
+
+### 3. Operations CLI login and credential storage
 
 What browser-mediated login or device-approval flow does the
 **[Operations CLI](glossary.md#applications-and-interfaces)** use
@@ -20,7 +27,7 @@ for **[Local Authentication](glossary.md#identities-and-access)** and
 operating-system credential stores are supported, how are non-secret profiles
 represented, and how does `logout` remove local credentials?
 
-### 3. Automation credential lifecycle
+### 4. Automation credential lifecycle
 
 **[Administrators](glossary.md#identities-and-access)** create and manage local
 **[Automation Identities](glossary.md#identities-and-access)**. How are their
@@ -31,7 +38,7 @@ transfer or suspension handled?
 
 ## Automation and Accountability
 
-### 4. Schedules and external triggers
+### 5. Schedules and external triggers
 
 Which automation sources does Weavelit support: server-owned schedules,
 external webhook/event triggers, headless
@@ -41,7 +48,7 @@ retried, deduplicated, and audited?
 
 ## Authorization and Administration
 
-### 5. Permission and group model
+### 6. Permission and group model
 
 What additional group-granted permission types, if any, are needed beyond
 access to **[Client Modules](glossary.md#applications-and-interfaces)**,
@@ -50,7 +57,7 @@ access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 Administration Permission? Which group-grant changes require additional
 confirmation or reauthentication?
 
-### 6. Administration boundaries
+### 7. Administration boundaries
 
 Which administrative functions are available in the
 **[Web UI](glossary.md#applications-and-interfaces)** after authentication and
@@ -62,13 +69,13 @@ one?
 
 ## API, Security, and Operations
 
-### 7. HTTPS edge and public API protection
+### 8. HTTPS edge and public API protection
 
 Where does TLS terminate, how are certificates renewed, which ports and source
 networks are allowed, and what request-size, rate-limit, CORS, and browser-CSRF
 controls apply?
 
-### 8. API contract and compatibility policy
+### 9. API contract and compatibility policy
 
 API routes are versioned under `/api/v1/`. What is the wire format and
 compatibility policy for
@@ -76,7 +83,7 @@ compatibility policy for
 pagination, and idempotency keys? What server and Operations CLI versions are
 supported together?
 
-### 9. Application data, log backup, and retention implementation
+### 10. Application data, log backup, and retention implementation
 
 Which storage technology holds policy, idempotency state, authentication state,
 schedules, and provider connection state? What application data is redacted, how
@@ -85,7 +92,7 @@ separate System Log and Audit Log databases and remote Log Module destinations
 backed up, protected, restored, and migrated? What configuration bounds and
 execution behavior apply to their independent retention and purge policies?
 
-### 10. Secrets and provider credential management
+### 11. Secrets and provider credential management
 
 Which **[Service Connection](glossary.md#applications-and-interfaces)** type
 does each **[Service Module](glossary.md#applications-and-interfaces)** support,
@@ -97,14 +104,14 @@ of all log output?
 
 ## Packages and Integrations
 
-### 11. Package and update model
+### 12. Package and update model
 
 How are the Ubuntu **[Weavelit Server](glossary.md#applications-and-interfaces)** package and macOS, Linux, and Windows
 **[Operations CLI](glossary.md#applications-and-interfaces)**
 packages distributed, signed, updated, and rolled back? Which client platforms
 are supported?
 
-### 12. Zendesk reference integration
+### 13. Zendesk reference integration
 
 Which Zendesk **[Service Connection](glossary.md#applications-and-interfaces)**
 type is supported first, and which Zendesk identity should create or update

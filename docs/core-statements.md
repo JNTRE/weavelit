@@ -197,10 +197,15 @@ made.
   and client authentication.
 - Weavelit provides local human accounts and local automation credentials as
   its self-contained **[Local Authentication](glossary.md#identities-and-access)** model.
+- The Server provides each supported local MFA method through a compiled-in
+  **[MFA Module](glossary.md#applications-and-interfaces)**. MFA Modules are
+  released as part of the Server package, not installed as runtime plugins.
 - Local Human Users authenticate with a password and may enroll in
   **[Multifactor Authentication](glossary.md#identities-and-access)**. MFA is
   optional by default, and an Administrator can require it for a local Human
   User.
+- Administrators configure MFA Module enablement through server-administration
+  functions. A disabled MFA Module cannot enroll or verify factors.
 - Init creates the first local Human User without an enrolled MFA factor. A
   Host Administrator can use the Admin CLI to reset MFA enrollment for any
   local Human User, including themselves.

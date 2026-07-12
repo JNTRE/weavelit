@@ -21,15 +21,28 @@ is not a complete implementation design.
   time-based one-time password (TOTP); a Human User who enrolls in TOTP must
   complete TOTP verification whenever they authenticate, and an Administrator
   can require MFA for a local Human User.
-- The Server owns local MFA policy, TOTP enrollment, verification, reset, and
-  secret storage. A Human User enrolls their own TOTP factor by confirming a
-  current password and a generated TOTP code. The Server may provide the TOTP
-  provisioning value only to that Human User during enrollment; it never
-  returns the secret after enrollment or records TOTP secrets or codes in logs
-  or audit records.
+- The Server owns local MFA policy, authorization, session usability, recovery,
+  audit records, and **[MFA Module](glossary.md#applications-and-interfaces)**
+  enablement. An MFA Module owns its method-specific enrollment, verification,
+  and protected factor-data handling.
+- The TOTP MFA Module enrolls a Human User's factor by confirming a current
+  password and a generated TOTP code. It may provide the TOTP provisioning
+  value only to that Human User during enrollment; it never returns the secret
+  after enrollment or records TOTP secrets or codes in logs or audit records.
 - A local Human User who is required to use MFA but has not enrolled, or whose
   enrollment has been reset, cannot obtain a usable session until completing
   TOTP enrollment. An MFA reset immediately invalidates the prior enrollment.
+- An Administrator can disable an MFA Module through server-administration
+  functions even when Human Users have active enrollments that depend on it.
+  Before applying the change, the Server reports the number of affected Human
+  Users. Disabling the MFA Module immediately prevents enrollment and
+  verification through that method and terminates the affected Human Users'
+  sessions.
+- Disabling an MFA Module does not remove a Human User's MFA requirement. An
+  affected Human User whose account requires MFA must enroll in an enabled MFA
+  Module before obtaining a usable session. An affected Human User whose
+  account does not require MFA may authenticate without MFA and can enroll in
+  any enabled MFA Module.
 - An Administrator can require MFA for another local Human User and reset that
   user's MFA enrollment through the Web UI. An Administrator cannot reset
   their own MFA enrollment through the Web UI. An Administrator who has
