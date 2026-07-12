@@ -83,14 +83,18 @@ compatibility policy for
 pagination, and idempotency keys? What server and Operations CLI versions are
 supported together?
 
-### 10. Application data, log backup, and retention implementation
+### 10. Application Database and log backup, retention, and recovery
 
-Which storage technology holds policy, idempotency state, authentication state,
-schedules, and provider connection state? What application data is redacted, how
-long is it retained, and how are its backups protected and restored? How are the
-separate System Log and Audit Log databases and remote Log Module destinations
-backed up, protected, restored, and migrated? What configuration bounds and
-execution behavior apply to their independent retention and purge policies?
+The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
+SQLite and is selected during Init; Weavelit does not support in-place database
+migration. Which data does a configuration backup export, how are its contents
+protected, versioned, and validated, and what import, replacement, and recovery
+behavior applies when it is imported into a separately initialized Server? What
+application data is redacted, how long is it retained, and how are Application
+Database backups protected and restored? How are the separate System Log and
+Audit Log databases and remote Log Module destinations backed up, protected,
+restored, and migrated? What configuration bounds and execution behavior apply
+to their independent retention and purge policies?
 
 ### 11. Secrets and provider credential management
 

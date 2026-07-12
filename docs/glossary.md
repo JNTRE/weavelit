@@ -6,7 +6,17 @@ section. Later uses in that section may be plain text.
 
 ## Applications and Interfaces
 
-now **Weavelit Server** - The Ubuntu-hosted application that owns the API, policy, System Logs, Audit Logs, Log Module configuration, provider integrations, and provider credentials.
+**Weavelit Server** - The Ubuntu-hosted application that owns the API, policy,
+Application Database, System Logs, Audit Logs, Log Module configuration,
+provider integrations, and provider credentials.
+
+**Application Database** - The server-owned persistent database for Weavelit
+application state, including users, sessions, policy, secrets, Service
+Connections, and operational state. It is selected and configured during
+**[Init](#states-and-requests)**, is separate from every
+**[Log Module](#applications-and-interfaces)** destination, and is not a
+module. The MVP Application Database uses SQLite; Weavelit does not support
+in-place migration between Application Database technologies.
 
 **Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for the module selected during **[Init](#states-and-requests)**, and configured only through server-administration functions.
 
@@ -83,7 +93,7 @@ from a shared secret and the current time by an authenticator application.
 
 ## States and Requests
 
-**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, selects, configures, and activates an initial Log Module that can durably record Audit Logs, and configures the Server for normal use. Init must complete before the Server starts normal operation.
+**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, selects and configures the **[Application Database](#applications-and-interfaces)**, selects, configures, and activates an initial Log Module that can durably record Audit Logs, and configures the Server for normal use. Init must complete before the Server starts normal operation.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.
 

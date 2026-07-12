@@ -110,11 +110,25 @@ made.
 - **[Log Modules](glossary.md#applications-and-interfaces)** are server-side
   Rust libraries that persist or deliver System Logs, Audit Logs, or both. More
   than one enabled Log Module may be active for either log type.
+- The Server stores its application state, including users, sessions, policy,
+  secrets, Service Connections, and operational state, in its
+  **[Application Database](glossary.md#applications-and-interfaces)**. The
+  Application Database is separate from every Log Module destination.
+- The MVP Application Database uses SQLite.
 - The MVP default Log Module uses SQLite and stores System Logs and Audit Logs
-  in a database separate from the Server's application state, including users,
-  sessions, policy, secrets, Service Connections, and operational state.
-- Init selects, configures, and activates an initial Log Module that durably
-  records Audit Logs. The Server does not begin normal operation without it.
+  in a database separate from the Application Database.
+- **[Init](glossary.md#states-and-requests)** selects and configures the
+  Application Database and selects, configures, and activates an initial Log
+  Module that durably records Audit Logs. The Server does not begin normal
+  operation without either one.
+- The Application Database is not a module and cannot be enabled, disabled, or
+  changed after Init. Weavelit does not support in-place migration between
+  Application Database technologies.
+- A **[Host Administrator](glossary.md#identities-and-access)** can export a
+  configuration backup and import it into a separately initialized Server after
+  that Server's Application Database is selected and configured. The backup's
+  contents, protection, compatibility, and import behavior are defined
+  separately.
 - Post-MVP, Administrators can independently configure System Log and Audit Log
   retention and purging for each Log Module.
 - Each integration defines its supported operations, required permissions,
