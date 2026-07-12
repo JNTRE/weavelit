@@ -16,7 +16,7 @@ section. Later uses in that section may be plain text.
 
 **Client Module** - A reusable server-side Rust library that provides and maintains one client-facing connection surface to the Weavelit Server. It authenticates and translates that client's requests into the shared **[Operation](#applications-and-interfaces)** contract, while the Server remains the final authorization authority.
 
-**Service Module** - A reusable server-side Rust library that authenticates with and communicates with one named external service and implements its supported Operations.
+**Service Module** - A reusable server-side Rust library that authenticates with and communicates with one named external service through exactly one **[Service Connection](#applications-and-interfaces)** type and implements its supported Operations. Supporting the same external service through another Service Connection type requires a separately named Service Module.
 
 **Service Connection** - A server-owned configuration through which a **[Service Module](#applications-and-interfaces)** authenticates to one external service. It specifies an authentication method and whether the resulting external identity is shared or associated with one **[Human User](#identities-and-access)**. Each Service Module supports exactly one Service Connection type; that type is unavailable until a corresponding connection is configured, and its use remains subject to all applicable caller grants. The Server receives, stores, and uses any sensitive authentication material; a Service Connection does not itself grant a caller access to the Service Module or its Operations.
 

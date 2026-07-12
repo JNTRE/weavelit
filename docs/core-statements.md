@@ -80,6 +80,9 @@ made.
   connections may require administrator setup, while user connections may
   require the associated
   **[Human User](glossary.md#identities-and-access)**'s authorization.
+- A provider that requires another Service Connection type is represented by a
+  separately named Service Module rather than an alternate connection type
+  within an existing Service Module.
 - Weavelit derives client identity from local authentication or a configured
   external identity provider and checks permission for every operation.
 - Agent skills and client-side checks improve usability, but the gateway is
