@@ -4,7 +4,7 @@ This folder documents server-side **[Log Modules](../glossary.md#applications-an
 
 ## Purpose and Scope
 
-Use this section to understand what this directory owns, what it does not own, and where related documentation belongs.
+Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns Log Module design, including log storage, delivery, retention, backup, restore, and migration boundaries.
 - It does not own Server application-state storage; its design remains in `../open-questions.md` until a dedicated documentation boundary is warranted.

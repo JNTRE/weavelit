@@ -23,7 +23,11 @@ Apply instructions in this order:
 ## 2. Asset Inventory
 
 - `AGENTS.md`: Canonical repository-wide agent routing and standards.
+- `.github/`: GitHub-specific repository metadata, including the Copilot
+  compatibility shim.
 - `.github/copilot-instructions.md`: Compatibility shim that defers to this guide.
+- `.gitignore`: Git ignore rules for local macOS, build, backup, and workspace
+  artifacts.
 - `CONTRIBUTING.md`: Branch, pull-request, branch-name, and Conventional Commit requirements.
 - `README.md`: Concise repository identification as an AI agent service gateway.
 - `docs/`: Canonical product, security, terminology, and unresolved-decision documentation; follow `docs/AGENTS.md` for changes within it.
