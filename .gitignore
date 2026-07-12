@@ -1,4 +1,5 @@
 .DS_Store
+/weavelit.code-workspace
 /target/
 *.rs.bk
 *.pdb
