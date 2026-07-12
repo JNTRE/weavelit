@@ -165,6 +165,8 @@ made.
 ## Technical Core Truths
 
 - Weavelit is implemented in Rust.
+- All Rust code in Weavelit, including the Server core, separately packaged
+  applications, and modules, uses the Rust 1.97 stable toolchain.
 - Weavelit consists of two separately packaged applications: the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** and the
   **[Operations CLI](glossary.md#applications-and-interfaces)**.
@@ -172,6 +174,10 @@ made.
   System Logs, Audit Logs, Log Module configuration, authentication
   configuration, provider integrations, and provider credentials.
 - The Weavelit Server package includes the Web UI and Admin CLI.
+- The Web UI is a single-page application built with TypeScript and React.
+  Its production asset bundle is built as part of the Weavelit Server package,
+  installed with the Server's file structure, and is not separately installed
+  or released.
 - The Operations CLI is a peer client application installed on a user's local
   machine; its first supported platform is macOS 26 and later on Apple Silicon
   (`arm64`). It does not contain provider credentials, provider integration
