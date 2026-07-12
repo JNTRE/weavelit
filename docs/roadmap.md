@@ -47,6 +47,11 @@ or technical commitments. Those commitments belong in the
 - [ ] A Host Administrator can use the Admin CLI to reset a local human user's
   password and require a password change at the user's next
   **[Local Authentication](glossary.md#identities-and-access)** login.
+- [ ] The Server stores every local human password set or reset through Init,
+  the Admin CLI, or the Web UI in accordance with the
+  [Security Model](security-model.md#authentication): using a modern adaptive
+  password-hashing algorithm from a maintained library, never in plaintext or
+  reversibly encrypted.
 - [ ] **[Init](glossary.md#states-and-requests)** generates and uses a
   self-signed TLS certificate by default.
 - [ ] One configured HTTPS listener serves both the

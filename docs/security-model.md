@@ -11,6 +11,11 @@ is not a complete implementation design.
 - Local human passwords are stored only with a modern adaptive password-hashing
   algorithm from a maintained library. Passwords are never stored in plaintext
   or reversibly encrypted.
+- Local human password creation, changes, resets, storage, and verification
+  occur only in Server-owned authentication logic. Client Modules and client
+  applications may request those workflows, but do not persist password values
+  or password verifiers, or implement separate password-hashing or verification
+  behavior.
 - **[Web UI](glossary.md#applications-and-interfaces)** browser sessions use
   secure, server-managed session handling.
 - **[Administrators](glossary.md#identities-and-access)** support multifactor
