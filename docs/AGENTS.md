@@ -32,7 +32,7 @@ Use this section as the source of truth for what assets belong in this directory
   documents; canonical documents supply the product, security, and technical
   direction for their goals.
 - `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
-- `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, audit, and observability boundaries.
+- `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
 - `vision.md`: High-level intended product, system relationships, and links to the Core Statements and Glossary.
 

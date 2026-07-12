@@ -4,6 +4,21 @@ This document records security requirements and implementation constraints that
 support the product boundaries in the [Core Statements](core-statements.md). It
 is not a complete implementation design.
 
+## Maintenance Policy
+
+This document is an initial collection of cross-cutting security requirements
+and implementation constraints. As a component is implemented, move its
+implementation-specific security detail to the owning specification:
+
+- [Authentication Specification](server/authentication/spec.md)
+- [Authorization Specification](server/authorization/spec.md)
+- [Automation Identities Specification](server/automation-identities/spec.md)
+
+Do this incrementally as implementation work makes the component's ownership
+clear; do not migrate requirements merely to complete a wholesale
+reorganization. Keep cross-cutting security constraints here, and link to the
+owning specification when its additional context is needed.
+
 ## Authentication
 
 - **[Local Authentication](glossary.md#identities-and-access)** is Weavelit's

@@ -1,40 +1,38 @@
-# Server Authentication Agent Guide
+# Automation Identities Agent Guide
 
-This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** authentication design for human users and validation of credentials presented by **[Automation Identities](../../glossary.md#identities-and-access)**. It applies the established **[Local Authentication](../../glossary.md#identities-and-access)** and **[External Authentication](../../glossary.md#identities-and-access)** commitments without defining implementation choices that remain unsettled.
+This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** design for **[Automation Identities](../../glossary.md#identities-and-access)**, their responsible ownership, and accountability boundaries.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Server authentication design for local human accounts, validation of credentials presented by **[Automation Identities](../../glossary.md#identities-and-access)**, and optional **[External Authentication](../../glossary.md#identities-and-access)**.
-- It does not own authorization policy evaluation; that belongs in the sibling `../authorization/` directory.
-- Authentication lifecycle and multifactor decisions that remain unsettled belong in `../../open-questions.md`.
+- This directory owns implementation-design documentation for Automation Identity lifecycle, credential management, responsible-owner enforcement, and accountability integration.
+- It does not own general authentication credential validation or authorization policy evaluation; those belong in the sibling `../authentication/` and `../authorization/` directories.
+- Unsettled Automation Identity choices belong in `../../open-questions.md`.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server authentication.
-- `spec.md`: Implementation-design specification for Server authentication.
+- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Automation Identities.
+- `spec.md`: Implementation-design specification for Automation Identities.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Keep authentication design aligned with `../../security-model.md` and record only settled commitments in `../../core-statements.md`.
-- Keep authorization evaluation in `../authorization/` and use `../../glossary.md` for canonical terminology.
+- Keep Automation Identity design aligned with `../../security-model.md` and record only settled commitments in `../../core-statements.md`.
+- Keep general credential validation in `../authentication/`, authorization policy evaluation in `../authorization/`, and Audit Log design in `../audit/`.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 
 ## Standards and Conventions
 
 - Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
-- Preserve the established **[Local Authentication](../../glossary.md#identities-and-access)** default and optional **[External Authentication](../../glossary.md#identities-and-access)** boundary; do not add unsupported authentication methods as commitments.
+- Preserve the established active Responsible Owner and named Operation scope requirements; do not make an Automation Identity self-managing.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.

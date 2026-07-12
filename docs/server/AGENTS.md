@@ -8,7 +8,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns shared **[Weavelit Server](../glossary.md#applications-and-interfaces)** implementation-design documentation and routing to server-boundary documentation.
 - It does not own product commitments, security requirements, or unresolved decisions; those remain in `../core-statements.md`, `../security-model.md`, and `../open-questions.md`.
-- The `api/`, `authentication/`, `authorization/`, `audit/`, `database/`, and `observability/` child directories own detailed documentation for their respective Server boundaries.
+- The `api/`, `authentication/`, `authorization/`, `automation-identities/`, `audit/`, `database/`, and `observability/` child directories own detailed documentation for their respective Server boundaries.
 
 ## Asset Inventory
 
@@ -16,8 +16,9 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Weavelit Server.
 - `api/`: Documentation for the Server's authenticated HTTPS application interface.
-- `authentication/`: Documentation for the Server's human and automation authentication design.
+- `authentication/`: Documentation for the Server's human authentication and Automation Identity credential-validation design.
 - `authorization/`: Documentation for the Server's permission and policy-evaluation design.
+- `automation-identities/`: Documentation for **[Automation Identity](../glossary.md#identities-and-access)** lifecycle, ownership, and accountability design.
 - `audit/`: Documentation for the Server's accountability and Audit Log design.
 - `database/`: Documentation for Application Database backend boundaries and their implementation design.
 - `observability/`: Documentation for Server System Log design and future operational diagnosis.
