@@ -1,0 +1,39 @@
+# Operations CLI Client Module Crate Agent Guide
+
+This directory is reserved for the compiled-in Operations CLI Client Module
+crate. It exposes the Operations CLI's authenticated `/api/v1/` request
+namespace, validates client requests as Operational Requests, and passes them
+to the Server's shared authorization policy.
+
+## Purpose and Scope
+
+Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+
+- This directory owns the Operations CLI Client Module's Server connection-surface behavior.
+- It does not own the separately packaged Operations CLI application; that belongs in `../../../../../operations-cli/`.
+- It does not own Server administration functions, Service Module provider behavior, or provider credentials.
+
+## Asset Inventory
+
+Use this section as the source of truth for what assets belong in this directory and what each asset is for.
+
+- `AGENTS.md`: Local routing, inventory, and Operations CLI Client Module crate-boundary rules.
+
+## Usage Guidance
+
+Follow this section for workflow, sequencing, and decision order when making changes in this directory.
+
+- Before editing, read this `AGENTS.md`, then each parent `AGENTS.md` upward to the repository root.
+- Read `../../../../../docs/client-modules/operations-cli/` and `../../../../../docs/clients/operations-cli/` before changing Operations CLI access or request behavior.
+- Keep Server-side request authentication and translation here and local CLI behavior in the separately packaged application.
+- Add contract and security tests for routes, credentials, request validation, authorization, and sensitive-data exposure as required by `../../../../../docs/testing.md`.
+
+## Standards and Conventions
+
+Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
+
+- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
+- Mount Operations CLI routes beneath `/api/v1/` on the configured Server HTTPS listener and make them unavailable when this Client Module is disabled.
+- Derive caller identity from Server-validated credentials, never from claims supplied by the Operations CLI.
+- Permit operations-only access; do not accept Operations CLI credentials for administrative functions or expose provider or automation credentials.
