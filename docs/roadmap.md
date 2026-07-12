@@ -293,20 +293,17 @@ The MVP boundary follows the packaging and verification milestone.
 
 ## Post-MVP
 
-### 9. Support Automation Identities
+### 9. Add TechnitiumDNS Service Module
 
-- [ ] An **[Administrator](glossary.md#identities-and-access)** can create and
-  manage an **[Automation Identity](glossary.md#identities-and-access)**,
-  including its credentials and named
-  **[Operation](glossary.md#applications-and-interfaces)** scopes.
-- [ ] Each Automation Identity has an active
-  **[Responsible Owner](glossary.md#identities-and-access)** who is a
-  **[Human User](glossary.md#identities-and-access)** but cannot change the
-  Automation Identity's permissions or credentials through ownership alone.
+- [ ] The TechnitiumDNS **[Service Module](glossary.md#applications-and-interfaces)**
+  declares its supported **[Service Connection](glossary.md#applications-and-interfaces)**
+  type and its DNS-management **[Operations](glossary.md#applications-and-interfaces)**.
+- [ ] A **[Human User](glossary.md#identities-and-access)** with the applicable
+  **[Group](glossary.md#identities-and-access)** grants can invoke a supported
+  TechnitiumDNS Operation through an authenticated configured Service
+  Connection.
 
-### 10. Add External Authentication
-
-### 11. Support User-Associated Service Connections
+### 10. Support User-Associated Service Connections
 
 - [ ] A **[Human User](glossary.md#identities-and-access)** with Web UI
   **[Client Module](glossary.md#applications-and-interfaces)** access and a
@@ -322,7 +319,38 @@ The MVP boundary follows the packaging and verification milestone.
   without returning, retaining, or otherwise disclosing it to the Web UI,
   other Human Users, or audit records.
 
-### 12. Offer a supported Server OCI image
+### 11. Support Automation Identities
+
+- [ ] An **[Administrator](glossary.md#identities-and-access)** can create and
+  manage an **[Automation Identity](glossary.md#identities-and-access)**,
+  including its credentials and named
+  **[Operation](glossary.md#applications-and-interfaces)** scopes.
+- [ ] Each Automation Identity has an active
+  **[Responsible Owner](glossary.md#identities-and-access)** who is a
+  **[Human User](glossary.md#identities-and-access)** but cannot change the
+  Automation Identity's permissions or credentials through ownership alone.
+
+### 12. Add External Authentication
+
+- [ ] An **[Administrator](glossary.md#identities-and-access)** can configure
+  an external OpenID Connect identity
+  provider for **[External Authentication](glossary.md#identities-and-access)**.
+- [ ] A **[Human User](glossary.md#identities-and-access)** authenticated
+  through the configured identity provider can access the
+  **[Weavelit Server](glossary.md#applications-and-interfaces)** only through
+  the same **[Client Module](glossary.md#applications-and-interfaces)**
+  availability and **[Group](glossary.md#identities-and-access)** grant rules
+  that apply to locally authenticated Human Users.
+
+### 13. Add Passkey MFA Module
+
+- [ ] A passkey **[MFA Module](glossary.md#applications-and-interfaces)** can
+  enroll and verify passkeys for a **[Human User](glossary.md#identities-and-access)**
+  while the **[Weavelit Server](glossary.md#applications-and-interfaces)**
+  retains control of MFA policy, session usability, authorization, and audit
+  records.
+
+### 14. Offer a supported Server OCI image
 
 - [ ] A supported OCI-compliant production image runs the verified packaged
   **[Weavelit Server](glossary.md#applications-and-interfaces)** artifact
@@ -331,8 +359,6 @@ The MVP boundary follows the packaging and verification milestone.
   for host administration, persistent Server state and backups, TLS
   termination, non-secret configuration, secret injection, image provenance,
   and upgrade and rollback.
-
-### 13. Expand supported capabilities deliberately
 
 ## Related Documents
 
