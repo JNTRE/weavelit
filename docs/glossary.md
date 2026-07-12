@@ -10,7 +10,7 @@ section. Later uses in that section may be plain text.
 
 **Operations CLI** - The separately packaged operations-only command-line application used on a user's macOS, Linux, or Windows system.
 
-**Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)** and available after authentication and Init.
+**Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)** and available after authentication and Init. A **[Human User](#identities-and-access)** whose **[Group](#identities-and-access)** grants the Web UI **[Client Module](#applications-and-interfaces)** can use self-service account functions and view their own Group memberships and effective access. Only an **[Administrator](#identities-and-access)** can use its administrative functions.
 
 **Admin CLI** - The host-local server administration tool, available only to a Unix account with `sudo` authority on the Weavelit Server host.
 
@@ -40,7 +40,7 @@ section. Later uses in that section may be plain text.
 
 **Group** - A collection of **[Human Users](#identities-and-access)** that grants its members access to **[Client Modules](#applications-and-interfaces)**, **[Service Modules](#applications-and-interfaces)**, named **[Operations](#applications-and-interfaces)**, and the **[Server Administration Permission](#identities-and-access)**. A Human User's effective grants are the additive union of its groups' grants; Human Users receive no direct grants.
 
-**Server Administration Permission** - The built-in permission, granted through a **[Group](#identities-and-access)**, that allows a **[Human User](#identities-and-access)** to administer Weavelit through the **[Web UI](#applications-and-interfaces)**. It does not itself grant named Operations.
+**Server Administration Permission** - The built-in permission, granted through a **[Group](#identities-and-access)**, that allows a **[Human User](#identities-and-access)** with Web UI **[Client Module](#applications-and-interfaces)** access to administer Weavelit through the **[Web UI](#applications-and-interfaces)**. It does not itself grant Web UI Client Module access, **[Service Modules](#applications-and-interfaces)**, or named **[Operations](#applications-and-interfaces)**.
 
 **Administrator** - A **[Human User](#identities-and-access)** whose effective group grants include the Server Administration Permission.
 
