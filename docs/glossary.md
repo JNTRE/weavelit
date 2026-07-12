@@ -6,7 +6,13 @@ section. Later uses in that section may be plain text.
 
 ## Applications and Interfaces
 
-**Weavelit Server** - The Ubuntu-hosted application that owns the API, policy, audit records, provider integrations, and provider credentials.
+**Weavelit Server** - The Ubuntu-hosted application that owns the API, policy, System Logs, Audit Logs, Log Module configuration, provider integrations, and provider credentials.
+
+**Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for the module selected during **[Init](#states-and-requests)**, and configured only through server-administration functions.
+
+**System Log** - A structured, pre-redacted diagnostic record of Weavelit Server lifecycle events, operational state, configuration changes, authentication failures, authorization denials, dependency failures, provider failures, or internal errors. A System Log supports operation and diagnosis; it is not an Audit Log.
+
+**Audit Log** - A structured, pre-redacted accountability record for a consequential action. It identifies the authenticated principal, **[Responsible Owner](#identities-and-access)** when applicable, action or **[Operation](#applications-and-interfaces)**, target, time, result, and correlation identifier. An Audit Log is distinct from a System Log.
 
 **Operations CLI** - The separately packaged operations-only command-line application used on a user's macOS, Linux, or Windows system.
 
@@ -44,7 +50,7 @@ section. Later uses in that section may be plain text.
 
 **Administrator** - A **[Human User](#identities-and-access)** whose effective group grants include the Server Administration Permission.
 
-**Administrators Group** - The system-created **[Group](#identities-and-access)** made during Init. It grants the **[Web UI](#applications-and-interfaces)** **[Client Module](#applications-and-interfaces)** and the Server Administration Permission, but no named Operations.
+**Administrators Group** - The system-created **[Group](#identities-and-access)** made during Init. It grants the **[Web UI](#applications-and-interfaces)** **[Client Module](#applications-and-interfaces)** and the Server Administration Permission, but no named Operations. Its members can view logs and configure Log Modules through server-administration functions.
 
 **Automation Identity** - A non-human principal created and managed by an **[Administrator](#identities-and-access)** with explicitly assigned named Operations for scheduled or triggered work.
 
@@ -56,6 +62,6 @@ section. Later uses in that section may be plain text.
 
 ## States and Requests
 
-**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, and configures the Server for normal use.
+**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, selects, configures, and activates an initial Log Module that can durably record Audit Logs, and configures the Server for normal use. Init must complete before the Server starts normal operation.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.

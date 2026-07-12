@@ -1,6 +1,6 @@
 # Weavelit Server Agent Guide
 
-This folder documents the implementation-design boundaries of the **[Weavelit Server](../glossary.md#applications-and-interfaces)**. It routes detailed work on the Server's API, access controls, audit records, observability, and durable data to focused child directories while keeping product commitments in the canonical top-level documents.
+This folder documents the implementation-design boundaries of the **[Weavelit Server](../glossary.md#applications-and-interfaces)**. It routes detailed work on the Server's API, access controls, **[Audit Logs](../glossary.md#applications-and-interfaces)**, and observability to focused child directories while keeping product commitments in the canonical top-level documents.
 
 ## Purpose and Scope
 
@@ -8,7 +8,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns shared **[Weavelit Server](../glossary.md#applications-and-interfaces)** implementation-design documentation and routing to server-boundary documentation.
 - It does not own product commitments, security requirements, or unresolved decisions; those remain in `../core-statements.md`, `../security-model.md`, and `../open-questions.md`.
-- The `api/`, `authentication/`, `authorization/`, `audit/`, `observability/`, and `storage/` child directories own detailed documentation for their respective Server boundaries.
+- The `api/`, `authentication/`, `authorization/`, `audit/`, and `observability/` child directories own detailed documentation for their respective Server boundaries.
 
 ## Asset Inventory
 
@@ -18,9 +18,8 @@ Use this section as the source of truth for what assets belong in this directory
 - `api/`: Documentation for the Server's authenticated HTTPS application interface.
 - `authentication/`: Documentation for the Server's human and automation authentication design.
 - `authorization/`: Documentation for the Server's permission and policy-evaluation design.
-- `audit/`: Documentation for the Server's accountability and audit-record design.
-- `observability/`: Future documentation boundary for Server operational diagnosis; no observability design has been decided yet.
-- `storage/`: Documentation for the Server's durable-data, retention, backup, and restore design.
+- `audit/`: Documentation for the Server's accountability and Audit Log design.
+- `observability/`: Documentation for Server System Log design and future operational diagnosis.
 
 ## Usage Guidance
 
