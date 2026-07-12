@@ -59,8 +59,8 @@ or technical commitments. Those commitments belong in the
   **[Service Module](glossary.md#applications-and-interfaces)**; its
   **[Operations](glossary.md#applications-and-interfaces)** are unavailable
   while disabled.
-- [ ] An Admin User can enable or disable an
-  **[Operation](glossary.md#applications-and-interfaces)**; the disabled
+- [ ] An Admin User can enable or disable one or more
+  **[Operations](glossary.md#applications-and-interfaces)**; the disabled
   Operation is unavailable to every human user and
   **[Automation Identity](glossary.md#identities-and-access)**.
 - [ ] An Admin User can access account management.
