@@ -85,9 +85,11 @@ redacted, how long is it retained, and how are backups protected and restored?
 
 ### 10. Secrets and provider credential management
 
-Where does the server obtain provider secrets and local automation credentials?
-How are they encrypted or protected by the host, rotated, revoked, and
-recovered without exposing them to clients or audit logs?
+Which **[Service Connection](glossary.md#applications-and-interfaces)** type
+does each **[Service Module](glossary.md#applications-and-interfaces)** support,
+and who may establish it? How are its authentication artifacts and local
+automation credentials encrypted or protected by the host, rotated, revoked,
+recovered, and kept out of clients and audit logs?
 
 ## Packages and Integrations
 
@@ -100,6 +102,8 @@ are supported?
 
 ### 12. Zendesk reference integration
 
-Which Zendesk authentication model, ticket fields, operations, idempotency
-strategy, retry behavior, and least-privileged provider permissions define the
-first supported integration?
+Which Zendesk **[Service Connection](glossary.md#applications-and-interfaces)**
+type is supported first, and which Zendesk identity should create or update
+tickets? Which ticket fields, operations, idempotency strategy, retry behavior,
+and least-privileged provider permissions define the first supported
+integration?

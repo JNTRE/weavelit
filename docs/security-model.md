@@ -18,6 +18,13 @@ is not a complete implementation design.
 - The **[Operations CLI](glossary.md#applications-and-interfaces)** never
   stores provider credentials. Its user-credential storage and login flow
   are specified separately.
+- The Server receives, stores, and, where applicable, refreshes or revokes the
+  sensitive authentication material for every
+  **[Service Connection](glossary.md#applications-and-interfaces)**, including
+  connections associated with a **[Human User](glossary.md#identities-and-access)**.
+  Such material is never exposed to
+  **[Client Modules](glossary.md#applications-and-interfaces)**, client
+  applications, or audit records.
 
 ## Authorization
 

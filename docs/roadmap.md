@@ -69,7 +69,9 @@ or technical commitments. Those commitments belong in the
 ### 3. Build the Zendesk Service Module
 
 - [ ] The Zendesk **[Service Module](glossary.md#applications-and-interfaces)**
-  can authenticate with Zendesk.
+  can establish and use a supported
+  **[Service Connection](glossary.md#applications-and-interfaces)** with
+  Zendesk.
 - [ ] The Zendesk Service Module can create a ticket.
 - [ ] The Zendesk Service Module can add a comment to an existing ticket.
 - [ ] The Zendesk Service Module can close a ticket.
@@ -108,11 +110,57 @@ or technical commitments. Those commitments belong in the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** web listener
   IP address and port through the Web UI.
 
-### 5. Build the Operations CLI
+### 5. Build the Operations CLI Client Module
 
-- [ ] The **[Operations CLI](glossary.md#applications-and-interfaces)** uses
-  `/api/v1/` routes on the configured HTTPS listener to submit supported
-  **[Operations](glossary.md#applications-and-interfaces)**.
+- [ ] The **[Operations CLI](glossary.md#applications-and-interfaces)**
+  **[Client Module](glossary.md#applications-and-interfaces)** is registered
+  with the **[Weavelit Server](glossary.md#applications-and-interfaces)** and
+  mounts its authenticated request namespace under `/api/v1/` on the configured
+  HTTPS listener.
+- [ ] An **[Administrator](glossary.md#identities-and-access)** can enable or
+  disable the Operations CLI Client Module; when disabled, its API routes are
+  unavailable.
+- [ ] The Operations CLI Client Module authenticates the caller with
+  Server-validated credentials, derives the caller identity from those
+  credentials, and never trusts identity, group, or permission claims supplied
+  by the Operations CLI.
+- [ ] A **[Human User](glossary.md#identities-and-access)** must have
+  Operations CLI Client Module access through a
+  **[Group](glossary.md#identities-and-access)** before the module permits
+  access.
+- [ ] Every request entering through the Operations CLI Client Module is
+  translated into a validated **[Operational Request](glossary.md#states-and-requests)**
+  for a supported **[Operation](glossary.md#applications-and-interfaces)** and
+  is passed to the Server's shared authorization policy.
+- [ ] The Operations CLI Client Module permits operations-only access and does
+  not accept Operations CLI credentials for administrative functions.
+- [ ] The Operations CLI Client Module never exposes provider credentials,
+  automation credentials, or internal error traces to the Operations CLI.
+
+### 6. Build the Operations CLI
+
+- [ ] A **[Human User](glossary.md#identities-and-access)** can sign in to the
+  **[Operations CLI](glossary.md#applications-and-interfaces)** only when a
+  **[Group](glossary.md#identities-and-access)** grants access to the
+  Operations CLI **[Client Module](glossary.md#applications-and-interfaces)**.
+- [ ] A Human User can sign out of the Operations CLI; subsequent requests are
+  not permitted through the Operations CLI Client Module until the user signs
+  in again.
+- [ ] The Operations CLI uses `/api/v1/` routes on the configured HTTPS
+  listener to submit supported **[Operations](glossary.md#applications-and-interfaces)**.
+- [ ] An **[Administrator](glossary.md#identities-and-access)** with Group
+  grants to the Operations CLI Client Module and a named Operation can use the
+  Operations CLI, but its **[Server Administration Permission](glossary.md#identities-and-access)**
+  does not provide Operations CLI access or administrative functions through
+  the client.
+- [ ] A Human User with Group grants to an enabled
+  **[Service Module](glossary.md#applications-and-interfaces)** and a named
+  Operation can invoke that Operation through the Operations CLI when the
+  Service Module's compatible
+  **[Service Connection](glossary.md#applications-and-interfaces)** is
+  authenticated.
+- [ ] A Human User with the required grants can invoke a supported Operation
+  through the Operations CLI and receive the expected structured result.
 
 ### MVP Boundary
 
@@ -120,7 +168,7 @@ The MVP boundary follows the Operations CLI milestone.
 
 ## Post-MVP
 
-### 6. Support Automation Identities
+### 7. Support Automation Identities
 
 - [ ] An **[Administrator](glossary.md#identities-and-access)** can create and
   manage an **[Automation Identity](glossary.md#identities-and-access)**,
@@ -131,6 +179,6 @@ The MVP boundary follows the Operations CLI milestone.
   **[Human User](glossary.md#identities-and-access)** but cannot change the
   Automation Identity's permissions or credentials through ownership alone.
 
-### 7. Add External Authentication
+### 8. Add External Authentication
 
-### 8. Expand supported capabilities deliberately
+### 9. Expand supported capabilities deliberately

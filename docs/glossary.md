@@ -18,6 +18,16 @@ section. Later uses in that section may be plain text.
 
 **Service Module** - A reusable server-side Rust library that authenticates with and communicates with one named external service and implements its supported Operations.
 
+**Service Connection** - A server-owned configuration through which a **[Service Module](#applications-and-interfaces)** authenticates to one external service. It specifies an authentication method and whether the resulting external identity is shared or associated with one **[Human User](#identities-and-access)**. Each Service Module supports exactly one Service Connection type; that type is unavailable until a corresponding connection is configured, and its use remains subject to all applicable caller grants. The Server receives, stores, and uses any sensitive authentication material; a Service Connection does not itself grant a caller access to the Service Module or its Operations.
+
+**Shared API Key Service Connection** - A **[Service Connection](#applications-and-interfaces)** that uses one provider API key for all authorized callers.
+
+**User API Key Service Connection** - A **[Service Connection](#applications-and-interfaces)** associated with one **[Human User](#identities-and-access)** that uses that user's provider API key.
+
+**Shared OAuth Service Connection** - A **[Service Connection](#applications-and-interfaces)** that uses one OAuth authorization for all authorized callers.
+
+**User OAuth Service Connection** - A **[Service Connection](#applications-and-interfaces)** associated with one **[Human User](#identities-and-access)** that uses an OAuth authorization for that user's external identity.
+
 **Workflow** - A human-, agent-, or automation-owned process that uses one or more Operations, potentially across Service Modules. It is not a configurable Weavelit application object.
 
 **Operation** - A specific named, validated, permissionable task implemented by a Service Module that the Server can authorize, audit, and execute.

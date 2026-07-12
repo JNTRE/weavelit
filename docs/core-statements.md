@@ -73,8 +73,13 @@ made.
 
 - Weavelit presents a stable, machine-readable interface for supported
   **[Operations](glossary.md#applications-and-interfaces)**.
-- Weavelit separates the agent-facing request path from the administrator path
-  that manages policy, service connections, and credentials.
+- Weavelit separates the agent-facing request path from the policy and
+  **[Service Connection](glossary.md#applications-and-interfaces)** setup
+  paths. Each **[Service Module](glossary.md#applications-and-interfaces)**
+  declares one Service Connection type and its setup workflow; shared
+  connections may require administrator setup, while user connections may
+  require the associated
+  **[Human User](glossary.md#identities-and-access)**'s authorization.
 - Weavelit derives client identity from local authentication or a configured
   external identity provider and checks permission for every operation.
 - Agent skills and client-side checks improve usability, but the gateway is
@@ -83,6 +88,10 @@ made.
   provider API action.
 - Weavelit keeps provider-specific authentication, retries, and error handling
   inside the trusted gateway environment.
+- A Service Connection determines which external identity performs an approved
+  operation; it does not grant a caller access. The Server separately evaluates
+  the caller's **[Group](glossary.md#identities-and-access)** grants and the
+  requested Operation before selecting a compatible Service Connection.
 - Provider authentication failure stops the requested action safely; normal
   agent operations do not initiate interactive provider login.
 - Weavelit applies validation, duplicate protection where appropriate, and
