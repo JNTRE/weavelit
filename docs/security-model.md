@@ -26,6 +26,9 @@ is not a complete implementation design.
   **[Operation](glossary.md#applications-and-interfaces)**.
 - Authorization is default-deny and granted to named operations, not broadly to
   provider integrations.
+- **[Groups](glossary.md#identities-and-access)** can scope a human user's
+  access to Client Modules, Service Modules, and named Operations. Group
+  membership does not grant, remove, or change a user's role.
 - The Operations CLI is operations-only. The server does not accept Operations
   CLI credentials for administrative functions.
 

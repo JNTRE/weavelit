@@ -32,7 +32,9 @@ section. Later uses in that section may be plain text.
 
 **Admin User** - A locally or externally authenticated human user assigned the **[Admin Role](#identities-and-access)**.
 
-**Standard User** - A locally or externally authenticated human user assigned the **[Standard Role](#identities-and-access)** who may be granted named Operations directly or through groups.
+**Standard User** - A locally or externally authenticated human user assigned the **[Standard Role](#identities-and-access)** who may be granted named Operations directly or through **[Groups](#identities-and-access)**.
+
+**Group** - An administrator-defined collection of human users used to control its members' access to **[Client Modules](#applications-and-interfaces)**, **[Service Modules](#applications-and-interfaces)**, and named **[Operations](#applications-and-interfaces)**. Group membership does not grant, remove, or change a user's role.
 
 **Automation Identity** - A non-human principal created and managed by an **[Admin User](#identities-and-access)** with explicitly assigned named Operations for scheduled or triggered work.
 

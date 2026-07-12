@@ -67,8 +67,8 @@ or technical commitments. Those commitments belong in the
 - [ ] An Admin User can enable or disable human user accounts.
 - [ ] An Admin User can create groups and add users to one or
   more groups.
-- [ ] An Admin User can grant Operation permissions to a user or
-  group.
+- [ ] An Admin User can enable or disable a group's access to Client Modules,
+  Service Modules, and named Operations without changing its members' roles.
 - [ ] An Admin User can configure the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** web listener
   IP address and port through the Web UI.

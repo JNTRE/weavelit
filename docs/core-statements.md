@@ -161,6 +161,10 @@ made.
   **[Operation](glossary.md#applications-and-interfaces)** scopes to Automation
   Identities. Automation credentials grant only explicitly allowed operations
   and can be revoked or expired by an administrator.
+- **[Groups](glossary.md#identities-and-access)** are administrator-defined
+  collections of human users used to enable or disable access to Client Modules,
+  Service Modules, and named Operations. Group membership does not grant,
+  remove, or change a user's role.
 - The Operations CLI and Web UI connect through
   **[Client Modules](glossary.md#applications-and-interfaces)** that translate
   requests into the same supported operation contracts. MCP adapters will use

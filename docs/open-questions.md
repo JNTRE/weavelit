@@ -47,10 +47,11 @@ retried, deduplicated, and audited?
 
 What additional fixed roles, if any, exist beyond the
 **[Admin Role](glossary.md#identities-and-access)** and
-**[Standard Role](glossary.md#identities-and-access)**? How are groups created
-and managed, how are named **[Operation](glossary.md#applications-and-interfaces)**
-permissions granted to human and Automation Identity principals, and which
-policy changes require additional confirmation or reauthentication?
+**[Standard Role](glossary.md#identities-and-access)**? How are overlapping
+direct and **[Group](glossary.md#identities-and-access)** assignments evaluated
+when they enable or disable a Client Module, Service Module, or named
+**[Operation](glossary.md#applications-and-interfaces)** for a human user, and
+which policy changes require additional confirmation or reauthentication?
 
 ### 6. Administration boundaries
 

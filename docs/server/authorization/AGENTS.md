@@ -8,7 +8,8 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns Server authorization design for named **[Operation](../../glossary.md#applications-and-interfaces)** permissions and policy evaluation.
 - It does not own authentication credential validation; that belongs in the sibling `../authentication/` directory.
-- Permission-group and role decisions that remain unsettled belong in `../../open-questions.md`.
+- Detailed Group assignment-evaluation and additional-role decisions that remain
+  unsettled belong in `../../open-questions.md`.
 
 ## Asset Inventory
 
