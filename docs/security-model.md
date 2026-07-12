@@ -33,9 +33,13 @@ is not a complete implementation design.
   **[Server Administration Permission](glossary.md#identities-and-access)**
   grants for **[Human Users](glossary.md#identities-and-access)**. A Human
   User's effective grants are the additive union of its groups' grants.
-- Every client-facing feature enforces its declared self-service,
-  group-scoped, or server-administration access class. A disabled account,
-  Client Module, Service Module, or Operation overrides any group grant.
+- Every new client-facing **[Client Module](glossary.md#applications-and-interfaces)**
+  and feature must declare and enforce its required grants and one access
+  class: self-service, group-scoped, or server-administration. Human User
+  access is delivered only through Group membership; self-service features
+  still require a Group grant to the Client Module through which they are
+  accessed. A disabled account, Client Module, Service Module, or Operation
+  overrides any group grant.
 - The Operations CLI is operations-only. The server does not accept Operations
   CLI credentials for administrative functions.
 

@@ -166,12 +166,18 @@ made.
   Identities. Automation credentials grant only explicitly allowed operations
   and can be revoked or expired by an administrator.
 - **[Groups](glossary.md#identities-and-access)** are the only source of
-  Client Module, Service Module, named Operation, and Server Administration
-  Permission grants for Human Users. A Human User's effective grants are the
-  additive union of its groups' grants.
-- Every client-facing feature declares and enforces a self-service,
-  group-scoped, or server-administration access class. The Server remains
-  default-deny when a feature's required access is not granted.
+  **[Client Module](glossary.md#applications-and-interfaces)**,
+  **[Service Module](glossary.md#applications-and-interfaces)**, named
+  **[Operation](glossary.md#applications-and-interfaces)**, and
+  **[Server Administration Permission](glossary.md#identities-and-access)**
+  grants for **[Human Users](glossary.md#identities-and-access)**. A Human
+  User's effective grants are the additive union of its groups' grants.
+- Every new client-facing Client Module and feature must declare and enforce
+  its required grants and one access class: self-service, group-scoped, or
+  server-administration. Human User access is delivered only through Group
+  membership; self-service features still require a Group grant to the Client
+  Module through which they are accessed. The Server remains default-deny when
+  a feature's required access is not granted.
 - The Operations CLI and Web UI connect through
   **[Client Modules](glossary.md#applications-and-interfaces)** that translate
   requests into the same supported operation contracts. MCP adapters will use
