@@ -69,12 +69,25 @@ or technical commitments. Those commitments belong in the
 ### 3. Build the Zendesk Service Module
 
 - [ ] The Zendesk **[Service Module](glossary.md#applications-and-interfaces)**
-  can establish and use its one supported
-  **[Service Connection](glossary.md#applications-and-interfaces)** with
-  Zendesk.
-- [ ] The Zendesk Service Module can create a ticket.
-- [ ] The Zendesk Service Module can add a comment to an existing ticket.
-- [ ] The Zendesk Service Module can close a ticket.
+  declares one supported **[Service Connection](glossary.md#applications-and-interfaces)**
+  type and its setup workflow, and can use a configured connection of that
+  type with Zendesk.
+- [ ] A Service Connection determines the external Zendesk identity used but
+  does not grant caller access; a **[Human User](glossary.md#identities-and-access)**
+  must have
+  **[Group](glossary.md#identities-and-access)** grants to the Zendesk Service
+  Module and the named **[Operation](glossary.md#applications-and-interfaces)**.
+- [ ] Unavailable or failed Zendesk Service Connection authentication stops the
+  requested Operation safely and never starts an interactive provider login
+  from the Operations CLI.
+- [ ] The Zendesk Service Module exposes named, validated Operations to create
+  tickets, add comments to existing tickets, and close tickets.
+- [ ] Each supported Zendesk Operation sends the appropriate Zendesk API
+  request and returns a structured success or failure result.
+- [ ] Zendesk credentials remain server-owned and are never exposed in client
+  results or audit records.
+- [ ] Successful and failed Zendesk Operations produce the required Server
+  audit records.
 
 ### 4. Build the Web UI
 
