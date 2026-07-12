@@ -23,8 +23,8 @@ or technical commitments. Those commitments belong in the
   **[Admin CLI](glossary.md#applications-and-interfaces)** to complete
   **[Init](glossary.md#states-and-requests)**, create the
   **[Administrators Group](glossary.md#identities-and-access)**, create the
-  first local **[Human User](glossary.md#identities-and-access)**, and add that
-  user to the Administrators Group.
+  first local **[Human User](glossary.md#identities-and-access)** without MFA
+  enrollment, and add that user to the Administrators Group.
 - [ ] The Administrators Group grants the Web UI
   **[Client Module](glossary.md#applications-and-interfaces)** and the
   **[Server Administration Permission](glossary.md#identities-and-access)**,
@@ -47,11 +47,23 @@ or technical commitments. Those commitments belong in the
 - [ ] A Host Administrator can use the Admin CLI to reset a local human user's
   password and require a password change at the user's next
   **[Local Authentication](glossary.md#identities-and-access)** login.
+- [ ] A Host Administrator can use the Admin CLI to reset MFA enrollment for
+  any local Human User, including themselves. The reset immediately invalidates
+  the prior enrollment, and the Admin CLI never displays or replaces the user's
+  TOTP secret.
 - [ ] The Server stores every local human password set or reset through Init,
   the Admin CLI, or the Web UI in accordance with the
   [Security Model](security-model.md#authentication): using a modern adaptive
   password-hashing algorithm from a maintained library, never in plaintext or
   reversibly encrypted.
+- [ ] The Server supports optional
+  **[Multifactor Authentication](glossary.md#identities-and-access)** for local
+  Human Users, using password and time-based one-time password (TOTP) as the
+  initial MFA method. A Human User who enrolls in TOTP must complete TOTP
+  verification whenever they authenticate.
+- [ ] The Server prevents a local Human User whose account requires MFA from
+  obtaining a usable session until they complete TOTP enrollment. Resetting MFA
+  returns an MFA-required account to that enrollment-required state.
 - [ ] **[Init](glossary.md#states-and-requests)** generates and uses a
   self-signed TLS certificate by default.
 - [ ] One configured HTTPS listener serves both the
@@ -116,7 +128,7 @@ or technical commitments. Those commitments belong in the
 
 - [ ] The initial **[Administrator](glossary.md#identities-and-access)** can
   sign in using the local username and password established during
-  **[Init](glossary.md#states-and-requests)**.
+  **[Init](glossary.md#states-and-requests)** before enrolling in MFA.
 - [ ] A **[Human User](glossary.md#identities-and-access)** with
   **[Group](glossary.md#identities-and-access)**-granted Web UI
   **[Client Module](glossary.md#applications-and-interfaces)** access can sign
@@ -124,6 +136,10 @@ or technical commitments. Those commitments belong in the
 - [ ] **[Human Users](glossary.md#identities-and-access)** using
   **[Local Authentication](glossary.md#identities-and-access)** can change the
   password for their own account when granted Web UI Client Module access.
+- [ ] A local Human User can enroll their own time-based one-time password
+  (TOTP) MFA factor from the self-service account area by confirming their
+  current password and a generated TOTP code. The Web UI never displays the
+  TOTP secret after enrollment.
 - [ ] The self-service account area shows a read-only summary of the Human
   User's **[Group](glossary.md#identities-and-access)** memberships and
   effective Client Module, Service Module, and named
@@ -151,6 +167,12 @@ or technical commitments. Those commitments belong in the
 - [ ] An Administrator can enable or disable human user accounts.
 - [ ] An Administrator can reset another local human user's password and require a
   password change at the user's next Local Authentication login.
+- [ ] An Administrator can require MFA for another local Human User or reset
+  that user's MFA enrollment through the Web UI. An Administrator cannot reset
+  their own MFA enrollment through the Web UI.
+- [ ] An Administrator who has enrolled in MFA must complete TOTP verification
+  for the current session before requiring MFA for, or resetting MFA enrollment
+  for, another local Human User.
 - [ ] An Administrator can create **[Groups](glossary.md#identities-and-access)**
   and add Human Users to one or more Groups.
 - [ ] An Administrator can configure a Group's grants to Client Modules,

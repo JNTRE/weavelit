@@ -6,7 +6,7 @@ section. Later uses in that section may be plain text.
 
 ## Applications and Interfaces
 
-**Weavelit Server** - The Ubuntu-hosted application that owns the API, policy, System Logs, Audit Logs, Log Module configuration, provider integrations, and provider credentials.
+now **Weavelit Server** - The Ubuntu-hosted application that owns the API, policy, System Logs, Audit Logs, Log Module configuration, provider integrations, and provider credentials.
 
 **Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for the module selected during **[Init](#states-and-requests)**, and configured only through server-administration functions.
 
