@@ -12,7 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - `docs/` owns the canonical product and architecture documentation for Weavelit.
 - This guide covers documentation workflow and document boundaries, not implementation-specific rules that do not yet exist in this repository.
-- Child guides in `client-modules/`, `clients/`, `server/`, and `service-modules/` own their respective connection, client-application, server-design, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
+- Child guides in `client-modules/`, `clients/`, `log-modules/`, `server/`, and `service-modules/` own their respective connection, client-application, log-storage and delivery, server-design, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
 
 ## Asset Inventory
 
@@ -23,10 +23,11 @@ Use this section as the source of truth for what assets belong in this directory
 - `clients/`: Documentation for individual client applications, including the **[Operations CLI](glossary.md#applications-and-interfaces)** and **[Web UI](glossary.md#applications-and-interfaces)**.
 - `core-statements.md`: Current product, security, and technical truths; expand or replace statements only after a clear decision.
 - `glossary.md`: Canonical definitions for Weavelit applications, interfaces, identities, access, states, and requests.
+- `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Core Statements, Glossary, or an architecture decision record.
 - `roadmap.md`: Non-binding guide for the intended path to MVP and beyond; it does not establish product commitments.
 - `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
-- `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, audit, observability, and storage boundaries.
+- `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, audit, and observability boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
 - `vision.md`: High-level intended product, system relationships, and links to the Core Statements and Glossary.
 
