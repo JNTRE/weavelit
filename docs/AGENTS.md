@@ -24,6 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `core-statements.md`: Current product, security, and technical truths; expand or replace statements only after a clear decision.
 - `glossary.md`: Canonical definitions for Weavelit applications, interfaces, identities, access, states, and requests.
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
+- `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Core Statements, Glossary, or an architecture decision record.
 - `roadmap.md`: Non-binding guide for the intended path to MVP and beyond; it does not establish product commitments.
 - `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
