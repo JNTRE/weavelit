@@ -177,6 +177,8 @@ when its additional context is needed.
 - Weavelit is implemented in Rust.
 - All Rust code in Weavelit, including the Server core, separately packaged
   applications, and modules, uses the Rust 1.97 stable toolchain.
+- Every implementation behavior change has the automated test evidence and
+  validation required by the [Testing and Validation Policy](testing.md).
 - Weavelit consists of two separately packaged applications: the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** and the
   **[Operations CLI](glossary.md#applications-and-interfaces)**.
@@ -307,3 +309,4 @@ when its additional context is needed.
 - [Vision](vision.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
+- [Testing and Validation Policy](testing.md)

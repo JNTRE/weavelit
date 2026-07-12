@@ -13,9 +13,10 @@ canonical direction and definitions that inform those outcomes.
   protections, and failure or rejection behavior needed to use them with
   confidence.
 - A milestone is complete only when all of its recorded goals have been
-  implemented and verified. Goals are not an exhaustive list of internal
-  implementation tasks, but no desired outcome may be omitted because it seems
-  small or supporting in nature.
+  implemented and verified according to the
+  [Testing and Validation Policy](testing.md). Goals are not an exhaustive list
+  of internal implementation tasks, but no desired outcome may be omitted
+  because it seems small or supporting in nature.
 - When work requires a product, security, or technical decision, record that
   decision in its canonical document or an architecture decision record and
   keep the milestone aligned with it. Unresolved choices remain in
@@ -48,3 +49,4 @@ canonical direction and definitions that inform those outcomes.
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
 - [Open Questions](open-questions.md)
+- [Testing and Validation Policy](testing.md)

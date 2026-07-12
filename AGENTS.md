@@ -40,6 +40,7 @@ Apply instructions in this order:
 - Read `CONTRIBUTING.md` before preparing branches, commits, or pull requests; work from `dev` through a focused topic branch, not directly on `main`.
 - Use `<type>/<short-kebab-case-description>` branch names and `<type>(<scope>): <description>` commit messages with a listed required scope.
 - For changes under `docs/`, use the local guide and update the canonical document rather than duplicating product commitments elsewhere.
+- For every implementation behavior change, add or update focused automated tests in the same change and run the applicable validation required by [the Testing and Validation Policy](docs/testing.md). Document any unavoidable manual verification in the owning specification.
 
 ## 4. Standards and Conventions
 
