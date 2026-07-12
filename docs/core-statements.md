@@ -152,7 +152,8 @@ made.
   configuration, provider integrations, and provider credentials.
 - The Weavelit Server package includes the Web UI and Admin CLI.
 - The Operations CLI is a peer client application installed on a user's local
-  machine; it does not contain provider credentials, provider integration
+  machine; its first supported platform is macOS 26 and later on Apple Silicon
+  (`arm64`). It does not contain provider credentials, provider integration
   logic, or administrative functions.
 - The Weavelit Server and Operations CLI communicate through the versioned
   application interface and can be packaged and upgraded independently within
@@ -160,6 +161,14 @@ made.
 - The **[Admin CLI](glossary.md#applications-and-interfaces)** runs only on the
   Weavelit Server host and requires a Unix account with `sudo` authority; it is
   not a remotely callable Weavelit interface.
+- The Admin CLI supports interactive **[Init](glossary.md#states-and-requests)**
+  and an explicit non-interactive bootstrap mode that reads a local bootstrap
+  configuration file. Both use the same Server-owned initialization logic.
+  Non-interactive bootstrap runs only against uninitialized Server state, reads
+  sensitive bootstrap values from local files referenced by the configuration
+  file rather than environment variables, and does not log or persist those
+  values or the bootstrap configuration. This non-interactive mode applies only
+  to Init; other Admin CLI functions remain host-local administrative actions.
 - **[Init](glossary.md#states-and-requests)**, creation of the
   **[Administrators Group](glossary.md#identities-and-access)**, creation of
   the first local **[Human User](glossary.md#identities-and-access)**, and
@@ -244,7 +253,10 @@ made.
 - Host-level administration is separate from Weavelit's application client
   interfaces.
 - The Weavelit Server is packaged as a `.deb` application for a controlled
-  Ubuntu host, where it runs as a gateway service.
+  Ubuntu 26.04 LTS `amd64` host, where it runs as a gateway service.
+- A supported OCI-compliant production image for the Weavelit Server is a
+  post-MVP deployment option. It will run a verified packaged Server artifact,
+  not compile the application when the container starts.
 - Weavelit implements provider integrations as focused
   **[Service Module](glossary.md#applications-and-interfaces)** libraries with
   deliberately registered operations.

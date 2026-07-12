@@ -104,12 +104,19 @@ of all log output?
 
 ## Packages and Integrations
 
-### 12. Package and update model
+### 12. Package, update, and container model
 
-How are the Ubuntu **[Weavelit Server](glossary.md#applications-and-interfaces)** package and macOS, Linux, and Windows
-**[Operations CLI](glossary.md#applications-and-interfaces)**
-packages distributed, signed, updated, and rolled back? Which client platforms
-are supported?
+What versioning scheme, distribution channel, artifact-integrity or signing
+mechanism, update policy, and rollback procedure apply to the Ubuntu
+**[Weavelit Server](glossary.md#applications-and-interfaces)** package and the
+macOS **[Operations CLI](glossary.md#applications-and-interfaces)** artifact?
+Which additional Operations CLI platforms are supported after macOS 26 and later
+on Apple Silicon (`arm64`)? For the post-MVP OCI-compliant production Server
+image, what host administration boundary applies to Admin CLI functions other
+than its defined non-interactive Init bootstrap mode, and how are those actions
+authorized and audited? What persistent-volume and backup model, TLS
+termination, secret injection mechanism, supported orchestrators, image
+provenance, and upgrade and rollback policy apply?
 
 ### 13. Zendesk reference integration
 

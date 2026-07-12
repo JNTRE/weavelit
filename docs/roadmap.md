@@ -21,10 +21,16 @@ or technical commitments. Those commitments belong in the
 
 - [ ] A **[Host Administrator](glossary.md#identities-and-access)** can use the
   **[Admin CLI](glossary.md#applications-and-interfaces)** to complete
-  **[Init](glossary.md#states-and-requests)**, create the
+  **[Init](glossary.md#states-and-requests)** interactively or from an explicit
+  non-interactive bootstrap configuration file, create the
   **[Administrators Group](glossary.md#identities-and-access)**, create the
   first local **[Human User](glossary.md#identities-and-access)** without MFA
   enrollment, and add that user to the Administrators Group.
+- [ ] The non-interactive Admin CLI bootstrap uses the same Server-owned Init
+  logic as interactive Init, runs only against uninitialized Server state, and
+  reads sensitive bootstrap values only from local files referenced by its
+  configuration file. It does not accept sensitive bootstrap values through
+  environment variables or log or persist those values or the configuration.
 - [ ] The Administrators Group grants the Web UI
   **[Client Module](glossary.md#applications-and-interfaces)** and the
   **[Server Administration Permission](glossary.md#identities-and-access)**,
@@ -65,6 +71,12 @@ or technical commitments. Those commitments belong in the
 - [ ] One configured HTTPS listener serves both the
   **[Web UI](glossary.md#applications-and-interfaces)** browser routes and
   authenticated `/api/v1/` routes.
+- [ ] A developer can use a documented process to build and use an
+  OCI-compliant development image to build, run, test, and restart the
+  Weavelit Server without installing Rust on the host. The development
+  environment receives non-secret configuration through environment variables,
+  mounts bootstrap secrets as local files, and preserves Server state in an
+  explicitly managed development volume.
 
 ### 2. Build the TOTP MFA Module
 
@@ -252,13 +264,36 @@ or technical commitments. Those commitments belong in the
 - [ ] A Human User with the required grants can invoke a supported Operation
   through the Operations CLI and receive the expected structured result.
 
+### 8. Package and verify the MVP deployment
+
+- [ ] A versioned `.deb` package installs the **[Weavelit Server](glossary.md#applications-and-interfaces)**,
+  Web UI assets, and Admin CLI on Ubuntu 26.04 LTS `amd64` without requiring
+  Rust, source code, or development tooling on the host.
+- [ ] The Server package installs the service definition and the non-secret
+  configuration, persistent-state, and log locations required by the Server.
+  Package installation does not create application users, configure Service
+  Connections, complete Init, or start normal Server operation against
+  uninitialized state.
+- [ ] A Host Administrator can install the Server package on a clean supported
+  Ubuntu host, complete Init interactively or through the defined
+  non-interactive bootstrap configuration, start the Server service, and reach
+  the configured HTTPS listener.
+- [ ] A versioned **[Operations CLI](glossary.md#applications-and-interfaces)**
+  artifact for macOS 26 and later on Apple Silicon (`arm64`) can be installed
+  without Rust, source code, or provider credentials.
+- [ ] An installed Operations CLI can authenticate to the installed Weavelit
+  Server and invoke a permitted supported Operation through `/api/v1/`.
+- [ ] The release artifacts and their supported platform requirements have
+  documented build, installation, initialization, verification, and
+  troubleshooting instructions.
+
 ### MVP Boundary
 
-The MVP boundary follows the Operations CLI milestone.
+The MVP boundary follows the packaging and verification milestone.
 
 ## Post-MVP
 
-### 8. Support Automation Identities
+### 9. Support Automation Identities
 
 - [ ] An **[Administrator](glossary.md#identities-and-access)** can create and
   manage an **[Automation Identity](glossary.md#identities-and-access)**,
@@ -269,9 +304,9 @@ The MVP boundary follows the Operations CLI milestone.
   **[Human User](glossary.md#identities-and-access)** but cannot change the
   Automation Identity's permissions or credentials through ownership alone.
 
-### 9. Add External Authentication
+### 10. Add External Authentication
 
-### 10. Support User-Associated Service Connections
+### 11. Support User-Associated Service Connections
 
 - [ ] A **[Human User](glossary.md#identities-and-access)** with Web UI
   **[Client Module](glossary.md#applications-and-interfaces)** access and a
@@ -287,4 +322,14 @@ The MVP boundary follows the Operations CLI milestone.
   without returning, retaining, or otherwise disclosing it to the Web UI,
   other Human Users, or audit records.
 
-### 11. Expand supported capabilities deliberately
+### 12. Offer a supported Server OCI image
+
+- [ ] A supported OCI-compliant production image runs the verified packaged
+  **[Weavelit Server](glossary.md#applications-and-interfaces)** artifact
+  without compiling it at container startup.
+- [ ] The production OCI image deployment has documented and tested boundaries
+  for host administration, persistent Server state and backups, TLS
+  termination, non-secret configuration, secret injection, image provenance,
+  and upgrade and rollback.
+
+### 13. Expand supported capabilities deliberately
