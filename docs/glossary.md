@@ -58,6 +58,15 @@ section. Later uses in that section may be plain text.
 
 **Local Authentication** - Weavelit's self-contained default authentication method for human users and Automation Identities.
 
+**Multifactor Authentication (MFA)** - An optional or required additional
+authentication factor for a local **[Human User](#identities-and-access)**.
+For the initial supported method, the Human User confirms a time-based one-time
+password (TOTP) in addition to their password. A Human User who has enrolled in
+MFA must provide TOTP whenever they authenticate.
+
+**Time-Based One-Time Password (TOTP)** - A short authentication code generated
+from a shared secret and the current time by an authenticator application.
+
 **External Authentication** - Optional authentication through a configured external OpenID Connect identity provider.
 
 ## States and Requests

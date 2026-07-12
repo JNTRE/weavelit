@@ -16,10 +16,32 @@ is not a complete implementation design.
   applications may request those workflows, but do not persist password values
   or password verifiers, or implement separate password-hashing or verification
   behavior.
+- Local **[Multifactor Authentication](glossary.md#identities-and-access)** is
+  optional by default. The initial supported MFA method uses a password and a
+  time-based one-time password (TOTP); a Human User who enrolls in TOTP must
+  complete TOTP verification whenever they authenticate, and an Administrator
+  can require MFA for a local Human User.
+- The Server owns local MFA policy, TOTP enrollment, verification, reset, and
+  secret storage. A Human User enrolls their own TOTP factor by confirming a
+  current password and a generated TOTP code. The Server may provide the TOTP
+  provisioning value only to that Human User during enrollment; it never
+  returns the secret after enrollment or records TOTP secrets or codes in logs
+  or audit records.
+- A local Human User who is required to use MFA but has not enrolled, or whose
+  enrollment has been reset, cannot obtain a usable session until completing
+  TOTP enrollment. An MFA reset immediately invalidates the prior enrollment.
+- An Administrator can require MFA for another local Human User and reset that
+  user's MFA enrollment through the Web UI. An Administrator cannot reset
+  their own MFA enrollment through the Web UI. An Administrator who has
+  enrolled in MFA must complete TOTP verification for the current session to
+  require MFA or reset another user's MFA enrollment.
+- A **[Host Administrator](glossary.md#identities-and-access)** can use the
+  **[Admin CLI](glossary.md#applications-and-interfaces)** to reset MFA
+  enrollment for any local Human User, including themselves. The Server records
+  MFA policy changes and resets in audit records without recording TOTP secrets
+  or codes.
 - **[Web UI](glossary.md#applications-and-interfaces)** browser sessions use
   secure, server-managed session handling.
-- **[Administrators](glossary.md#identities-and-access)** support multifactor
-  authentication.
 - The **[Operations CLI](glossary.md#applications-and-interfaces)** never
   stores provider credentials. Its user-credential storage and login flow
   are specified separately.

@@ -197,6 +197,13 @@ made.
   and client authentication.
 - Weavelit provides local human accounts and local automation credentials as
   its self-contained **[Local Authentication](glossary.md#identities-and-access)** model.
+- Local Human Users authenticate with a password and may enroll in
+  **[Multifactor Authentication](glossary.md#identities-and-access)**. MFA is
+  optional by default, and an Administrator can require it for a local Human
+  User.
+- Init creates the first local Human User without an enrolled MFA factor. A
+  Host Administrator can use the Admin CLI to reset MFA enrollment for any
+  local Human User, including themselves.
 - **[External Authentication](glossary.md#identities-and-access)** through
   OpenID Connect providers and external workload identities is optional, not a
   deployment requirement.

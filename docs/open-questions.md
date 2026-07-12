@@ -9,9 +9,7 @@ Glossary, or an architecture decision record rather than remaining here.
 
 ### 1. Local human account lifecycle
 
-How are local human accounts created, invited, disabled, recovered, and
-deleted? Which multifactor methods are supported, and which are required for
-**[Administrators](glossary.md#identities-and-access)**?
+How are local human accounts invited, disabled, recovered, and deleted?
 
 ### 2. Operations CLI login and credential storage
 
