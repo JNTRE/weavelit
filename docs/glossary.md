@@ -10,7 +10,7 @@ section. Later uses in that section may be plain text.
 
 **Operations CLI** - The separately packaged operations-only command-line application used on a user's macOS, Linux, or Windows system.
 
-**Web UI** - The browser-based administrative client included with the **[Weavelit Server](#applications-and-interfaces)** and available after authentication and setup.
+**Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)** and available after authentication and Init.
 
 **Admin CLI** - The host-local server administration tool, available only to a Unix account with `sudo` authority on the Weavelit Server host.
 
@@ -26,19 +26,19 @@ section. Later uses in that section may be plain text.
 
 **Host Administrator** - A person with `sudo` authority on the **[Weavelit Server](#applications-and-interfaces)** host who may run the **[Admin CLI](#applications-and-interfaces)**.
 
-**Admin Role** - The built-in role that grants a human user permission to administer Weavelit through the **[Web UI](#applications-and-interfaces)**. It does not itself grant named **[Operations](#applications-and-interfaces)**.
+**Human User** - A locally or externally authenticated person.
 
-**Standard Role** - The built-in role for a human user without Weavelit administrative permission. It does not itself grant named Operations.
+**Group** - A collection of **[Human Users](#identities-and-access)** that grants its members access to **[Client Modules](#applications-and-interfaces)**, **[Service Modules](#applications-and-interfaces)**, named **[Operations](#applications-and-interfaces)**, and the **[Server Administration Permission](#identities-and-access)**. A Human User's effective grants are the additive union of its groups' grants; Human Users receive no direct grants.
 
-**Admin User** - A locally or externally authenticated human user assigned the **[Admin Role](#identities-and-access)**.
+**Server Administration Permission** - The built-in permission, granted through a **[Group](#identities-and-access)**, that allows a **[Human User](#identities-and-access)** to administer Weavelit through the **[Web UI](#applications-and-interfaces)**. It does not itself grant named Operations.
 
-**Standard User** - A locally or externally authenticated human user assigned the **[Standard Role](#identities-and-access)** who may be granted named Operations directly or through **[Groups](#identities-and-access)**.
+**Administrator** - A **[Human User](#identities-and-access)** whose effective group grants include the Server Administration Permission.
 
-**Group** - An administrator-defined collection of human users used to control its members' access to **[Client Modules](#applications-and-interfaces)**, **[Service Modules](#applications-and-interfaces)**, and named **[Operations](#applications-and-interfaces)**. Group membership does not grant, remove, or change a user's role.
+**Administrators Group** - The system-created **[Group](#identities-and-access)** made during Init. It grants the **[Web UI](#applications-and-interfaces)** **[Client Module](#applications-and-interfaces)** and the Server Administration Permission, but no named Operations.
 
-**Automation Identity** - A non-human principal created and managed by an **[Admin User](#identities-and-access)** with explicitly assigned named Operations for scheduled or triggered work.
+**Automation Identity** - A non-human principal created and managed by an **[Administrator](#identities-and-access)** with explicitly assigned named Operations for scheduled or triggered work.
 
-**Responsible Owner** - The active human **[Admin User](#identities-and-access)** or **[Standard User](#identities-and-access)** accountable for an **[Automation Identity](#identities-and-access)** and its configured work. Responsibility does not grant authority to change the Automation Identity's permissions or credentials.
+**Responsible Owner** - The active **[Human User](#identities-and-access)** accountable for an **[Automation Identity](#identities-and-access)** and its configured work. Responsibility does not grant authority to change the Automation Identity's permissions or credentials.
 
 **Local Authentication** - Weavelit's self-contained default authentication method for human users and Automation Identities.
 
@@ -46,6 +46,6 @@ section. Later uses in that section may be plain text.
 
 ## States and Requests
 
-**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the first local **[Admin User](#identities-and-access)** and configures the Server for normal use.
+**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, and configures the Server for normal use.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.

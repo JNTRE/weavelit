@@ -13,8 +13,8 @@ is not a complete implementation design.
   or reversibly encrypted.
 - **[Web UI](glossary.md#applications-and-interfaces)** browser sessions use
   secure, server-managed session handling.
-- **[Admin User](glossary.md#identities-and-access)** accounts
-  support multifactor authentication.
+- **[Administrators](glossary.md#identities-and-access)** support multifactor
+  authentication.
 - The **[Operations CLI](glossary.md#applications-and-interfaces)** never
   stores provider credentials. Its user-credential storage and login flow
   are specified separately.
@@ -26,9 +26,16 @@ is not a complete implementation design.
   **[Operation](glossary.md#applications-and-interfaces)**.
 - Authorization is default-deny and granted to named operations, not broadly to
   provider integrations.
-- **[Groups](glossary.md#identities-and-access)** can scope a human user's
-  access to Client Modules, Service Modules, and named Operations. Group
-  membership does not grant, remove, or change a user's role.
+- **[Groups](glossary.md#identities-and-access)** are the only source of
+  **[Client Module](glossary.md#applications-and-interfaces)**,
+  **[Service Module](glossary.md#applications-and-interfaces)**, named
+  **[Operation](glossary.md#applications-and-interfaces)**, and
+  **[Server Administration Permission](glossary.md#identities-and-access)**
+  grants for **[Human Users](glossary.md#identities-and-access)**. A Human
+  User's effective grants are the additive union of its groups' grants.
+- Every client-facing feature enforces its declared self-service,
+  group-scoped, or server-administration access class. A disabled account,
+  Client Module, Service Module, or Operation overrides any group grant.
 - The Operations CLI is operations-only. The server does not accept Operations
   CLI credentials for administrative functions.
 
@@ -36,8 +43,9 @@ is not a complete implementation design.
 
 - Each **[Automation Identity](glossary.md#identities-and-access)** has an
   active **[Responsible Owner](glossary.md#identities-and-access)**.
-- Only an **[Admin User](glossary.md#identities-and-access)** may create or
-  manage an Automation Identity, including its credentials and named
+- Only an **[Administrator](glossary.md#identities-and-access)** may create or
+  manage an **[Automation Identity](glossary.md#identities-and-access)**,
+  including its credentials and named
   **[Operation](glossary.md#applications-and-interfaces)** scopes.
 - Automation credentials are scoped to named operations and can be revoked or
   expired by an administrator.

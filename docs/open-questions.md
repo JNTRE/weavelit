@@ -11,7 +11,7 @@ Glossary, or an architecture decision record rather than remaining here.
 
 How are local human accounts created, invited, disabled, recovered, and
 deleted? Which multifactor methods are supported, and which are required for
-**[Admin Users](glossary.md#identities-and-access)**?
+**[Administrators](glossary.md#identities-and-access)**?
 
 ### 2. Operations CLI login and credential storage
 
@@ -24,7 +24,7 @@ represented, and how does `logout` remove local credentials?
 
 ### 3. Automation credential lifecycle
 
-**[Admin Users](glossary.md#identities-and-access)** create and manage local
+**[Administrators](glossary.md#identities-and-access)** create and manage local
 **[Automation Identities](glossary.md#identities-and-access)**. How are their
 credentials generated, displayed once, stored by a scheduler or trigger,
 rotated, expired, revoked, and recovered? What default and maximum validity
@@ -43,15 +43,14 @@ retried, deduplicated, and audited?
 
 ## Authorization and Administration
 
-### 5. Permission and role model
+### 5. Permission and group model
 
-What additional fixed roles, if any, exist beyond the
-**[Admin Role](glossary.md#identities-and-access)** and
-**[Standard Role](glossary.md#identities-and-access)**? How are overlapping
-direct and **[Group](glossary.md#identities-and-access)** assignments evaluated
-when they enable or disable a Client Module, Service Module, or named
-**[Operation](glossary.md#applications-and-interfaces)** for a human user, and
-which policy changes require additional confirmation or reauthentication?
+What additional group-granted permission types, if any, are needed beyond
+access to **[Client Modules](glossary.md#applications-and-interfaces)**,
+**[Service Modules](glossary.md#applications-and-interfaces)**, named
+**[Operations](glossary.md#applications-and-interfaces)**, and the Server
+Administration Permission? Which group-grant changes require additional
+confirmation or reauthentication?
 
 ### 6. Administration boundaries
 

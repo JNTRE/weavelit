@@ -100,8 +100,8 @@ made.
 
 - Weavelit will not execute client-supplied commands, scripts, URLs, HTTP
   methods, or provider payloads as a generic escape hatch.
-- Weavelit will not accept a caller's claimed identity, role, or permission as
-  the basis for authorization.
+- Weavelit will not accept a caller's claimed identity or permission as the
+  basis for authorization.
 - Weavelit will not make client-side validation or agent instructions the only
   protection for a provider action.
 - Weavelit will not let the agent-facing path alter authorization policy,
@@ -133,13 +133,16 @@ made.
 - The **[Admin CLI](glossary.md#applications-and-interfaces)** runs only on the
   Weavelit Server host and requires a Unix account with `sudo` authority; it is
   not a remotely callable Weavelit interface.
-- **[Init](glossary.md#states-and-requests)** and creation of the
-  first local **[Admin User](glossary.md#identities-and-access)**
-  are performed through the Admin CLI. External-authentication configuration is
-  optional server administration.
+- **[Init](glossary.md#states-and-requests)**, creation of the
+  **[Administrators Group](glossary.md#identities-and-access)**, creation of
+  the first local **[Human User](glossary.md#identities-and-access)**, and
+  assignment of that user to the Administrators Group are performed through the
+  Admin CLI. External-authentication configuration is optional server
+  administration.
 - The **[Web UI](glossary.md#applications-and-interfaces)** cannot perform
   administrative functions until init is complete. Thereafter, it
-  requires human authentication and Weavelit administrative permission.
+  requires human authentication and the
+  **[Server Administration Permission](glossary.md#identities-and-access)**.
 - The Operations CLI requests only supported operational tasks. The Operations
   CLI does not implement administrative commands, and the server does not
   accept Operations CLI credentials for administrative functions.
@@ -157,14 +160,18 @@ made.
 - **[External Authentication](glossary.md#identities-and-access)** through
   OpenID Connect providers and external workload identities is optional, not a
   deployment requirement.
-- Only Admin Users create, manage, and assign named
+- Only **[Administrators](glossary.md#identities-and-access)** create, manage,
+  and assign named
   **[Operation](glossary.md#applications-and-interfaces)** scopes to Automation
   Identities. Automation credentials grant only explicitly allowed operations
   and can be revoked or expired by an administrator.
-- **[Groups](glossary.md#identities-and-access)** are administrator-defined
-  collections of human users used to enable or disable access to Client Modules,
-  Service Modules, and named Operations. Group membership does not grant,
-  remove, or change a user's role.
+- **[Groups](glossary.md#identities-and-access)** are the only source of
+  Client Module, Service Module, named Operation, and Server Administration
+  Permission grants for Human Users. A Human User's effective grants are the
+  additive union of its groups' grants.
+- Every client-facing feature declares and enforces a self-service,
+  group-scoped, or server-administration access class. The Server remains
+  default-deny when a feature's required access is not granted.
 - The Operations CLI and Web UI connect through
   **[Client Modules](glossary.md#applications-and-interfaces)** that translate
   requests into the same supported operation contracts. MCP adapters will use
@@ -172,8 +179,8 @@ made.
 - The Operations CLI translates user or agent commands into typed
   **[Operational Requests](glossary.md#states-and-requests)** and returns
   machine-readable results.
-- The Web UI is an API client that authorized administrators use to manage the
-  application after init.
+- The Web UI is an API client through which permitted Human Users access
+  self-service, group-scoped, and server-administration functions after init.
 - Weavelit derives client identity from server-validated credentials and
   authorizes every requested operation at the gateway.
 - Host-level administration is separate from Weavelit's application client

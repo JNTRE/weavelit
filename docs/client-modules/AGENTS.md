@@ -6,7 +6,7 @@ This folder documents the server-side **[Client Modules](../glossary.md#applicat
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns shared documentation for Client Modules and their role at the Weavelit Server boundary.
+- This directory owns shared documentation for Client Modules and their function at the Weavelit Server boundary.
 - It does not own Operations CLI or Web UI application documentation; those belong in the sibling `../clients/` directory.
 - The `mcp/`, `operations-cli/`, and `web-ui/` child directories own detailed documentation for their respective Client Modules.
 

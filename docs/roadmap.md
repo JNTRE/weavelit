@@ -21,13 +21,22 @@ or technical commitments. Those commitments belong in the
 
 - [ ] A **[Host Administrator](glossary.md#identities-and-access)** can use the
   **[Admin CLI](glossary.md#applications-and-interfaces)** to complete
-  **[Init](glossary.md#states-and-requests)** and create the first
-  local **[Admin User](glossary.md#identities-and-access)**.
+  **[Init](glossary.md#states-and-requests)**, create the
+  **[Administrators Group](glossary.md#identities-and-access)**, create the
+  first local **[Human User](glossary.md#identities-and-access)**, and add that
+  user to the Administrators Group.
+- [ ] The Administrators Group grants the Web UI
+  **[Client Module](glossary.md#applications-and-interfaces)** and the
+  **[Server Administration Permission](glossary.md#identities-and-access)**,
+  but no named Operations.
 - [ ] A Host Administrator can use the Admin CLI to set the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** listening IP
   address.
 - [ ] A Host Administrator can start and stop the Weavelit Server process
   successfully.
+- [ ] A Host Administrator can use the Admin CLI to reset a local human user's
+  password and require a password change at the user's next
+  **[Local Authentication](glossary.md#identities-and-access)** login.
 - [ ] **[Init](glossary.md#states-and-requests)** generates and uses a
   self-signed TLS certificate by default.
 - [ ] One configured HTTPS listener serves both the
@@ -46,30 +55,35 @@ or technical commitments. Those commitments belong in the
 
 ### 4. Build the Web UI
 
-- [ ] The **[Admin User](glossary.md#identities-and-access)**
-  can sign in using the local username and password established during **[Init](glossary.md#states-and-requests)**.
-- [ ] **[Admin Users](glossary.md#identities-and-access)** and
-  **[Standard Users](glossary.md#identities-and-access)** using
+- [ ] The initial **[Administrator](glossary.md#identities-and-access)** can
+  sign in using the local username and password established during
+  **[Init](glossary.md#states-and-requests)**.
+- [ ] **[Human Users](glossary.md#identities-and-access)** using
   **[Local Authentication](glossary.md#identities-and-access)** can change the
-  password for their own account.
-- [ ] An Admin User can enable or disable a
+  password for their own account when granted Web UI Client Module access.
+- [ ] An Administrator can enable or disable a
   **[Client Module](glossary.md#applications-and-interfaces)**; its connection
   surface is unavailable while disabled.
-- [ ] An Admin User can enable or disable a
+- [ ] An Administrator can enable or disable a
   **[Service Module](glossary.md#applications-and-interfaces)**; its
   **[Operations](glossary.md#applications-and-interfaces)** are unavailable
   while disabled.
-- [ ] An Admin User can enable or disable one or more
+- [ ] An Administrator can enable or disable one or more
   **[Operations](glossary.md#applications-and-interfaces)**; the disabled
   Operation is unavailable to every human user and
   **[Automation Identity](glossary.md#identities-and-access)**.
-- [ ] An Admin User can access account management.
-- [ ] An Admin User can enable or disable human user accounts.
-- [ ] An Admin User can create groups and add users to one or
-  more groups.
-- [ ] An Admin User can enable or disable a group's access to Client Modules,
-  Service Modules, and named Operations without changing its members' roles.
-- [ ] An Admin User can configure the
+- [ ] An Administrator can access account management.
+- [ ] An Administrator can create a local human user account; the new user must
+  change its password at the first Local Authentication login.
+- [ ] An Administrator can enable or disable human user accounts.
+- [ ] An Administrator can reset another local human user's password and require a
+  password change at the user's next Local Authentication login.
+- [ ] An Administrator can create **[Groups](glossary.md#identities-and-access)**
+  and add Human Users to one or more Groups.
+- [ ] An Administrator can configure a Group's grants to Client Modules,
+  Service Modules, named Operations, and the
+  **[Server Administration Permission](glossary.md#identities-and-access)**.
+- [ ] An Administrator can configure the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** web listener
   IP address and port through the Web UI.
 
@@ -87,14 +101,14 @@ The MVP boundary follows the Operations CLI milestone.
 
 ### 6. Support Automation Identities
 
-- [ ] An **[Admin User](glossary.md#identities-and-access)** can create and
+- [ ] An **[Administrator](glossary.md#identities-and-access)** can create and
   manage an **[Automation Identity](glossary.md#identities-and-access)**,
   including its credentials and named
   **[Operation](glossary.md#applications-and-interfaces)** scopes.
 - [ ] Each Automation Identity has an active
-  **[Responsible Owner](glossary.md#identities-and-access)** who may be an Admin
-  User or Standard User but cannot change the Automation Identity's permissions
-  or credentials through ownership alone.
+  **[Responsible Owner](glossary.md#identities-and-access)** who is a
+  **[Human User](glossary.md#identities-and-access)** but cannot change the
+  Automation Identity's permissions or credentials through ownership alone.
 
 ### 7. Add External Authentication
 
