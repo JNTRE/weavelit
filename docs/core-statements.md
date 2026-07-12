@@ -264,3 +264,9 @@ made.
   side of the connection.
 - Weavelit will offer MCP adapters through Client Modules that use the same
   supported operation contracts.
+
+## Related Documents
+
+- [Vision](vision.md)
+- [Security Model](security-model.md)
+- [Glossary](glossary.md)

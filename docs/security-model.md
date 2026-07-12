@@ -107,3 +107,8 @@ is not a complete implementation design.
   expired by an administrator.
 - Audit records identify the authenticated principal that initiated an action
   and the Responsible Owner of an Automation Identity when applicable.
+
+## Related Documents
+
+- [Core Statements](core-statements.md)
+- [Glossary](glossary.md)

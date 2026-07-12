@@ -86,3 +86,9 @@ from a shared secret and the current time by an authenticator application.
 **Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, selects, configures, and activates an initial Log Module that can durably record Audit Logs, and configures the Server for normal use. Init must complete before the Server starts normal operation.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.
+
+## Related Documents
+
+- [Vision](vision.md)
+- [Core Statements](core-statements.md)
+- [Security Model](security-model.md)
