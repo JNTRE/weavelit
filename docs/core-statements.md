@@ -4,6 +4,16 @@ This document records the current product, security, and technical truths about
 Weavelit. Expand or replace a statement only when a clear decision has been
 made.
 
+## Maintenance Policy
+
+This document is an initial collection of cross-cutting product, security, and
+technical commitments. As a component is implemented, move its
+implementation-specific commitments to that component's canonical `spec.md`.
+Do this incrementally as implementation work makes the component's ownership
+clear; do not migrate statements merely to complete a wholesale reorganization.
+Keep only the cross-cutting truths here, and link to the owning specification
+when its additional context is needed.
+
 ## Weavelit Is
 
 - Weavelit is a self-hosted gateway for AI-assisted operational workflows.
