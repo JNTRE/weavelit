@@ -34,6 +34,10 @@ or technical commitments. Those commitments belong in the
   address.
 - [ ] A Host Administrator can start and stop the Weavelit Server process
   successfully.
+- [ ] Required Server state persists across a restart, including accounts,
+  Groups and their grants, Client Module and Service Module enablement,
+  configuration, **[Service Connections](glossary.md#applications-and-interfaces)**,
+  audit records, and active server-managed user sessions.
 - [ ] A Host Administrator can use the Admin CLI to reset a local human user's
   password and require a password change at the user's next
   **[Local Authentication](glossary.md#identities-and-access)** login.
