@@ -114,7 +114,13 @@ made.
   secrets, Service Connections, and operational state, in its
   **[Application Database](glossary.md#applications-and-interfaces)**. The
   Application Database is separate from every Log Module destination.
-- The MVP Application Database uses SQLite.
+- The Server isolates Application Database persistence behind an internal
+  backend contract. Each supported Application Database backend is a dedicated
+  Rust crate that owns its database-driver integration, schema migrations,
+  transaction behavior, connection health handling, and backend-specific
+  errors. The Server core owns backend selection, configuration validation, and
+  lifecycle behavior.
+- The MVP Application Database uses the SQLite backend crate.
 - The MVP default Log Module uses SQLite and stores System Logs and Audit Logs
   in a database separate from the Application Database.
 - **[Init](glossary.md#states-and-requests)** selects and configures the
@@ -123,7 +129,8 @@ made.
   operation without either one.
 - The Application Database is not a module and cannot be enabled, disabled, or
   changed after Init. Weavelit does not support in-place migration between
-  Application Database technologies.
+  Application Database technologies. Application Database backends are
+  compiled into the Server package and are not runtime-installable plugins.
 - A **[Host Administrator](glossary.md#identities-and-access)** can export a
   configuration backup and import it into a separately initialized Server after
   that Server's Application Database is selected and configured. The backup's

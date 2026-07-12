@@ -15,8 +15,11 @@ application state, including users, sessions, policy, secrets, Service
 Connections, and operational state. It is selected and configured during
 **[Init](#states-and-requests)**, is separate from every
 **[Log Module](#applications-and-interfaces)** destination, and is not a
-module. The MVP Application Database uses SQLite; Weavelit does not support
-in-place migration between Application Database technologies.
+module. Application Database persistence uses an internal backend contract;
+each supported backend is a dedicated Rust crate. The Server core owns backend
+selection, configuration validation, and lifecycle behavior. Backends are
+compiled into the Server package and are not runtime-installable plugins. The
+MVP backend is SQLite.
 
 **Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for the module selected during **[Init](#states-and-requests)**, and configured only through server-administration functions.
 
