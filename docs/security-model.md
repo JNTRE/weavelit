@@ -22,8 +22,9 @@ is not a complete implementation design.
   sensitive authentication material for every
   **[Service Connection](glossary.md#applications-and-interfaces)**, including
   connections associated with a **[Human User](glossary.md#identities-and-access)**.
-  Such material is never exposed to
-  **[Client Modules](glossary.md#applications-and-interfaces)**, client
+  Sensitive material may be supplied only through a declared Service Connection
+  setup workflow; it is never returned to, retained by, or otherwise disclosed
+  to **[Client Modules](glossary.md#applications-and-interfaces)**, client
   applications, or audit records.
 
 ## Authorization
@@ -47,6 +48,10 @@ is not a complete implementation design.
   still require a Group grant to the Client Module through which they are
   accessed. A disabled account, Client Module, Service Module, or Operation
   overrides any group grant.
+- Browser navigation and page visibility are usability controls only. The
+  Server independently authorizes every **[Web UI](glossary.md#applications-and-interfaces)**
+  request and rejects administrative requests without the Server Administration
+  Permission.
 - The Operations CLI is operations-only. The server does not accept Operations
   CLI credentials for administrative functions.
 

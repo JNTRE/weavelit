@@ -104,9 +104,23 @@ or technical commitments. Those commitments belong in the
 - [ ] The initial **[Administrator](glossary.md#identities-and-access)** can
   sign in using the local username and password established during
   **[Init](glossary.md#states-and-requests)**.
+- [ ] A **[Human User](glossary.md#identities-and-access)** with
+  **[Group](glossary.md#identities-and-access)**-granted Web UI
+  **[Client Module](glossary.md#applications-and-interfaces)** access can sign
+  in to a self-service account area.
 - [ ] **[Human Users](glossary.md#identities-and-access)** using
   **[Local Authentication](glossary.md#identities-and-access)** can change the
   password for their own account when granted Web UI Client Module access.
+- [ ] The self-service account area shows a read-only summary of the Human
+  User's **[Group](glossary.md#identities-and-access)** memberships and
+  effective Client Module, Service Module, and named
+  **[Operation](glossary.md#applications-and-interfaces)** grants, without
+  exposing Service Module configuration, Service Connection details, provider
+  identities, or credentials.
+- [ ] A Human User without the
+  **[Server Administration Permission](glossary.md#identities-and-access)**
+  cannot see Web UI administration navigation or pages; the Server rejects a
+  direct request for an administrative function.
 - [ ] An Administrator can enable or disable a
   **[Client Module](glossary.md#applications-and-interfaces)**; its connection
   surface is unavailable while disabled.
@@ -203,4 +217,20 @@ The MVP boundary follows the Operations CLI milestone.
 
 ### 8. Add External Authentication
 
-### 9. Expand supported capabilities deliberately
+### 9. Support User-Associated Service Connections
+
+- [ ] A **[Human User](glossary.md#identities-and-access)** with Web UI
+  **[Client Module](glossary.md#applications-and-interfaces)** access and a
+  **[Group](glossary.md#identities-and-access)** grant to a
+  **[Service Module](glossary.md#applications-and-interfaces)** can identify
+  from My Access when that Service Module uses a user-associated
+  **[Service Connection](glossary.md#applications-and-interfaces)** type.
+- [ ] My Access provides the Service Module's declared user-associated Service
+  Connection setup workflow, such as API-key entry or OAuth authorization, to
+  the associated Human User. It does not provide setup for shared Service
+  Connections.
+- [ ] The Server receives and stores the resulting authentication material
+  without returning, retaining, or otherwise disclosing it to the Web UI,
+  other Human Users, or audit records.
+
+### 10. Expand supported capabilities deliberately
