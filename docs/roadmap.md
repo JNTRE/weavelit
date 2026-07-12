@@ -46,9 +46,8 @@ or technical commitments. Those commitments belong in the
 
 ### 4. Build the Web UI
 
-- [ ] The initial **[Admin User](glossary.md#identities-and-access)**
-  can sign in using the local username and password established during Initial
-  **[Init](glossary.md#states-and-requests)**.
+- [ ] The **[Admin User](glossary.md#identities-and-access)**
+  can sign in using the local username and password established during **[Init](glossary.md#states-and-requests)**.
 - [ ] **[Admin Users](glossary.md#identities-and-access)** and
   **[Standard Users](glossary.md#identities-and-access)** using
   **[Local Authentication](glossary.md#identities-and-access)** can change the
