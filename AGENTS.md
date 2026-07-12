@@ -47,6 +47,8 @@ Apply instructions in this order:
 - Keep this root `AGENTS.md` as the canonical repository instruction source.
 - Maintain product-specific AI instruction files only as thin shims that link or defer to this root file.
 - Keep this root `AGENTS.md` at 100 lines or fewer.
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
+- The preceding specification-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the terms and stated boundaries in the canonical documentation when adding or revising product claims.
 - Use the exact canonical names in `docs/glossary.md` when naming Weavelit concepts.
 - On first substantive use in a written section, format a canonical glossary term as a bold link to its glossary category; later uses in that section may be plain text.

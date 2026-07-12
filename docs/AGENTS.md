@@ -52,6 +52,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use the exact canonical names defined in `glossary.md` when documenting Weavelit concepts.

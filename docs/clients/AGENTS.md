@@ -31,6 +31,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 ## Standards and Conventions
 
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
