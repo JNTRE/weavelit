@@ -50,8 +50,9 @@ or technical commitments. Those commitments belong in the
   can sign in using the local username and password established during Initial
   **[Init](glossary.md#states-and-requests)**.
 - [ ] **[Admin Users](glossary.md#identities-and-access)** and
-  **[Standard Users](glossary.md#identities-and-access)** can change the
-  password for their own local account.
+  **[Standard Users](glossary.md#identities-and-access)** using
+  **[Local Authentication](glossary.md#identities-and-access)** can change the
+  password for their own account.
 - [ ] An Admin User can enable or disable a
   **[Client Module](glossary.md#applications-and-interfaces)**; its connection
   surface is unavailable while disabled.
