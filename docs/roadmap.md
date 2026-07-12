@@ -29,6 +29,12 @@ or technical commitments. Those commitments belong in the
   **[Client Module](glossary.md#applications-and-interfaces)** and the
   **[Server Administration Permission](glossary.md#identities-and-access)**,
   but no named Operations.
+- [ ] The **[Weavelit Server](glossary.md#applications-and-interfaces)**
+  applies default-deny authorization using additive Group grants and global
+  availability gates. A disabled Human User, Client Module,
+  **[Service Module](glossary.md#applications-and-interfaces)**, or
+  **[Operation](glossary.md#applications-and-interfaces)** is unavailable
+  regardless of otherwise effective Group grants.
 - [ ] A Host Administrator can use the Admin CLI to set the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** listening IP
   address.
