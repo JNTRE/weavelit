@@ -1,12 +1,12 @@
 # Server Audit Agent Guide
 
-This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** audit-record design for consequential **[Operations](../../glossary.md#applications-and-interfaces)**. It preserves accountability for the authenticated principal and, for automations, the **[Responsible Owner](../../glossary.md#identities-and-access)** without treating audit records as operational observability data.
+This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** **[Audit Log](../../glossary.md#applications-and-interfaces)** design for consequential **[Operations](../../glossary.md#applications-and-interfaces)**. It preserves accountability for the authenticated principal and, for automations, the **[Responsible Owner](../../glossary.md#identities-and-access)** without treating Audit Logs as operational observability data.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns audit-record design for **[Operation](../../glossary.md#applications-and-interfaces)** accountability, including the authenticated principal, result, and correlation identifier.
+- This directory owns Audit Log design for **[Operation](../../glossary.md#applications-and-interfaces)** accountability, including the authenticated principal, result, and correlation identifier.
 - It does not own operational diagnosis, metrics, or tracing; those belong in the sibling `../observability/` directory.
 - Audit retention, redaction, and backup decisions that remain unsettled belong in `../../open-questions.md`.
 
@@ -14,7 +14,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server audit records.
+- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server Audit Logs.
 
 ## Usage Guidance
 
@@ -32,4 +32,4 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
-- Preserve the accountability purpose of audit records; do not substitute operational observability data for required audit evidence.
+- Preserve the accountability purpose of Audit Logs; do not substitute operational observability data for required audit evidence.
