@@ -53,8 +53,16 @@ test that fails before the fix and passes after it.
 
 All Rust code uses the repository's Rust 1.97 stable toolchain. Once the Cargo
 workspace is introduced, it must commit a `rust-toolchain.toml` that pins the
-toolchain and required components. The workspace's default CI validation must
-run the following commands without warnings or failures:
+toolchain and required components. Run the complete Server Rust quality-gate
+suite locally and in CI with:
+
+```sh
+make -C server check
+```
+
+The Server `Makefile` runs the following required commands without warnings or
+failures. Add a required default Rust quality gate there so local and CI
+validation remain identical:
 
 ```sh
 cargo fmt --all -- --check
@@ -62,6 +70,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 cargo build --workspace --release
 ```
+
+Crate-local tests are included through their workspace member's Cargo targets.
+A dedicated Server test crate must be a workspace member so `make -C server
+check` runs it automatically.
 
 `cargo fmt` and Clippy are quality gates, not substitutes for tests. The
 repository's shared VS Code settings run rustfmt on Rust-file saves and cause

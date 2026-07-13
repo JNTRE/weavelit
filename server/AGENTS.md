@@ -20,6 +20,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and source-boundary rules for the Weavelit Server.
 - `Cargo.toml`: Rust workspace manifest for Server package crates.
 - `crates/`: Rust crate locations for the Server, Admin CLI, Application Database backend, and compiled-in modules.
+- `Makefile`: Standard local and CI entry point for Server Rust quality gates.
 - `packaging/`: Release packaging assets for the Server package; `deb/` owns Debian-specific files.
 - `rust-toolchain.toml`: Pinned Rust toolchain and required quality-gate components.
 - `tests/`: Server-focused integration and end-to-end tests.
@@ -33,6 +34,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before changing a component, read its matching guide under `../docs/server/`, `../docs/client-modules/`, `../docs/mfa-modules/`, `../docs/log-modules/`, or `../docs/service-modules/`.
 - Make minimal, targeted changes and preserve the existing ownership boundaries between Server crates, Web UI, tests, and packaging.
 - Update the owning documentation and focused tests with each implementation behavior change, as required by `../docs/testing.md`.
+- Run `make check` for the complete Server Rust quality-gate suite.
 - Add a child `AGENTS.md` only when that path develops distinct commands, validation, security constraints, or documentation routing.
 
 ## Standards and Conventions

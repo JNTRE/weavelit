@@ -22,10 +22,10 @@ development.
 
 ## Validation
 
-Run the applicable checks before opening a pull request. Rust changes must meet
-the [Testing and Validation Policy](docs/testing.md); the Rust Quality workflow
-repeats its required quality gates on non-draft pull requests targeting `dev`
-or `main`.
+Run the applicable checks before opening a pull request. For Server Rust
+changes, run `make -C server check`. Rust changes must meet the [Testing and
+Validation Policy](docs/testing.md); the Rust Quality workflow repeats this
+suite on non-draft pull requests targeting `dev` or `main`.
 
 ## Branch names
 
