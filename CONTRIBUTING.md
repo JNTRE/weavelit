@@ -20,6 +20,13 @@ For a release, verify the integrated work on `dev`, then open and merge a pull
 request from `dev` into `main`. Keep `dev` and continue using it for subsequent
 development.
 
+## Validation
+
+Run the applicable checks before opening a pull request. Rust changes must meet
+the [Testing and Validation Policy](docs/testing.md); the Rust Quality workflow
+repeats its required quality gates on non-draft pull requests targeting `dev`
+or `main`.
+
 ## Branch names
 
 Use `<type>/<short-kebab-case-description>`, such as
