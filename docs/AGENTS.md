@@ -21,6 +21,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, workflow, and inventory rules for the canonical documentation set.
 - `client-modules/`: Documentation for the server-side **[Client Modules](glossary.md#applications-and-interfaces)** that provide client-facing connection surfaces to the Weavelit Server.
 - `clients/`: Documentation for individual client applications, including the **[Operations CLI](glossary.md#applications-and-interfaces)** and **[Web UI](glossary.md#applications-and-interfaces)**.
+- `containers/`: Development and production OCI container-image specifications.
 - `core-statements.md`: Current product, security, and technical truths; expand or replace statements only after a clear decision.
 - `glossary.md`: Canonical definitions for Weavelit applications, interfaces, identities, access, states, and requests.
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.

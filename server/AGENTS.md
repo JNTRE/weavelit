@@ -18,7 +18,9 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and source-boundary rules for the Weavelit Server.
+- `.dockerignore`: Development container build-context exclusions.
 - `Cargo.toml`: Rust workspace manifest for Server package crates.
+- `containers/`: Development and production Containerfiles for the Server.
 - `crates/`: Rust crate locations for the Server, Admin CLI, Application Database backend, and compiled-in modules.
 - `Makefile`: Standard local and CI entry point for Server Rust quality gates.
 - `packaging/`: Release packaging assets for the Server package; `deb/` owns Debian-specific files.
