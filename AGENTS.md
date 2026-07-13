@@ -53,7 +53,10 @@ Apply instructions in this order:
 - Keep this root `AGENTS.md` as the canonical repository instruction source.
 - Maintain product-specific AI instruction files only as thin shims that link or defer to this root file.
 - Keep this root `AGENTS.md` at 100 lines or fewer.
+- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
 - Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
+- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - The preceding specification-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the terms and stated boundaries in the canonical documentation when adding or revising product claims.
 - Use the exact canonical names in `docs/glossary.md` when naming Weavelit concepts.

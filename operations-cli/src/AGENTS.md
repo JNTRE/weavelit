@@ -34,6 +34,9 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
+- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - Use the configured Server HTTPS listener and `/api/v1/` routes for supported Operations; do not use Web UI browser routes.
 - Do not add administrative commands, provider credentials, or provider-integration logic to the Operations CLI.
 - Preserve Server-owned authorization decisions and canonical API requirements instead of duplicating them locally.

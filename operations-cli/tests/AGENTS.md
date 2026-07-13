@@ -34,6 +34,9 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
+- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - Cover sign-in, sign-out, permitted invocation, denied or unavailable access, and structured result behavior as each workflow is implemented.
 - Verify the separately packaged CLI against the versioned Server interface on its supported macOS `arm64` platform when release workflows are introduced.
 - Use controlled Server fixtures; do not depend on a live provider as part of the default CLI test suite.

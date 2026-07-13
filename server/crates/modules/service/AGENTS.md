@@ -35,6 +35,9 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
+- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - Support exactly one Service Connection type per Service Module; represent another connection type as a separately named Service Module.
 - Keep provider credentials and provider-specific authentication, retries, and error handling inside the trusted Server environment.
 - Do not add a provider capability without documented Operations, permissions, authentication, failure behavior, and maintenance responsibility.
