@@ -134,9 +134,12 @@ when its additional context is needed.
 - The MVP default Log Module uses SQLite and stores System Logs and Audit Logs
   in a database separate from the Application Database.
 - **[Init](glossary.md#states-and-requests)** selects and configures the
-  Application Database and selects, configures, and activates an initial Log
-  Module that durably records Audit Logs. The Server does not begin normal
-  operation without either one.
+  Application Database and selects, configures, and activates one or more
+  initial Log Modules. Init assigns configured Log Modules separately to
+  System Logs and Audit Logs; the same Log Module may receive both types. Init
+  does not complete, and the Server does not begin normal operation, until both
+  assignments are valid and the Audit Log assignment can durably record Audit
+  Logs.
 - The Application Database is not a module and cannot be enabled, disabled, or
   changed after Init. Weavelit does not support in-place migration between
   Application Database technologies. Application Database backends are
@@ -225,9 +228,9 @@ when its additional context is needed.
   **[Administrators Group](glossary.md#identities-and-access)**, creation of
   the first local **[Human User](glossary.md#identities-and-access)**, and
   assignment of that user to the Administrators Group, and selection,
-  configuration, and activation of an initial Log Module are performed through
-  the Admin CLI. External-authentication configuration is optional server
-  administration.
+  configuration, activation, and System Log and Audit Log assignment of one or
+  more initial Log Modules are performed through the Admin CLI.
+  External-authentication configuration is optional server administration.
 - After **[Init](glossary.md#states-and-requests)**, a
   **[Human User](glossary.md#identities-and-access)** with a Group grant to the
   **[Web UI](glossary.md#applications-and-interfaces)**
