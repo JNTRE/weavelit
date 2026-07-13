@@ -141,11 +141,24 @@ when its additional context is needed.
   changed after Init. Weavelit does not support in-place migration between
   Application Database technologies. Application Database backends are
   compiled into the Server package and are not runtime-installable plugins.
-- A **[Host Administrator](glossary.md#identities-and-access)** can export a
-  configuration backup and import it into a separately initialized Server after
-  that Server's Application Database is selected and configured. The backup's
-  contents, protection, compatibility, and import behavior are defined
-  separately.
+- Init creates a distinct backup recovery key pair. The Server retains only
+  the public recovery key, and the Host Administrator retains the private
+  recovery key outside Weavelit. This key pair is separate from the Server's
+  at-rest key material used to protect reversibly encrypted application data.
+- An Administrator can create and download a versioned, encrypted Application
+  Database backup through server-administration functions. The backup contains
+  the application state required to restore operational status, including
+  configuration, accounts, Groups, grants, password verifiers, protected MFA
+  factor data, and Service Connection credentials. The Server encrypts each
+  backup for the retained public recovery key; it never stores or redisplays
+  the private recovery key.
+- A Host Administrator can use the Admin CLI to import a compatible backup into
+  a separately initialized Server after that Server's Application Database is
+  selected and configured. Import requires the private recovery key, validates
+  the backup before replacing application state, invalidates all active
+  sessions, and re-encrypts restored secret material with the replacement
+  Server's own at-rest key. The workflow does not support in-place migration
+  between Application Database technologies.
 - Post-MVP, Administrators can independently configure System Log and Audit Log
   retention and purging for each Log Module.
 - Each integration defines its supported operations, required permissions,

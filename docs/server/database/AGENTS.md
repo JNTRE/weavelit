@@ -23,6 +23,8 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for
   the Application Database.
+- `spec.md`: Shared Application Database backend-contract and backup-recovery
+  design.
 - `sqlite/`: Documentation boundary for the MVP SQLite Application Database
   backend.
 

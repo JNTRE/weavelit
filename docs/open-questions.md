@@ -87,11 +87,8 @@ supported together?
 
 The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
 SQLite and is selected during Init; Weavelit does not support in-place database
-migration. Which data does a configuration backup export, how are its contents
-protected, versioned, and validated, and what import, replacement, and recovery
-behavior applies when it is imported into a separately initialized Server? What
-application data is redacted, how long is it retained, and how are Application
-Database backups protected and restored? How are the separate System Log and
+migration. What compatibility window and artifact-retention policy applies to
+versioned Application Database backups? How are the separate System Log and
 Audit Log databases and remote Log Module destinations backed up, protected,
 restored, and migrated? What configuration bounds and execution behavior apply
 to their independent retention and purge policies?

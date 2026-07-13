@@ -81,6 +81,19 @@ owning specification when its additional context is needed.
   setup workflow; it is never returned to, retained by, or otherwise disclosed
   to **[Client Modules](glossary.md#applications-and-interfaces)**, client
   applications, or audit records.
+- The Server protects reversibly encrypted application data with Server-local
+  at-rest key material that is separate from the backup recovery key pair.
+  During Init, the Server retains only the recovery public key; the Host
+  Administrator records the private recovery key outside Weavelit. The private
+  recovery key is never stored in the Application Database, Server
+  configuration, container volume, logs, or ordinary backup artifact.
+- An encrypted backup may be created through server-administration functions
+  and downloaded by an Administrator. The Server encrypts it for the recovery
+  public key and does not expose the private recovery key during ordinary
+  backup operations. Recovery is a host-local Admin CLI action that requires
+  the private recovery key. The replacement Server validates the backup,
+  invalidates active sessions, and re-encrypts restored secret material with
+  its own Server-local at-rest key.
 
 ## Authorization
 
