@@ -197,7 +197,7 @@ when its additional context is needed.
   validation required by the [Testing and Validation Policy](testing.md).
 - Weavelit consists of two separately packaged applications: the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** and the
-  **[Operations CLI](glossary.md#applications-and-interfaces)**.
+  **[Weavelit CLI](glossary.md#applications-and-interfaces)**.
 - The Weavelit Server owns the HTTPS API, operation catalog, authorization,
   System Logs, Audit Logs, Log Module configuration, authentication
   configuration, provider integrations, and provider credentials.
@@ -206,11 +206,11 @@ when its additional context is needed.
   Its production asset bundle is built as part of the Weavelit Server package,
   installed with the Server's file structure, and is not separately installed
   or released.
-- The Operations CLI is a peer client application installed on a user's local
+- The Weavelit CLI is a peer client application installed on a user's local
   machine; its first supported platform is macOS 26 and later on Apple Silicon
   (`arm64`). It does not contain provider credentials, provider integration
   logic, or administrative functions.
-- The Weavelit Server and Operations CLI communicate through the versioned
+- The Weavelit Server and Weavelit CLI communicate through the versioned
   application interface and can be packaged and upgraded independently within
   that interface's compatibility policy.
 - The **[Admin CLI](glossary.md#applications-and-interfaces)** runs only on the
@@ -247,15 +247,15 @@ when its additional context is needed.
 - Administrators can view System Logs and Audit Logs in a read-only Web UI
   logging area and configure Log Modules through server-administration
   functions. Future administrative surfaces may provide equivalent access.
-- The Operations CLI requests only supported operational tasks. The Operations
-  CLI does not implement administrative commands, and the server does not
-  accept Operations CLI credentials for administrative functions.
+- The Weavelit CLI requests only supported operational tasks. The Weavelit CLI
+  does not implement administrative commands, and the server does not accept
+  Weavelit CLI credentials for administrative functions.
 - Weavelit is an API-first application with a stable, versioned, machine-
   readable interface for explicitly supported operations.
 - Weavelit exposes its application interface as an authenticated HTTPS API.
 - One configurable HTTPS listener serves the Web UI browser routes and the
   authenticated API routes. API routes are versioned under `/api/v1/`.
-- The Operations CLI uses the API routes on that listener; it does not use Web
+- The Weavelit CLI uses the API routes on that listener; it does not use Web
   UI browser routes.
 - Network reachability is limited by TLS, firewall and other network controls,
   and client authentication.
@@ -307,11 +307,11 @@ when its additional context is needed.
   membership; self-service features still require a Group grant to the Client
   Module through which they are accessed. The Server remains default-deny when
   a feature's required access is not granted.
-- The Operations CLI and Web UI connect through
+- The Weavelit CLI and Web UI connect through
   **[Client Modules](glossary.md#applications-and-interfaces)** that translate
   requests into the same supported operation contracts. MCP adapters will use
   separate Client Modules.
-- The Operations CLI translates user or agent commands into typed
+- The Weavelit CLI translates user or agent commands into typed
   **[Operational Requests](glossary.md#states-and-requests)** and returns
   machine-readable results.
 - The Web UI is an API client through which permitted Human Users access
