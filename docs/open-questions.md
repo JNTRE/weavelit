@@ -144,6 +144,17 @@ example, Fluent UI or Material UI)? What accessibility, supported-browser,
 theming, maintenance, bundle-size, and long-term customization criteria must it
 meet, and which visual foundations remain local to Weavelit?
 
+### 16. Server release-version source
+
+The **[Weavelit Server](glossary.md#applications-and-interfaces)** Rust
+workspace manifest currently defines one shared `$X.Y.Z$` version for the
+Server and **[Admin CLI](glossary.md#applications-and-interfaces)**. When
+release automation and package workflows are introduced, can they reliably
+derive and validate every Server release artifact's version from that manifest,
+including its release tag and platform package metadata? Revisit whether the
+workspace manifest remains the appropriate single source of truth after that
+validation.
+
 ## Related Documents
 
 - [Vision](vision.md)
