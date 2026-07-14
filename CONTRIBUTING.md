@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to WeaveLit.
+Thanks for contributing to Weavelit.
 
 ## Branch and release workflow
 
@@ -19,6 +19,13 @@ For normal development:
 For a release, verify the integrated work on `dev`, then open and merge a pull
 request from `dev` into `main`. Keep `dev` and continue using it for subsequent
 development.
+
+## Validation
+
+Run the applicable checks before opening a pull request. For Server Rust
+changes, run `make -C server check`. Rust changes must meet the [Testing and
+Validation Policy](docs/testing.md); the Rust Quality workflow repeats this
+suite on non-draft pull requests targeting `dev` or `main`.
 
 ## Branch names
 

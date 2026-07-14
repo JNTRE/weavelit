@@ -1,0 +1,37 @@
+name: Rust Quality
+
+"on":
+  pull_request:
+    branches:
+      - dev
+      - main
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    if: github.event.pull_request.draft == false
+    name: Format, lint, test, and build
+    runs-on: ubuntu-26.04
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install pinned Rust toolchain
+        # Keep this version synchronized with server/rust-toolchain.toml for deterministic CI.
+        run: rustup toolchain install 1.97.0 --profile minimal --component clippy --component rustfmt
+      - name: Show selected Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+      - name: Run quality gates
+        run: make check
