@@ -1,4 +1,4 @@
-# Milestone 4: Build the Zendesk Service Module
+# Milestone 4: Service Module - Zendesk
 
 ## Goals
 

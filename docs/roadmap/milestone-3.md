@@ -1,4 +1,4 @@
-# Milestone 3: Build the Web UI Client Module
+# Milestone 3: Client Module - Web UI
 
 ## Goals
 

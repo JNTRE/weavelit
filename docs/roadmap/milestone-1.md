@@ -1,4 +1,4 @@
-# Milestone 1: Build the Core Server Application
+# Milestone 1: Core Server Application
 
 ## Goals
 

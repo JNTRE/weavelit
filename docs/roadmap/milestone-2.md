@@ -1,4 +1,4 @@
-# Milestone 2: Build the TOTP MFA Module
+# Milestone 2: MFA Module - TOTP
 
 ## Goals
 

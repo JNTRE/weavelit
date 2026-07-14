@@ -1,4 +1,4 @@
-# Milestone 5: Build the Web UI
+# Milestone 5: Web UI - Admin and User Self-Service
 
 ## Goals
 

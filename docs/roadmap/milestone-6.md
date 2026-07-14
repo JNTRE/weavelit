@@ -1,4 +1,4 @@
-# Milestone 6: Build the Operations CLI Client Module
+# Milestone 6: Client Module - Operations CLI
 
 ## Goals
 

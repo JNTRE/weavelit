@@ -1,4 +1,4 @@
-# Milestone 8: Package and Verify the MVP Deployment
+# Milestone 8: MVP Package Build and Validation
 
 ## Goals
 

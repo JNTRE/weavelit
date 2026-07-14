@@ -1,4 +1,4 @@
-# Milestone 7: Build the Operations CLI
+# Milestone 7: Operations CLI
 
 ## Goals
 
