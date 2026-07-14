@@ -115,22 +115,14 @@ integration?
 
 ## Web UI and Developer Quality
 
-### 12. Web UI linting and quality-gate baseline
-
-Which project-local linting tools and rule sets govern the TypeScript and React
-source for the **[Web UI](glossary.md#applications-and-interfaces)**? How are
-their versions pinned, manually run by contributors, exposed through the Server
-Makefile, and enforced by a GitHub Actions quality workflow alongside the Rust
-quality gate?
-
-### 13. Web UI design system
+### 12. Web UI design system
 
 Which design system or component library, if any, will the Web UI adopt (for
 example, Fluent UI or Material UI)? What accessibility, supported-browser,
 theming, maintenance, bundle-size, and long-term customization criteria must it
 meet, and which visual foundations remain local to Weavelit?
 
-### 14. Server release-version source
+### 13. Server release-version source
 
 The **[Weavelit Server](glossary.md#applications-and-interfaces)** Rust
 workspace manifest currently defines one shared `$X.Y.Z$` version for the

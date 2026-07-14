@@ -2,6 +2,8 @@
 
 ## Goals
 
+- [ ] The Web UI uses project-local, version-pinned ESLint and Prettier configurations for its TypeScript and React source, with npm scripts that let contributors lint, check formatting, and apply formatting locally.
+- [ ] The Server Makefile and a GitHub Actions workflow run the same read-only Web UI linting and formatting checks, so local and continuous-integration quality gates remain consistent.
 - [ ] The initial **[Administrator](../glossary.md#identities-and-access)** can sign in using the local username and password established during **[Init](../glossary.md#states-and-requests)** before enrolling in MFA.
 - [ ] A **[Human User](../glossary.md#identities-and-access)** with **[Group](../glossary.md#identities-and-access)**-granted Web UI **[Client Module](../glossary.md#applications-and-interfaces)** access can sign in to a self-service account area.
 - [ ] **[Human Users](../glossary.md#identities-and-access)** using **[Local Authentication](../glossary.md#identities-and-access)** can change the password for their own account when granted Web UI Client Module access.
