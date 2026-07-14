@@ -7,18 +7,14 @@ Glossary, or an architecture decision record rather than remaining here.
 
 ## Identity and Credentials
 
-### 1. Local human account lifecycle
-
-How are local human accounts invited, disabled, recovered, and deleted?
-
-### 2. MFA method expansion
+### 1. MFA method expansion
 
 Which additional compiled-in **[MFA Modules](glossary.md#applications-and-interfaces)**
 will Weavelit support after TOTP, and how can a Human User enroll, replace, or
 retire multiple MFA methods without weakening an MFA requirement or creating an
 account-recovery gap?
 
-### 3. Operations CLI login and credential storage
+### 2. Operations CLI login and credential storage
 
 What browser-mediated login or device-approval flow does the
 **[Operations CLI](glossary.md#applications-and-interfaces)** use
@@ -27,7 +23,7 @@ for **[Local Authentication](glossary.md#identities-and-access)** and
 operating-system credential stores are supported, how are non-secret profiles
 represented, and how does `logout` remove local credentials?
 
-### 4. Automation credential lifecycle
+### 3. Automation credential lifecycle
 
 **[Administrators](glossary.md#identities-and-access)** create and manage local
 **[Automation Identities](glossary.md#identities-and-access)**. How are their
@@ -38,7 +34,7 @@ transfer or suspension handled?
 
 ## Automation and Accountability
 
-### 5. Schedules and external triggers
+### 4. Schedules and external triggers
 
 Which automation sources does Weavelit support: server-owned schedules,
 external webhook/event triggers, headless
@@ -48,7 +44,7 @@ retried, deduplicated, and audited?
 
 ## Authorization and Administration
 
-### 6. Permission and group model
+### 5. Permission and group model
 
 What additional group-granted permission types, if any, are needed beyond
 access to **[Client Modules](glossary.md#applications-and-interfaces)**,
@@ -57,25 +53,15 @@ access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 Administration Permission? Which group-grant changes require additional
 confirmation or reauthentication?
 
-### 7. Administration boundaries
-
-Which administrative functions are available in the
-**[Web UI](glossary.md#applications-and-interfaces)** after authentication and
-which remain exclusively in the host-local
-**[Admin CLI](glossary.md#applications-and-interfaces)**? What recovery actions
-can a **[Host Administrator](glossary.md#identities-and-access)** take, and what
-**[Audit Log](glossary.md#applications-and-interfaces)** is required for each
-one?
-
 ## API, Security, and Operations
 
-### 8. HTTPS edge and public API protection
+### 6. HTTPS edge and public API protection
 
 Where does TLS terminate, how are certificates renewed, which ports and source
 networks are allowed, and what request-size, rate-limit, CORS, and browser-CSRF
 controls apply?
 
-### 9. API contract and compatibility policy
+### 7. API contract and compatibility policy
 
 API routes are versioned under `/api/v1/`. What is the wire format and
 compatibility policy for
@@ -83,7 +69,7 @@ compatibility policy for
 pagination, and idempotency keys? What server and Operations CLI versions are
 supported together?
 
-### 10. Application Database and log backup, retention, and recovery
+### 8. Application Database and log backup, retention, and recovery
 
 The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
 SQLite and is selected during Init; Weavelit does not support in-place database
@@ -93,7 +79,7 @@ Audit Log databases and remote Log Module destinations backed up, protected,
 restored, and migrated? What configuration bounds and execution behavior apply
 to their independent retention and purge policies?
 
-### 11. Secrets and provider credential management
+### 9. Secrets and provider credential management
 
 Which **[Service Connection](glossary.md#applications-and-interfaces)** type
 does each **[Service Module](glossary.md#applications-and-interfaces)** support,
@@ -105,7 +91,7 @@ of all log output?
 
 ## Packages and Integrations
 
-### 12. Package, update, and container model
+### 10. Package, update, and container model
 
 What versioning scheme, distribution channel, artifact-integrity or signing
 mechanism, update policy, and rollback procedure apply to the Ubuntu
@@ -119,7 +105,7 @@ authorized and audited? What persistent-volume and backup model, TLS
 termination, secret injection mechanism, supported orchestrators, image
 provenance, and upgrade and rollback policy apply?
 
-### 13. Zendesk reference integration
+### 11. Zendesk reference integration
 
 Which Zendesk **[Service Connection](glossary.md#applications-and-interfaces)**
 type is supported first, and which Zendesk identity should create or update
@@ -129,7 +115,7 @@ integration?
 
 ## Web UI and Developer Quality
 
-### 14. Web UI linting and quality-gate baseline
+### 12. Web UI linting and quality-gate baseline
 
 Which project-local linting tools and rule sets govern the TypeScript and React
 source for the **[Web UI](glossary.md#applications-and-interfaces)**? How are
@@ -137,14 +123,14 @@ their versions pinned, manually run by contributors, exposed through the Server
 Makefile, and enforced by a GitHub Actions quality workflow alongside the Rust
 quality gate?
 
-### 15. Web UI design system
+### 13. Web UI design system
 
 Which design system or component library, if any, will the Web UI adopt (for
 example, Fluent UI or Material UI)? What accessibility, supported-browser,
 theming, maintenance, bundle-size, and long-term customization criteria must it
 meet, and which visual foundations remain local to Weavelit?
 
-### 16. Server release-version source
+### 14. Server release-version source
 
 The **[Weavelit Server](glossary.md#applications-and-interfaces)** Rust
 workspace manifest currently defines one shared `$X.Y.Z$` version for the

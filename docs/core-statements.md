@@ -261,6 +261,19 @@ when its additional context is needed.
   and client authentication.
 - Weavelit provides local human accounts and local automation credentials as
   its self-contained **[Local Authentication](glossary.md#identities-and-access)** model.
+- Local **[Human User](glossary.md#identities-and-access)** accounts are
+  created only through server-administration functions, including the
+  **[Admin CLI](glossary.md#applications-and-interfaces)** during
+  **[Init](glossary.md#states-and-requests)**. Accounts can be disabled but
+  are not deleted. Weavelit provides no email-based invitation or recovery
+  mechanism.
+- An Administrator who can access a server-administration surface can perform
+  the available local-account administration functions for any local Human
+  User, including themselves, such as initiating a password reset or resetting
+  an MFA enrollment. A Host Administrator can use the Admin CLI to perform the
+  same local-account administration functions without an application session,
+  including to clear the MFA enrollment of the sole Administrator after an MFA
+  lockout.
 - The Server provides each supported local MFA method through a compiled-in
   **[MFA Module](glossary.md#applications-and-interfaces)**. MFA Modules are
   released as part of the Server package, not installed as runtime plugins.

@@ -31,6 +31,13 @@ owning specification when its additional context is needed.
   applications may request those workflows, but do not persist password values
   or password verifiers, or implement separate password-hashing or verification
   behavior.
+- Local Human User accounts are created only through server-administration
+  functions and may be disabled but are never deleted. Weavelit has no
+  email-based invitation or recovery mechanism. An Administrator with access
+  to a server-administration surface can initiate a password reset for any
+  local Human User, including themselves. A Host Administrator can perform the
+  same local-account administration functions with the Admin CLI without an
+  application session.
 - Local **[Multifactor Authentication](glossary.md#identities-and-access)** is
   optional by default. The initial supported MFA method uses a password and a
   time-based one-time password (TOTP); a Human User who enrolls in TOTP must
@@ -58,14 +65,20 @@ owning specification when its additional context is needed.
   Module before obtaining a usable session. An affected Human User whose
   account does not require MFA may authenticate without MFA and can enroll in
   any enabled MFA Module.
-- An Administrator can require MFA for another local Human User and reset that
-  user's MFA enrollment through the Web UI. An Administrator cannot reset
-  their own MFA enrollment through the Web UI. An Administrator who has
-  enrolled in MFA must complete TOTP verification for the current session to
-  require MFA or reset another user's MFA enrollment.
+- An Administrator with access to a server-administration surface can require
+  MFA for, or reset the MFA enrollment of, any local Human User, including
+  themselves. An Administrator who has enrolled in MFA must complete TOTP
+  verification for the current session before requiring MFA or resetting an
+  MFA enrollment.
+- Resetting an MFA enrollment clears the prior factor data and, when MFA
+  remains required, forces the Human User to enroll in an enabled MFA Module
+  before obtaining a usable session. An Administrator who cannot authenticate
+  cannot use an application administration surface to recover their own
+  account.
 - A **[Host Administrator](glossary.md#identities-and-access)** can use the
-  **[Admin CLI](glossary.md#applications-and-interfaces)** to reset MFA
-  enrollment for any local Human User, including themselves. The Server records
+  **[Admin CLI](glossary.md#applications-and-interfaces)** without an
+  application session to reset MFA enrollment for any local Human User,
+  including the sole Administrator following an MFA lockout. The Server records
   MFA policy changes and resets in audit records without recording TOTP secrets
   or codes.
 - **[Web UI](glossary.md#applications-and-interfaces)** browser sessions use

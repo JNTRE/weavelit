@@ -12,11 +12,12 @@
 - [ ] An Administrator can enable or disable a **[Service Module](../glossary.md#applications-and-interfaces)**; its **[Operations](../glossary.md#applications-and-interfaces)** are unavailable while disabled.
 - [ ] An Administrator can enable or disable one or more **[Operations](../glossary.md#applications-and-interfaces)**; the disabled Operation is unavailable to every human user and **[Automation Identity](../glossary.md#identities-and-access)**.
 - [ ] An Administrator can access account management.
-- [ ] An Administrator can create a local human user account; the new user must change its password at the first Local Authentication login.
-- [ ] An Administrator can enable or disable human user accounts.
-- [ ] An Administrator can reset another local human user's password and require a password change at the user's next Local Authentication login.
-- [ ] An Administrator can require MFA for another local Human User or reset that user's MFA enrollment through the Web UI. An Administrator cannot reset their own MFA enrollment through the Web UI.
-- [ ] An Administrator who has enrolled in MFA must complete TOTP verification for the current session before requiring MFA for, or resetting MFA enrollment for, another local Human User.
+- [ ] An Administrator can create a local human user account; there is no self-registration or email-based invitation, and the new user must change its password at the first Local Authentication login.
+- [ ] An Administrator can enable or disable human user accounts. Disabled accounts are not deleted.
+- [ ] An Administrator can reset any local human user's password, including their own, and require a password change at the user's next Local Authentication login.
+- [ ] An Administrator can require MFA for, or reset the MFA enrollment of, any local Human User, including themselves, through the Web UI. An MFA reset clears the prior factor and forces re-enrollment when MFA remains required.
+- [ ] An Administrator who has enrolled in MFA must complete TOTP verification for the current session before requiring MFA or resetting an MFA enrollment, including their own.
+- [ ] A Host Administrator can use the Admin CLI without an application session to perform the same local-account administration functions available to an Administrator through the Web UI, including clearing the MFA enrollment of the sole Administrator after an MFA lockout.
 - [ ] An Administrator can create **[Groups](../glossary.md#identities-and-access)** and add Human Users to one or more Groups.
 - [ ] An Administrator can configure a Group's grants to Client Modules, Service Modules, named Operations, and the **[Server Administration Permission](../glossary.md#identities-and-access)**.
 - [ ] An Administrator can configure the **[Weavelit Server](../glossary.md#applications-and-interfaces)** web listener IP address and port through the Web UI.
