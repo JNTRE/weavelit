@@ -1,13 +1,13 @@
 # Operations CLI Client Module Agent Guide
 
-This folder documents the server-side **[Client Module](../../glossary.md#applications-and-interfaces)** that provides the **[Operations CLI](../../glossary.md#applications-and-interfaces)** connection surface to the Weavelit Server. It keeps the Server's connection-boundary detail separate from the Operations CLI application itself.
+This folder documents the server-side **[Client Module](../../glossary.md#applications-and-interfaces)** that provides the **[Weavelit CLI](../../glossary.md#applications-and-interfaces)** connection surface to the Weavelit Server. It keeps the Server's connection-boundary detail separate from the Weavelit CLI application itself.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns documentation specific to the Operations CLI Client Module.
-- It does not own Operations CLI application behavior; that belongs in `../../clients/operations-cli/`.
+- It does not own Weavelit CLI application behavior; that belongs in `../../clients/weavelit-cli/`.
 - Documentation shared by Client Modules belongs in the parent `../` directory.
 
 ## Asset Inventory
@@ -36,7 +36,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
-- Keep Operations CLI application documentation in `../../clients/operations-cli/` and provider-integration documentation in `../../service-modules/`.
+- Keep Weavelit CLI application documentation in `../../clients/weavelit-cli/` and provider-integration documentation in `../../service-modules/`.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
