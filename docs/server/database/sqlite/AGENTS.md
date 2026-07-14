@@ -21,8 +21,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for
-  the SQLite Application Database backend.
+- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the SQLite Application Database backend.
 
 ## Usage Guidance
 
@@ -40,13 +39,13 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 ## Standards and Conventions
 
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
-- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
+- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../../glossary.md`; on first substantive
   use in a section, format a canonical term as a bold link to its glossary

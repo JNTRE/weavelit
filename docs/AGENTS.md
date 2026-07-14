@@ -12,7 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - `docs/` owns the canonical product and architecture documentation for Weavelit.
 - This guide covers documentation workflow and document boundaries, not implementation-specific rules that do not yet exist in this repository.
-- Child guides in `client-modules/`, `clients/`, `log-modules/`, `server/`, and `service-modules/` own their respective connection, client-application, log-storage and delivery, server-design, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
+- Child guides in `client-modules/`, `clients/`, `containers/`, `log-modules/`, `mfa-modules/`, `roadmap/`, `server/`, and `service-modules/` own their respective connection, client-application, container-image, log-storage and delivery, MFA-method, milestone, server-design, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
 
 ## Asset Inventory
 
@@ -27,11 +27,8 @@ Use this section as the source of truth for what assets belong in this directory
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Core Statements, Glossary, or an architecture decision record.
-- `roadmap/`: Individually maintained milestone outcome documents indexed by
-  `roadmap.md`.
-- `roadmap.md`: Delivery-phase index and completion guidance for the milestone
-  documents; canonical documents supply the product, security, and technical
-  direction for their goals.
+- `roadmap/`: Individually maintained milestone outcome documents indexed by `roadmap.md`.
+- `roadmap.md`: Delivery-phase index and completion guidance for the milestone documents; canonical documents supply the product, security, and technical direction for their goals.
 - `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
@@ -54,11 +51,11 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
+- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
 - Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use the exact canonical names defined in `glossary.md` when documenting Weavelit concepts.
 - On first substantive use in each document section, write a canonical glossary term
