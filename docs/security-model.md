@@ -83,7 +83,7 @@ owning specification when its additional context is needed.
   or codes.
 - **[Web UI](glossary.md#applications-and-interfaces)** browser sessions use
   secure, server-managed session handling.
-- The **[Operations CLI](glossary.md#applications-and-interfaces)** never
+- The **[Weavelit CLI](glossary.md#applications-and-interfaces)** never
   stores provider credentials. Its user-credential storage and login flow
   are specified separately.
 - The Server receives, stores, and, where applicable, refreshes or revokes the
@@ -133,8 +133,8 @@ owning specification when its additional context is needed.
   Server independently authorizes every **[Web UI](glossary.md#applications-and-interfaces)**
   request and rejects administrative requests without the Server Administration
   Permission.
-- The Operations CLI is operations-only. The server does not accept Operations
-  CLI credentials for administrative functions.
+- The Weavelit CLI is operations-only. The server does not accept Weavelit CLI
+  credentials for administrative functions.
 
 ## Automation Accountability
 
