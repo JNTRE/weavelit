@@ -10,7 +10,7 @@ remote client interface and requires Unix `sudo` authority on the Server host.
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns host-local Admin CLI behavior and its use of Server-owned administration logic.
-- It does not own the remotely installed Operations CLI; that belongs in `../../../operations-cli/`.
+- It does not own the remotely installed Weavelit CLI; that belongs in the dedicated client source tree.
 - It does not own Web UI administration, Server policy, or individual module implementations.
 
 ## Asset Inventory

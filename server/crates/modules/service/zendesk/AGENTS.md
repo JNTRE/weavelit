@@ -11,7 +11,7 @@ Connection type.
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns Zendesk-specific provider integration and supported Operations.
-- It does not own shared Service Module guidance, caller authorization, client request translation, or the Operations CLI application.
+- It does not own shared Service Module guidance, caller authorization, client request translation, or the Weavelit CLI application.
 - Future child paths own only narrower Zendesk guidance that differs from this module boundary.
 
 ## Asset Inventory

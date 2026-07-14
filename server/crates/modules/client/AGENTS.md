@@ -18,7 +18,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and Client Module crate-boundary rules.
-- `operations-cli/`: Operations CLI Client Module crate boundary.
+- `Weavelit CLI Client Module crate`: Server connection-surface crate boundary.
 - `web-ui/`: Web UI Client Module crate boundary.
 
 ## Usage Guidance

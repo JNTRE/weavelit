@@ -10,7 +10,7 @@ policy enforcement, provider integrations, and provider credentials.
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns source and release assets for the Weavelit Server package.
-- It does not own the separately packaged Operations CLI application; that belongs in `../operations-cli/`.
+- It does not own the separately packaged Weavelit CLI application; that belongs in the dedicated client source tree.
 - Component-specific implementation guidance belongs in the matching canonical documentation under `../docs/` until a child source directory gains distinct local workflow rules.
 
 ## Asset Inventory
