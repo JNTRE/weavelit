@@ -39,4 +39,5 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - Build production Web UI assets as part of the Weavelit Server package; do not create a separate Web UI release.
-- Do not treat client-side navigation or validation as authorization controls.- Never expose provider credentials, automation credentials, or internal error traces in the browser.
+- Do not treat client-side navigation or validation as authorization controls.
+- Never expose provider credentials, automation credentials, or internal error traces in the browser.

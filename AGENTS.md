@@ -35,7 +35,6 @@ Apply instructions in this order:
 - `docs/glossary.md`: Canonical definitions and naming for Weavelit concepts.
 - `operations-cli/`: Source, tests, and macOS release packaging for the separately packaged Operations CLI; follow its local guide.
 - `server/`: Source, tests, Web UI, and Debian release packaging for the Weavelit Server; follow its local guide.
-- `weavelit.code-workspace`: VS Code multi-root workspace definition.
 
 ## 3. Usage Guidance
 
