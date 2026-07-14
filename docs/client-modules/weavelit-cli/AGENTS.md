@@ -1,12 +1,12 @@
-# Operations CLI Client Module Agent Guide
+# Weavelit CLI Client Module Agent Guide
 
-This folder documents the server-side **[Client Module](../../glossary.md#applications-and-interfaces)** that provides the **[Weavelit CLI](../../glossary.md#applications-and-interfaces)** connection surface to the Weavelit Server. It keeps the Server's connection-boundary detail separate from the Weavelit CLI application itself.
+This folder documents the server-side **[Weavelit CLI](../../glossary.md#applications-and-interfaces)** **[Client Module](../../glossary.md#applications-and-interfaces)**. It keeps the Server's connection-boundary detail separate from the Weavelit CLI application itself.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns documentation specific to the Operations CLI Client Module.
+- This directory owns documentation specific to the Weavelit CLI Client Module.
 - It does not own Weavelit CLI application behavior; that belongs in `../../clients/weavelit-cli/`.
 - Documentation shared by Client Modules belongs in the parent `../` directory.
 
@@ -14,14 +14,14 @@ Use this section to understand what this directory owns, what it does not own, a
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Operations CLI Client Module.
+- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Weavelit CLI Client Module.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Keep Operations CLI Client Module documentation directly in this folder; move shared Client Module material to the parent `../` directory.
+- Keep Weavelit CLI Client Module documentation directly in this folder; move shared Client Module material to the parent `../` directory.
 - Use `../../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

@@ -8,7 +8,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns shared documentation for Client Modules and their function at the Weavelit Server boundary.
 - It does not own Weavelit CLI or Web UI application documentation; those belong in the sibling `../clients/` directory.
-- The `mcp/`, `operations-cli/`, and `web-ui/` child directories own detailed documentation for their respective Client Modules.
+- The `mcp/`, `weavelit-cli/`, and `web-ui/` child directories own detailed documentation for their respective Client Modules.
 
 ## Asset Inventory
 
@@ -16,7 +16,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Client Modules.
 - `mcp/`: Future-only documentation boundary for the MCP Client Module; it does not represent an implemented interface.
-- `operations-cli/`: Documentation for the server-side Client Module that provides the **[Weavelit CLI](../glossary.md#applications-and-interfaces)** connection surface.
+- `weavelit-cli/`: Documentation for the server-side **[Weavelit CLI](../glossary.md#applications-and-interfaces)** Client Module.
 - `web-ui/`: Documentation for the server-side Client Module that provides the **[Web UI](../glossary.md#applications-and-interfaces)** connection surface.
 
 ## Usage Guidance

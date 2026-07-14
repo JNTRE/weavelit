@@ -26,7 +26,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `milestone-3.md`: Web UI Client Module delivery outcomes.
 - `milestone-4.md`: Zendesk Service Module delivery outcomes.
 - `milestone-5.md`: Web UI delivery outcomes.
-- `milestone-6.md`: Operations CLI Client Module delivery outcomes.
+- `milestone-6.md`: Weavelit CLI Client Module delivery outcomes.
 - `milestone-7.md`: Weavelit CLI delivery outcomes.
 - `milestone-8.md`: MVP deployment packaging and verification outcomes.
 - `milestone-9.md`: TechnitiumDNS Service Module delivery outcomes.

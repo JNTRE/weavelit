@@ -39,7 +39,7 @@ plugins.
 
 **Weavelit CLI** - The separately packaged operations-only command-line
 application used on a user's local system. It interacts with the
-**[Weavelit Server](#applications-and-interfaces)** through the Operations CLI
+**[Weavelit Server](#applications-and-interfaces)** through the Weavelit CLI
 **[Client Module](#applications-and-interfaces)**. Its first supported platform
 is macOS 26 and later on Apple Silicon (`arm64`).
 
