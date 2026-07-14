@@ -1,5 +1,9 @@
 # Milestone 3: Client Module - Web UI
 
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 3](https://github.com/JNTRE/weavelit/milestone/3). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
+
 ## Goals
 
 - [ ] The **[Web UI](../glossary.md#applications-and-interfaces)** **[Client Module](../glossary.md#applications-and-interfaces)** is registered with the Weavelit Server and mounts its browser-facing route namespace on the configured HTTPS listener.

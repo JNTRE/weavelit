@@ -1,5 +1,9 @@
 # Milestone 7: Weavelit CLI
 
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 7](https://github.com/JNTRE/weavelit/milestone/7). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
+
 ## Goals
 
 - [ ] A **[Human User](../glossary.md#identities-and-access)** can sign in to the **[Weavelit CLI](../glossary.md#applications-and-interfaces)** only when a **[Group](../glossary.md#identities-and-access)** grants access to the Weavelit CLI **[Client Module](../glossary.md#applications-and-interfaces)**.

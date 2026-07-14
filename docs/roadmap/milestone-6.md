@@ -1,5 +1,9 @@
 # Milestone 6: Client Module - Weavelit CLI
 
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 6](https://github.com/JNTRE/weavelit/milestone/6). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
+
 ## Goals
 
 - [ ] The **[Weavelit CLI](../glossary.md#applications-and-interfaces)** **[Client Module](../glossary.md#applications-and-interfaces)** is registered with the **[Weavelit Server](../glossary.md#applications-and-interfaces)** and mounts its authenticated request namespace under `/api/v1/` on the configured HTTPS listener.

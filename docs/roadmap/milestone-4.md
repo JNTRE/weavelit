@@ -1,5 +1,9 @@
 # Milestone 4: Service Module - Zendesk
 
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 4](https://github.com/JNTRE/weavelit/milestone/4). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
+
 ## Goals
 
 - [ ] The Zendesk **[Service Module](../glossary.md#applications-and-interfaces)** declares one supported **[Service Connection](../glossary.md#applications-and-interfaces)** type and its setup workflow, and can use a configured connection of that type with Zendesk.

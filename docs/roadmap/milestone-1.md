@@ -1,5 +1,9 @@
 # Milestone 1: Core Server Application
 
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 1](https://github.com/JNTRE/weavelit/milestone/1). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
+
 ## Goals
 
 - [ ] A **[Host Administrator](../glossary.md#identities-and-access)** can use the **[Admin CLI](../glossary.md#applications-and-interfaces)** to complete **[Init](../glossary.md#states-and-requests)** interactively or from an explicit non-interactive bootstrap configuration file, create the **[Administrators Group](../glossary.md#identities-and-access)**, create the first local **[Human User](../glossary.md#identities-and-access)** without MFA enrollment, and add that user to the Administrators Group.

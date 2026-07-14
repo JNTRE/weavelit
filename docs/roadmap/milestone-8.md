@@ -1,5 +1,9 @@
 # Milestone 8: MVP Package Build and Validation
 
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
+
 ## Goals
 
 - [ ] A versioned `.deb` package installs the **[Weavelit Server](../glossary.md#applications-and-interfaces)**, Web UI assets, and Admin CLI on Ubuntu 26.04 LTS `amd64` without requiring Rust, source code, or development tooling on the host.

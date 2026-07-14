@@ -1,5 +1,9 @@
 # Milestone 2: MFA Module - TOTP
 
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 2](https://github.com/JNTRE/weavelit/milestone/2). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
+
 ## Goals
 
 - [ ] The TOTP **[MFA Module](../glossary.md#applications-and-interfaces)** is compiled into the Weavelit Server package, registered with the Server, and enabled by default after Init. An Administrator can enable or disable it through server-administration functions.
