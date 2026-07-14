@@ -30,7 +30,7 @@ canonical direction and definitions that inform those outcomes.
 - [Milestone 4: Build the Zendesk Service Module](roadmap/milestone-4.md)
 - [Milestone 5: Build the Web UI](roadmap/milestone-5.md)
 - [Milestone 6: Build the Operations CLI Client Module](roadmap/milestone-6.md)
-- [Milestone 7: Build the Operations CLI](roadmap/milestone-7.md)
+- [Milestone 7: Build the Weavelit CLI](roadmap/milestone-7.md)
 - [Milestone 8: Package and verify the MVP deployment](roadmap/milestone-8.md)
 
 ## Post-MVP
