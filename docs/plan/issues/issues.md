@@ -143,6 +143,5 @@ routine metadata update to the affected issue's record.
 
 ## Related Documents
 
-- [Milestone Index](../milestones.md)
 - [Milestone 1 Outcomes](../milestones/milestone-1.md)
 - [Testing and Validation Policy](../../testing.md)

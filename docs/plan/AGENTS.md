@@ -18,8 +18,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and planning-documentation boundary rules.
 - `issues/`: High-level documentation of open GitHub issues and their project-planning metadata.
-- `milestones.md`: Delivery-phase index and completion guidance for the milestone documents; canonical documents supply the product, security, and technical direction for their goals.
-- `milestones/`: Individually maintained milestone outcome documents indexed by `milestones.md`.
+- `milestones/`: Individually maintained milestone outcome documents. Each records every desired capability, limit, protection, and safe failure or rejection behavior required to complete its delivery stage; a milestone is complete only when every recorded outcome is implemented and verified according to the [Testing and Validation Policy](../testing.md).
 
 ## Usage Guidance
 
@@ -27,7 +26,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Read `issues/issues.md` before changing how open work is summarized or mapped to GitHub Project metadata.
-- Read `milestones.md` before changing milestone organization or delivery-phase alignment.
+- Read the affected document in `milestones/` before changing its outcomes. Keep milestones aligned with canonical documents for settled product, security, and technical decisions; unresolved choices remain in [Open Questions](../open-questions.md).
 - Keep planning outcomes aligned with canonical documents for settled product, security, and technical decisions instead of redefining those decisions.
 - Place milestone-specific guidance and outcome documents in `milestones/`.
 

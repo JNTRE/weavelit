@@ -138,5 +138,4 @@ tests to a final hardening phase.
 
 - [Core Statements](core-statements.md)
 - [Security Model](security-model.md)
-- [Roadmap](plan/milestones.md)
 - [Glossary](glossary.md)
