@@ -28,7 +28,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
   and the repository-root `AGENTS.md`.
-- Update this specification when the matching development Containerfile or its
+- Update this documentation when the matching development Containerfile or its
   build, mount, configuration, or validation contract changes.
 - Keep Docker as a supported local client without requiring Docker-only image or
   runtime behavior.
@@ -46,7 +46,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep the required heading order and keep this guide under 100 lines.
 - Keep the development image distinct from the production OCI image; link to the
-  production specification instead of duplicating its deployment requirements.
+  production documentation instead of duplicating its deployment requirements.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.

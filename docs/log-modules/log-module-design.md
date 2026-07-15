@@ -1,6 +1,6 @@
-# Log Module Specification
+# Log Module Design
 
-This specification defines the shared design for Server-side
+This document defines the shared design for Server-side
 **[Log Modules](../glossary.md#applications-and-interfaces)**. It does not
 define a destination-specific storage, delivery, retention, backup, or
 migration implementation.

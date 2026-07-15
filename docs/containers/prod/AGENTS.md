@@ -27,7 +27,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
   and the repository-root `AGENTS.md`.
-- Update this specification when the matching production Containerfile or its
+- Update this documentation when the matching production Containerfile or its
   packaging, runtime, deployment, or release-validation contract changes.
 - Keep the production image limited to verified packaged Server artifacts;
   never route development tooling or source-build behavior into this boundary.
@@ -45,7 +45,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep the required heading order and keep this guide under 100 lines.
 - Keep the production image distinct from the development image; link to the
-  development specification instead of duplicating its toolchain requirements.
+  development documentation instead of duplicating its toolchain requirements.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.

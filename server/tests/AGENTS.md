@@ -24,7 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../docs/testing.md` and the implementation boundary's owning specification before adding or changing a test workflow.
+- Read `../../docs/testing.md` and the implementation boundary's owning documentation before adding or changing a test workflow.
 - Test public results, persisted state, audit events, and provider requests rather than private implementation call order.
 - Keep tests deterministic, isolated, repeatable, and free of production services, live credentials, real user data, and network timing dependencies.
 

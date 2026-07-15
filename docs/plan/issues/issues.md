@@ -17,7 +17,7 @@
 > Create every new issue through the repository's Issue Form that matches its
 > native GitHub issue type. Use a blank issue only when a maintainer has a
 > specific exceptional need that no available form can represent. Each form
-> assigns its native GitHub issue type and collects the specification appropriate
+> assigns its native GitHub issue type and collects the documentation appropriate
 > to that type. After creation, assign the applicable repository component
 > labels, `Priority` value, GitHub Milestone, Project status, and issue
 > relationships; do not recreate retired Project fields for type, area, delivery

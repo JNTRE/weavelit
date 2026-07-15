@@ -1,4 +1,4 @@
-# Development Container Specification
+# Development Container Design
 
 ## Purpose
 
@@ -35,11 +35,11 @@ When implemented, the development image must:
 The implemented image must be built and exercised with both a Docker command
 and at least one OCI-compatible alternative such as Podman or Buildah. Its
 validation must run `make check` inside the container and confirm that source,
-state, and secret mounts follow this specification.
+state, and secret mounts follow this design.
 
 ## Related Documents
 
 - [Testing and Validation Policy](../../testing.md)
 - [Milestone 1](../../plan/milestones/milestone-1.md)
-- [Production Container Specification](../prod/spec.md)
+- [Production Container Design](../prod/production-container-design.md)
 - [Open Questions](../../open-questions.md)

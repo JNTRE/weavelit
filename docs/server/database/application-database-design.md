@@ -1,6 +1,6 @@
-# Application Database Specification
+# Application Database Design
 
-This specification defines the shared implementation design for the Server's
+This document defines the shared implementation design for the Server's
 internal **[Application Database](../../glossary.md#applications-and-interfaces)**
 backend contract. Backend-specific storage behavior belongs in the applicable
 child directory.

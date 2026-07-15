@@ -12,8 +12,7 @@ verification provide the additional evidence that tests alone cannot.
   commitment regresses.
 - Every behavior change includes automated tests in the same change. A change
   that cannot reasonably be automated must document why and provide a repeatable
-  manual verification procedure in its owning `spec.md` or implementation
-  documentation.
+  manual verification procedure in its owning documentation.
 - Tests are deterministic, isolated, and safe to run repeatedly. They do not
   depend on production services, live provider credentials, real user data, or
   network timing.
@@ -29,8 +28,8 @@ verification provide the additional evidence that tests alone cannot.
 
 Before implementation begins, the author records the behavior being added or
 changed, its observable success result, its rejection or failure results, and
-the smallest useful test layer. The feature's `spec.md` is the source for this
-record when a feature specification exists.
+the smallest useful test layer. The feature's canonical documentation is the
+source for this record when it exists.
 
 Each change must include the tests appropriate to its risk and boundary:
 
@@ -110,7 +109,7 @@ incident response or rollback procedure authorizes the exception.
 
 An agent or contributor implementing a change must:
 
-1. Read the owning specification and identify success, rejection, and failure
+1. Read the owning documentation and identify success, rejection, and failure
    behavior before editing implementation code.
 2. Add or update focused tests in the same change, including a regression test
    for a bug fix and security tests for any changed trust boundary.

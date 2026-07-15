@@ -41,7 +41,7 @@ Apply instructions in this order:
 - Use `<type>/<short-kebab-case-description>` branch names and `<type>(<scope>): <description>` commit messages with a listed required scope.
 - For changes under `docs/`, use the local guide and update the canonical document rather than duplicating product commitments elsewhere.
 - For changes under `server/` or `weavelit-cli/`, read the matching local guide and the canonical documentation it routes to before editing.
-- For every implementation behavior change, add or update focused automated tests in the same change and run the applicable validation required by [the Testing and Validation Policy](docs/testing.md). Document any unavoidable manual verification in the owning specification.
+- For every implementation behavior change, add or update focused automated tests in the same change and run the applicable validation required by [the Testing and Validation Policy](docs/testing.md). Document any unavoidable manual verification in the owning documentation.
 
 ## 4. Standards and Conventions
 

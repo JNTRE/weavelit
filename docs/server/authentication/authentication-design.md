@@ -1,4 +1,4 @@
-# Authentication Specification
+# Authentication Design
 
 This document is the canonical destination for implementation-specific
 authentication design for the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**.
@@ -8,7 +8,7 @@ the relevant detail here.
 
 ## Current Scope
 
-This specification will document the implementation design for
+This document will cover the implementation design for
 **[Local Authentication](../../glossary.md#identities-and-access)**,
 **[External Authentication](../../glossary.md#identities-and-access)**,
 credential handling, sessions, and

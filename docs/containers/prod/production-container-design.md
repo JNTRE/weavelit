@@ -1,4 +1,4 @@
-# Production Container Specification
+# Production Container Design
 
 ## Purpose
 
@@ -27,5 +27,5 @@ When implemented, the production image must:
 ## Related Documents
 
 - [Milestone 14](../../plan/milestones/milestone-14.md)
-- [Development Container Specification](../dev/spec.md)
+- [Development Container Design](../dev/development-container-design.md)
 - [Open Questions](../../open-questions.md)

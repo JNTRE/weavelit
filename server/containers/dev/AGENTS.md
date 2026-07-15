@@ -31,7 +31,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Do not replace the placeholder until the Server development configuration,
   state path, bootstrap secret-file interface, and startup behavior are defined.
 - Validate an implemented image using `make check` within the mounted source
-  tree and preserve the specification's Docker and OCI-compatible validation.
+  tree and preserve its documented Docker and OCI-compatible validation.
 
 ## Standards and Conventions
 
