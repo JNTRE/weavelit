@@ -1,4 +1,4 @@
-# Milestone 1: Build the Core Server Application
+# Milestone 1: Core Server Application
 
 ## Goals
 
@@ -20,6 +20,10 @@
 - [ ] **[Init](../glossary.md#states-and-requests)** generates and uses a self-signed TLS certificate by default.
 - [ ] One configured HTTPS listener serves both the **[Web UI](../glossary.md#applications-and-interfaces)** browser routes and authenticated `/api/v1/` routes.
 - [ ] A developer can use a documented process to build and use an OCI-compliant development image to build, run, test, and restart the Weavelit Server without installing Rust on the host. The development environment receives non-secret configuration through environment variables, mounts bootstrap secrets as local files, and preserves Server state in an explicitly managed development volume.
+
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 1](https://github.com/JNTRE/weavelit/milestone/1). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
 
 ## Related Documents
 

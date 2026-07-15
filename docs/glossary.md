@@ -37,9 +37,13 @@ plugins.
 
 **Audit Log** - A structured, pre-redacted accountability record for a consequential action. It identifies the authenticated principal, **[Responsible Owner](#identities-and-access)** when applicable, action or **[Operation](#applications-and-interfaces)**, target, time, result, and correlation identifier. An Audit Log is distinct from a System Log.
 
-**Operations CLI** - The separately packaged operations-only command-line
-application used on a user's local system. Its first supported platform is
-macOS 26 and later on Apple Silicon (`arm64`).
+**Weavelit CLI** - The separately packaged operations-only command-line
+application used on a user's local system. It interacts with the
+**[Weavelit Server](#applications-and-interfaces)** through the Weavelit CLI
+**[Client Module](#applications-and-interfaces)**. Its first supported platform
+is macOS 26 and later on Apple Silicon (`arm64`).
+
+**Operations CLI** - Previous name for the **[Weavelit CLI](#applications-and-interfaces)**. This term is retained here only as a compatibility alias; all other documentation must use Weavelit CLI. Code or configuration may retain the previous name only where required for compatibility.
 
 **Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)** and available after authentication and Init. A **[Human User](#identities-and-access)** whose **[Group](#identities-and-access)** grants the Web UI **[Client Module](#applications-and-interfaces)** can use self-service account functions and view their own Group memberships and effective access. Only an **[Administrator](#identities-and-access)** can use its administrative functions.
 

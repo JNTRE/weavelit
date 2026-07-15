@@ -1,4 +1,4 @@
-# Milestone 2: Build the TOTP MFA Module
+# Milestone 2: MFA Module - TOTP
 
 ## Goals
 
@@ -8,6 +8,10 @@
 - [ ] The TOTP MFA Module activates an enrollment only after the enrolling Human User confirms a valid generated TOTP code, and it securely stores the resulting factor data in the Server's trusted environment.
 - [ ] The TOTP MFA Module verifies valid TOTP codes and rejects invalid, expired, or replayed codes. It returns a typed verification result to the Server without disclosing the TOTP secret or raw implementation errors.
 - [ ] Disabling the TOTP MFA Module immediately prevents new TOTP enrollment and verification. The Server applies the defined affected-user reporting, session termination, and MFA-policy behavior.
+
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 2](https://github.com/JNTRE/weavelit/milestone/2). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
 
 ## Related Documents
 

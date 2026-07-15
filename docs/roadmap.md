@@ -24,23 +24,23 @@ canonical direction and definitions that inform those outcomes.
 
 ## MVP
 
-- [Milestone 1: Build the core server application](roadmap/milestone-1.md)
-- [Milestone 2: Build the TOTP MFA Module](roadmap/milestone-2.md)
-- [Milestone 3: Build the Web UI Client Module](roadmap/milestone-3.md)
-- [Milestone 4: Build the Zendesk Service Module](roadmap/milestone-4.md)
-- [Milestone 5: Build the Web UI](roadmap/milestone-5.md)
-- [Milestone 6: Build the Operations CLI Client Module](roadmap/milestone-6.md)
-- [Milestone 7: Build the Operations CLI](roadmap/milestone-7.md)
-- [Milestone 8: Package and verify the MVP deployment](roadmap/milestone-8.md)
+- [Milestone 1: Core Server Application](roadmap/milestone-1.md)
+- [Milestone 2: MFA Module - TOTP](roadmap/milestone-2.md)
+- [Milestone 3: Client Module - Web UI](roadmap/milestone-3.md)
+- [Milestone 4: Service Module - Zendesk](roadmap/milestone-4.md)
+- [Milestone 5: Web UI - Admin and User Self-Service](roadmap/milestone-5.md)
+- [Milestone 6: Client Module - Weavelit CLI](roadmap/milestone-6.md)
+- [Milestone 7: Weavelit CLI](roadmap/milestone-7.md)
+- [Milestone 8: MVP Package Build and Validation](roadmap/milestone-8.md)
 
 ## Post-MVP
 
 - [Milestone 9: Build the TechnitiumDNS Service Module](roadmap/milestone-9.md)
-- [Milestone 10: Build support for user-associated Service Connections](roadmap/milestone-10.md)
-- [Milestone 11: Build support for Automation Identities](roadmap/milestone-11.md)
-- [Milestone 12: Build support for External Authentication](roadmap/milestone-12.md)
+- [Milestone 10: Build Support for User-Associated Service Connections](roadmap/milestone-10.md)
+- [Milestone 11: Build Support for Automation Identities](roadmap/milestone-11.md)
+- [Milestone 12: Build Support for External Authentication](roadmap/milestone-12.md)
 - [Milestone 13: Build the Passkey MFA Module](roadmap/milestone-13.md)
-- [Milestone 14: Build support for a Server OCI image](roadmap/milestone-14.md)
+- [Milestone 14: Build Support for a Server OCI Image](roadmap/milestone-14.md)
 
 ## Related Documents
 

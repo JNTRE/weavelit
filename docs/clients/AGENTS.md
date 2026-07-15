@@ -8,7 +8,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns shared client-application and client-adapter documentation and routing to individual client documentation.
 - It does not own server-side Client Module design; that belongs in the sibling `../client-modules/` directory.
-- The `mcp/`, `operations-cli/`, and `web-ui/` child directories own detailed documentation for their respective clients or adapters.
+- The `mcp/`, `weavelit-cli/`, and `web-ui/` child directories own detailed documentation for their respective clients or adapters.
 
 ## Asset Inventory
 
@@ -16,7 +16,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for client applications.
 - `mcp/`: Future-only documentation boundary for the MCP adapter; it does not represent an implemented client.
-- `operations-cli/`: Documentation for the **[Operations CLI](../glossary.md#applications-and-interfaces)** application.
+- `weavelit-cli/`: Documentation for the **[Weavelit CLI](../glossary.md#applications-and-interfaces)** application.
 - `web-ui/`: Documentation for the **[Web UI](../glossary.md#applications-and-interfaces)** application.
 
 ## Usage Guidance
@@ -31,13 +31,13 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 ## Standards and Conventions
 
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
-- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
+- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
 - Keep server-side Client Module design in `../client-modules/` and Service Module documentation in `../service-modules/`.

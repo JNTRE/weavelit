@@ -22,18 +22,18 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Keep audit design aligned with `../../core-statements.md` and `../../security-model.md`; record unresolved retention and backup choices in `../../open-questions.md`.
-- Keep operational diagnosis in `../observability/` and durable-data implementation detail in `../storage/`.
+- Keep operational diagnosis in `../observability/` and Audit Log storage and delivery design in `../../log-modules/`.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 
 ## Standards and Conventions
 
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
-- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
+- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
 - Preserve the accountability purpose of Audit Logs; do not substitute operational observability data for required audit evidence.

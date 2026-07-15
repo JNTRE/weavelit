@@ -10,7 +10,7 @@ policy enforcement, provider integrations, and provider credentials.
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns source and release assets for the Weavelit Server package.
-- It does not own the separately packaged Operations CLI application; that belongs in `../operations-cli/`.
+- It does not own the separately packaged Weavelit CLI application; that belongs in the dedicated client source tree.
 - Component-specific implementation guidance belongs in the matching canonical documentation under `../docs/` until a child source directory gains distinct local workflow rules.
 
 ## Asset Inventory
@@ -23,7 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `containers/`: Development and production Containerfiles for the Server.
 - `crates/`: Rust crate locations for the Server, Admin CLI, Application Database backend, and compiled-in modules.
 - `Makefile`: Standard local and CI entry point for Server Rust quality gates.
-- `packaging/`: Release packaging assets for the Server package; `deb/` owns Debian-specific files.
+- `packaging/`: Release packaging assets for the Server package; `packaging/deb/` owns Debian-specific files.
 - `rust-toolchain.toml`: Pinned Rust toolchain and required quality-gate components.
 - `tests/`: Server-focused integration and end-to-end tests.
 - `web-ui/`: TypeScript and React source whose production assets are bundled into the Server package.
@@ -44,7 +44,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/sqlite/spec.md`) in the same change.
+- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
 - Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
 - Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.

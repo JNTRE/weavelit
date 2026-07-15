@@ -41,7 +41,7 @@ Each change must include the tests appropriate to its risk and boundary:
 | Versioned API, **[Client Module](glossary.md#applications-and-interfaces)**, or **[Service Module](glossary.md#applications-and-interfaces)** contract | Contract tests for accepted requests and stable success and error responses. |
 | Authentication, authorization, secret handling, audit logging, MFA, or destructive operations | Tests for every allowed and denied path, plus tests that sensitive values are absent from returned errors and logs. |
 | Provider integration | Tests against controlled fakes or recorded fixtures for request construction, error mapping, retry, rate-limit, and duplicate-protection behavior. Live-provider checks are separately controlled smoke tests, never the default test suite. |
-| Web UI, Operations CLI, Admin CLI, packaging, or deployment workflow | Focused end-to-end or smoke tests of the user workflow and the failure condition most likely to cause an unusable release. |
+| Web UI, Weavelit CLI, Admin CLI, packaging, or deployment workflow | Focused end-to-end or smoke tests of the user workflow and the failure condition most likely to cause an unusable release. |
 
 Use table-driven tests for meaningful input combinations and property tests for
 invariants with broad input spaces. Prefer assertions on public results,
@@ -97,7 +97,7 @@ clean checkout and verifies it in a production-like environment. For the
 installation or image startup, configuration and secret-file handling, Init or
 an equivalent controlled fixture, an authenticated request, an authorization
 denial, durable state across a restart, and clean shutdown. The separately
-packaged **[Operations CLI](glossary.md#applications-and-interfaces)** must be
+packaged **[Weavelit CLI](glossary.md#applications-and-interfaces)** must be
 tested on its supported macOS `arm64` platform against the versioned Server
 interface.
 

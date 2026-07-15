@@ -14,10 +14,10 @@ will Weavelit support after TOTP, and how can a Human User enroll, replace, or
 retire multiple MFA methods without weakening an MFA requirement or creating an
 account-recovery gap?
 
-### 2. Operations CLI login and credential storage
+### 2. Weavelit CLI login and credential storage
 
 What browser-mediated login or device-approval flow does the
-**[Operations CLI](glossary.md#applications-and-interfaces)** use
+**[Weavelit CLI](glossary.md#applications-and-interfaces)** use
 for **[Local Authentication](glossary.md#identities-and-access)** and
 **[External Authentication](glossary.md#identities-and-access)**? Which
 operating-system credential stores are supported, how are non-secret profiles
@@ -38,7 +38,7 @@ transfer or suspension handled?
 
 Which automation sources does Weavelit support: server-owned schedules,
 external webhook/event triggers, headless
-**[Operations CLI](glossary.md#applications-and-interfaces)**
+**[Weavelit CLI](glossary.md#applications-and-interfaces)**
 invocations, or all of these? How are schedules represented, enabled, paused,
 retried, deduplicated, and audited?
 
@@ -66,7 +66,7 @@ controls apply?
 API routes are versioned under `/api/v1/`. What is the wire format and
 compatibility policy for
 **[Operational Requests](glossary.md#states-and-requests)**, results, errors,
-pagination, and idempotency keys? What server and Operations CLI versions are
+pagination, and idempotency keys? What server and Weavelit CLI versions are
 supported together?
 
 ### 8. Application Database and log backup, retention, and recovery
@@ -96,8 +96,8 @@ of all log output?
 What versioning scheme, distribution channel, artifact-integrity or signing
 mechanism, update policy, and rollback procedure apply to the Ubuntu
 **[Weavelit Server](glossary.md#applications-and-interfaces)** package and the
-macOS **[Operations CLI](glossary.md#applications-and-interfaces)** artifact?
-Which additional Operations CLI platforms are supported after macOS 26 and later
+macOS **[Weavelit CLI](glossary.md#applications-and-interfaces)** artifact?
+Which additional Weavelit CLI platforms are supported after macOS 26 and later
 on Apple Silicon (`arm64`)? For the post-MVP OCI-compliant production Server
 image, what host administration boundary applies to Admin CLI functions other
 than its defined non-interactive Init bootstrap mode, and how are those actions
