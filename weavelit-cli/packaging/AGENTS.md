@@ -25,7 +25,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../docs/plan/roadmap/milestone-8.md` and the Weavelit CLI requirements before changing release-artifact behavior.
+- Read `../../docs/plan/milestones/milestone-8.md` and the Weavelit CLI requirements before changing release-artifact behavior.
 - Keep packaging assets separate from source and verify installation against a versioned Server interface when release workflows are introduced.
 - Record release build, installation, verification, and troubleshooting instructions with the packaged workflow.
 

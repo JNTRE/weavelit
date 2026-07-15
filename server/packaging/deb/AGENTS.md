@@ -24,7 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../../docs/plan/roadmap/milestone-8.md` and the relevant Server requirements before changing Debian package behavior.
+- Read `../../../docs/plan/milestones/milestone-8.md` and the relevant Server requirements before changing Debian package behavior.
 - Keep package installation, service definition, non-secret configuration, persistent-state, and log-location behavior here.
 - Verify release artifacts in a clean, production-like Ubuntu environment when this packaging workflow is introduced.
 

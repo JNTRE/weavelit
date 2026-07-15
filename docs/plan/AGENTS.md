@@ -10,14 +10,14 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns documentation organized around delivery planning and milestone outcomes.
 - It does not own canonical product, security, or technical decisions; those remain in the top-level documents under `docs/`.
-- The `roadmap/` child directory owns the milestone documents indexed by `../roadmap.md`.
+- The `milestones/` child directory owns the milestone documents indexed by `../roadmap.md`.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and planning-documentation boundary rules.
-- `roadmap/`: Individually maintained milestone outcome documents indexed by `../roadmap.md`.
+- `milestones/`: Individually maintained milestone outcome documents indexed by `../roadmap.md`.
 
 ## Usage Guidance
 
@@ -26,7 +26,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Read `../roadmap.md` before changing milestone organization or delivery-phase alignment.
 - Keep planning outcomes aligned with canonical documents for settled product, security, and technical decisions instead of redefining those decisions.
-- Place milestone-specific guidance and outcome documents in `roadmap/`.
+- Place milestone-specific guidance and outcome documents in `milestones/`.
 
 ## Standards and Conventions
 
