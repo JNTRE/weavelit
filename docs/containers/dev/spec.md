@@ -40,6 +40,6 @@ state, and secret mounts follow this specification.
 ## Related Documents
 
 - [Testing and Validation Policy](../../testing.md)
-- [Milestone 1](../../roadmap/milestone-1.md)
+- [Milestone 1](../../plan/roadmap/milestone-1.md)
 - [Production Container Specification](../prod/spec.md)
 - [Open Questions](../../open-questions.md)

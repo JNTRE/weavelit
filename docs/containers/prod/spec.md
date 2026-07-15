@@ -26,6 +26,6 @@ When implemented, the production image must:
 
 ## Related Documents
 
-- [Milestone 14](../../roadmap/milestone-14.md)
+- [Milestone 14](../../plan/roadmap/milestone-14.md)
 - [Development Container Specification](../dev/spec.md)
 - [Open Questions](../../open-questions.md)

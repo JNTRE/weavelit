@@ -10,7 +10,7 @@ stage with confidence.
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns the independently maintained milestone goal documents
-  linked from `../roadmap.md`.
+  linked from `../../roadmap.md`.
 - Each milestone describes the complete outcomes required to finish its phase;
   it does not own canonical product, security, or technical decisions.
 - The parent roadmap owns phase order and the MVP boundary. Canonical documents
@@ -40,12 +40,12 @@ Use this section as the source of truth for what assets belong in this directory
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the
-  repository-root `AGENTS.md`.
-- Read `../roadmap.md` to identify the milestone's phase and parent index entry
+- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
+  and the repository-root `AGENTS.md`.
+- Read `../../roadmap.md` to identify the milestone's phase and parent index entry
   before changing its goals.
 - Keep changes focused on the affected milestone. When a milestone is added,
-  removed, moved, or renamed, update `../roadmap.md` and the applicable parent
+  removed, moved, or renamed, update `../../roadmap.md` and the applicable parent
   asset inventories in the same change.
 - Record every desired completion outcome, including capabilities, limits,
   protections, and safe failure or rejection behavior; do not replace those
@@ -72,7 +72,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Preserve a final `## Related Documents` section with non-numbered links to
   existing repository-relative canonical documents; update it when referenced
   documentation changes.
-- Use the canonical names from `../glossary.md` and format their first
+- Use the canonical names from `../../glossary.md` and format their first
   substantive use in a section as bold glossary links.
 - Link to canonical documents rather than restating settled product, security,
   or technical decisions in a milestone.

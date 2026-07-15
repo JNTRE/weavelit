@@ -12,7 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - `docs/` owns the canonical product and architecture documentation for Weavelit.
 - This guide covers documentation workflow and document boundaries, not implementation-specific rules that do not yet exist in this repository.
-- Child guides in `client-modules/`, `clients/`, `containers/`, `log-modules/`, `mfa-modules/`, `roadmap/`, `server/`, and `service-modules/` own their respective connection, client-application, container-image, log-storage and delivery, MFA-method, milestone, server-design, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
+- Child guides in `client-modules/`, `clients/`, `containers/`, `log-modules/`, `mfa-modules/`, `plan/`, `server/`, and `service-modules/` own their respective connection, client-application, container-image, log-storage and delivery, MFA-method, planning, server-design, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
 
 ## Asset Inventory
 
@@ -27,7 +27,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Core Statements, Glossary, or an architecture decision record.
-- `roadmap/`: Individually maintained milestone outcome documents indexed by `roadmap.md`.
+- `plan/`: Planning documentation, including individually maintained milestone outcome documents indexed by `roadmap.md`.
 - `roadmap.md`: Delivery-phase index and completion guidance for the milestone documents; canonical documents supply the product, security, and technical direction for their goals.
 - `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.

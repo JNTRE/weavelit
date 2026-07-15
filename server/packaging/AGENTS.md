@@ -25,7 +25,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../docs/roadmap/milestone-8.md` and the relevant Server requirements before changing package behavior.
+- Read `../../docs/plan/roadmap/milestone-8.md` and the relevant Server requirements before changing package behavior.
 - Keep packaging assets separate from application source and test package behavior in a production-like environment when packaging is introduced.
 - Record release build, installation, initialization, verification, and troubleshooting instructions with the packaged workflow.
 
