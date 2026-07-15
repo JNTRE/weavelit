@@ -1,35 +1,32 @@
-# Planning Documentation Agent Guide
+# Issue Planning Agent Guide
 
-This directory organizes Weavelit's delivery-planning documentation. It keeps
-the delivery-phase index, milestone outcomes, and the high-level issue view in
-a dedicated planning boundary.
+This directory holds the high-level view of open Weavelit GitHub issues and
+their GitHub Project planning metadata. It provides a reviewable snapshot of
+planned work without replacing GitHub as the live source of truth.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns documentation organized around delivery planning and milestone outcomes.
-- It does not own canonical product, security, or technical decisions; those remain in the top-level documents under `docs/`.
-- The `issues/` and `milestones/` child directories own the open-issue overview and milestone documents, respectively.
+- This directory owns the maintained overview of open issues in [JNTRE/weavelit](https://github.com/JNTRE/weavelit/issues).
+- It does not own live issue state, relationships, milestones, or project fields; GitHub owns those records.
+- `issues.md` defines the standard issue-summary format and current open-issue snapshot.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing, inventory, and planning-documentation boundary rules.
-- `issues/`: High-level documentation of open GitHub issues and their project-planning metadata.
-- `milestones.md`: Delivery-phase index and completion guidance for the milestone documents; canonical documents supply the product, security, and technical direction for their goals.
-- `milestones/`: Individually maintained milestone outcome documents indexed by `milestones.md`.
+- `AGENTS.md`: Local workflow, inventory, and issue-summary maintenance rules.
+- `issues.md`: High-level open-issue overview, planning metadata, and demonstration entry.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `issues/issues.md` before changing how open work is summarized or mapped to GitHub Project metadata.
-- Read `milestones.md` before changing milestone organization or delivery-phase alignment.
-- Keep planning outcomes aligned with canonical documents for settled product, security, and technical decisions instead of redefining those decisions.
-- Place milestone-specific guidance and outcome documents in `milestones/`.
+- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- Refresh issue records from the repository issue tracker, GitHub Milestones, and the Weavelit GitHub Project in the same update.
+- Include each open repository issue exactly once and summarize its stated outcome or decision without replacing its acceptance criteria.
+- Treat demonstration entries as documentation examples only; do not create a GitHub issue without explicit approval.
 
 ## Standards and Conventions
 
@@ -41,7 +38,9 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
 - Keep the required heading order and keep this guide under 100 lines.
-- Use exact canonical names from `../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
+- Preserve the standard record fields in `issues.md`; write `Not assigned` when GitHub has no value rather than inferring one.
+- Order an epic before its child issues, then order siblings by issue number.
+- Record activity dates as `YYYY-MM-DD`.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
