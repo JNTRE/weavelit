@@ -1,9 +1,5 @@
 # Milestone 1: Core Server Application
 
-## GitHub Milestone
-
-Implementation progress is tracked in [GitHub Milestone 1](https://github.com/JNTRE/weavelit/milestone/1). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
-
 ## Goals
 
 - [ ] A **[Host Administrator](../glossary.md#identities-and-access)** can use the **[Admin CLI](../glossary.md#applications-and-interfaces)** to complete **[Init](../glossary.md#states-and-requests)** interactively or from an explicit non-interactive bootstrap configuration file, create the **[Administrators Group](../glossary.md#identities-and-access)**, create the first local **[Human User](../glossary.md#identities-and-access)** without MFA enrollment, and add that user to the Administrators Group.
@@ -24,6 +20,10 @@ Implementation progress is tracked in [GitHub Milestone 1](https://github.com/JN
 - [ ] **[Init](../glossary.md#states-and-requests)** generates and uses a self-signed TLS certificate by default.
 - [ ] One configured HTTPS listener serves both the **[Web UI](../glossary.md#applications-and-interfaces)** browser routes and authenticated `/api/v1/` routes.
 - [ ] A developer can use a documented process to build and use an OCI-compliant development image to build, run, test, and restart the Weavelit Server without installing Rust on the host. The development environment receives non-secret configuration through environment variables, mounts bootstrap secrets as local files, and preserves Server state in an explicitly managed development volume.
+
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 1](https://github.com/JNTRE/weavelit/milestone/1). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
 
 ## Related Documents
 

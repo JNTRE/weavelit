@@ -1,9 +1,5 @@
 # Milestone 4: Service Module - Zendesk
 
-## GitHub Milestone
-
-Implementation progress is tracked in [GitHub Milestone 4](https://github.com/JNTRE/weavelit/milestone/4). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
-
 ## Goals
 
 - [ ] The Zendesk **[Service Module](../glossary.md#applications-and-interfaces)** declares one supported **[Service Connection](../glossary.md#applications-and-interfaces)** type and its setup workflow, and can use a configured connection of that type with Zendesk.
@@ -15,6 +11,10 @@ Implementation progress is tracked in [GitHub Milestone 4](https://github.com/JN
 - [ ] Each supported Zendesk Operation sends the appropriate Zendesk API request and returns a structured success or failure result.
 - [ ] Zendesk credentials remain server-owned and are never exposed in client results or audit records.
 - [ ] Successful and failed Zendesk Operations produce the required Server audit records.
+
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 4](https://github.com/JNTRE/weavelit/milestone/4). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
 
 ## Related Documents
 

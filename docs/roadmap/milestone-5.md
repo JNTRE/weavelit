@@ -1,9 +1,5 @@
 # Milestone 5: Web UI - Admin and User Self-Service
 
-## GitHub Milestone
-
-Implementation progress is tracked in [GitHub Milestone 5](https://github.com/JNTRE/weavelit/milestone/5). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
-
 ## Goals
 
 - [ ] The Web UI uses project-local, version-pinned ESLint and Prettier configurations for its TypeScript and React source, with npm scripts that let contributors lint, check formatting, and apply formatting locally.
@@ -27,6 +23,10 @@ Implementation progress is tracked in [GitHub Milestone 5](https://github.com/JN
 - [ ] An Administrator can create **[Groups](../glossary.md#identities-and-access)** and add Human Users to one or more Groups.
 - [ ] An Administrator can configure a Group's grants to Client Modules, Service Modules, named Operations, and the **[Server Administration Permission](../glossary.md#identities-and-access)**.
 - [ ] An Administrator can configure the **[Weavelit Server](../glossary.md#applications-and-interfaces)** web listener IP address and port through the Web UI.
+
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 5](https://github.com/JNTRE/weavelit/milestone/5). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
 
 ## Related Documents
 

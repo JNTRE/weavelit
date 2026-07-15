@@ -1,9 +1,5 @@
 # Milestone 8: MVP Package Build and Validation
 
-## GitHub Milestone
-
-Implementation progress is tracked in [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
-
 ## Goals
 
 - [ ] A versioned `.deb` package installs the **[Weavelit Server](../glossary.md#applications-and-interfaces)**, Web UI assets, and Admin CLI on Ubuntu 26.04 LTS `amd64` without requiring Rust, source code, or development tooling on the host.
@@ -12,6 +8,10 @@ Implementation progress is tracked in [GitHub Milestone 8](https://github.com/JN
 - [ ] A versioned **[Weavelit CLI](../glossary.md#applications-and-interfaces)** artifact for macOS 26 and later on Apple Silicon (`arm64`) can be installed without Rust, source code, or provider credentials.
 - [ ] An installed Weavelit CLI can authenticate to the installed Weavelit Server and invoke a permitted supported Operation through `/api/v1/`.
 - [ ] The release artifacts and their supported platform requirements have documented build, installation, initialization, verification, and troubleshooting instructions.
+
+## GitHub Milestone
+
+Implementation progress is tracked in [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8). Keep that GitHub Milestone aligned with this canonical document when this milestone's title, goals, or scope changes.
 
 ## Related Documents
 
