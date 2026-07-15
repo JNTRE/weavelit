@@ -9,37 +9,59 @@ body:
   - type: textarea
     id: outcome
     attributes:
-      label: Intended outcome
+      label: Outcome
       description: Describe the capability and why it is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Explain the user, operational, architectural, or product need that motivates this feature.
     validations:
       required: true
   - type: textarea
     id: scope
     attributes:
-      label: Scope and exclusions
-      description: Identify the expected behavior, affected interfaces, and explicit non-goals.
+      label: Scope
+      description: List expected behavior, affected interfaces, and explicit non-goals.
+      value: |
+        -
     validations:
       required: true
   - type: textarea
     id: acceptance-criteria
     attributes:
-      label: Acceptance criteria
+      label: Acceptance Criteria
       description: List the observable conditions that must hold for the feature to be complete.
       value: |
         - [ ]
     validations:
       required: true
   - type: textarea
-    id: constraints
+    id: test-evidence
     attributes:
-      label: Constraints and dependencies
-      description: Identify relevant security, compatibility, operational, or architectural constraints and related work. Write "None" when there are none.
+      label: Test Evidence
+      description: List the focused automated checks and any necessary manual verification.
+      value: |
+        -
     validations:
       required: true
   - type: textarea
-    id: validation
+    id: dependencies
     attributes:
-      label: Validation
-      description: State the automated checks and any required manual verification.
+      label: Dependencies
+      description: Link blocking decisions, related issues, or external constraints. Write "None" when there are none.
+      value: |
+        -
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link the canonical documents, roadmap outcomes, or related issues that define this feature. Write "None" when there are no references.
+      value: |
+        -
     validations:
       required: true

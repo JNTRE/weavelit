@@ -9,37 +9,52 @@ body:
   - type: textarea
     id: outcome
     attributes:
-      label: Intended outcome
+      label: Outcome
       description: State the concrete result this work must produce.
     validations:
       required: true
   - type: textarea
     id: scope
     attributes:
-      label: Implementation scope
-      description: Identify the affected packages, modules, interfaces, and any important exclusions.
+      label: Scope
+      description: List the affected packages, modules, interfaces, and important exclusions.
+      value: |
+        -
     validations:
       required: true
   - type: textarea
     id: acceptance-criteria
     attributes:
-      label: Acceptance criteria
+      label: Acceptance Criteria
       description: List the observable conditions that must hold when the task is complete.
       value: |
         - [ ]
     validations:
       required: true
   - type: textarea
-    id: validation
+    id: test-evidence
     attributes:
-      label: Validation
-      description: State the focused automated checks and any necessary manual verification.
+      label: Test Evidence
+      description: List the focused automated checks and any necessary manual verification.
+      value: |
+        -
     validations:
       required: true
   - type: textarea
     id: dependencies
     attributes:
-      label: Dependencies and relationships
+      label: Dependencies
       description: Link blocking decisions, related issues, or external constraints. Write "None" when there are none.
+      value: |
+        -
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link the canonical documents, roadmap outcomes, or related issues that define this task. Write "None" when there are no references.
+      value: |
+        -
     validations:
       required: true

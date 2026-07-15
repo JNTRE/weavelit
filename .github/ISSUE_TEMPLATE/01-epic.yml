@@ -9,28 +9,43 @@ body:
   - type: textarea
     id: outcome
     attributes:
-      label: Intended outcome
+      label: Outcome
       description: State the user, operational, or architectural outcome this epic delivers.
     validations:
       required: true
   - type: textarea
     id: scope
     attributes:
-      label: Scope and boundaries
-      description: Identify what belongs in this epic and what is explicitly out of scope.
+      label: Scope
+      description: List the decisions, work, or boundaries that belong in this epic.
+      value: |
+        -
     validations:
       required: true
   - type: textarea
-    id: child-issues
+    id: completion-criteria
     attributes:
-      label: Planned child issues
-      description: List the decision, task, feature, bug, or risk issues that must be created or linked. Include ordering or dependencies where known.
+      label: Completion Criteria
+      description: List the observable conditions that must hold before this epic can close.
+      value: |
+        - [ ]
     validations:
       required: true
   - type: textarea
-    id: completion-evidence
+    id: out-of-scope
     attributes:
-      label: Completion evidence
-      description: Describe the observable result that demonstrates the epic is complete.
+      label: Out Of Scope
+      description: List work that is intentionally excluded from this epic. Write "None" when there are no exclusions.
+      value: |
+        -
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link the canonical documents, roadmap outcomes, or related issues that define this epic. Write "None" when there are no references.
+      value: |
+        -
     validations:
       required: true

@@ -14,34 +14,63 @@ body:
     validations:
       required: true
   - type: textarea
-    id: expected-behavior
+    id: context
     attributes:
-      label: Expected behavior
-      description: State the intended behavior or contractual expectation.
-    validations:
-      required: true
-  - type: textarea
-    id: reproduction
-    attributes:
-      label: Reproduction steps
-      description: Provide the smallest reliable sequence that demonstrates the problem.
+      label: Context
+      description: State the expected behavior, affected environment, reproduction steps, and relevant evidence. Redact secrets.
       value: |
+        Expected behavior:
+
+        Reproduction steps:
         1.
         2.
         3.
+
+        Environment and evidence:
     validations:
       required: true
   - type: textarea
-    id: environment
+    id: scope
     attributes:
-      label: Environment and evidence
-      description: Include relevant versions, configuration, logs, screenshots, or other evidence. Redact secrets.
+      label: Scope
+      description: List the affected packages, modules, interfaces, and important exclusions.
+      value: |
+        -
     validations:
       required: true
   - type: textarea
-    id: validation
+    id: acceptance-criteria
     attributes:
-      label: Regression validation
-      description: State the test or other evidence that will demonstrate the defect is fixed and remains fixed.
+      label: Acceptance Criteria
+      description: List the observable conditions that demonstrate the defect is resolved.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: test-evidence
+    attributes:
+      label: Test Evidence
+      description: State the regression test or other evidence that demonstrates the defect is fixed and remains fixed.
+      value: |
+        -
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Link blocking decisions, related issues, or external constraints. Write "None" when there are none.
+      value: |
+        -
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link the canonical documents, relevant logs, or related issues. Write "None" when there are no references.
+      value: |
+        -
     validations:
       required: true
