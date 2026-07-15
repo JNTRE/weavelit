@@ -27,7 +27,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read the nearest `AGENTS.md`, then this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
+- Before editing this directory, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Keep shared Server design documentation directly in this folder; place boundary-specific detail in its appropriate child directory.
 - Update `../core-statements.md` for settled commitments and `../open-questions.md` for unresolved choices instead of treating local design documentation as their replacement.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.

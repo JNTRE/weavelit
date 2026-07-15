@@ -19,7 +19,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing and documentation-maintenance rules.
-- Canonical documentation: Production OCI image contract.
+- `production-container-design.md`: Canonical production OCI image contract.
 
 ## Usage Guidance
 

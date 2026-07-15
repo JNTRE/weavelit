@@ -16,7 +16,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server authorization.
-- Canonical documentation: Implementation design for Server authorization.
+- `authorization-design.md`: Canonical implementation design for Server authorization.
 
 ## Usage Guidance
 

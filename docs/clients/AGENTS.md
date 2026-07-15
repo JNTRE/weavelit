@@ -23,7 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read the nearest `AGENTS.md`, then this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
+- Before editing this directory, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Place documentation shared by client applications and adapters directly in this folder; place component-specific detail in its child directory.
 - Preserve the future-only status of `mcp/`; do not add implementation artifacts or describe it as currently supported.
 - Use `../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.

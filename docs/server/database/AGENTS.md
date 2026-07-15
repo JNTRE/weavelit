@@ -22,7 +22,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Application Database.
-- Canonical documentation: Shared Application Database backend-contract and backup-recovery design.
+- `application-database-design.md`: Shared Application Database backend-contract and backup-recovery design.
 - `sqlite/`: Documentation boundary for the MVP SQLite Application Database backend.
 
 ## Usage Guidance
