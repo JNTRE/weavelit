@@ -8,7 +8,7 @@
 
 ## Related Documents
 
-- [Roadmap](../../roadmap.md)
+- [Roadmap](../milestones.md)
 - [Vision](../../vision.md)
 - [Core Statements](../../core-statements.md)
 - [Security Model](../../security-model.md)

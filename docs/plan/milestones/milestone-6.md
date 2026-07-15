@@ -16,7 +16,7 @@ Implementation progress is tracked in [GitHub Milestone 6](https://github.com/JN
 
 ## Related Documents
 
-- [Roadmap](../../roadmap.md)
+- [Roadmap](../milestones.md)
 - [Vision](../../vision.md)
 - [Core Statements](../../core-statements.md)
 - [Security Model](../../security-model.md)
