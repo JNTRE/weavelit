@@ -10,7 +10,7 @@ provider credentials, provider integrations, or Server administration.
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns Weavelit CLI source, tests, and macOS release packaging.
-- It does not own the server-side Weavelit CLI Client Module; that belongs in the corresponding Server Client Module crate.
+- It does not own the server-side Weavelit CLI Client Module; that belongs in `../server/crates/modules/client/weavelit-cli/`.
 - It does not own provider integration, provider credentials, or administrative functions; those remain Weavelit Server responsibilities.
 
 ## Asset Inventory
