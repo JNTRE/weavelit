@@ -6,13 +6,13 @@ An AI agent service gateway
 
 The repository contains two separately packaged applications. The `server/`
 directory owns the Weavelit Server, its compiled-in modules, the Admin CLI, the
-Web UI source, tests, and Debian packaging. The Weavelit CLI source tree owns
+Web UI source, tests, and Debian packaging. The `weavelit-cli/` directory owns
 the separately packaged macOS client application.
 
 - `server/crates/`: Rust Server, Admin CLI, Application Database backend, and compiled-in Client, MFA, Log, and Service Module crates.
 - `server/web-ui/`: Web UI source built into the Server package.
 - `server/tests/`: Server-focused integration and end-to-end tests.
 - `server/packaging/deb/`: Debian package assets for the Server release.
-- `Weavelit CLI source`: Application source.
-- `Weavelit CLI tests`: Focused application tests.
-- `Weavelit CLI macOS packaging`: macOS `arm64` release packaging assets.
+- `weavelit-cli/src/`: Weavelit CLI source.
+- `weavelit-cli/tests/`: Weavelit CLI tests.
+- `weavelit-cli/packaging/macos/`: macOS `arm64` release packaging assets.
