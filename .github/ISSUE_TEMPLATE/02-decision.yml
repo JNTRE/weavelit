@@ -1,0 +1,43 @@
+name: Decision
+description: Resolve a bounded question with a documented conclusion.
+type: Decision
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a descriptive title without a "Decision:" prefix. After creation, add the relevant component labels, Priority value, milestone, and parent epic.
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision to make
+      description: State the bounded question and the decision that this issue must produce.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and constraints
+      description: Identify the relevant product, technical, security, operational, or compatibility constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options and tradeoffs
+      description: List viable options and the meaningful advantages, costs, or risks of each.
+    validations:
+      required: true
+  - type: textarea
+    id: decision-criteria
+    attributes:
+      label: Decision criteria
+      description: State how the options will be evaluated and what evidence is needed to conclude the decision.
+    validations:
+      required: true
+  - type: textarea
+    id: documentation-impact
+    attributes:
+      label: Documentation and follow-up impact
+      description: Name the canonical document to update and the follow-up issues that the conclusion may create or unblock.
+    validations:
+      required: true

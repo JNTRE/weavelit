@@ -1,0 +1,45 @@
+name: Feature
+description: Propose new functionality with clear scope and acceptance criteria.
+type: Feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a descriptive title without a "Feature:" prefix. After creation, add the relevant component labels, Priority value, milestone, and parent epic.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Intended outcome
+      description: Describe the capability and why it is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and exclusions
+      description: Identify the expected behavior, affected interfaces, and explicit non-goals.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: List the observable conditions that must hold for the feature to be complete.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and dependencies
+      description: Identify relevant security, compatibility, operational, or architectural constraints and related work. Write "None" when there are none.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: State the automated checks and any required manual verification.
+    validations:
+      required: true

@@ -1,0 +1,36 @@
+name: Epic
+description: Define a cohesive outcome that organizes related issues.
+type: Epic
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a descriptive title without an "Epic:" prefix. After creation, add the relevant component labels, Priority value, milestone, and child issues.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Intended outcome
+      description: State the user, operational, or architectural outcome this epic delivers.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and boundaries
+      description: Identify what belongs in this epic and what is explicitly out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: child-issues
+    attributes:
+      label: Planned child issues
+      description: List the decision, task, feature, bug, or risk issues that must be created or linked. Include ordering or dependencies where known.
+    validations:
+      required: true
+  - type: textarea
+    id: completion-evidence
+    attributes:
+      label: Completion evidence
+      description: Describe the observable result that demonstrates the epic is complete.
+    validations:
+      required: true

@@ -1,11 +1,27 @@
 # Open Issue Overview
 
-This document is a high-level snapshot of open issues in the
-[Weavelit issue tracker](https://github.com/JNTRE/weavelit/issues) and their
-planning metadata in the
-[Weavelit GitHub Project](https://github.com/orgs/JNTRE/projects/1/views/1).
-GitHub remains the source of truth for live issue state, relationships,
-milestones, and project fields.
+> [!INFO]
+> This document is a high-level snapshot of open issues in the
+> [Weavelit issue tracker](https://github.com/JNTRE/weavelit/issues) and their
+> planning metadata in the
+> [Weavelit GitHub Project](https://github.com/orgs/JNTRE/projects/1/views/1).
+> GitHub remains the source of truth for live issue state, relationships,
+> milestones, and project fields.
+>
+> Refresh this snapshot from all three GitHub planning layers: repository
+> issues, GitHub Milestones, and the Weavelit GitHub Project. Add newly opened
+> issues, remove closed issues, and update changed metadata and summaries.
+> Preserve `Not assigned` for empty fields and do not infer project metadata
+> from titles or issue bodies.
+>
+> Create every new issue through the repository's Issue Form that matches its
+> native GitHub issue type. Use a blank issue only when a maintainer has a
+> specific exceptional need that no available form can represent. Each form
+> assigns its native GitHub issue type and collects the specification appropriate
+> to that type. After creation, assign the applicable repository component
+> labels, `Priority` value, GitHub Milestone, Project status, and issue
+> relationships; do not recreate retired Project fields for type, area, delivery
+> priority, size, or estimate.
 
 ## Standard Record Format
 
@@ -124,14 +140,6 @@ routine metadata update to the affected issue's record.
 | Project | Priority | `next` |
 | Issue | Type | `task` |
 | Issue | Label | `server core` |
-
-## Maintenance
-
-Refresh this snapshot from all three GitHub planning layers: repository issues,
-GitHub Milestones, and the Weavelit GitHub Project. Add newly opened issues,
-remove closed issues, and update changed metadata and summaries. Preserve
-`Not assigned` for empty fields and do not infer project metadata from titles or
-issue bodies.
 
 ## Related Documents
 

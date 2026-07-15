@@ -1,0 +1,45 @@
+name: Task
+description: Define a specific piece of implementation or maintenance work.
+type: Task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a descriptive title without a "Task:" prefix. After creation, add the relevant component labels, Priority value, milestone, and parent epic.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Intended outcome
+      description: State the concrete result this work must produce.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Implementation scope
+      description: Identify the affected packages, modules, interfaces, and any important exclusions.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: List the observable conditions that must hold when the task is complete.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: State the focused automated checks and any necessary manual verification.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and relationships
+      description: Link blocking decisions, related issues, or external constraints. Write "None" when there are none.
+    validations:
+      required: true

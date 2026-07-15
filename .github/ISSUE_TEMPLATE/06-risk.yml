@@ -1,0 +1,43 @@
+name: Risk
+description: Record an uncertainty that needs monitoring or mitigation.
+type: Risk
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a descriptive title without a "Risk:" prefix. After creation, add the relevant component labels, Priority value, milestone, and parent epic when applicable.
+  - type: textarea
+    id: risk
+    attributes:
+      label: Risk statement
+      description: State the uncertainty, the event that could occur, and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: triggers
+    attributes:
+      label: Triggers and evidence
+      description: Identify the conditions, indicators, or assumptions that would show the risk is materializing.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Potential impact
+      description: Describe the likely product, security, operational, delivery, or maintenance consequences.
+    validations:
+      required: true
+  - type: textarea
+    id: response
+    attributes:
+      label: Mitigation and response
+      description: Describe preventive work, contingency action, and any decision or task needed to reduce the risk.
+    validations:
+      required: true
+  - type: textarea
+    id: monitoring
+    attributes:
+      label: Monitoring and exit criteria
+      description: State who or what will monitor the risk and what evidence will allow it to be closed or downgraded.
+    validations:
+      required: true
