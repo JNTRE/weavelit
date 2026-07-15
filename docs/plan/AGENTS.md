@@ -11,6 +11,7 @@ Use this section to understand what this directory owns, what it does not own, a
 - This directory owns documentation organized around delivery planning and milestone outcomes.
 - It does not own canonical product, security, or technical decisions; those remain in the top-level documents under `docs/`.
 - The `issues/` and `milestones/` child directories own the open-issue overview and milestone documents, respectively.
+- The `project/` child directory owns the reference for active GitHub issue metadata and Project workflow values.
 
 ## Asset Inventory
 
@@ -19,6 +20,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and planning-documentation boundary rules.
 - `issues/`: High-level documentation of open GitHub issues and their project-planning metadata.
 - `milestones/`: Individually maintained milestone outcome documents. Each records every desired capability, limit, protection, and safe failure or rejection behavior required to complete its delivery stage; a milestone is complete only when every recorded outcome is implemented and verified according to the [Testing and Validation Policy](../testing.md).
+- `project/`: GitHub issue-metadata and Project workflow standards; follow `project/AGENTS.md` before editing this boundary.
 
 ## Usage Guidance
 
@@ -27,6 +29,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Read `issues/issues.md` before changing how open work is summarized or mapped to GitHub Project metadata.
 - Read the affected document in `milestones/` before changing its outcomes. Keep milestones aligned with canonical documents for settled product, security, and technical decisions; unresolved choices remain in [Open Questions](../open-questions.md).
+- Read `project/AGENTS.md` and `project/issue-standards.md` before changing documented GitHub issue metadata or Project workflow values.
 - Keep planning outcomes aligned with canonical documents for settled product, security, and technical decisions instead of redefining those decisions.
 - Place milestone-specific guidance and outcome documents in `milestones/`.
 

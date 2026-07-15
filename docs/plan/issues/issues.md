@@ -18,10 +18,10 @@
 > native GitHub issue type. Use a blank issue only when a maintainer has a
 > specific exceptional need that no available form can represent. Each form
 > assigns its native GitHub issue type and collects the documentation appropriate
-> to that type. After creation, assign the applicable repository component
-> labels, `Priority` value, GitHub Milestone, Project status, and issue
-> relationships; do not recreate retired Project fields for type, area, delivery
-> priority, size, or estimate.
+> to that type. After creation, assign the applicable repository component labels,
+> `Priority` value, GitHub Milestone, Project status, and issue relationships. Do
+> not recreate retired Project fields for type, area, delivery priority, size, or
+> estimate. See the [GitHub Project and Issue Standards](../project/issue-standards.md).
 
 ## Standard Record Format
 
@@ -32,8 +32,8 @@ routine metadata update to the affected issue's record.
 - The linked heading records the issue number, name, and canonical issue link.
 - `Summary` states the intended outcome or decision at a high level.
 - `Related` records the related epic and GitHub Milestone.
-- `Project` records GitHub Project board status and priority.
-- `Issue` records type and label.
+- `Project` records GitHub Project board status.
+- `Issue` records type, label, and priority.
 
 ## Open Issues
 
@@ -46,7 +46,7 @@ routine metadata update to the affected issue's record.
 | Related | Related epic | [#4 Server architecture and dependency baseline](https://github.com/JNTRE/weavelit/issues/4) |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 | Project | Board | `backlog` |
-| Project | Priority | `next` |
+| Issue | Priority | `next` |
 | Issue | Type | `task` |
 | Issue | Label | `documentation` |
 
@@ -59,7 +59,7 @@ routine metadata update to the affected issue's record.
 | Related | Related epic | This issue is the epic |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 | Project | Board | `backlog` |
-| Project | Priority | `next` |
+| Issue | Priority | `next` |
 | Issue | Type | `epic` |
 | Issue | Label | `server core` |
 
@@ -72,7 +72,7 @@ routine metadata update to the affected issue's record.
 | Related | Related epic | [#4 Server architecture and dependency baseline](https://github.com/JNTRE/weavelit/issues/4) |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 | Project | Board | `backlog` |
-| Project | Priority | `next` |
+| Issue | Priority | `next` |
 | Issue | Type | `decision` |
 | Issue | Label | `server core` |
 
@@ -85,7 +85,7 @@ routine metadata update to the affected issue's record.
 | Related | Related epic | [#4 Server architecture and dependency baseline](https://github.com/JNTRE/weavelit/issues/4) |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 | Project | Board | `backlog` |
-| Project | Priority | `next` |
+| Issue | Priority | `next` |
 | Issue | Type | `decision` |
 | Issue | Label | `database module` |
 
@@ -98,7 +98,7 @@ routine metadata update to the affected issue's record.
 | Related | Related epic | [#4 Server architecture and dependency baseline](https://github.com/JNTRE/weavelit/issues/4) |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 | Project | Board | `backlog` |
-| Project | Priority | `next` |
+| Issue | Priority | `next` |
 | Issue | Type | `decision` |
 | Issue | Label | `server core` |
 
@@ -111,7 +111,7 @@ routine metadata update to the affected issue's record.
 | Related | Related epic | [#4 Server architecture and dependency baseline](https://github.com/JNTRE/weavelit/issues/4) |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 | Project | Board | `backlog` |
-| Project | Priority | `next` |
+| Issue | Priority | `next` |
 | Issue | Type | `task` |
 | Issue | Label | `database module` |
 
@@ -124,7 +124,7 @@ routine metadata update to the affected issue's record.
 | Related | Related epic | [#4 Server architecture and dependency baseline](https://github.com/JNTRE/weavelit/issues/4) |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 | Project | Board | `backlog` |
-| Project | Priority | `next` |
+| Issue | Priority | `next` |
 | Issue | Type | `task` |
 | Issue | Label | `database module` |
 
@@ -137,11 +137,12 @@ routine metadata update to the affected issue's record.
 | Related | Related epic | [#4 Server architecture and dependency baseline](https://github.com/JNTRE/weavelit/issues/4) |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 | Project | Board | `backlog` |
-| Project | Priority | `next` |
+| Issue | Priority | `next` |
 | Issue | Type | `task` |
 | Issue | Label | `server core` |
 
 ## Related Documents
 
+- [GitHub Project and Issue Standards](../project/issue-standards.md)
 - [Milestone 1 Outcomes](../milestones/milestone-1.md)
 - [Testing and Validation Policy](../../testing.md)
