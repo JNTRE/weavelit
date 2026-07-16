@@ -98,11 +98,12 @@ test coverage.
 Released crates.io packages are the normal production source. Local paths are
 reserved for internal workspace members; third-party code is not vendored into
 the workspace. Alternate registries are prohibited unless explicitly approved.
-A Git dependency, unpublished fork, or non-registry package resolved in
-`Cargo.lock` is a temporary exception requiring an immutable full commit
-revision, its source and replacement rationale, a named owner, and a removal
-condition or follow-on issue. It receives the same approval and validation
-evidence as a released package.
+A third-party Git dependency, unpublished fork, or package from another
+non-registry source resolved in `server/Cargo.lock` is a temporary exception.
+It requires an immutable full commit revision where applicable, its source and
+replacement rationale, a named owner, and a removal condition or follow-on
+issue. It receives the same approval and validation evidence as a released
+package. Internal workspace members are not exceptions.
 
 | Package | Source and version | Owning crate | Behavior | Enabled features and security baseline |
 | --- | --- | --- | --- | --- |
