@@ -27,13 +27,15 @@
 
 Each open issue uses an issue-centered record instead of a wide table. This
 keeps summaries readable, accommodates optional project fields, and limits a
-routine metadata update to the affected issue's record.
+routine metadata update to the affected issue's record. Every issue must retain
+the example's heading, summary, and grouped-table layout. Include only rows for
+applicable metadata fields; do not add or restructure record fields.
 
 - The linked heading records the issue number, name, and canonical issue link.
 - `Summary` states the intended outcome or decision at a high level.
-- `Related` records the related epic and GitHub Milestone.
-- `Project` records GitHub Project board status.
-- `Issue` records type, label, and priority.
+- `Related` rows record the related epic and GitHub Milestone when applicable.
+- `Project` rows record GitHub Project board status when applicable.
+- `Issue` rows record type, label, and priority when applicable.
 
 ## Open Issues
 
@@ -65,7 +67,10 @@ routine metadata update to the affected issue's record.
 
 ### [#5 Define Rust workspace dependency policy](https://github.com/JNTRE/weavelit/issues/5)
 
-**Summary:** Decide how the Server Rust workspace centralizes dependency versions, constrains crate-specific features, maintains its lockfile, and justifies production dependencies before additional internal crates are introduced.
+**Summary:** Define the Server Rust workspace dependency policy for shared
+versions, crate-specific features, lockfile maintenance, production-dependency
+approval, and source exceptions. The settled policy is recorded in the
+[Server Architecture Design](../../server/server-architecture-design.md).
 
 | Group | Field | Value |
 | --- | --- | --- |

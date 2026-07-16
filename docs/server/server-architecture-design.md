@@ -66,7 +66,89 @@ A shared Server crate boundary must not erase the distinction between product
 concepts. In particular, an Application Database backend is not a runtime
 module. Application Database persistence remains separate from every
 **[Log Module](../glossary.md#applications-and-interfaces)** destination even
-when their implementations use the same technology.
+when their implementations use the same technology. They may use the same
+approved workspace dependency without sharing persistence behavior.
+
+## Rust Workspace Dependency Policy
+
+`server/Cargo.toml` is the Server Rust workspace manifest and the authority for
+workspace-wide dependency governance. This policy applies to every direct
+production dependency in that workspace.
+
+### Approved Production Dependencies
+
+This document is the stable record of approved direct production dependencies
+for the Server Rust workspace. It does not list transitive dependencies;
+`server/Cargo.lock` is the authoritative resolved record for those packages.
+Update this registry in the same change that adds, removes, upgrades, or
+materially reconfigures a direct production dependency.
+
+Do not pre-approve cross-cutting dependencies. Select and document a dependency
+only when a named Milestone behavior requires it and an owning crate is known.
+
+Before approval, each dependency record must identify the Milestone behavior it
+enables, its owning crate, its package source and declared version, the minimal
+enabled feature set, and why the standard library or an approved dependency is
+insufficient. It must also record maintenance and license compatibility
+evidence, plus the focused and locked-workspace validation performed.
+Security-sensitive dependencies additionally record the security property they
+provide, the enabled capabilities or backend choices relevant to that property,
+applicable advisory-review evidence, and safe-failure test coverage.
+
+Released crates.io packages are the normal production source. Local paths are
+reserved for internal workspace members; third-party code is not vendored into
+the workspace. Alternate registries are prohibited unless explicitly approved.
+A third-party Git dependency, unpublished fork, or package from another
+non-registry source in `server/Cargo.lock` is a temporary exception, whether a
+direct production dependency selects it or it is introduced transitively. It
+requires an immutable full commit revision where applicable, its source and
+replacement rationale, a named owner, and a removal condition or follow-on
+issue. It receives the same approval and validation evidence as a released
+package. Internal workspace members are not exceptions.
+
+No production dependencies are currently approved.
+
+### Planned Production Dependency Candidates
+
+The following candidates are selected for a documented future behavior but are
+not approved production dependencies. A candidate does not authorize adding a
+dependency. The implementation change must declare an exact version and move
+the candidate to the approved registry with all required approval and
+validation evidence.
+
+| Package | Intended source | Owning crate | Planned behavior | Intended features and security baseline |
+| --- | --- | --- | --- | --- |
+| `rusqlite` | crates.io | `weavelit-server-database-sqlite` | Milestone 1 SQLite Application Database backend | `bundled`; do not enable runtime SQLite extension loading; select only additional features required by the backend |
+
+The workspace manifest owns an approved shared dependency's identity, version,
+source, and any workspace-wide security baseline. A single-consumer dependency
+remains in its owning crate manifest. When a second workspace crate requires
+the same package, that change promotes its shared configuration to
+`[workspace.dependencies]`.
+
+### Shared Dependency Versions And Features
+
+Each consuming crate explicitly declares only the minimal features needed for
+its behavior. The approval record states whether default features are enabled;
+when the upstream package supports it and required behavior permits, use
+`default-features = false` and opt into named features instead. Review every
+enabled feature as part of the dependency change because Cargo unifies features
+across workspace consumers.
+
+### Dependency Resolution And Updates
+
+Commit `server/Cargo.lock` as Cargo-generated output and never edit it by hand.
+A dependency manifest change that changes resolution includes the resulting
+lockfile update in the same change. Normal updates are targeted with Cargo and
+reviewed for all resolved package, version, and source changes. A broad update
+is a separately described dependency-maintenance change, not incidental feature
+work.
+
+Run the locked workspace validation required by the
+[Testing and Validation Policy](../testing.md) for every dependency-resolution
+change. A security update may be expedited, but its record identifies the
+advisory or upstream notice, resolved version, affected behavior, lockfile
+impact, and validation performed.
 
 ## Related Documents
 
