@@ -23,7 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read the nearest `AGENTS.md`, then this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
+- Before editing this directory, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Place documentation shared by client applications and adapters directly in this folder; place component-specific detail in its child directory.
 - Preserve the future-only status of `mcp/`; do not add implementation artifacts or describe it as currently supported.
 - Use `../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
@@ -34,10 +34,11 @@ Follow this section for workflow, sequencing, and decision order when making cha
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
-- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
+- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Every change must include an update to its relevant documentation under `docs/` in the same change.
+- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
+- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
 - Keep server-side Client Module design in `../client-modules/` and Service Module documentation in `../service-modules/`.

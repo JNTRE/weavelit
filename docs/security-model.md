@@ -8,16 +8,16 @@ is not a complete implementation design.
 
 This document is an initial collection of cross-cutting security requirements
 and implementation constraints. As a component is implemented, move its
-implementation-specific security detail to the owning specification:
+implementation-specific security detail to the owning documentation:
 
-- [Authentication Specification](server/authentication/spec.md)
-- [Authorization Specification](server/authorization/spec.md)
-- [Automation Identities Specification](server/automation-identities/spec.md)
+- [Authentication Design](server/authentication/authentication-design.md)
+- [Authorization Design](server/authorization/authorization-design.md)
+- [Automation Identity Design](server/automation-identities/automation-identity-design.md)
 
 Do this incrementally as implementation work makes the component's ownership
 clear; do not migrate requirements merely to complete a wholesale
 reorganization. Keep cross-cutting security constraints here, and link to the
-owning specification when its additional context is needed.
+owning documentation when its additional context is needed.
 
 ## Authentication
 

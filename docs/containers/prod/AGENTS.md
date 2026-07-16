@@ -12,14 +12,14 @@ Use this section to understand what this directory owns, what it does not own, a
   validation requirements.
 - It does not own the Containerfile implementation, Server application
   behavior, or the development image contract.
-- `spec.md` is the canonical production container specification.
+- This directory contains the canonical production container documentation.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing and specification-maintenance rules.
-- `spec.md`: Canonical production OCI image contract.
+- `AGENTS.md`: Local routing and documentation-maintenance rules.
+- `production-container-design.md`: Canonical production OCI image contract.
 
 ## Usage Guidance
 
@@ -27,7 +27,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
   and the repository-root `AGENTS.md`.
-- Update this specification when the matching production Containerfile or its
+- Update this documentation when the matching production Containerfile or its
   packaging, runtime, deployment, or release-validation contract changes.
 - Keep the production image limited to verified packaged Server artifacts;
   never route development tooling or source-build behavior into this boundary.
@@ -38,13 +38,14 @@ Follow this section for workflow, sequencing, and decision order when making cha
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
-- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
+- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Every change must include an update to its relevant documentation under `docs/` in the same change.
+- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
+- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep the required heading order and keep this guide under 100 lines.
 - Keep the production image distinct from the development image; link to the
-  development specification instead of duplicating its toolchain requirements.
+  development documentation instead of duplicating its toolchain requirements.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.

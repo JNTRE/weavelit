@@ -19,8 +19,8 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and Containerfile-boundary rules.
-- `dev/`: Development Containerfile boundary; its contract is in `docs/containers/dev/spec.md`.
-- `prod/`: Production Containerfile boundary; its contract is in `docs/containers/prod/spec.md`.
+- `dev/`: Development Containerfile boundary; its contract is documented in `docs/containers/dev/`.
+- `prod/`: Production Containerfile boundary; its contract is documented in `docs/containers/prod/`.
 
 ## Usage Guidance
 
@@ -28,8 +28,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md` and the
   repository-root `AGENTS.md`.
-- Read the matching `../../docs/containers/<image>/spec.md` before changing a
-  Containerfile, and update it in the same change when the image contract changes.
+- Read the matching canonical documentation under `../../docs/containers/<image>/`
+  before changing a Containerfile, and update it in the same change when the image contract changes.
 - Keep development and production image implementations separate; do not make
   production behavior a development-image mode.
 - Preserve OCI-compatible image behavior. Docker may be used locally, but do
@@ -40,10 +40,11 @@ Follow this section for workflow, sequencing, and decision order when making cha
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
-- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
+- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Every change must include an update to its relevant documentation under `docs/` in the same change.
+- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
+- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep the required heading order and keep this guide under 100 lines.
 - Keep container build-context exclusions in `../.dockerignore`, not in a
   Containerfile or runtime configuration.

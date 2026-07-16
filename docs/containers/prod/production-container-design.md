@@ -1,4 +1,4 @@
-# Production Container Specification
+# Production Container Design
 
 ## Purpose
 
@@ -13,6 +13,9 @@ as a development-image mode. Its Containerfile remains a non-runnable
 placeholder until the release package, image provenance, and production
 deployment contract are defined.
 
+The placeholder's `org.opencontainers.image.description` label points to this
+document.
+
 When implemented, the production image must:
 
 - run a verified packaged Server artifact without compiling source code at
@@ -26,6 +29,6 @@ When implemented, the production image must:
 
 ## Related Documents
 
-- [Milestone 14](../../roadmap/milestone-14.md)
-- [Development Container Specification](../dev/spec.md)
+- [Milestone 14](../../plan/milestones/milestone-14.md)
+- [Development Container Design](../dev/development-container-design.md)
 - [Open Questions](../../open-questions.md)

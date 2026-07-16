@@ -1,20 +1,17 @@
 # Roadmap Milestones Agent Guide
 
-This directory holds the individual delivery-outcome records behind the phase
-index in `docs/roadmap.md`. Each milestone turns a roadmap phase item into a
-checkable set of capabilities and protective boundaries needed to close that
-stage with confidence.
+This directory holds the individual delivery-outcome records. Each milestone
+is a checkable set of capabilities and protective boundaries needed to close a
+delivery stage with confidence.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns the independently maintained milestone goal documents
-  linked from `../roadmap.md`.
+- This directory owns the independently maintained milestone goal documents.
 - Each milestone describes the complete outcomes required to finish its phase;
   it does not own canonical product, security, or technical decisions.
-- The parent roadmap owns phase order and the MVP boundary. Canonical documents
-  in `docs/` own settled decisions and definitions.
+- Canonical documents in `docs/` own settled decisions and definitions.
 
 ## Asset Inventory
 
@@ -40,13 +37,11 @@ Use this section as the source of truth for what assets belong in this directory
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the
-  repository-root `AGENTS.md`.
-- Read `../roadmap.md` to identify the milestone's phase and parent index entry
-  before changing its goals.
+- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
+  and the repository-root `AGENTS.md`.
 - Keep changes focused on the affected milestone. When a milestone is added,
-  removed, moved, or renamed, update `../roadmap.md` and the applicable parent
-  asset inventories in the same change.
+  removed, moved, or renamed, update the applicable parent asset inventories in
+  the same change.
 - Record every desired completion outcome, including capabilities, limits,
   protections, and safe failure or rejection behavior; do not replace those
   outcomes with an exhaustive implementation-task list.
@@ -59,10 +54,11 @@ Follow this section for workflow, sequencing, and decision order when making cha
 Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
 
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Every change must include an update to its relevant documentation. For feature-specific work, update the feature's `spec.md` under `docs/` (for example, `docs/server/database/spec.md`) in the same change.
-- Specification documents are AI-maintained documentation: agents must keep them accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Reorganize, move, add, or remove specification content as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Do not allow a specification document to become a monolith; split large documents into focused sibling documents named `<name>-spec.md` when doing so improves logical structure, navigation, or maintainability.
+- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
+- Every change must include an update to its relevant documentation under `docs/` in the same change.
+- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
+- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
+- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Name milestone documents `milestone-<number>.md` and title them
   `# Milestone <number>: <title>`.
 - Keep each milestone's `## Goals` section after its title and its
@@ -72,7 +68,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Preserve a final `## Related Documents` section with non-numbered links to
   existing repository-relative canonical documents; update it when referenced
   documentation changes.
-- Use the canonical names from `../glossary.md` and format their first
+- Use the canonical names from `../../glossary.md` and format their first
   substantive use in a section as bold glossary links.
 - Link to canonical documents rather than restating settled product, security,
   or technical decisions in a milestone.

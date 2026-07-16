@@ -11,6 +11,12 @@
 - `docs(scope):`
 - `<other-type>(scope):`
 
+### Issue Closure
+
+<!-- When this PR closes a tracked issue, replace `None` with `Closes #123`. GitHub links the issue and closes it when the PR merges into the default branch. -->
+
+None
+
 ## Impact
 
 <!-- Note compatibility changes, configuration requirements, migrations, security implications, or rollback steps. State "None" when not applicable. -->

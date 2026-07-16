@@ -1,4 +1,4 @@
-# Development Container Specification
+# Development Container Design
 
 ## Purpose
 
@@ -14,6 +14,9 @@ The development image is reserved for Milestone 1. Its Containerfile remains a
 non-runnable placeholder until the Server defines its development
 configuration, persistent-state location, bootstrap secret-file interface, and
 startup behavior.
+
+The placeholder's `org.opencontainers.image.description` label points to this
+document.
 
 When implemented, the development image must:
 
@@ -35,11 +38,11 @@ When implemented, the development image must:
 The implemented image must be built and exercised with both a Docker command
 and at least one OCI-compatible alternative such as Podman or Buildah. Its
 validation must run `make check` inside the container and confirm that source,
-state, and secret mounts follow this specification.
+state, and secret mounts follow this design.
 
 ## Related Documents
 
 - [Testing and Validation Policy](../../testing.md)
-- [Milestone 1](../../roadmap/milestone-1.md)
-- [Production Container Specification](../prod/spec.md)
+- [Milestone 1](../../plan/milestones/milestone-1.md)
+- [Production Container Design](../prod/production-container-design.md)
 - [Open Questions](../../open-questions.md)
