@@ -14,10 +14,14 @@ SQLite-specific error mapping. It does not own Server lifecycle decisions,
 shared contract types, or **[Log Module](../../../glossary.md#applications-and-interfaces)**
 destinations.
 
-The crate uses `rusqlite` with its `bundled` feature. The Server workspace
-centralizes and locks the selected dependency version. Bundling provides a
-known SQLite release and consistent behavior across development, CI, packaging,
-and deployment without relying on a host SQLite shared library.
+After implementation-time approval, the crate declares `rusqlite` with its
+`bundled` feature in its own manifest as the initial consumer. If a second
+Server crate requires `rusqlite`, the change promotes its shared source,
+version, and security baseline to `server/Cargo.toml`'s
+`[workspace.dependencies]`. `server/Cargo.lock` records the resolved version.
+Bundling provides a known SQLite release and consistent behavior across
+development, CI, packaging, and deployment without relying on a host SQLite
+shared library.
 
 The backend uses explicit Weavelit-owned SQL and does not use an ORM. It does
 not enable runtime SQLite extension loading or execute user-supplied SQL.

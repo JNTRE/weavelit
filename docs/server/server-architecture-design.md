@@ -90,8 +90,8 @@ Before approval, each dependency record must identify the Milestone behavior it
 enables, its owning crate, its package source and declared version, the minimal
 enabled feature set, and why the standard library or an approved dependency is
 insufficient. It must also record maintenance and license compatibility
-evidence, plus the focused and locked-workspace validation performed. Security-
-sensitive dependencies additionally record their security property, relevant
+evidence, plus the focused and locked-workspace validation performed.
+Security-sensitive dependencies additionally record their security property, relevant
 capabilities or backend choices, applicable advisory review, and safe-failure
 test coverage.
 
@@ -105,9 +105,19 @@ replacement rationale, a named owner, and a removal condition or follow-on
 issue. It receives the same approval and validation evidence as a released
 package. Internal workspace members are not exceptions.
 
-| Package | Source and version | Owning crate | Behavior | Enabled features and security baseline |
+No production dependencies are currently approved.
+
+### Planned Production Dependency Candidates
+
+The following candidates are selected for a documented future behavior but are
+not approved production dependencies. A candidate does not authorize adding a
+dependency. The implementation change must declare an exact version and move
+the candidate to the approved registry with all required approval and
+validation evidence.
+
+| Package | Intended source | Owning crate | Planned behavior | Intended features and security baseline |
 | --- | --- | --- | --- | --- |
-| `rusqlite` | crates.io; exact version is recorded when the dependency is first declared | `weavelit-server-database-sqlite` | Milestone 1 SQLite Application Database backend | `bundled`; do not enable runtime SQLite extension loading; select only additional features required by the backend |
+| `rusqlite` | crates.io | `weavelit-server-database-sqlite` | Milestone 1 SQLite Application Database backend | `bundled`; do not enable runtime SQLite extension loading; select only additional features required by the backend |
 
 The workspace manifest owns an approved shared dependency's identity, version,
 source, and any workspace-wide security baseline. A single-consumer dependency
