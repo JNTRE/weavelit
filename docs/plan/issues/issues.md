@@ -65,7 +65,10 @@ routine metadata update to the affected issue's record.
 
 ### [#5 Define Rust workspace dependency policy](https://github.com/JNTRE/weavelit/issues/5)
 
-**Summary:** Decide how the Server Rust workspace centralizes dependency versions, constrains crate-specific features, maintains its lockfile, and justifies production dependencies before additional internal crates are introduced.
+**Summary:** Define the Server Rust workspace dependency policy for shared
+versions, crate-specific features, lockfile maintenance, production-dependency
+approval, and source exceptions. The settled policy is recorded in the
+[Server Architecture Design](../../server/server-architecture-design.md).
 
 | Group | Field | Value |
 | --- | --- | --- |
