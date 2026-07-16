@@ -1,10 +1,17 @@
-# GitHub Project and Issue Standards
+# GitHub Project Standards
 
 This document records the active GitHub planning metadata for
 [JNTRE/weavelit](https://github.com/JNTRE/weavelit) and the
 [Weavelit GitHub Project](https://github.com/orgs/JNTRE/projects/1/views/1).
 GitHub remains the source of truth; update this reference when that configuration
 changes.
+
+## Metadata Scope
+
+These standards apply to GitHub Issues and Pull Requests where GitHub supports
+the metadata. Labels, GitHub Project fields, and milestones use the same
+configured values for both work-item types. Native issue types and issue
+relationships apply only to Issues.
 
 ## Issue Types
 
@@ -26,13 +33,13 @@ and issue relationships required for the work.
 
 ## Labels
 
-Apply the applicable component label to each issue. Add the general-purpose
-labels only when their defined condition applies; they do not replace the native
-issue type.
+Apply the applicable component label to each Issue or Pull Request. Add the
+general-purpose labels only when their defined condition applies; they do not
+replace a native issue type.
 
 ### Component Labels
 
-| Label | Apply when the issue affects |
+| Label | Apply when the Issue or Pull Request affects |
 | --- | --- |
 | `server core` | The Weavelit Server core. |
 | `database module` | An Application Database component. |
@@ -55,9 +62,9 @@ issue type.
 
 ## Priority
 
-`Priority` is an organization-level GitHub Issue Field that records the current
-importance level assigned to an issue. Set one of these exact values on each
-issue.
+`Priority` is an organization-level GitHub Project field that records the
+current importance of an Issue or Pull Request item. Set one of these exact
+values when the work item is added to the Project.
 
 | Priority |
 | --- |
@@ -69,7 +76,8 @@ issue.
 
 ## Project Status
 
-Set one of these exact `Status` values for each Project item.
+Set one of these exact `Status` values for each Issue or Pull Request Project
+item.
 
 | Status | Meaning |
 | --- | --- |
@@ -79,6 +87,12 @@ Set one of these exact `Status` values for each Project item.
 | `In review` | The item is in review. |
 | `done` | The item has been completed. |
 | `blocked` | The item cannot proceed until its blocker is resolved. |
+
+## Milestones
+
+Apply the relevant GitHub Milestone to an Issue or Pull Request when it belongs
+to a defined delivery milestone. Leave the milestone unset only when no
+milestone applies.
 
 ## Related Documents
 

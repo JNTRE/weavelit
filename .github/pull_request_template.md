@@ -32,6 +32,8 @@ None
 ## Checklist
 
 - [ ] This PR targets `dev`.
+- [ ] Applied the required label and GitHub Project fields.
+- [ ] Applied the relevant milestone, when one applies.
 - [ ] Confirmed the change is focused and the diff was reviewed.
 - [ ] Validated all relevant documentation and feature specifications are updated, when applicable.
 - [ ] Ran relevant checks, or explained why they could not be run.

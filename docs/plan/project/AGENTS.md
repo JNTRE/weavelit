@@ -1,14 +1,17 @@
 # GitHub Planning Standards Agent Guide
 
-This directory records the active GitHub issue metadata and Weavelit GitHub
-Project workflow values used to plan delivery. It provides a stable local
-reference while GitHub remains the source of truth for the live configuration.
+This directory records the active GitHub Issue and Pull Request metadata and
+Weavelit GitHub Project workflow values used to plan delivery. It provides a
+stable local reference while GitHub remains the source of truth for the live
+configuration.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns the documented standards for GitHub issue types, labels, organization-level Issue Fields, and Project status values.
+- This directory owns the documented standards for GitHub issue types, shared
+  Issue and Pull Request labels, GitHub Project fields, milestones, and Project
+  status values.
 - It does not own the live GitHub configuration; refresh the reference from the [Weavelit GitHub Project](https://github.com/orgs/JNTRE/projects/1/views/1) and the `JNTRE/weavelit` issue tracker.
 - The sibling `../issues/` directory owns open-issue snapshots, including the metadata values assigned to individual issues.
 
@@ -17,15 +20,18 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local workflow, inventory, and documentation-boundary rules for GitHub planning standards.
-- `issue-standards.md`: Active GitHub issue-type, label, priority, and Project-status reference.
+- `project-standards.md`: Active GitHub Issue and Pull Request metadata and
+  Project workflow reference.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Refresh type, label, Issue Field, and Project status values from GitHub before changing `issue-standards.md`.
-- Preserve the exact configured name and capitalization of each GitHub value in `issue-standards.md`.
+- Refresh type, label, GitHub Project field, milestone, and Project status
+  values from GitHub before changing `project-standards.md`.
+- Preserve the exact configured name and capitalization of each GitHub value in
+  `project-standards.md`.
 - Update `../issues/issues.md` in the same change when a documented metadata change affects its standard record format or displayed values.
 - Record proposed GitHub configuration changes only after they are active in GitHub; do not present a proposal as an active standard.
 

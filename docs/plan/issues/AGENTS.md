@@ -29,7 +29,9 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Read `templates/AGENTS.md` before changing an agent-created issue body template.
 - Create an issue by copying the matching template in `templates/` beginning with `##` into a temporary body file, replacing every bracketed placeholder, and passing it to `gh issue create --body-file`.
-- Set the native issue type with `gh issue create --type`; then assign the component label, `Priority`, GitHub Milestone, Project status, and applicable issue relationships defined in `../project/issue-standards.md`.
+- Set the native issue type with `gh issue create --type`; then assign the
+  component label, `Priority`, GitHub Milestone, Project status, and applicable
+  issue relationships defined in `../project/project-standards.md`.
 - Refresh issue records from the repository issue tracker, GitHub Milestones, and the Weavelit GitHub Project in the same update.
 - Include each open repository issue exactly once and summarize its stated outcome or decision without replacing its acceptance criteria.
 - Treat demonstration entries as documentation examples only; do not create a GitHub issue without explicit approval.
