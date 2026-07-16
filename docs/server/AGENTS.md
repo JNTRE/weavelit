@@ -22,6 +22,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `audit/`: Documentation for the Server's accountability and Audit Log design.
 - `database/`: Documentation for Application Database backend boundaries and their implementation design.
 - `observability/`: Documentation for Server System Log design and future operational diagnosis.
+- `server-architecture-design.md`: Shared Server workspace, crate-composition, and lifecycle design rules.
 
 ## Usage Guidance
 

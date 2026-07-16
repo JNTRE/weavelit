@@ -17,9 +17,14 @@ Connections, and operational state. It is selected and configured during
 **[Log Module](#applications-and-interfaces)** destination, and is not a
 module. Application Database persistence uses an internal backend contract;
 each supported backend is a dedicated Rust crate. The Server core owns backend
-selection, configuration validation, and lifecycle behavior. Backends are
+selection, common bootstrap-configuration validation, and lifecycle behavior.
+Each backend validates its own connection and storage settings. Backends are
 compiled into the Server package and are not runtime-installable plugins. The
-MVP backend is SQLite.
+MVP backend is SQLite. Application Database state and a Log Module destination
+never share Weavelit-owned persistence logic or implementation crates, files,
+schemas, connections, configuration, resources, lifecycle, or backup and
+retention behavior. They may use the same workspace-pinned third-party
+dependency, such as `rusqlite`, without sharing persistence behavior.
 
 **Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for the module selected during **[Init](#states-and-requests)**, and configured only through server-administration functions.
 
@@ -100,7 +105,7 @@ from a shared secret and the current time by an authenticator application.
 
 ## States and Requests
 
-**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, selects and configures the **[Application Database](#applications-and-interfaces)**, selects, configures, and activates one or more initial Log Modules, and assigns configured Log Modules separately to System Logs and Audit Logs. The same Log Module may receive both log types. Init must validate both assignments, including durable Audit Log recording, before the Server starts normal operation.
+**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, selects and configures the **[Application Database](#applications-and-interfaces)** in a host-local bootstrap step, then separately selects, configures, and activates one or more initial Log Modules and assigns configured Log Modules to System Logs and Audit Logs. The same Log Module may receive both log types, but it does not reuse Application Database resources. Init must validate both assignments, including durable Audit Log recording, before the Server starts normal operation.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.
 

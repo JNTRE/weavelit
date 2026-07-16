@@ -12,6 +12,16 @@ During **[Init](../glossary.md#states-and-requests)**, the
 configures, and activates one or more Log Modules before assigning destinations
 for the two log types.
 
+Application Database bootstrap configuration is selected and configured in a
+separate preceding Init step. Selecting the same underlying technology for an
+Application Database and a Log Module does not reuse Weavelit-owned persistence
+logic or implementation crates, configuration, database file, schema,
+connection, or other resources. They may use the same workspace-pinned
+third-party dependency, such as `rusqlite`, without sharing persistence
+behavior. A Log Module may instead deliver records to a non-database destination,
+such as email, an API endpoint, or Checkmk; its destination type does not affect
+Application Database behavior.
+
 Interactive Init collects configuration in this order:
 
 1. Select and configure a Log Module for **[System Logs](../glossary.md#applications-and-interfaces)**.
@@ -36,3 +46,4 @@ persisted.
 - [Security Model](../security-model.md)
 - [Open Questions](../open-questions.md)
 - [Glossary](../glossary.md)
+- [Application Database Design](../server/database/application-database-design.md)

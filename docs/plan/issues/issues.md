@@ -21,7 +21,7 @@
 > assign the applicable repository component labels, `Priority` value, GitHub
 > Milestone, Project status, and issue relationships. Do not recreate retired
 > Project fields for type, area, delivery priority, size, or estimate. See the
-> [GitHub Project and Issue Standards](../project/issue-standards.md).
+> [GitHub Project Standards](../project/project-standards.md).
 
 ## Standard Record Format
 
@@ -147,7 +147,7 @@ routine metadata update to the affected issue's record.
 - [Decision Template](templates/decision-template.md)
 - [Epic Template](templates/epic-template.md)
 - [Feature Template](templates/feature-template.md)
-- [GitHub Project and Issue Standards](../project/issue-standards.md)
+- [GitHub Project Standards](../project/project-standards.md)
 - [Milestone 1 Outcomes](../milestones/milestone-1.md)
 - [Risk Template](templates/risk-template.md)
 - [Task Template](templates/task-template.md)

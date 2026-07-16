@@ -5,6 +5,92 @@ internal **[Application Database](../../glossary.md#applications-and-interfaces)
 backend contract. Backend-specific storage behavior belongs in the applicable
 child directory.
 
+## Crate Boundary
+
+`weavelit-server-database` defines the backend-neutral Application Database
+contract: Server domain types, the persistence operations available to the
+Server, and storage-neutral typed errors. It contains no backend selection,
+driver, connection, query, transaction, migration, or backup implementation.
+
+Each supported backend is a dedicated compiled-in implementation crate. The
+MVP SQLite implementation is `weavelit-server-database-sqlite`. It implements
+the shared contract and owns all SQLite-specific behavior. An Application
+Database backend is not a runtime **[Module](../../glossary.md#applications-and-interfaces)**.
+
+The **[Weavelit Server](../../glossary.md#applications-and-interfaces)** owns
+backend composition and lifecycle. It reads the selected backend and its
+host-managed bootstrap configuration, validates the selected backend and common
+configuration structure, constructs the compiled-in backend, and calls it
+through the shared contract. Each backend validates its own connection and
+storage settings. A future backend independently selects its own connection and
+concurrency model behind that same contract.
+
+## Initial Contract
+
+The initial contract expresses Server application intent rather than storage
+mechanics. It supports only these capabilities:
+
+1. Inspect whether the Application Database is initialized.
+2. Atomically persist the initial application-owned state exactly once.
+3. Load the initialized application-owned state required by Server startup.
+
+The initial write persists the complete supplied state and marks the database
+initialized as one operation. If it fails, no supplied state remains and the
+database stays uninitialized. A later initialization attempt returns the stable
+`AlreadyInitialized` error.
+
+The contract initially exposes these storage-neutral error categories:
+
+```text
+AlreadyInitialized
+NotInitialized
+InvalidState
+ConfigurationInvalid
+Unavailable
+IntegrityFailure
+```
+
+`ConfigurationInvalid` means that host-managed backend configuration must be
+corrected. `Unavailable` means an otherwise valid backend cannot currently be
+opened, queried, locked, or used. `IntegrityFailure` prevents normal operation
+when persisted data, schema, or migration history is damaged or incompatible.
+Backend-specific error details remain private and are mapped to these safe
+categories before reaching the Server.
+
+## Bootstrap And Operational State
+
+Host-managed bootstrap configuration identifies the compiled-in backend and
+its connection settings before the Server can open the Application Database;
+it remains outside the Application Database. Application-owned operational
+state is persisted through the contract, including durable Server configuration
+such as the listening IP address.
+
+**[Init](../../glossary.md#states-and-requests)** is a host-local
+**[Admin CLI](../../glossary.md#applications-and-interfaces)** workflow, not a
+network-exposed Server function. Post-Init administration changes operational
+state through its own authorized administration boundary and cannot rerun Init.
+
+## Log Module Separation
+
+Application Database persistence and **[Log Module](../../glossary.md#applications-and-interfaces)**
+destinations remain structurally and operationally separate, even when both
+use the same technology. They do not share Weavelit-owned persistence logic or
+implementation crates, database files, schemas, migration ledgers, connections,
+health checks, configuration, resources, lifecycle, backup or recovery behavior,
+or retention policy. They may use the same workspace-pinned third-party
+dependency, such as `rusqlite`, without sharing persistence behavior.
+
+The Server rejects configuration where an Application Database file and a Log
+Module database file resolve to the same file. Log Modules receive only
+pre-redacted records from the Server; they never read or modify Application
+Database state. The Application Database never acts as a Log Module destination,
+fallback, or queue.
+
+Application Database selection and configuration occur in a distinct host-local
+Init step before Log Module selection and configuration. Selecting the same
+underlying technology for both does not reuse an Application Database backend
+or its resources.
+
 ## Backup And Recovery
 
 During **[Init](../../glossary.md#states-and-requests)**, the Server creates a
@@ -46,3 +132,7 @@ in an ordinary backup artifact.
 - [Security Model](../../security-model.md)
 - [Open Questions](../../open-questions.md)
 - [Glossary](../../glossary.md)
+- [Server Architecture Design](../server-architecture-design.md)
+- [SQLite Application Database Design](sqlite/sqlite-application-database-design.md)
+- [Log Module Design](../../log-modules/log-module-design.md)
+- [Testing and Validation Policy](../../testing.md)

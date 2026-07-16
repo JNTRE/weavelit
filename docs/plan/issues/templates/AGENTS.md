@@ -10,7 +10,8 @@ structure without relying on GitHub Issue Forms.
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns the Markdown body structure and native-type instructions for agent-created GitHub issues.
-- It does not own live issue metadata such as labels, `Priority`, milestones, Project status, or issue relationships; [GitHub Project and Issue Standards](../../project/issue-standards.md) owns the documented values and assignment workflow.
+- It does not own live issue metadata such as labels, `Priority`, milestones,
+  Project status, or issue relationships; [GitHub Project Standards](../../project/project-standards.md) owns the documented values and assignment workflow.
 - This guide applies to the template files in this directory; [Open Issue Overview](../issues.md) owns the snapshot of issues created from them.
 
 ## Asset Inventory
@@ -34,7 +35,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Copy only the sections beginning with `##` into the temporary body file passed to `gh issue create --body-file`.
 - Replace every bracketed placeholder before creating the issue.
 - Pass the template's `Native type` value to `gh issue create --type`.
-- Apply labels, `Priority`, milestones, Project status, and relationships according to [GitHub Project and Issue Standards](../../project/issue-standards.md).
+- Apply labels, `Priority`, milestones, Project status, and relationships
+  according to [GitHub Project Standards](../../project/project-standards.md).
 
 ## Standards and Conventions
 
@@ -44,7 +46,8 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep the required heading order and keep this guide under 100 lines.
 - Name each file `<native-type>-template.md` using the lowercase native issue type shown in its hidden `Native type` instruction.
 - Keep each template's hidden creation instructions before the copied `##` body sections.
-- Keep the `## Related Documents` section at the end of each template and link it to `../../project/issue-standards.md`.
+- Keep the `## Related Documents` section at the end of each template and link
+  it to `../../project/project-standards.md`.
 - Do not place live issue assignments or Project values in a template body; apply them after issue creation through the documented GitHub workflow.
 - Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
 - Every change must include an update to its relevant documentation under `docs/` in the same change.

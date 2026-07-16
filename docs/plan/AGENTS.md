@@ -29,7 +29,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Read `issues/issues.md` before changing how open work is summarized or mapped to GitHub Project metadata.
 - Read the affected document in `milestones/` before changing its outcomes. Keep milestones aligned with canonical documents for settled product, security, and technical decisions; unresolved choices remain in [Open Questions](../open-questions.md).
-- Read `project/AGENTS.md` and `project/issue-standards.md` before changing documented GitHub issue metadata or Project workflow values.
+- Read `project/AGENTS.md` and `project/project-standards.md` before changing
+  documented GitHub Issue or Pull Request metadata or Project workflow values.
 - Keep planning outcomes aligned with canonical documents for settled product, security, and technical decisions instead of redefining those decisions.
 - Place milestone-specific guidance and outcome documents in `milestones/`.
 

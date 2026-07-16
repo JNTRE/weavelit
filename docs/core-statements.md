@@ -123,23 +123,30 @@ when its additional context is needed.
 - The Server stores its application state, including users, sessions, policy,
   secrets, Service Connections, and operational state, in its
   **[Application Database](glossary.md#applications-and-interfaces)**. The
-  Application Database is separate from every Log Module destination.
+  Application Database is separate from every Log Module destination. The two
+  never share Weavelit-owned persistence logic or implementation crates, files,
+  schemas, connections, configuration, resources, lifecycle, or backup and
+  retention behavior, even when both use the same technology. They may use the
+  same workspace-pinned third-party dependency, such as `rusqlite`, without
+  sharing persistence behavior.
 - The Server isolates Application Database persistence behind an internal
   backend contract. Each supported Application Database backend is a dedicated
   Rust crate that owns its database-driver integration, schema migrations,
   transaction behavior, connection health handling, and backend-specific
-  errors. The Server core owns backend selection, configuration validation, and
-  lifecycle behavior.
+  errors, including validation of its connection and storage settings. The
+  Server core owns backend selection, common bootstrap-configuration validation,
+  and lifecycle behavior.
 - The MVP Application Database uses the SQLite backend crate.
 - The MVP default Log Module uses SQLite and stores System Logs and Audit Logs
-  in a database separate from the Application Database.
+  in a database separate from the Application Database. Selecting SQLite for
+  both creates separate implementations and resources.
 - **[Init](glossary.md#states-and-requests)** selects and configures the
-  Application Database and selects, configures, and activates one or more
-  initial Log Modules. Init assigns configured Log Modules separately to
-  System Logs and Audit Logs; the same Log Module may receive both types. Init
-  does not complete, and the Server does not begin normal operation, until both
-  assignments are valid and the Audit Log assignment can durably record Audit
-  Logs.
+  Application Database in a host-local bootstrap step, then separately selects,
+  configures, and activates one or more initial Log Modules. Init assigns
+  configured Log Modules separately to System Logs and Audit Logs; the same Log
+  Module may receive both types. Init does not complete, and the Server does
+  not begin normal operation, until both assignments are valid and the Audit
+  Log assignment can durably record Audit Logs.
 - The Application Database is not a module and cannot be enabled, disabled, or
   changed after Init. Weavelit does not support in-place migration between
   Application Database technologies. Application Database backends are
