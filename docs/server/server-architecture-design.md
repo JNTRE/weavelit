@@ -57,8 +57,9 @@ contract or code.
 The **[Weavelit Server](../glossary.md#applications-and-interfaces)** composes
 supported **[Application Database](../glossary.md#applications-and-interfaces)**
 backends and runtime modules as compiled-in Rust crates. It owns backend and
-module selection, configuration validation, and lifecycle behavior; component
-crates own their implementation-specific behavior behind their documented
+module selection, common configuration validation, and lifecycle behavior.
+Component crates own their implementation-specific behavior, including
+validation of their connection and storage settings, behind their documented
 boundaries.
 
 A shared Server crate boundary must not erase the distinction between product

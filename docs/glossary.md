@@ -17,7 +17,8 @@ Connections, and operational state. It is selected and configured during
 **[Log Module](#applications-and-interfaces)** destination, and is not a
 module. Application Database persistence uses an internal backend contract;
 each supported backend is a dedicated Rust crate. The Server core owns backend
-selection, configuration validation, and lifecycle behavior. Backends are
+selection, common bootstrap-configuration validation, and lifecycle behavior.
+Each backend validates its own connection and storage settings. Backends are
 compiled into the Server package and are not runtime-installable plugins. The
 MVP backend is SQLite. Application Database state and a Log Module destination
 never share Weavelit-owned persistence logic or implementation crates, files,

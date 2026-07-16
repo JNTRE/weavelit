@@ -19,10 +19,11 @@ Database backend is not a runtime **[Module](../../glossary.md#applications-and-
 
 The **[Weavelit Server](../../glossary.md#applications-and-interfaces)** owns
 backend composition and lifecycle. It reads the selected backend and its
-host-managed bootstrap configuration, validates that configuration, constructs
-the compiled-in backend, and calls it through the shared contract. A future
-backend independently selects its own connection and concurrency model behind
-that same contract.
+host-managed bootstrap configuration, validates the selected backend and common
+configuration structure, constructs the compiled-in backend, and calls it
+through the shared contract. Each backend validates its own connection and
+storage settings. A future backend independently selects its own connection and
+concurrency model behind that same contract.
 
 ## Initial Contract
 
