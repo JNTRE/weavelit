@@ -27,7 +27,7 @@
 
 Each open issue uses an issue-centered record instead of a wide table. This
 keeps summaries readable, accommodates optional project fields, and limits a
-routine metadata update to the affected issue's record.
+routine metadata update to the affected issue's record. Every issue must strictly adhere to the example record format below.
 
 - The linked heading records the issue number, name, and canonical issue link.
 - `Summary` states the intended outcome or decision at a high level.
