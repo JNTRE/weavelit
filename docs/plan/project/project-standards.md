@@ -10,8 +10,8 @@ changes.
 
 These standards apply to GitHub Issues and Pull Requests where GitHub supports
 the metadata. Labels, GitHub Project fields, and milestones use the same
-configured values for both work-item types. Native issue types and issue
-relationships apply only to Issues.
+configured values for both work-item types. Native issue types,
+organization-level `Priority`, and issue relationships apply only to Issues.
 
 ## Issue Types
 
@@ -62,9 +62,8 @@ replace a native issue type.
 
 ## Priority
 
-`Priority` is an organization-level GitHub Project field that records the
-current importance of an Issue or Pull Request item. Set one of these exact
-values when the work item is added to the Project.
+`Priority` is an organization-level GitHub Issue Field that records the current
+importance assigned to an Issue. Set one of these exact values on each Issue.
 
 | Priority |
 | --- |
