@@ -8,8 +8,12 @@ changes.
 
 ## Issue Types
 
-Create issues using the Issue Form for their native GitHub issue type. Use a
-blank issue only when no available form can represent the work.
+Create issues from the matching Markdown template in
+[`docs/plan/issues/`](../issues/). Copy the template sections beginning with
+`##` into the body file, then pass the completed file to
+`gh issue create --body-file` and set the matching native type with `--type`.
+After creation, assign the labels, `Priority`, GitHub Milestone, Project status,
+and issue relationships required for the work.
 
 | Type | Use |
 | --- | --- |
@@ -78,5 +82,5 @@ Set one of these exact `Status` values for each Project item.
 
 ## Related Documents
 
-- [Open Issue Overview](../issues/issues.md)
+- [Issue Templates and Open Issue Overview](../issues/issues.md)
 - [Contributing](../../../CONTRIBUTING.md)

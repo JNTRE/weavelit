@@ -14,14 +14,14 @@
 > Preserve `Not assigned` for empty fields and do not infer project metadata
 > from titles or issue bodies.
 >
-> Create every new issue through the repository's Issue Form that matches its
-> native GitHub issue type. Use a blank issue only when a maintainer has a
-> specific exceptional need that no available form can represent. Each form
-> assigns its native GitHub issue type and collects the documentation appropriate
-> to that type. After creation, assign the applicable repository component labels,
-> `Priority` value, GitHub Milestone, Project status, and issue relationships. Do
-> not recreate retired Project fields for type, area, delivery priority, size, or
-> estimate. See the [GitHub Project and Issue Standards](../project/issue-standards.md).
+> Create every new issue from the Markdown template in this directory that
+> matches its native GitHub issue type. Copy the template sections beginning
+> with `##` to a temporary body file, replace every bracketed placeholder, and pass the file to
+> `gh issue create --body-file` with the matching `--type` value. After creation,
+> assign the applicable repository component labels, `Priority` value, GitHub
+> Milestone, Project status, and issue relationships. Do not recreate retired
+> Project fields for type, area, delivery priority, size, or estimate. See the
+> [GitHub Project and Issue Standards](../project/issue-standards.md).
 
 ## Standard Record Format
 
@@ -143,6 +143,12 @@ routine metadata update to the affected issue's record.
 
 ## Related Documents
 
+- [Bug Template](bug-template.md)
+- [Decision Template](decision-template.md)
+- [Epic Template](epic-template.md)
+- [Feature Template](feature-template.md)
 - [GitHub Project and Issue Standards](../project/issue-standards.md)
 - [Milestone 1 Outcomes](../milestones/milestone-1.md)
+- [Risk Template](risk-template.md)
+- [Task Template](task-template.md)
 - [Testing and Validation Policy](../../testing.md)
