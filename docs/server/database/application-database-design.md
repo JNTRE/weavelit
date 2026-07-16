@@ -73,9 +73,11 @@ state through its own authorized administration boundary and cannot rerun Init.
 
 Application Database persistence and **[Log Module](../../glossary.md#applications-and-interfaces)**
 destinations remain structurally and operationally separate, even when both
-use the same technology. They do not share application logic, crates, database
-files, schemas, migration ledgers, connections, health checks, configuration,
-resources, lifecycle, backup or recovery behavior, or retention policy.
+use the same technology. They do not share Weavelit-owned persistence logic or
+implementation crates, database files, schemas, migration ledgers, connections,
+health checks, configuration, resources, lifecycle, backup or recovery behavior,
+or retention policy. They may use the same workspace-pinned third-party
+dependency, such as `rusqlite`, without sharing persistence behavior.
 
 The Server rejects configuration where an Application Database file and a Log
 Module database file resolve to the same file. Log Modules receive only

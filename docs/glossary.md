@@ -20,8 +20,10 @@ each supported backend is a dedicated Rust crate. The Server core owns backend
 selection, configuration validation, and lifecycle behavior. Backends are
 compiled into the Server package and are not runtime-installable plugins. The
 MVP backend is SQLite. Application Database state and a Log Module destination
-never share application logic, crates, files, schemas, connections,
-configuration, resources, lifecycle, or backup and retention behavior.
+never share Weavelit-owned persistence logic or implementation crates, files,
+schemas, connections, configuration, resources, lifecycle, or backup and
+retention behavior. They may use the same workspace-pinned third-party
+dependency, such as `rusqlite`, without sharing persistence behavior.
 
 **Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for the module selected during **[Init](#states-and-requests)**, and configured only through server-administration functions.
 

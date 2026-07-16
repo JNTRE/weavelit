@@ -124,9 +124,11 @@ when its additional context is needed.
   secrets, Service Connections, and operational state, in its
   **[Application Database](glossary.md#applications-and-interfaces)**. The
   Application Database is separate from every Log Module destination. The two
-  never share application logic, crates, files, schemas, connections,
-  configuration, resources, lifecycle, or backup and retention behavior, even
-  when both use the same technology.
+  never share Weavelit-owned persistence logic or implementation crates, files,
+  schemas, connections, configuration, resources, lifecycle, or backup and
+  retention behavior, even when both use the same technology. They may use the
+  same workspace-pinned third-party dependency, such as `rusqlite`, without
+  sharing persistence behavior.
 - The Server isolates Application Database persistence behind an internal
   backend contract. Each supported Application Database backend is a dedicated
   Rust crate that owns its database-driver integration, schema migrations,

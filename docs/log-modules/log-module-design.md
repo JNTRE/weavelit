@@ -14,11 +14,13 @@ for the two log types.
 
 Application Database bootstrap configuration is selected and configured in a
 separate preceding Init step. Selecting the same underlying technology for an
-Application Database and a Log Module does not reuse its crate, code,
-configuration, database file, schema, connection, or other resources. A Log
-Module may instead deliver records to a non-database destination, such as email,
-an API endpoint, or Checkmk; its destination type does not affect Application
-Database behavior.
+Application Database and a Log Module does not reuse Weavelit-owned persistence
+logic or implementation crates, configuration, database file, schema,
+connection, or other resources. They may use the same workspace-pinned
+third-party dependency, such as `rusqlite`, without sharing persistence
+behavior. A Log Module may instead deliver records to a non-database destination,
+such as email, an API endpoint, or Checkmk; its destination type does not affect
+Application Database behavior.
 
 Interactive Init collects configuration in this order:
 
