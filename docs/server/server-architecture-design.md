@@ -66,9 +66,16 @@ A shared Server crate boundary must not erase the distinction between product
 concepts. In particular, an Application Database backend is not a runtime
 module. Application Database persistence remains separate from every
 **[Log Module](../glossary.md#applications-and-interfaces)** destination even
-when their implementations use the same technology.
+when their implementations use the same technology. They may use the same
+approved workspace dependency without sharing persistence behavior.
 
-## Production Dependency Registry
+## Rust Workspace Dependency Policy
+
+`server/Cargo.toml` is the Server Rust workspace manifest and the authority for
+workspace-wide dependency governance. This policy applies to every direct
+production dependency in that workspace.
+
+### Approved Production Dependencies
 
 This document is the stable record of approved direct production dependencies
 for the Server Rust workspace. It does not list transitive dependencies;
@@ -99,17 +106,24 @@ evidence as a released package.
 
 | Package | Source and version | Owning crate | Behavior | Enabled features and security baseline |
 | --- | --- | --- | --- | --- |
-| None currently approved | N/A | N/A | N/A | N/A |
+| `rusqlite` | crates.io; exact version is recorded when the dependency is first declared | `weavelit-server-database-sqlite` | Milestone 1 SQLite Application Database backend | `bundled`; do not enable runtime SQLite extension loading; select only additional features required by the backend |
 
 The workspace manifest owns an approved shared dependency's identity, version,
 source, and any workspace-wide security baseline. A single-consumer dependency
 remains in its owning crate manifest. When a second workspace crate requires
 the same package, that change promotes its shared configuration to
-`[workspace.dependencies]`; each crate continues to declare only its minimal
-behavior-specific features. Review the resulting combined feature set because
-Cargo unifies features across workspace consumers.
+`[workspace.dependencies]`.
 
-## Dependency Resolution And Updates
+### Shared Dependency Versions And Features
+
+Each consuming crate explicitly declares only the minimal features needed for
+its behavior. The approval record states whether default features are enabled;
+when the upstream package supports it and required behavior permits, use
+`default-features = false` and opt into named features instead. Review every
+enabled feature as part of the dependency change because Cargo unifies features
+across workspace consumers.
+
+### Dependency Resolution And Updates
 
 Commit `server/Cargo.lock` as Cargo-generated output and never edit it by hand.
 A dependency manifest change that changes resolution includes the resulting

@@ -41,7 +41,10 @@ under `docs/` before this work is merged.
 ## Documentation Changes
 
 - `docs/server/server-architecture-design.md`: Add and maintain the approved
-  direct production dependency registry.
+  direct production dependency registry and record the shared-dependency
+  boundary.
+- `docs/plan/issues/issues.md`: Update issue #5's summary with the settled
+  policy outcome.
 
 ## Related Documents
 
