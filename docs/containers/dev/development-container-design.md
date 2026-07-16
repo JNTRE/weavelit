@@ -15,6 +15,9 @@ non-runnable placeholder until the Server defines its development
 configuration, persistent-state location, bootstrap secret-file interface, and
 startup behavior.
 
+The placeholder's `org.opencontainers.image.description` label points to this
+document.
+
 When implemented, the development image must:
 
 - target Ubuntu 26.04 LTS `amd64` and use a pinned base-image digest;

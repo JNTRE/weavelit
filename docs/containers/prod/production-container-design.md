@@ -13,6 +13,9 @@ as a development-image mode. Its Containerfile remains a non-runnable
 placeholder until the release package, image provenance, and production
 deployment contract are defined.
 
+The placeholder's `org.opencontainers.image.description` label points to this
+document.
+
 When implemented, the production image must:
 
 - run a verified packaged Server artifact without compiling source code at

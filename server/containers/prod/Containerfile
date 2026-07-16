@@ -1,4 +1,4 @@
 FROM scratch
 
 LABEL org.opencontainers.image.title="Weavelit production image placeholder"
-LABEL org.opencontainers.image.description="Not a usable production image; see docs/containers/prod/spec.md."
+LABEL org.opencontainers.image.description="Not a usable production image; see docs/containers/prod/production-container-design.md."
