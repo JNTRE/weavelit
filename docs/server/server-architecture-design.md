@@ -91,16 +91,17 @@ enables, its owning crate, its package source and declared version, the minimal
 enabled feature set, and why the standard library or an approved dependency is
 insufficient. It must also record maintenance and license compatibility
 evidence, plus the focused and locked-workspace validation performed.
-Security-sensitive dependencies additionally record their security property, relevant
-capabilities or backend choices, applicable advisory review, and safe-failure
-test coverage.
+Security-sensitive dependencies additionally record the security property they
+provide, the enabled capabilities or backend choices relevant to that property,
+applicable advisory-review evidence, and safe-failure test coverage.
 
 Released crates.io packages are the normal production source. Local paths are
 reserved for internal workspace members; third-party code is not vendored into
 the workspace. Alternate registries are prohibited unless explicitly approved.
 A third-party Git dependency, unpublished fork, or package from another
-non-registry source resolved in `server/Cargo.lock` is a temporary exception.
-It requires an immutable full commit revision where applicable, its source and
+non-registry source in `server/Cargo.lock` is a temporary exception, whether a
+direct production dependency selects it or it is introduced transitively. It
+requires an immutable full commit revision where applicable, its source and
 replacement rationale, a named owner, and a removal condition or follow-on
 issue. It receives the same approval and validation evidence as a released
 package. Internal workspace members are not exceptions.

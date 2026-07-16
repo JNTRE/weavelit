@@ -27,14 +27,15 @@
 
 Each open issue uses an issue-centered record instead of a wide table. This
 keeps summaries readable, accommodates optional project fields, and limits a
-routine metadata update to the affected issue's record. Every issue must
-strictly adhere to the example record format below.
+routine metadata update to the affected issue's record. Every issue must retain
+the example's heading, summary, and grouped-table layout. Include only rows for
+applicable metadata fields; do not add or restructure record fields.
 
 - The linked heading records the issue number, name, and canonical issue link.
 - `Summary` states the intended outcome or decision at a high level.
-- `Related` records the related epic and GitHub Milestone.
-- `Project` records GitHub Project board status.
-- `Issue` records type, label, and priority.
+- `Related` rows record the related epic and GitHub Milestone when applicable.
+- `Project` rows record GitHub Project board status when applicable.
+- `Issue` rows record type, label, and priority when applicable.
 
 ## Open Issues
 
