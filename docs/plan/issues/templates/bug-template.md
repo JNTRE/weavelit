@@ -50,4 +50,4 @@ Environment and evidence:
 
 ## Related Documents
 
-- [GitHub Project and Issue Standards](../project/issue-standards.md)
+- [GitHub Project and Issue Standards](../../project/issue-standards.md)

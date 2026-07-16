@@ -34,4 +34,4 @@ component labels, Priority, milestone, Project status, and parent epic.
 
 ## Related Documents
 
-- [GitHub Project and Issue Standards](../project/issue-standards.md)
+- [GitHub Project and Issue Standards](../../project/issue-standards.md)

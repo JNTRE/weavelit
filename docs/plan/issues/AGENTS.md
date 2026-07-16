@@ -12,26 +12,23 @@ Use this section to understand what this directory owns, what it does not own, a
 - It does not own live issue state, relationships, milestones, or project fields; GitHub owns those records.
 - `issues.md` defines the standard issue-summary format and current open-issue snapshot.
 - The Markdown templates define the required body structure for agent-created issues; GitHub remains the source of truth for each issue's native type and planning metadata.
+- The `templates/` child directory owns the template-specific creation workflow; read `templates/AGENTS.md` before changing a template.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local workflow, inventory, and issue-summary maintenance rules.
-- `bug-template.md`: Body template for issues with the native `bug` type.
-- `decision-template.md`: Body template for issues with the native `decision` type.
-- `epic-template.md`: Body template for issues with the native `epic` type.
-- `feature-template.md`: Body template for issues with the native `feature` type.
 - `issues.md`: High-level open-issue overview, planning metadata, and demonstration entry.
-- `risk-template.md`: Body template for issues with the native `risk` type.
-- `task-template.md`: Body template for issues with the native `task` type.
+- `templates/`: Markdown body templates for agent-created issues; follow `templates/AGENTS.md` before editing this boundary.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Create an issue by copying the matching template's sections beginning with `##` into a temporary body file, replacing every bracketed placeholder, and passing it to `gh issue create --body-file`.
+- Read `templates/AGENTS.md` before changing an agent-created issue body template.
+- Create an issue by copying the matching template in `templates/` beginning with `##` into a temporary body file, replacing every bracketed placeholder, and passing it to `gh issue create --body-file`.
 - Set the native issue type with `gh issue create --type`; then assign the component label, `Priority`, GitHub Milestone, Project status, and applicable issue relationships defined in `../project/issue-standards.md`.
 - Refresh issue records from the repository issue tracker, GitHub Milestones, and the Weavelit GitHub Project in the same update.
 - Include each open repository issue exactly once and summarize its stated outcome or decision without replacing its acceptance criteria.
@@ -49,7 +46,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep the required heading order and keep this guide under 100 lines.
 - Preserve the standard record fields in `issues.md`; write `Not assigned` when GitHub has no value rather than inferring one.
-- Do not use GitHub Issue Forms; this repository creates issues through the Markdown templates in this directory.
+- Do not use GitHub Issue Forms; this repository creates issues through the Markdown templates in `templates/`.
 - Order an epic before its child issues, then order siblings by issue number.
 - Record activity dates as `YYYY-MM-DD`.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.

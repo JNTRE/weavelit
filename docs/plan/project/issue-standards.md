@@ -9,7 +9,7 @@ changes.
 ## Issue Types
 
 Create issues from the matching Markdown template in
-[`docs/plan/issues/`](../issues/). Copy the template sections beginning with
+[`docs/plan/issues/templates/`](../issues/templates/). Copy the template sections beginning with
 `##` into the body file, then pass the completed file to
 `gh issue create --body-file` and set the matching native type with `--type`.
 After creation, assign the labels, `Priority`, GitHub Milestone, Project status,

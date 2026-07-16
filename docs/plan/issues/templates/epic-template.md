@@ -30,4 +30,4 @@ component labels, Priority, milestone, Project status, and child issues.
 
 ## Related Documents
 
-- [GitHub Project and Issue Standards](../project/issue-standards.md)
+- [GitHub Project and Issue Standards](../../project/issue-standards.md)
