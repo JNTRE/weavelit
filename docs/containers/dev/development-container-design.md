@@ -28,8 +28,9 @@ When implemented, the development image must:
   quality-gate suite;
 - keep non-secret development configuration outside the image and receive it
   through environment variables;
-- mount bootstrap secrets as read-only local files, never include them in the
-  build context, image layers, or environment variables; and
+- mount the versioned bootstrap configuration and bootstrap secrets as local
+  files, never include secrets in the build context, image layers, or
+  environment variables; and
 - use explicitly managed volumes for future persistent Server state and any
   optional build-cache data.
 
@@ -44,5 +45,6 @@ state, and secret mounts follow this design.
 
 - [Testing and Validation Policy](../../testing.md)
 - [Milestone 1](../../plan/milestones/milestone-1.md)
+- [Server Init Design](../../server/init-design.md)
 - [Production Container Design](../prod/production-container-design.md)
 - [Open Questions](../../open-questions.md)

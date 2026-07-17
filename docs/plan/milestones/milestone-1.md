@@ -7,7 +7,7 @@ Implementation progress is tracked in [GitHub Milestone 1](https://github.com/JN
 ## Goals
 
 - [ ] A **[Host Administrator](../../glossary.md#identities-and-access)** can use the **[Admin CLI](../../glossary.md#applications-and-interfaces)** to complete **[Init](../../glossary.md#states-and-requests)** interactively or from an explicit non-interactive bootstrap configuration file, create the **[Administrators Group](../../glossary.md#identities-and-access)**, create the first local **[Human User](../../glossary.md#identities-and-access)** without MFA enrollment, and add that user to the Administrators Group.
-- [ ] The non-interactive Admin CLI bootstrap uses the same Server-owned Init logic as interactive Init, runs only against uninitialized Server state, and reads sensitive bootstrap values only from local files referenced by its configuration file. It does not accept sensitive bootstrap values through environment variables or log or persist those values or the configuration.
+- [ ] The non-interactive Admin CLI bootstrap uses the shared Server-owned Init use case defined in the [Server Init Design](../../server/init-design.md): it uses versioned TOML, runs only against uninitialized Server state, reads sensitive bootstrap values only from referenced local files, rejects environment-secret input, and does not log or persist those values or the configuration.
 - [ ] The Administrators Group grants the Web UI **[Client Module](../../glossary.md#applications-and-interfaces)** and the **[Server Administration Permission](../../glossary.md#identities-and-access)**, but no named Operations.
 - [ ] The **[Weavelit Server](../../glossary.md#applications-and-interfaces)** applies default-deny authorization using additive Group grants and global availability gates. A disabled Human User, Client Module, **[Service Module](../../glossary.md#applications-and-interfaces)**, or **[Operation](../../glossary.md#applications-and-interfaces)** is unavailable regardless of otherwise effective Group grants.
 - [ ] A Host Administrator can use the Admin CLI to set the Weavelit Server listening IP address.
@@ -32,3 +32,4 @@ Implementation progress is tracked in [GitHub Milestone 1](https://github.com/JN
 - [Security Model](../../security-model.md)
 - [Glossary](../../glossary.md)
 - [Open Questions](../../open-questions.md)
+- [Server Init Design](../../server/init-design.md)

@@ -52,6 +52,11 @@ such as `weavelit-server-log-sqlite`, without
 requiring a `weavelit-server-log` crate before it has a meaningful shared
 contract or code.
 
+`weavelit-server-init` is the dedicated Server-owned crate for the shared Init
+use case. It is not a runtime module and is not linked into the normal
+`weavelit-server` runtime. Its detailed adapter and lifecycle boundary is
+defined in the [Server Init Design](init-design.md).
+
 ## Compiled-In Component Boundaries
 
 The **[Weavelit Server](../glossary.md#applications-and-interfaces)** composes
@@ -154,6 +159,7 @@ impact, and validation performed.
 
 - [Core Statements](../core-statements.md)
 - [Glossary](../glossary.md)
+- [Server Init Design](init-design.md)
 - [Application Database Design](database/application-database-design.md)
 - [Log Module Design](../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../testing.md)

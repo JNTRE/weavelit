@@ -30,14 +30,21 @@ concurrency model behind that same contract.
 The initial contract expresses Server application intent rather than storage
 mechanics. It supports only these capabilities:
 
-1. Inspect whether the Application Database is initialized.
-2. Atomically persist the initial application-owned state exactly once.
-3. Load the initialized application-owned state required by Server startup.
+1. Inspect whether the Application Database is uninitialized,
+   `InitializationPending`, or initialized.
+2. Atomically create, reconcile, or discard a non-operational initialization
+   checkpoint containing a recovery public key and delivery nonce only.
+3. Atomically replace an eligible checkpoint with the complete
+   application-owned initial state exactly once.
+4. Load the initialized application-owned state required by Server startup.
 
 The initial write persists the complete supplied state and marks the database
-initialized as one operation. If it fails, no supplied state remains and the
-database stays uninitialized. A later initialization attempt returns the stable
-`AlreadyInitialized` error.
+initialized as one operation. A pending checkpoint is not application state and
+normal Server startup refuses to operate from it. It permits the Init crate to
+reconcile recovery-key output delivery without creating a new key pair or
+persisting bootstrap configuration. If the final write fails, the checkpoint
+remains available for the same Init workflow to resume or safely discard. A
+later initialization attempt returns the stable `AlreadyInitialized` error.
 
 The contract initially exposes these storage-neutral error categories:
 
@@ -69,6 +76,10 @@ such as the listening IP address.
 **[Admin CLI](../../glossary.md#applications-and-interfaces)** workflow, not a
 network-exposed Server function. Post-Init administration changes operational
 state through its own authorized administration boundary and cannot rerun Init.
+The Server-owned preflight checks initialized state before interactive
+initialization secrets are accepted, and the contract's final atomic write
+returns `AlreadyInitialized` on every later attempt. The detailed Init workflow
+and adapter boundary are defined in the [Server Init Design](../init-design.md).
 
 ## Log Module Separation
 
@@ -133,6 +144,7 @@ in an ordinary backup artifact.
 - [Open Questions](../../open-questions.md)
 - [Glossary](../../glossary.md)
 - [Server Architecture Design](../server-architecture-design.md)
+- [Server Init Design](../init-design.md)
 - [SQLite Application Database Design](sqlite/sqlite-application-database-design.md)
 - [Log Module Design](../../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../../testing.md)
