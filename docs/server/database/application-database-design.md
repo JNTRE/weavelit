@@ -69,6 +69,10 @@ such as the listening IP address.
 **[Admin CLI](../../glossary.md#applications-and-interfaces)** workflow, not a
 network-exposed Server function. Post-Init administration changes operational
 state through its own authorized administration boundary and cannot rerun Init.
+The Server-owned Init crate checks initialized state before accepting secrets,
+and the contract's atomic initial write returns `AlreadyInitialized` on every
+later attempt. The detailed Init workflow and adapter boundary are defined in
+the [Server Init Design](../init-design.md).
 
 ## Log Module Separation
 
@@ -133,6 +137,7 @@ in an ordinary backup artifact.
 - [Open Questions](../../open-questions.md)
 - [Glossary](../../glossary.md)
 - [Server Architecture Design](../server-architecture-design.md)
+- [Server Init Design](../init-design.md)
 - [SQLite Application Database Design](sqlite/sqlite-application-database-design.md)
 - [Log Module Design](../../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../../testing.md)

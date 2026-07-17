@@ -21,6 +21,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `automation-identities/`: Documentation for **[Automation Identity](../glossary.md#identities-and-access)** lifecycle, ownership, and accountability design.
 - `audit/`: Documentation for the Server's accountability and Audit Log design.
 - `database/`: Documentation for Application Database backend boundaries and their implementation design.
+- `init-design.md`: Server-owned Init crate, adapter, bootstrap, secret-file, and error-boundary design.
 - `observability/`: Documentation for Server System Log design and future operational diagnosis.
 - `server-architecture-design.md`: Shared Server workspace, crate-composition, and lifecycle design rules.
 

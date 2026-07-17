@@ -20,6 +20,8 @@ When implemented, the production image must:
 
 - run a verified packaged Server artifact without compiling source code at
   container startup;
+- run the Server and any bootstrap adapter as a dedicated non-root service
+  user, with mounted secret files readable only by that user;
 - exclude Rust, Cargo, source code, test tooling, and build dependencies;
 - document and test host administration, persistent state and backups, TLS
   termination, non-secret configuration, secret injection, provenance, upgrade,
@@ -31,4 +33,5 @@ When implemented, the production image must:
 
 - [Milestone 14](../../plan/milestones/milestone-14.md)
 - [Development Container Design](../dev/development-container-design.md)
+- [Server Init Design](../../server/init-design.md)
 - [Open Questions](../../open-questions.md)

@@ -39,6 +39,7 @@ Each change must include the tests appropriate to its risk and boundary:
 | Database, filesystem, configuration, serialization, or process behavior | Integration tests using isolated temporary resources and real adapters. |
 | Versioned API, **[Client Module](glossary.md#applications-and-interfaces)**, or **[Service Module](glossary.md#applications-and-interfaces)** contract | Contract tests for accepted requests and stable success and error responses. |
 | Authentication, authorization, secret handling, audit logging, MFA, or destructive operations | Tests for every allowed and denied path, plus tests that sensitive values are absent from returned errors and logs. |
+| Server-owned Init use case or bootstrap adapter | Direct workflow tests for validation, one-time atomic persistence, retry, redaction, and secret-file rejection; process-level tests for each supplied adapter's command or mount workflow. |
 | Provider integration | Tests against controlled fakes or recorded fixtures for request construction, error mapping, retry, rate-limit, and duplicate-protection behavior. Live-provider checks are separately controlled smoke tests, never the default test suite. |
 | Web UI, Weavelit CLI, Admin CLI, packaging, or deployment workflow | Focused end-to-end or smoke tests of the user workflow and the failure condition most likely to cause an unusable release. |
 
@@ -138,3 +139,4 @@ tests to a final hardening phase.
 - [Core Statements](core-statements.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
+- [Server Init Design](server/init-design.md)

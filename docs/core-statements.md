@@ -58,8 +58,9 @@ when its additional context is needed.
   supported operation.
 - Weavelit returns a structured result that an AI-assisted workflow can report
   and use.
-- Results include a correlation identifier; errors are structured, stable, and
-  never expose secrets or raw internal traces.
+- Results include a correlation identifier. A centralized Server-owned
+  presentation layer maps typed failures to structured, stable errors that
+  never expose secrets, raw internal traces, or dependency-specific details.
 - Weavelit fails safely when a request is invalid, unauthorized, duplicated,
   or cannot be completed.
 - A write operation must be safe to retry or protected against creating
@@ -225,12 +226,14 @@ when its additional context is needed.
   not a remotely callable Weavelit interface.
 - The Admin CLI supports interactive **[Init](glossary.md#states-and-requests)**
   and an explicit non-interactive bootstrap mode that reads a local bootstrap
-  configuration file. Both use the same Server-owned initialization logic.
-  Non-interactive bootstrap runs only against uninitialized Server state, reads
-  sensitive bootstrap values from local files referenced by the configuration
-  file rather than environment variables, and does not log or persist those
-  values or the bootstrap configuration. This non-interactive mode applies only
-  to Init; other Admin CLI functions remain host-local administrative actions.
+  configuration file. Both invoke the same Server-owned `InitializeServer` use
+  case in `weavelit-server-init`; the normal Server runtime does not expose an
+  Init interface. Non-interactive bootstrap uses versioned TOML, runs only
+  against uninitialized Server state, reads sensitive values only from local
+  files referenced by the configuration, and does not log or persist those
+  values or the configuration. This non-interactive mode applies only to Init;
+  other Admin CLI functions remain host-local administrative actions. The
+  detailed boundary is defined in the [Server Init Design](server/init-design.md).
 - **[Init](glossary.md#states-and-requests)**, creation of the
   **[Administrators Group](glossary.md#identities-and-access)**, creation of
   the first local **[Human User](glossary.md#identities-and-access)**, and
@@ -345,4 +348,5 @@ when its additional context is needed.
 - [Vision](vision.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
+- [Server Init Design](server/init-design.md)
 - [Testing and Validation Policy](testing.md)

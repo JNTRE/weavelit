@@ -100,6 +100,12 @@ owning documentation when its additional context is needed.
   Administrator records the private recovery key outside Weavelit. The private
   recovery key is never stored in the Application Database, Server
   configuration, container volume, logs, or ordinary backup artifact.
+- Init bootstrap configuration contains no inline secret values or
+  environment-variable interpolation. It references secret files only; the
+  Server accepts a bounded regular non-symlink file without group or world
+  access and never logs the secret, its contents, or its path. The detailed
+  adapter and recovery-key delivery behavior is defined in the
+  [Server Init Design](server/init-design.md).
 - An encrypted backup may be created through server-administration functions
   and downloaded by an Administrator. The Server encrypts it for the recovery
   public key and does not expose the private recovery key during ordinary
@@ -153,3 +159,4 @@ owning documentation when its additional context is needed.
 
 - [Core Statements](core-statements.md)
 - [Glossary](glossary.md)
+- [Server Init Design](server/init-design.md)
