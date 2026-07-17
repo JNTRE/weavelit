@@ -14,6 +14,15 @@ request that it accepts. It owns bootstrap configuration processing,
 secret-file handling, Server semantic validation, recovery-key delivery, and
 the atomic initial-state transition.
 
+Before input collection, an adapter calls the crate's non-mutating
+`PreflightInitializeServer` helper with the selected backend and the minimum
+connection configuration needed to open it. It returns an opaque preflight
+handle only when the target is eligible for Init. The handle is bound to the
+selected Application Database and is supplied to `InitializeServer`, which
+rechecks eligibility during its final atomic state transition. Preflight is not
+an alternative initialization path and cannot create or modify application
+state.
+
 The normal `weavelit-server` runtime does not depend on
 `weavelit-server-init` and does not expose an Init interface. It opens existing
 application state for normal operation and does not start normally when that
@@ -23,8 +32,8 @@ The **[Admin CLI](../glossary.md#applications-and-interfaces)** is a host-local
 adapter. It owns command parsing, interactive prompts, and presentation of
 normalized results. It has no direct Application Database or driver access and
 cannot create an alternative initialization path. Interactive prompts and
-non-interactive bootstrap both create the same normalized request and invoke
-`InitializeServer`.
+non-interactive bootstrap both first use Server-owned preflight, then create the
+same normalized request and invoke `InitializeServer`.
 
 A future container bootstrap adapter passes its mounted bootstrap-configuration
 path to `weavelit-server-init`. It reuses the same parser, secret-file rules,
@@ -52,6 +61,14 @@ never reads bootstrap secrets from environment variables. Unrelated non-secret
 environment configuration remains valid; a future explicitly named secret
 environment variable is unsupported and must be rejected rather than read.
 
+Preflight reads only the selected backend's non-sensitive configuration. When a
+future backend cannot be opened without a secret, the Init crate may read only
+the referenced connection secret needed for that opening; the adapter never
+reads it. For the MVP SQLite backend, preflight needs no secret. After preflight
+accepts the target, the adapter may collect the initial Administrator password,
+Log Module credentials, and other initialization secrets. An already initialized
+target therefore rejects before those values are prompted for or read.
+
 ## Secret Files And Recovery-Key Delivery
 
 The Init crate accepts a secret file only when the opened object is a
@@ -69,15 +86,33 @@ Server process can read the file and it is not group- or world-accessible.
 During Init, the Server generates a backup recovery key pair and retains only
 the public key. Interactive Init may display the private key once after an
 explicit confirmation. Non-interactive bootstrap requires an explicit output
-file, creates it only when it does not already exist, applies restrictive
-permissions, and writes the private key once without printing or logging it.
-Future container bootstrap uses the same mounted output-file mechanism.
+file and never prints or logs the private key. Future container bootstrap uses
+the same mounted output-file mechanism.
+
+Recovery-key delivery and initialization use a recoverable two-phase protocol:
+
+1. The Init crate creates a restrictive, unique staging file beside the requested
+   output path, writes and synchronizes the private key, and records an
+   `InitializationPending` checkpoint containing only the public key and a
+   delivery nonce. Normal Server startup treats this checkpoint as uninitialized.
+2. It finalizes the staging file at the requested output path without replacing
+   an existing file, then atomically replaces the checkpoint with the complete
+   initialized state.
+
+If a delivery or final-state write fails, the checkpoint prevents a new key pair
+from being generated. A retry using the same output path verifies the staged or
+final key against the pending public key and resumes the same `InitializeServer`
+workflow. If neither delivery file remains, the crate safely discards the
+non-operational checkpoint before beginning a new attempt. It never marks the
+Server initialized before private-key delivery succeeds, and it never overwrites
+an unrelated output file.
 
 ## Initialization Lifecycle And Errors
 
-Init identifies and opens the configured **[Application Database](../glossary.md#applications-and-interfaces)** before collecting interactive secrets or reading
-referenced secret files. If the database is already initialized,
-`InitializeServer` returns `AlreadyInitialized` without changing state.
+`PreflightInitializeServer` identifies and opens the configured
+**[Application Database](../glossary.md#applications-and-interfaces)** before
+interactive initialization secrets are collected or read. If the database is
+already initialized, it returns `AlreadyInitialized` without changing state.
 
 The complete application-owned initial state commits atomically. A failure in
 validation, recovery-key generation, Log Module setup, durable Audit Log
@@ -96,10 +131,11 @@ operating-system errors never reach users or automation.
 
 ## Test Evidence
 
-`weavelit-server-init` has direct tests for normalized-request validation,
-TOML parsing and version rejection, secret-file safety, environment rejection,
-recovery-key delivery, redaction, atomic rollback, retry behavior, and the
-one-time `AlreadyInitialized` guard.
+`weavelit-server-init` has direct tests for preflight-before-prompt behavior,
+normalized-request validation, TOML parsing and version rejection, secret-file
+safety, environment rejection, recovery-key staging and reconciliation,
+redaction, atomic rollback, retry behavior, and the one-time
+`AlreadyInitialized` guard.
 
 Admin CLI process-level tests verify interactive and bootstrap command wiring,
 stable normalized error output, and high-risk rejection cases. Interactive
