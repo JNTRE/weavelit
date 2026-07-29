@@ -31,6 +31,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, `../../../AGENTS.md`, and `../../../../AGENTS.md`.
+- Before creating or updating a production document, read the [Documentation Standards](../../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Select the template whose hidden `Native type` value matches the issue being created.
 - Copy only the sections beginning with `##` into the temporary body file passed to `gh issue create --body-file`.
 - Replace every bracketed placeholder before creating the issue.

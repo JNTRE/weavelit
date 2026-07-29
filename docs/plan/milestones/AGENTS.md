@@ -39,6 +39,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
   and the repository-root `AGENTS.md`.
+- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Keep changes focused on the affected milestone. When a milestone is added,
   removed, moved, or renamed, update the applicable parent asset inventories in
   the same change.
@@ -59,15 +60,19 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
+- Preserve the required heading order and keep this guide under 100 lines.
 - Name milestone documents `milestone-<number>.md` and title them
   `# Milestone <number>: <title>`.
 - Keep each milestone's `## Goals` section after its title and its
   `## Related Documents` section at the end of the file.
 - Keep goals as unchecked Markdown checklist items until their outcome is
   complete and verified.
-- Preserve a final `## Related Documents` section with non-numbered links to
-  existing repository-relative canonical documents; update it when referenced
-  documentation changes.
+- Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
+- Every production document must include a `## Related Documents` section at the end of the document.
+- `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
+- Include only valid, repository-relative links to existing canonical documents.
+- Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
+- Remove stale links and add canonical links so the section reflects current source-of-truth references.
 - Use the canonical names from `../../glossary.md` and format their first
   substantive use in a section as bold glossary links.
 - Link to canonical documents rather than restating settled product, security,
