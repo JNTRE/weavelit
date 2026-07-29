@@ -29,8 +29,10 @@ Follow this section for workflow, sequencing, and decision order when making cha
   and the repository-root `AGENTS.md`.
 - Update this documentation when the matching production Containerfile or its
   packaging, runtime, deployment, or release-validation contract changes.
-- Keep the production image limited to verified packaged Server artifacts;
-  never route development tooling or source-build behavior into this boundary.
+- Keep the production image limited to the same versioned, prebuilt Server
+  release output used to assemble the `.deb` package; never route a separate
+  Server build, development tooling, or source-build behavior into this
+  boundary.
 - Record unresolved production-container decisions in `../../open-questions.md`.
 
 ## Standards and Conventions

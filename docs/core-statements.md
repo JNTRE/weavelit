@@ -206,6 +206,10 @@ when its additional context is needed.
 - Weavelit consists of two separately packaged applications: the
   **[Weavelit Server](glossary.md#applications-and-interfaces)** and the
   **[Weavelit CLI](glossary.md#applications-and-interfaces)**.
+- The Weavelit Server is one deployable application process. The Server core,
+  Application Database backends, Client Modules, Service Modules, Log Modules,
+  and MFA Modules are compiled into that application; they are not
+  independently deployed services.
 - The Weavelit Server owns the HTTPS API, operation catalog, authorization,
   System Logs, Audit Logs, Log Module configuration, authentication
   configuration, provider integrations, and provider credentials.
@@ -234,6 +238,12 @@ when its additional context is needed.
   values or the configuration. This non-interactive mode applies only to Init;
   other Admin CLI functions remain host-local administrative actions. The
   detailed boundary is defined in the [Server Init Design](server/init-design.md).
+- Package installation, service configuration, and future container adapters
+  may supply only the host and process settings, paths, and references needed
+  before Init or Server startup. They do not create a second application
+  configuration surface: Init establishes initial application configuration,
+  and authenticated server-administration functions own mutable application
+  settings thereafter.
 - **[Init](glossary.md#states-and-requests)**, creation of the
   **[Administrators Group](glossary.md#identities-and-access)**, creation of
   the first local **[Human User](glossary.md#identities-and-access)**, and
@@ -331,10 +341,13 @@ when its additional context is needed.
 - Host-level administration is separate from Weavelit's application client
   interfaces.
 - The Weavelit Server is packaged as a `.deb` application for a controlled
-  Ubuntu 26.04 LTS `amd64` host, where it runs as a gateway service.
+  Ubuntu 26.04 LTS `amd64` host, where it runs as a gateway service. The `.deb`
+  package is the MVP production distribution and deployment format.
 - A supported OCI-compliant production image for the Weavelit Server is a
-  post-MVP deployment option. It will run a verified packaged Server artifact,
-  not compile the application when the container starts.
+  post-MVP deployment option. It will contain the same versioned, prebuilt
+  Server release output used to assemble the `.deb` package; the image is a
+  sibling delivery wrapper, not a separate Server build, and does not compile
+  the application when the container starts.
 - Weavelit implements provider integrations as focused
   **[Service Module](glossary.md#applications-and-interfaces)** libraries with
   deliberately registered operations.

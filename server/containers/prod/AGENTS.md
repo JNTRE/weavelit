@@ -1,8 +1,9 @@
 # Production Containerfile Agent Guide
 
 This directory owns the future production Containerfile for the Weavelit
-Server. It is reserved for the packaged, verified OCI artifact introduced in
-Milestone 14 and must remain isolated from development tooling.
+Server. It is reserved for the OCI wrapper around the versioned, prebuilt Server
+release output introduced in Milestone 14 and must remain isolated from
+development tooling.
 
 ## Purpose and Scope
 
@@ -28,10 +29,11 @@ Follow this section for workflow, sequencing, and decision order when making cha
   and the repository-root `AGENTS.md`.
 - Read the canonical documentation in `../../../docs/containers/prod/` before changing
   the Containerfile and update it in the same change when its contract changes.
-- Do not replace the placeholder until the verified Server package, image
-  provenance, and production deployment contract are defined.
-- Validate an implemented image against its verified packaged Server artifact;
-  never compile Server source code at container startup.
+- Do not replace the placeholder until the versioned, prebuilt Server release
+  output used to assemble the `.deb` package, image provenance, and production
+  deployment contract are defined.
+- Validate an implemented image against that same Server release output; never
+  install the `.deb` or compile Server source code at container startup.
 
 ## Standards and Conventions
 

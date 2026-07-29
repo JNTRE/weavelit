@@ -93,17 +93,22 @@ of all log output?
 
 ### 10. Package, update, and container model
 
-What versioning scheme, distribution channel, artifact-integrity or signing
-mechanism, update policy, and rollback procedure apply to the Ubuntu
+For the MVP release, what versioning scheme, distribution channel,
+artifact-integrity or signing mechanism, update policy, and rollback procedure
+apply to the Ubuntu
 **[Weavelit Server](glossary.md#applications-and-interfaces)** package and the
 macOS **[Weavelit CLI](glossary.md#applications-and-interfaces)** artifact?
 Which additional Weavelit CLI platforms are supported after macOS 26 and later
-on Apple Silicon (`arm64`)? For the post-MVP OCI-compliant production Server
-image, what host administration boundary applies to Admin CLI functions other
-than its defined non-interactive Init bootstrap mode, and how are those actions
-authorized and audited? What persistent-volume and backup model, TLS
-termination, secret injection mechanism, supported orchestrators, image
-provenance, and upgrade and rollback policy apply?
+on Apple Silicon (`arm64`)?
+
+For the post-MVP OCI-compliant production Server image, how does the build and
+verification workflow prove that the image contains the same versioned,
+prebuilt Server release output used to assemble the `.deb` package? What host
+administration boundary applies to Admin CLI functions other than its defined
+non-interactive Init bootstrap mode, and how are those actions authorized and
+audited? What persistent-volume and backup model, TLS termination, secret
+injection mechanism, supported orchestrators, image provenance, and upgrade
+and rollback policy apply?
 
 ### 11. Zendesk reference integration
 
