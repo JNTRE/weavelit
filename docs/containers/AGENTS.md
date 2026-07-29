@@ -1,9 +1,11 @@
 # Container Documentation Agent Guide
 
 This directory defines the canonical OCI container contracts for the Weavelit
-Server. It keeps the Milestone 1 development image separate from the later
-production image so their toolchain, runtime, and deployment requirements do
-not leak into each other.
+Server. The MVP production deployment is the native `.deb` package delivered
+in Milestone 8; the production image is a post-MVP option delivered in
+Milestone 14. This directory keeps the Milestone 1 development image separate
+from that later production image so their toolchain, runtime, and deployment
+requirements do not leak into each other.
 
 ## Purpose and Scope
 
