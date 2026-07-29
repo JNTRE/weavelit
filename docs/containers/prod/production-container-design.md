@@ -21,11 +21,12 @@ document.
 When implemented, the production image must:
 
 - contain and run the same verified, prebuilt Server release output used to
-  assemble the `.deb` package, without installing the `.deb` or compiling
-  source code at container startup;
-- preserve the Server-owned Init and application-configuration boundaries;
-  container inputs and bootstrap adapters must not create an alternative
-  configuration surface;
+  assemble the `.deb` package, without installing the `.deb` at any image-build
+  or runtime stage and without compiling source code at container startup;
+- preserve the Server-owned
+  **[Init](../../glossary.md#states-and-requests)** and
+  application-configuration boundaries; container inputs and bootstrap adapters
+  must not create an alternative configuration surface;
 - run the Server and any bootstrap adapter as a dedicated non-root service
   user, with mounted secret files readable only by that user;
 - exclude Rust, Cargo, source code, test tooling, and build dependencies;

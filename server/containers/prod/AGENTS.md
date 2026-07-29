@@ -32,8 +32,9 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Do not replace the placeholder until the versioned, prebuilt Server release
   output used to assemble the `.deb` package, image provenance, and production
   deployment contract are defined.
-- Validate an implemented image against that same Server release output; never
-  install the `.deb` or compile Server source code at container startup.
+- Validate an implemented image against that same Server release output; do not
+  install the `.deb` at any image-build or runtime stage, and do not compile
+  Server source code at container startup.
 
 ## Standards and Conventions
 

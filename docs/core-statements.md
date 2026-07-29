@@ -207,9 +207,12 @@ when its additional context is needed.
   **[Weavelit Server](glossary.md#applications-and-interfaces)** and the
   **[Weavelit CLI](glossary.md#applications-and-interfaces)**.
 - The Weavelit Server is one deployable application process. The Server core,
-  Application Database backends, Client Modules, Service Modules, Log Modules,
-  and MFA Modules are compiled into that application; they are not
-  independently deployed services.
+  **[Application Database](glossary.md#applications-and-interfaces)** backends,
+  **[Client Modules](glossary.md#applications-and-interfaces)**,
+  **[Service Modules](glossary.md#applications-and-interfaces)**,
+  **[Log Modules](glossary.md#applications-and-interfaces)**, and
+  **[MFA Modules](glossary.md#applications-and-interfaces)** are compiled into
+  that application; they are not independently deployed services.
 - The Weavelit Server owns the HTTPS API, operation catalog, authorization,
   System Logs, Audit Logs, Log Module configuration, authentication
   configuration, provider integrations, and provider credentials.
