@@ -27,6 +27,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
   and the repository-root `AGENTS.md`.
+- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Update this documentation when the matching production Containerfile or its
   packaging, runtime, deployment, or release-validation contract changes.
 - Keep the production image limited to the same versioned, prebuilt Server

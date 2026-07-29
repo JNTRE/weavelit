@@ -24,6 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
+- Before creating or updating a production document, read the [Documentation Standards](../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Place shared Client Module documentation directly in this folder; place module-specific detail in its appropriate child directory.
 - Preserve the future-only status of `mcp/`; do not add implementation artifacts or describe it as currently supported.
 - Use `../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.

@@ -27,6 +27,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Read `templates/AGENTS.md` before changing an agent-created issue body template.
 - Create an issue by copying the matching template in `templates/` beginning with `##` into a temporary body file, replacing every bracketed placeholder, and passing it to `gh issue create --body-file`.
 - Set the native issue type with `gh issue create --type`; then assign the

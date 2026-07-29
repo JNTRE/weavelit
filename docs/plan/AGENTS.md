@@ -27,6 +27,9 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
+- Before creating or updating a production document, read the
+  [Documentation Standards](../documentation-standards.md) and apply its
+  authority, document-type, lifecycle, structure, and writing rules.
 - Read `issues/issues.md` before changing how open work is summarized or mapped to GitHub Project metadata.
 - Read the affected document in `milestones/` before changing its outcomes. Keep milestones aligned with canonical documents for settled product, security, and technical decisions; unresolved choices remain in [Open Questions](../open-questions.md).
 - Read `project/AGENTS.md` and `project/project-standards.md` before changing

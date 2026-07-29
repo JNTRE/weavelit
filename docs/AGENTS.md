@@ -23,6 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `clients/`: Documentation for individual client applications, including the **[Weavelit CLI](glossary.md#applications-and-interfaces)** and **[Web UI](glossary.md#applications-and-interfaces)**.
 - `containers/`: Development and production OCI container-image documentation.
 - `core-statements.md`: Current product, security, and technical truths; expand or replace statements only after a clear decision.
+- `documentation-standards.md`: Shared authority, document-type, lifecycle, structure, and writing standards for production documentation under `docs/`.
 - `glossary.md`: Canonical definitions for Weavelit applications, interfaces, identities, access, states, and requests.
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
@@ -39,6 +40,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then the repository-root `AGENTS.md`.
+- Before creating or updating a production document, read the [Documentation Standards](documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Make minimal, targeted edits; avoid broad rewrites unless explicitly requested.
 - Use `glossary.md` for canonical terms and keep their usage consistent across the documentation.
 - Record settled product, security, or technical commitments in `core-statements.md`; remove a resolved item from `open-questions.md` and place its decision in the appropriate canonical document or an architecture decision record.
