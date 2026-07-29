@@ -20,6 +20,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local workflow, inventory, and issue-summary maintenance rules.
 - `issues.md`: High-level open-issue overview, planning metadata, and demonstration entry.
+- `todo.md`: Unscheduled ideas and tasks retained for future consideration.
 - `templates/`: Markdown body templates for agent-created issues; follow `templates/AGENTS.md` before editing this boundary.
 
 ## Usage Guidance
