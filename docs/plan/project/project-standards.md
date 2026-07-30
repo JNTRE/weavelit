@@ -100,6 +100,6 @@ milestone applies.
 
 ## Related Documents
 
-- [Issue Templates and Open Issue Overview](../issues/issues.md)
+- [Issue Templates and Issue Index](../issues/issues.md)
 - [Milestone Index](../milestones/milestones.md)
 - [Contributing](../../../CONTRIBUTING.md)

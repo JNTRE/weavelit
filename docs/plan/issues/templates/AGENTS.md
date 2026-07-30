@@ -12,7 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
 - This directory owns the Markdown body structure and native-type instructions for agent-created GitHub issues.
 - It does not own live issue metadata such as labels, `Priority`, milestones,
   Project status, or issue relationships; [GitHub Project Standards](../../project/project-standards.md) owns the documented values and assignment workflow.
-- This guide applies to the template files in this directory; [Open Issue Overview](../issues.md) owns the snapshot of issues created from them.
+- This guide applies to the template files in this directory; the [Issue Index](../issues.md) provides local navigation to open issues created from them.
 
 ## Asset Inventory
 

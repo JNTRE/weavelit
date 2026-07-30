@@ -1,8 +1,8 @@
 # Planning Documentation Agent Guide
 
 This directory organizes Weavelit's delivery-planning documentation. It keeps
-milestone navigation, the high-level issue view, and GitHub Project workflow
-references in a dedicated planning boundary.
+issue and milestone navigation and GitHub Project workflow references in a
+dedicated planning boundary.
 
 ## Purpose and Scope
 
@@ -10,8 +10,9 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns repository documentation organized around delivery planning.
 - It does not own canonical product, security, or technical decisions; those remain in the top-level documents under `docs/`.
+- GitHub Issues own issue titles, bodies, outcomes, acceptance criteria, type, state, labels, assignees, priority, relationships, milestone assignments, and GitHub Project fields.
 - GitHub Milestones own milestone titles, summaries, goals, state, dates, progress, and assigned issues.
-- The `issues/` and `milestones/` child directories own the open-issue overview and the repository milestone navigation index, respectively.
+- The `issues/` and `milestones/` child directories own the repository issue and milestone navigation indexes, respectively.
 - The `project/` child directory owns the reference for active GitHub issue metadata and Project workflow values.
 
 ## Asset Inventory
@@ -19,7 +20,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and planning-documentation boundary rules.
-- `issues/`: High-level documentation of open GitHub issues and their project-planning metadata.
+- `issues/`: Repository navigation to authoritative open GitHub Issues with brief summaries and optional Related Epic and Milestone context.
 - `milestones/`: Repository navigation to authoritative GitHub Milestones and their summaries; it does not duplicate milestone goals or state.
 - `project/`: GitHub issue-metadata and Project workflow standards; follow `project/AGENTS.md` before editing this boundary.
 
@@ -31,11 +32,12 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before creating or updating a production document, read the
   [Documentation Standards](../documentation-standards.md) and apply its
   authority, document-type, lifecycle, structure, and writing rules.
-- Read `issues/issues.md` before changing how open work is summarized or mapped to GitHub Project metadata.
+- Read `issues/issues.md`, then the linked authoritative GitHub Issue, before changing an issue. Keep the local index limited to summaries and optional Related Epic and Milestone context.
 - Read `milestones/milestones.md`, then the linked authoritative GitHub Milestone, before changing a milestone. Keep GitHub Milestone outcomes aligned with canonical documents for settled product, security, and technical decisions; unresolved choices remain in [Open Questions](../open-questions.md).
 - Read `project/AGENTS.md` and `project/project-standards.md` before changing
   documented GitHub Issue or Pull Request metadata or Project workflow values.
 - Keep planning outcomes aligned with canonical documents for settled product, security, and technical decisions instead of redefining those decisions.
+- Keep repository issue navigation in `issues/issues.md`; do not create local issue-body or planning-metadata snapshots.
 - Keep repository milestone navigation in `milestones/`; do not create local per-milestone outcome documents.
 
 ## Standards and Conventions

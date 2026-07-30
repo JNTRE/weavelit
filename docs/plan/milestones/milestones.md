@@ -163,5 +163,5 @@ behavior.
 - [Core Statements](../../core-statements.md)
 - [Open Questions](../../open-questions.md)
 - [Testing and Validation Policy](../../testing.md)
-- [Open Issue Overview](../issues/issues.md)
+- [Issue Index](../issues/issues.md)
 - [GitHub Project Standards](../project/project-standards.md)

@@ -30,6 +30,10 @@ Use these ownership boundaries:
 - `open-questions.md` owns unresolved product and architecture decisions.
 - Component and module design documents own implementation-specific contracts,
   invariants, lifecycle behavior, failure behavior, and technical choices.
+- GitHub Issues own issue titles, bodies, outcomes, acceptance criteria, type,
+  state, labels, assignees, priority, relationships, milestone assignments, and
+  GitHub Project fields. Repository planning documents may index open issues but
+  do not duplicate their bodies or planning metadata.
 - GitHub Milestones own milestone titles, summaries, delivery outcomes, state,
   dates, progress, and assigned issues. Repository planning documents may index
   those milestones but do not duplicate their goals or completion state.
@@ -97,13 +101,16 @@ Design documents describe the intended implementation contract, not a tour of
 source files or a chronological implementation journal. Use code identifiers
 when they are part of a stable contract or make the boundary materially clearer.
 
-### Planning Documents And GitHub Milestones
+### Planning Documents And GitHub Work Items
 
 Repository planning documents define their stated work-organization records and
-navigation. The milestone index may repeat each GitHub Milestone's title and a
-short summary for discovery, but GitHub remains authoritative and the index must
-not reproduce milestone goals, completion state, dates, progress, or issue
-assignments.
+navigation. The open-issue index may repeat each open GitHub Issue's linked
+title, short summary, and Related Epic and Milestone values for discovery, but
+must not reproduce its body, acceptance criteria, type, state, labels,
+assignees, priority, other relationships, or GitHub Project fields. The
+milestone index may repeat each GitHub Milestone's title and a short summary for
+discovery, but must not reproduce milestone goals, completion state, dates,
+progress, or issue assignments. GitHub remains authoritative for both indexes.
 
 A GitHub Milestone goal describes a capability, limit, protection, safe
 rejection, or verification result. It does not decompose the outcome into an
