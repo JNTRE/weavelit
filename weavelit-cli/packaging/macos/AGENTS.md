@@ -24,7 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../../docs/plan/milestones/milestone-8.md` and the Weavelit CLI requirements before changing macOS release behavior.
+- Read the authoritative [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8) and the Weavelit CLI requirements before changing macOS release behavior.
 - Keep macOS installation behavior here and verify an installed artifact against an installed compatible Server when this workflow is introduced.
 - Record macOS build, installation, verification, and troubleshooting instructions with the release workflow.
 

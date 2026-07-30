@@ -155,4 +155,4 @@ the same Init crate.
 - [Development Container Design](../containers/dev/development-container-design.md)
 - [Production Container Design](../containers/prod/production-container-design.md)
 - [Testing and Validation Policy](../testing.md)
-- [Milestone 1](../plan/milestones/milestone-1.md)
+- [Milestone 1](../plan/milestones/milestones.md#milestone-1-core-server-application)

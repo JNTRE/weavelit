@@ -59,7 +59,7 @@ applicable metadata fields; do not add or restructure record fields.
 - [Epic Template](templates/epic-template.md)
 - [Feature Template](templates/feature-template.md)
 - [GitHub Project Standards](../project/project-standards.md)
-- [Milestone 1 Outcomes](../milestones/milestone-1.md)
+- [Milestone Index](../milestones/milestones.md)
 - [Risk Template](templates/risk-template.md)
 - [Task Template](templates/task-template.md)
 - [Testing and Validation Policy](../../testing.md)

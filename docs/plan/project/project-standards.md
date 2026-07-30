@@ -89,6 +89,11 @@ item.
 
 ## Milestones
 
+GitHub Milestones are the authoritative source for milestone titles, summaries,
+goals, state, dates, progress, and assigned issues. The repository
+[Milestone Index](../milestones/milestones.md) provides navigation and brief
+summaries only.
+
 Apply the relevant GitHub Milestone to an Issue or Pull Request when it belongs
 to a defined delivery milestone. Leave the milestone unset only when no
 milestone applies.
@@ -96,4 +101,5 @@ milestone applies.
 ## Related Documents
 
 - [Issue Templates and Open Issue Overview](../issues/issues.md)
+- [Milestone Index](../milestones/milestones.md)
 - [Contributing](../../../CONTRIBUTING.md)

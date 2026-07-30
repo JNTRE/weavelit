@@ -28,7 +28,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Core Statements, Glossary, or an architecture decision record.
-- `plan/`: Delivery-planning documentation, including the open-issue overview and individually maintained milestone outcome documents.
+- `plan/`: Delivery-planning documentation, including the open-issue overview, GitHub Project standards, and navigation to authoritative GitHub Milestones.
 - `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
@@ -44,7 +44,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Make minimal, targeted edits; avoid broad rewrites unless explicitly requested.
 - Use `glossary.md` for canonical terms and keep their usage consistent across the documentation.
 - Record settled product, security, or technical commitments in `core-statements.md`; remove a resolved item from `open-questions.md` and place its decision in the appropriate canonical document or an architecture decision record.
-- Keep roadmap milestones aligned with canonical documents for settled product,
+- Keep GitHub Milestones aligned with canonical documents for settled product,
   security, and technical decisions instead of redefining those decisions.
 - Keep security constraints in `security-model.md` aligned with `core-statements.md`, and preserve each document's stated scope.
 

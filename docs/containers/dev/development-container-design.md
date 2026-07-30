@@ -44,7 +44,7 @@ state, and secret mounts follow this design.
 ## Related Documents
 
 - [Testing and Validation Policy](../../testing.md)
-- [Milestone 1](../../plan/milestones/milestone-1.md)
+- [Milestone 1](../../plan/milestones/milestones.md#milestone-1-core-server-application)
 - [Server Init Design](../../server/init-design.md)
 - [Production Container Design](../prod/production-container-design.md)
 - [Open Questions](../../open-questions.md)

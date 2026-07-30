@@ -30,8 +30,11 @@ Use these ownership boundaries:
 - `open-questions.md` owns unresolved product and architecture decisions.
 - Component and module design documents own implementation-specific contracts,
   invariants, lifecycle behavior, failure behavior, and technical choices.
-- Planning documents own delivery outcomes and work organization, not the
-  product or technical decisions on which those outcomes depend.
+- GitHub Milestones own milestone titles, summaries, delivery outcomes, state,
+  dates, progress, and assigned issues. Repository planning documents may index
+  those milestones but do not duplicate their goals or completion state.
+- Other planning documents own their defined work-organization records, not the
+  product or technical decisions on which those records depend.
 - Architecture decision records own the rationale and consequences of a
   consequential decision when preserving that history remains useful after the
   current design has incorporated the result.
@@ -94,17 +97,18 @@ Design documents describe the intended implementation contract, not a tour of
 source files or a chronological implementation journal. Use code identifiers
 when they are part of a stable contract or make the boundary materially clearer.
 
-### Planning And Milestone Documents
+### Planning Documents And GitHub Milestones
 
-Planning documents define observable delivery outcomes, sequencing, and work
-organization. They may summarize a canonical requirement when needed to make a
-completion outcome independently checkable, but the summary must link to its
-authority and must not change or extend that requirement.
+Repository planning documents define their stated work-organization records and
+navigation. The milestone index may repeat each GitHub Milestone's title and a
+short summary for discovery, but GitHub remains authoritative and the index must
+not reproduce milestone goals, completion state, dates, progress, or issue
+assignments.
 
-A milestone goal describes a capability, limit, protection, safe rejection, or
-verification result. It does not decompose the outcome into an exhaustive list
-of implementation tasks. Completion requires both the behavior and the evidence
-required by the Testing and Validation Policy.
+A GitHub Milestone goal describes a capability, limit, protection, safe
+rejection, or verification result. It does not decompose the outcome into an
+exhaustive list of implementation tasks. Completion requires both the behavior
+and the evidence required by the Testing and Validation Policy.
 
 ### Open Questions
 
