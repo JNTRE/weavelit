@@ -26,7 +26,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `milestone-6.md`: Weavelit CLI Client Module delivery outcomes.
 - `milestone-7.md`: Weavelit CLI delivery outcomes.
 - `milestone-8.md`: MVP deployment packaging and verification outcomes.
-- `milestone-9.md`: TechnitiumDNS Service Module delivery outcomes.
+- `milestone-9.md`: Additional Service Module delivery outcomes.
 - `milestone-10.md`: User-associated Service Connection support outcomes.
 - `milestone-11.md`: Automation Identity support outcomes.
 - `milestone-12.md`: External Authentication support outcomes.

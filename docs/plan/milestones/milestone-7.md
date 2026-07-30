@@ -20,3 +20,4 @@ Implementation progress is tracked in [GitHub Milestone 7](https://github.com/JN
 - [Security Model](../../security-model.md)
 - [Glossary](../../glossary.md)
 - [Open Questions](../../open-questions.md)
+- [Testing and Validation Policy](../../testing.md)

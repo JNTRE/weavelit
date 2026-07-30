@@ -6,7 +6,7 @@ Implementation progress is tracked in [GitHub Milestone 3](https://github.com/JN
 
 ## Goals
 
-- [ ] The **[Web UI](../../glossary.md#applications-and-interfaces)** **[Client Module](../../glossary.md#applications-and-interfaces)** is registered with the Weavelit Server and mounts its browser-facing route namespace on the configured HTTPS listener.
+- [ ] The **[Web UI](../../glossary.md#applications-and-interfaces)** **[Client Module](../../glossary.md#applications-and-interfaces)** is registered with the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** and mounts its browser-facing route namespace on the configured HTTPS listener.
 - [ ] An **[Administrator](../../glossary.md#identities-and-access)** can enable or disable the Web UI Client Module; when disabled, its browser routes and sessions are unavailable.
 - [ ] The Web UI Client Module uses secure, server-managed browser sessions and supports session termination.
 - [ ] The Web UI Client Module derives the **[Human User](../../glossary.md#identities-and-access)** identity from the Server-managed session and never trusts identity, group, or permission claims supplied by the browser.
@@ -21,3 +21,4 @@ Implementation progress is tracked in [GitHub Milestone 3](https://github.com/JN
 - [Security Model](../../security-model.md)
 - [Glossary](../../glossary.md)
 - [Open Questions](../../open-questions.md)
+- [Testing and Validation Policy](../../testing.md)

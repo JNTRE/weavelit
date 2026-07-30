@@ -6,8 +6,8 @@ Implementation progress is tracked in [GitHub Milestone 2](https://github.com/JN
 
 ## Goals
 
-- [ ] The TOTP **[MFA Module](../../glossary.md#applications-and-interfaces)** is compiled into the Weavelit Server package, registered with the Server, and enabled by default after Init. An Administrator can enable or disable it through server-administration functions.
-- [ ] The TOTP MFA Module uses maintained, standards-compliant TOTP libraries to generate and verify TOTP factors without exposing its implementation library directly to Client Modules or client applications.
+- [ ] The TOTP **[MFA Module](../../glossary.md#applications-and-interfaces)** is compiled into the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** package, registered with the Server, and enabled by default after **[Init](../../glossary.md#states-and-requests)**. An **[Administrator](../../glossary.md#identities-and-access)** can enable or disable it through server-administration functions.
+- [ ] The TOTP MFA Module uses maintained, standards-compliant TOTP libraries to generate and verify TOTP factors without exposing its implementation library directly to **[Client Modules](../../glossary.md#applications-and-interfaces)** or client applications.
 - [ ] The TOTP MFA Module generates a unique TOTP secret and provisioning value for a local **[Human User](../../glossary.md#identities-and-access)** enrollment. The provisioning value is available only during that Human User's enrollment and is not returned after enrollment completes.
 - [ ] The TOTP MFA Module activates an enrollment only after the enrolling Human User confirms a valid generated TOTP code, and it securely stores the resulting factor data in the Server's trusted environment.
 - [ ] The TOTP MFA Module verifies valid TOTP codes and rejects invalid, expired, or replayed codes. It returns a typed verification result to the Server without disclosing the TOTP secret or raw implementation errors.
@@ -20,3 +20,4 @@ Implementation progress is tracked in [GitHub Milestone 2](https://github.com/JN
 - [Security Model](../../security-model.md)
 - [Glossary](../../glossary.md)
 - [Open Questions](../../open-questions.md)
+- [Testing and Validation Policy](../../testing.md)
