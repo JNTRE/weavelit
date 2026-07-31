@@ -47,8 +47,10 @@ This milestone establishes the
 Server-owned browser connection surface, including its restricted
 **[Init](../../glossary.md#states-and-requests)** and
 **[Restore](../../glossary.md#states-and-requests)** contracts and its normal
-authenticated functions, with secure sessions, validated identity, shared
-authorization enforcement, and credential-safe responses.
+User Plane and Administration Plane functions, with secure sessions, validated
+identity, shared authorization enforcement, and credential-safe responses. It
+owns the Server-side connection contract; Milestone 5 owns the Web UI
+application experience.
 
 ### Milestone 4: Service Module - Zendesk
 
@@ -58,20 +60,23 @@ This milestone delivers the Zendesk
 **[Service Module](../../glossary.md#applications-and-interfaces)** reference
 integration with one supported connection type, deliberate ticket operations,
 server-side authorization, safe retry and failure behavior, credential
-isolation, and auditable structured results.
+isolation, auditable structured results, and reusable acceptance gates for
+later Service Modules.
 
-### Milestone 5: Web UI - Admin and User Self-Service
+### Milestone 5: Web UI - Administration and User Self-Service
 
 [Open GitHub Milestone 5](https://github.com/JNTRE/weavelit/milestone/5).
 
 This milestone delivers the
-**[Web UI](../../glossary.md#applications-and-interfaces)** administration and
-self-service experience, including sign-in, password and
+**[Web UI](../../glossary.md#applications-and-interfaces)** User Plane and
+Administration Plane experience, including sign-in, password and
 **[Multifactor Authentication (MFA)](../../glossary.md#identities-and-access)**
 workflows, access visibility, account and
 **[Group](../../glossary.md#identities-and-access)** management, module and
 **[Operation](../../glossary.md#applications-and-interfaces)** controls,
-listener configuration, and repeatable frontend quality gates.
+shared Zendesk Service Connection administration, read-only log access, Log
+Module configuration, and repeatable frontend quality gates. It consumes the
+Server-side contracts delivered by Milestone 3.
 
 ### Milestone 6: Client Module - Weavelit CLI
 
@@ -80,9 +85,11 @@ listener configuration, and repeatable frontend quality gates.
 This milestone establishes the
 **[Weavelit CLI](../../glossary.md#applications-and-interfaces)**
 **[Client Module](../../glossary.md#applications-and-interfaces)** as an
-authenticated, operations-only `/api/v1/` surface that translates validated
-requests while preserving Server-owned identity, authorization, and credential
-boundaries.
+authenticated `/api/v1/` surface with declared User Plane and Administration
+Plane functions that translates validated requests while preserving
+Server-owned identity, authorization, and credential boundaries. It owns the
+Server-side connection contract; Milestone 7 owns the CLI application
+experience.
 
 ### Milestone 7: Weavelit CLI
 
@@ -91,11 +98,13 @@ boundaries.
 This milestone delivers the separately packaged
 **[Weavelit CLI](../../glossary.md#applications-and-interfaces)** experience for
 signing in, signing out, invoking permitted
-**[Operations](../../glossary.md#applications-and-interfaces)** through the CLI
-**[Client Module](../../glossary.md#applications-and-interfaces)**, and receiving
-structured results without exposing administrative functions.
+**[Operations](../../glossary.md#applications-and-interfaces)** through its User
+Plane, performing permitted Administration Plane functions, and receiving
+machine-readable results through the CLI
+**[Client Module](../../glossary.md#applications-and-interfaces)**. It consumes
+the Server-side contracts delivered by Milestone 6.
 
-### Milestone 8: MVP Package Build and Validation
+### Milestone 8: MVP Release Packaging and End-to-End Validation
 
 [Open GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8).
 
@@ -105,8 +114,14 @@ package and native
 **[Weavelit CLI](../../glossary.md#applications-and-interfaces)** artifact,
 including clean installation, **[Init](../../glossary.md#states-and-requests)**,
 **[Restore](../../glossary.md#states-and-requests)**, service startup,
-authenticated operation, and operator documentation on their supported
-platforms.
+authenticated User Plane and Administration Plane operation, and operator
+documentation on their supported platforms.
+
+## Post-MVP Draft Milestones
+
+Milestones 9 through 14 are provisional post-MVP drafts. GitHub owns their
+detailed goals and current state, and each milestone will be reviewed after MVP
+completion before implementation begins.
 
 ### Milestone 9: Build an Additional Service Module
 
@@ -137,8 +152,9 @@ every applicable access grant.
 
 This milestone introduces
 **[Automation Identities](../../glossary.md#identities-and-access)** with
-explicitly scoped, revocable, and expiring credentials, an active
-**[Responsible Owner](../../glossary.md#identities-and-access)**, and
+explicitly scoped, revocable, and expiring credentials, an assigned active
+**[Responsible Owner](../../glossary.md#identities-and-access)**, owner-status
+fail-closed behavior, and
 **[Audit Logs](../../glossary.md#applications-and-interfaces)** that preserve
 both authenticated-principal and human-accountability context.
 
@@ -146,13 +162,15 @@ both authenticated-principal and human-accountability context.
 
 [Open GitHub Milestone 12](https://github.com/JNTRE/weavelit/milestone/12).
 
-This milestone adds optional OpenID Connect
+This draft milestone adds optional OpenID Connect
 **[External Authentication](../../glossary.md#identities-and-access)** while
 preserving Server-validated identity,
 **[Client Module](../../glossary.md#applications-and-interfaces)** and
 **[Group](../../glossary.md#identities-and-access)** authorization, safe
 rejection of invalid provider credentials, and continued
 **[Local Authentication](../../glossary.md#identities-and-access)** support.
+External workload identity support remains outside this draft pending post-MVP
+review.
 
 ### Milestone 13: Build the Passkey MFA Module
 
