@@ -34,8 +34,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
   removed, renamed, or receives a materially changed summary.
 - Keep each local summary brief and navigational. Do not copy milestone goals,
   state, dates, progress, or assigned issues into the repository.
-- Preserve the non-live `Milestone Example` entry as the first entry under
-  `Milestones`, including its non-live disclaimer.
+- Preserve the non-live `Example Milestone` section separately from
+  `Milestones`.
 - When a milestone requires a settled product, security, or technical
   decision, update the canonical document or architecture decision record and
   keep the GitHub Milestone aligned with that decision.
@@ -52,7 +52,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Keep `milestones.md` as a navigation index, not a second milestone tracker.
-- Give each listed live milestone a level-three title, a separate
+- Give each listed milestone a level-three title, a separate
   `Open GitHub Milestone <number>` link, and a brief summary.
 - Link every listed milestone to its authoritative GitHub Milestone.
 - If the index and GitHub differ, treat GitHub as authoritative and refresh the
