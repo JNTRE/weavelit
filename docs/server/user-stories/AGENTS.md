@@ -45,5 +45,4 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
 - Include only valid, repository-relative links to existing canonical documents.
 - Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
-- Remove stale links and add canonical links so the section reflects current
-	source-of-truth references.
+- Remove stale links and add canonical links so the section reflects current source-of-truth references.
