@@ -42,6 +42,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
   Epic values, and Milestone values.
 - Include each open repository issue exactly once and summarize its stated
   outcome or decision without copying its body or acceptance criteria.
+- Preserve the non-live `Example Issue` section separately from `Open Issues`.
 
 ## Standards and Conventions
 
@@ -54,8 +55,9 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep the required heading order and keep this guide under 100 lines.
-- Give each listed issue a linked level-three heading in the form
-  `#<number> <title>` and a bold `Summary:` paragraph.
+- Give each listed issue a level-three heading in the form `#<number> <title>`,
+  a separate `Open GitHub Issue #<number>` link, and a bold `Summary:`
+  paragraph.
 - When applicable, use a `Group | Field | Value` table containing only
   `Related | Related epic | <value>` and `Related | Milestone | <value>` rows;
   omit any row whose value is absent.

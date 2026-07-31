@@ -11,6 +11,23 @@ may be included for context. If this index differs from GitHub, GitHub controls.
 
 There are currently no open issues.
 
+## Example Issue
+
+The following entry demonstrates the local index format only. It does not
+represent an open issue.
+
+### #NUMBER Issue title
+
+[Open GitHub Issue #NUMBER](https://github.com/JNTRE/weavelit/issues/NUMBER).
+
+**Summary:** Briefly state the issue's intended outcome or decision without
+copying its body or acceptance criteria.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Related epic | [#EPIC_NUMBER Parent epic title](https://github.com/JNTRE/weavelit/issues/EPIC_NUMBER) |
+| Related | Milestone | [Milestone NUMBER: Milestone title](https://github.com/JNTRE/weavelit/milestone/NUMBER) |
+
 ## Related Documents
 
 - [Bug Template](templates/bug-template.md)
