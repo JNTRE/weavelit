@@ -282,8 +282,14 @@ The Server MUST record consequential actions as
 diagnosis. System Logs MUST cover Server lifecycle events, operational state,
 configuration changes, authentication failures, authorization denials,
 dependency failures, provider failures, and internal errors. Audit Logs MUST
-capture the caller, Responsible Owner when applicable, Operation, target, time,
-result, and correlation identifier.
+capture the acting principal, Responsible Owner when the acting principal is an
+Automation Identity, action or Operation, target, time, result, and correlation
+identifier. An authenticated action MUST identify its authenticated principal.
+A Server-owned lifecycle action that cannot have an authenticated application
+principal MUST identify the
+**[System Principal](glossary.md#identities-and-access)** in the acting-principal
+field instead. The System Principal MUST NOT be accepted as the caller of an
+Operation.
 
 System Logs and Audit Logs MUST be structured and pre-redacted before they
 reach a Log Module. They MUST exclude secrets and unnecessary sensitive

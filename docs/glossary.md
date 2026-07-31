@@ -54,7 +54,15 @@ plugins.
 
 **System Log** - A structured, pre-redacted diagnostic record of Weavelit Server lifecycle events, operational state, configuration changes, authentication failures, authorization denials, dependency failures, provider failures, or internal errors. A System Log supports operation and diagnosis; it is not an Audit Log.
 
-**Audit Log** - A structured, pre-redacted accountability record for a consequential action. It identifies the authenticated principal, **[Responsible Owner](#identities-and-access)** when applicable, action or **[Operation](#applications-and-interfaces)**, target, time, result, and correlation identifier. An Audit Log is distinct from a System Log.
+**Audit Log** - A structured, pre-redacted accountability record for a
+consequential action. It identifies the acting principal: an authenticated
+principal for an authenticated action or the
+**[System Principal](#identities-and-access)** for a Server-owned lifecycle
+action that cannot have an authenticated application principal. It also
+identifies the **[Responsible Owner](#identities-and-access)** when the acting
+principal is an Automation Identity, action or
+**[Operation](#applications-and-interfaces)**, target, time, result, and
+correlation identifier. An Audit Log is distinct from a System Log.
 
 **Weavelit CLI** - The separately packaged command-line application used on a
 user's local system. It interacts with the
@@ -159,6 +167,14 @@ Operations for scheduled or triggered work. Its Operation scopes are
 independent of its Responsible Owner's effective grants, but it is usable only
 while an active Responsible Owner is assigned.
 
+**System Principal** - The Server-owned, audit-only principal used to attribute
+a consequential lifecycle action when no authenticated application principal
+can exist, including the durable Restore result recorded before a replacement
+deployment is sealed. It occupies the Audit Log's acting-principal field rather
+than an additional attribution field; Responsible Owner does not apply. It
+cannot authenticate, hold credentials, receive grants, invoke Operations, or be
+selected or impersonated by a caller.
+
 **Responsible Owner** - The **[Human User](#identities-and-access)** assigned
 accountability for an **[Automation Identity](#identities-and-access)** and its
 configured work. Responsibility does not require the owner to possess the
@@ -182,7 +198,7 @@ from a shared secret and the current time by an authenticator application.
 
 ## States and Requests
 
-**Init** - The pre-operational process by which an uninitialized **[Weavelit Server](#applications-and-interfaces)** creates new application state after the shared Server contract selects and configures the **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Restore](#states-and-requests)** and is exposed only through Init-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Init creates the **[Administrators Group](#identities-and-access)** and first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, and selects, configures, and activates one or more initial Log Modules with assignments for System Logs and Audit Logs. The same Log Module may receive both log types but does not reuse Application Database resources. Init completes only after the Server validates the Application Database and both Log Module assignments, including durable Audit Log recording, commits initialized database state, and irreversibly seals its Server-local deployment record before transitioning directly to normal operation.
+**Init** - The pre-operational process by which an uninitialized **[Weavelit Server](#applications-and-interfaces)** creates new application state after the shared Server contract selects and configures the **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Restore](#states-and-requests)** and is exposed only through Init-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Init creates the **[Administrators Group](#identities-and-access)** and first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, and selects, configures, and activates one or more initial Log Modules with assignments for System Logs and Audit Logs. The same Log Module may receive both log types but does not reuse Application Database resources. Init completes only after the Server validates the Application Database and both Log Module assignments, including confirmation that the Audit Log assignment can durably record Audit Logs, commits initialized database state, and irreversibly seals its Server-local deployment record before transitioning directly to normal operation.
 
 **Restore** - The pre-operational process by which an uninitialized replacement **[Weavelit Server](#applications-and-interfaces)** imports existing application state from a compatible encrypted backup after the shared Server contract selects and configures an eligible **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Init](#states-and-requests)** and is exposed only through Restore-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Restore supplies the backup and its private recovery key; the Server validates the backup before mutation, invalidates restored sessions, re-encrypts protected secret material with the replacement Server's at-rest key, commits the restored state under the replacement deployment identifier, and irreversibly seals the deployment before transitioning directly to normal operation. Restore does not support in-place migration between Application Database technologies and becomes unavailable after the deployment is initialized.
 
