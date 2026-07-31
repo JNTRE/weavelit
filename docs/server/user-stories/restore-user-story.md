@@ -1,12 +1,12 @@
 # Restore User Story
 
 This document defines the user-visible first-launch
-**[Restore](../glossary.md#states-and-requests)** story for the
-**[Web UI](../glossary.md#applications-and-interfaces)**. It owns workflow
+**[Restore](../../glossary.md#states-and-requests)** story for the
+**[Web UI](../../glossary.md#applications-and-interfaces)**. It owns workflow
 choice, user responsibilities, visible transitions, and interrupted client
-behavior. The [Server Restore Design](restore-design.md) remains authoritative
+behavior. The [Server Restore Design](../restore-design.md) remains authoritative
 for backup validation, recovery-key handling, persistence, concurrency, and
-failure mechanics. The [Server Lifecycle Design](lifecycle-design.md) owns
+failure mechanics. The [Server Lifecycle Design](../lifecycle-design.md) owns
 shared status, database selection, and route availability. Another
 Restore-capable client may present a different interaction while invoking the
 same Server-owned contracts.
@@ -14,7 +14,7 @@ same Server-owned contracts.
 ## Install And Choose A Workflow
 
 1. A person installs and starts the
-   **[Weavelit Server](../glossary.md#applications-and-interfaces)** package.
+   **[Weavelit Server](../../glossary.md#applications-and-interfaces)** package.
    Package configuration supplies the HTTPS listener, TLS material, and
    protected Server state directory.
 2. On first startup, the Server creates its deployment record with a unique
@@ -24,7 +24,7 @@ same Server-owned contracts.
    login and normal application functions are unavailable.
 4. The person opens the Web UI over HTTPS. No account or application session
    exists, so the Web UI presents two mutually exclusive choices: create a new
-   deployment with **[Init](../glossary.md#states-and-requests)** or restore an
+   deployment with **[Init](../../glossary.md#states-and-requests)** or restore an
    existing deployment from an encrypted backup.
 5. The person chooses Restore. The Web UI enters the Restore workflow without
    creating an account, session, or alternate host-authentication step.
@@ -36,7 +36,7 @@ key is proof of host authority or a normal application credential.
 ## Select The Application Database
 
 1. The Web UI requests the compiled-in
-   **[Application Database](../glossary.md#applications-and-interfaces)**
+   **[Application Database](../../glossary.md#applications-and-interfaces)**
    backend catalog from the shared lifecycle contract and presents each
    backend's typed configuration fields. The MVP offers SQLite.
 2. The person selects a backend, completes its fields, and submits the
@@ -104,7 +104,7 @@ request ends, and does not imply that application state was partially restored.
 
 After successful Restore, the Web UI redirects to its normal sign-in screen.
 Restore does not create an artificial or implicit browser session. A restored
-**[Human User](../glossary.md#identities-and-access)** signs in with their
+**[Human User](../../glossary.md#identities-and-access)** signs in with their
 restored account credentials and completes any restored MFA requirement through
 normal authentication.
 
@@ -154,11 +154,11 @@ Restore.
 
 ## Related Documents
 
-- [Server Restore Design](restore-design.md)
-- [Server Lifecycle Design](lifecycle-design.md)
-- [Server Init Design](init-design.md)
+- [Server Restore Design](../restore-design.md)
+- [Server Lifecycle Design](../lifecycle-design.md)
+- [Server Init Design](../init-design.md)
 - [Init User Story](init-user-story.md)
-- [Application Database Design](database/application-database-design.md)
-- [Security Model](../security-model.md)
-- [Testing and Validation Policy](../testing.md)
-- [Glossary](../glossary.md)
+- [Application Database Design](../database/application-database-design.md)
+- [Security Model](../../security-model.md)
+- [Testing and Validation Policy](../../testing.md)
+- [Glossary](../../glossary.md)

@@ -220,7 +220,7 @@ the complete first-launch workflow and recovery from an interrupted delivery.
 
 ## Related Documents
 
-- [Init User Story](init-user-story.md)
+- [Init User Story](user-stories/init-user-story.md)
 - [Core Statements](../core-statements.md)
 - [Security Model](../security-model.md)
 - [Server Architecture Design](server-architecture-design.md)

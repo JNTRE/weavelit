@@ -212,7 +212,7 @@ selected policy.
 
 ## Related Documents
 
-- [Restore User Story](restore-user-story.md)
+- [Restore User Story](user-stories/restore-user-story.md)
 - [Core Statements](../core-statements.md)
 - [Security Model](../security-model.md)
 - [Open Questions](../open-questions.md)

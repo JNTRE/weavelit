@@ -8,7 +8,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns shared **[Weavelit Server](../glossary.md#applications-and-interfaces)** implementation-design documentation and routing to server-boundary documentation.
 - It does not own product commitments, security requirements, or unresolved decisions; those remain in `../core-statements.md`, `../security-model.md`, and `../open-questions.md`.
-- The `api/`, `authentication/`, `authorization/`, `automation-identities/`, `audit/`, `database/`, and `observability/` child directories own detailed documentation for their respective Server boundaries.
+- The `api/`, `authentication/`, `authorization/`, `automation-identities/`, `audit/`, `database/`, `observability/`, and `user-stories/` child directories own detailed documentation for their respective Server boundaries and user-visible lifecycle workflows.
 
 ## Asset Inventory
 
@@ -22,12 +22,11 @@ Use this section as the source of truth for what assets belong in this directory
 - `audit/`: Documentation for the Server's accountability and Audit Log design.
 - `database/`: Documentation for Application Database backend boundaries and their implementation design.
 - `init-design.md`: Server-owned fresh-state Init contract, request and secret handling, initial recovery-key delivery, atomic state creation, and error-boundary design.
-- `init-user-story.md`: Web UI first-launch setup sequence, user responsibilities, visible transitions, and interrupted workflow behavior.
 - `lifecycle-design.md`: Shared pre-operational startup classification, deployment-record and database-locator persistence, database selection, workflow arbitration, concurrency, and sealing design.
 - `observability/`: Documentation for Server System Log design and future operational diagnosis.
 - `restore-design.md`: Server-owned Restore contract, backup and recovery-key validation, restored-state transformation, atomic persistence, audit completion, and error-boundary design.
-- `restore-user-story.md`: Web UI Restore sequence, user responsibilities, visible transitions, and interrupted workflow behavior.
 - `server-architecture-design.md`: Shared Server workspace, crate-composition, and lifecycle design rules.
+- `user-stories/`: User-visible Web UI Init and Restore workflow narratives; Server contract and persistence design remain in the parent documents.
 
 ## Usage Guidance
 
@@ -37,7 +36,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before creating or updating a production document, read the
   [Documentation Standards](../documentation-standards.md) and apply its
   authority, document-type, lifecycle, structure, and writing rules.
-- Keep shared Server design documentation directly in this folder; place boundary-specific detail in its appropriate child directory.
+- Keep shared Server design documentation directly in this folder; place boundary-specific detail and user-visible lifecycle narratives in their appropriate child directories.
 - Update `../core-statements.md` for settled commitments and `../open-questions.md` for unresolved choices instead of treating local design documentation as their replacement.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

@@ -1,27 +1,27 @@
 # Init User Story
 
-This document defines the user-visible first-launch **[Init](../glossary.md#states-and-requests)**
-story for the **[Web UI](../glossary.md#applications-and-interfaces)**. It owns
+This document defines the user-visible first-launch **[Init](../../glossary.md#states-and-requests)**
+story for the **[Web UI](../../glossary.md#applications-and-interfaces)**. It owns
 the setup sequence, user responsibilities, visible transitions, and interrupted
-workflow behavior. The [Server Init Design](init-design.md) remains authoritative
+workflow behavior. The [Server Init Design](../init-design.md) remains authoritative
 for new-state requests, recovery-key delivery, and initial-state creation. The
-[Server Lifecycle Design](lifecycle-design.md) owns shared status, database
+[Server Lifecycle Design](../lifecycle-design.md) owns shared status, database
 selection, lifecycle enforcement, and sealing. Another Init-capable client may
 present a different interaction while invoking the same Server-owned contracts.
 
 ## Install And Open Setup
 
 1. A person installs and starts the
-   **[Weavelit Server](../glossary.md#applications-and-interfaces)** package.
+   **[Weavelit Server](../../glossary.md#applications-and-interfaces)** package.
    Package configuration supplies the HTTPS listener, TLS material, and
    protected Server state directory.
 2. On first startup, the Server creates its deployment record with a unique
    deployment identifier and `Uninitialized` lifecycle state.
 3. The Server enters restricted pre-operational mode. It serves only declared
-   **[Init](../glossary.md#states-and-requests)** and
-   **[Restore](../glossary.md#states-and-requests)** client assets and
+   **[Init](../../glossary.md#states-and-requests)** and
+   **[Restore](../../glossary.md#states-and-requests)** client assets and
    operations; login and normal application functions are unavailable.
-4. The person opens the **[Web UI](../glossary.md#applications-and-interfaces)**
+4. The person opens the **[Web UI](../../glossary.md#applications-and-interfaces)**
    over HTTPS. No account or application session exists yet, so the Web UI
    offers mutually exclusive choices to create a new deployment with Init or
    restore an existing deployment from an encrypted backup.
@@ -36,7 +36,7 @@ of host control.
 
 1. The Web UI requests the compiled-in backend catalog from the shared
    lifecycle contract for the
-   **[Application Database](../glossary.md#applications-and-interfaces)**
+   **[Application Database](../../glossary.md#applications-and-interfaces)**
    and presents each backend's typed configuration fields. The MVP offers
    SQLite.
 2. The person selects a backend, completes its fields, and submits the
@@ -56,14 +56,14 @@ previous destination.
 
 ## Configure Initial Logging
 
-The Web UI collects the initial **[Log Module](../glossary.md#applications-and-interfaces)**
+The Web UI collects the initial **[Log Module](../../glossary.md#applications-and-interfaces)**
 configuration in this order:
 
 1. Select and configure a Log Module for
-   **[System Logs](../glossary.md#applications-and-interfaces)**.
+   **[System Logs](../../glossary.md#applications-and-interfaces)**.
 2. Assign that configured Log Module to receive System Logs.
 3. Select and configure a Log Module for
-   **[Audit Logs](../glossary.md#applications-and-interfaces)**.
+   **[Audit Logs](../../glossary.md#applications-and-interfaces)**.
 4. Assign that configured Log Module to receive Audit Logs.
 
 The person may select the same configured Log Module for both assignments. The
@@ -74,12 +74,12 @@ other resources.
 ## Create The First Administrator
 
 1. The person enters the required fields for the first local
-   **[Human User](../glossary.md#identities-and-access)** and chooses a password.
+   **[Human User](../../glossary.md#identities-and-access)** and chooses a password.
 2. The Web UI keeps the password only in current-page memory and submits it over
    HTTPS as part of finalization. It does not place the password in a URL,
    browser history, logs, or persistent client storage.
 3. The Server creates the system-defined
-   **[Administrators Group](../glossary.md#identities-and-access)** and adds the
+   **[Administrators Group](../../glossary.md#identities-and-access)** and adds the
    first Human User. The Web UI does not ask the person to define or alter that
    Group's initial grants.
 
@@ -89,7 +89,7 @@ session.
 ## Save The Recovery Key
 
 1. The Web UI requests recovery-key preparation only after an eligible
-   **[Application Database](../glossary.md#applications-and-interfaces)** has
+   **[Application Database](../../glossary.md#applications-and-interfaces)** has
    been selected.
 2. The Server creates the recovery key pair, records the non-operational
    `InitializationPending` checkpoint, advances the deployment record to
@@ -135,17 +135,17 @@ generating another recovery key.
 
 ## Sign In
 
-After successful **[Init](../glossary.md#states-and-requests)**, the
-**[Web UI](../glossary.md#applications-and-interfaces)** redirects to its normal
+After successful **[Init](../../glossary.md#states-and-requests)**, the
+**[Web UI](../../glossary.md#applications-and-interfaces)** redirects to its normal
 sign-in screen. Init does not create an artificial or implicit application
-session. The first **[Human User](../glossary.md#identities-and-access)** enters
+session. The first **[Human User](../../glossary.md#identities-and-access)** enters
 their new credentials and receives a Server-managed session only after normal
 authentication succeeds.
 
 ## Resume Interrupted Setup
 
-The **[Web UI](../glossary.md#applications-and-interfaces)** asks the lifecycle
-and Init contracts for trusted **[Init](../glossary.md#states-and-requests)**
+The **[Web UI](../../glossary.md#applications-and-interfaces)** asks the lifecycle
+and Init contracts for trusted **[Init](../../glossary.md#states-and-requests)**
 status when setup is opened or refreshed. It never infers progress only from
 browser state.
 
@@ -172,12 +172,12 @@ browser state.
 ## After Init
 
 Once the deployment record is sealed `Initialized`, every supported
-**[Init](../glossary.md#states-and-requests)** entry point rejects further
+**[Init](../../glossary.md#states-and-requests)** entry point rejects further
 mutation before reading secrets or changing state. Hidden or reconstructed Web
 UI routes, stale requests, concurrent finalization attempts, and direct internal
 calls cannot restart setup.
 
-On later starts, the **[Weavelit Server](../glossary.md#applications-and-interfaces)**
+On later starts, the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**
 requires the deployment record, database locator, and Application Database to
 carry the matching deployment identifier and initialized state. Missing,
 malformed, unavailable, or mismatched retained components fail closed instead
@@ -185,11 +185,11 @@ of reopening Init.
 
 ## Related Documents
 
-- [Server Init Design](init-design.md)
-- [Server Lifecycle Design](lifecycle-design.md)
+- [Server Init Design](../init-design.md)
+- [Server Lifecycle Design](../lifecycle-design.md)
 - [Restore User Story](restore-user-story.md)
-- [Application Database Design](database/application-database-design.md)
-- [Log Module Design](../log-modules/log-module-design.md)
-- [Security Model](../security-model.md)
-- [Glossary](../glossary.md)
-- [Testing and Validation Policy](../testing.md)
+- [Application Database Design](../database/application-database-design.md)
+- [Log Module Design](../../log-modules/log-module-design.md)
+- [Security Model](../../security-model.md)
+- [Glossary](../../glossary.md)
+- [Testing and Validation Policy](../../testing.md)
