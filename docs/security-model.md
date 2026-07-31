@@ -235,4 +235,4 @@ owning documentation when its additional context is needed.
 
 - [Core Statements](core-statements.md)
 - [Glossary](glossary.md)
-- [Server Init Design](server/init-design.md)
+- [Server Init Design](server/lifecycle/init/init-design.md)

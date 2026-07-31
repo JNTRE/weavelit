@@ -52,8 +52,8 @@ state, and secret mounts follow this design.
 
 - [Testing and Validation Policy](../../testing.md)
 - [Milestone 1](../../plan/milestones/milestones.md#milestone-1-core-server-application)
-- [Server Lifecycle Design](../../server/lifecycle-design.md)
-- [Server Init Design](../../server/init-design.md)
-- [Server Restore Design](../../server/restore-design.md)
+- [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md)
+- [Server Init Design](../../server/lifecycle/init/init-design.md)
+- [Server Restore Design](../../server/lifecycle/restore/restore-design.md)
 - [Production Container Design](../prod/production-container-design.md)
 - [Open Questions](../../open-questions.md)

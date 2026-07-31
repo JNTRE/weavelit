@@ -1,12 +1,12 @@
 # Server Restore Design
 
 This document defines the Server-owned implementation boundary for
-**[Restore](../glossary.md#states-and-requests)**. It owns encrypted backup
+**[Restore](../../../glossary.md#states-and-requests)**. It owns encrypted backup
 validation, private recovery-key handling, normalized restored-state creation,
 restored-session invalidation, protected-secret re-encryption, durable Restore
 result recording, and the atomic replacement of an eligible uninitialized
-**[Application Database](../glossary.md#applications-and-interfaces)**. The
-[Server Lifecycle Design](lifecycle-design.md) owns shared database selection,
+**[Application Database](../../../glossary.md#applications-and-interfaces)**. The
+[Server Lifecycle Design](../lifecycle-design.md) owns shared database selection,
 workflow arbitration, persistence anchors, startup classification, and sealing.
 
 ## Runtime And Client Module Boundary
@@ -14,7 +14,7 @@ workflow arbitration, persistence anchors, startup classification, and sealing.
 `weavelit-server-restore` is the dedicated Server-owned crate for restoring
 existing application state. The normal `weavelit-server` runtime composes it
 with `weavelit-server-lifecycle` and exposes it only through Restore-capable
-**[Client Modules](../glossary.md#applications-and-interfaces)** while the
+**[Client Modules](../../../glossary.md#applications-and-interfaces)** while the
 lifecycle authority reports that Restore is eligible or pending.
 
 The Restore crate owns backup-specific request normalization, validation,
@@ -57,7 +57,7 @@ Restore contract.
 The selected backend must be compatible with the backup. Restore does not
 perform an in-place migration between Application Database technologies. The
 supported backup-format and Server-version compatibility windows remain defined
-by the decisions tracked in [Open Questions](../open-questions.md).
+by the decisions tracked in [Open Questions](../../../open-questions.md).
 
 ## Request And Sensitive Input Handling
 
@@ -212,14 +212,14 @@ selected policy.
 
 ## Related Documents
 
-- [Restore User Story](user-stories/restore-user-story.md)
-- [Core Statements](../core-statements.md)
-- [Security Model](../security-model.md)
-- [Open Questions](../open-questions.md)
-- [Glossary](../glossary.md)
-- [Server Architecture Design](server-architecture-design.md)
-- [Server Lifecycle Design](lifecycle-design.md)
-- [Server Init Design](init-design.md)
-- [Application Database Design](database/application-database-design.md)
-- [Testing and Validation Policy](../testing.md)
-- [Log Module Design](../log-modules/log-module-design.md)
+- [Restore User Story](../../user-stories/restore-user-story.md)
+- [Core Statements](../../../core-statements.md)
+- [Security Model](../../../security-model.md)
+- [Open Questions](../../../open-questions.md)
+- [Glossary](../../../glossary.md)
+- [Server Architecture Design](../../server-architecture-design.md)
+- [Server Lifecycle Design](../lifecycle-design.md)
+- [Server Init Design](../init/init-design.md)
+- [Application Database Design](../../database/application-database-design.md)
+- [Testing and Validation Policy](../../../testing.md)
+- [Log Module Design](../../../log-modules/log-module-design.md)

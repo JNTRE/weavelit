@@ -4,9 +4,9 @@ This document defines the user-visible first-launch
 **[Restore](../../glossary.md#states-and-requests)** story for the
 **[Web UI](../../glossary.md#applications-and-interfaces)**. It owns workflow
 choice, user responsibilities, visible transitions, and interrupted client
-behavior. The [Server Restore Design](../restore-design.md) remains authoritative
+behavior. The [Server Restore Design](../lifecycle/restore/restore-design.md) remains authoritative
 for backup validation, recovery-key handling, persistence, concurrency, and
-failure mechanics. The [Server Lifecycle Design](../lifecycle-design.md) owns
+failure mechanics. The [Server Lifecycle Design](../lifecycle/lifecycle-design.md) owns
 shared status, database selection, and route availability. Another
 Restore-capable client may present a different interaction while invoking the
 same Server-owned contracts.
@@ -154,9 +154,9 @@ Restore.
 
 ## Related Documents
 
-- [Server Restore Design](../restore-design.md)
-- [Server Lifecycle Design](../lifecycle-design.md)
-- [Server Init Design](../init-design.md)
+- [Server Restore Design](../lifecycle/restore/restore-design.md)
+- [Server Lifecycle Design](../lifecycle/lifecycle-design.md)
+- [Server Init Design](../lifecycle/init/init-design.md)
 - [Init User Story](init-user-story.md)
 - [Application Database Design](../database/application-database-design.md)
 - [Security Model](../../security-model.md)

@@ -141,4 +141,4 @@ tests to a final hardening phase.
 - [Core Statements](core-statements.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
-- [Server Init Design](server/init-design.md)
+- [Server Init Design](server/lifecycle/init/init-design.md)

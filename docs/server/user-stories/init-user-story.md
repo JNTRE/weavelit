@@ -3,9 +3,9 @@
 This document defines the user-visible first-launch **[Init](../../glossary.md#states-and-requests)**
 story for the **[Web UI](../../glossary.md#applications-and-interfaces)**. It owns
 the setup sequence, user responsibilities, visible transitions, and interrupted
-workflow behavior. The [Server Init Design](../init-design.md) remains authoritative
+workflow behavior. The [Server Init Design](../lifecycle/init/init-design.md) remains authoritative
 for new-state requests, recovery-key delivery, and initial-state creation. The
-[Server Lifecycle Design](../lifecycle-design.md) owns shared status, database
+[Server Lifecycle Design](../lifecycle/lifecycle-design.md) owns shared status, database
 selection, lifecycle enforcement, and sealing. Another Init-capable client may
 present a different interaction while invoking the same Server-owned contracts.
 
@@ -185,8 +185,8 @@ of reopening Init.
 
 ## Related Documents
 
-- [Server Init Design](../init-design.md)
-- [Server Lifecycle Design](../lifecycle-design.md)
+- [Server Init Design](../lifecycle/init/init-design.md)
+- [Server Lifecycle Design](../lifecycle/lifecycle-design.md)
 - [Restore User Story](restore-user-story.md)
 - [Application Database Design](../database/application-database-design.md)
 - [Log Module Design](../../log-modules/log-module-design.md)

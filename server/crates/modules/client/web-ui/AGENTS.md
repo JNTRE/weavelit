@@ -26,7 +26,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then each parent `AGENTS.md` upward to the repository root.
-- Read `../../../../../docs/server/lifecycle-design.md`, `../../../../../docs/server/init-design.md`, `../../../../../docs/server/restore-design.md`, `../../../../../docs/client-modules/web-ui/`, and `../../../../../docs/clients/web-ui/` before changing Web UI pre-operational, access, or connection behavior.
+- Read `../../../../../docs/server/lifecycle/lifecycle-design.md`, `../../../../../docs/server/lifecycle/init/init-design.md`, `../../../../../docs/server/lifecycle/restore/restore-design.md`, `../../../../../docs/client-modules/web-ui/`, and `../../../../../docs/clients/web-ui/` before changing Web UI pre-operational, access, or connection behavior.
 - Keep browser-facing request translation here and application presentation behavior in the Server Web UI source boundary.
 - Add contract and security tests for lifecycle-gated route availability, Init,
   Restore, sessions, caller identity, authorization, and sensitive-data

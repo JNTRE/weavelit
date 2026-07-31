@@ -284,9 +284,9 @@ when its additional context is needed.
   administration surfaces. Another Client Module may provide either only when
   it declares the capability and implements the corresponding Server-owned
   contract. The detailed boundaries are defined in the
-  [Server Lifecycle Design](server/lifecycle-design.md),
-  [Server Init Design](server/init-design.md), and
-  [Server Restore Design](server/restore-design.md).
+  [Server Lifecycle Design](server/lifecycle/lifecycle-design.md),
+  [Server Init Design](server/lifecycle/init/init-design.md), and
+  [Server Restore Design](server/lifecycle/restore/restore-design.md).
 - Package installation, service configuration, and future container adapters
   supply only the host and process settings required for the Server to start in
   restricted uninitialized mode. They do not select the Application Database or
@@ -425,7 +425,7 @@ when its additional context is needed.
 - [Vision](vision.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
-- [Server Lifecycle Design](server/lifecycle-design.md)
-- [Server Init Design](server/init-design.md)
-- [Server Restore Design](server/restore-design.md)
+- [Server Lifecycle Design](server/lifecycle/lifecycle-design.md)
+- [Server Init Design](server/lifecycle/init/init-design.md)
+- [Server Restore Design](server/lifecycle/restore/restore-design.md)
 - [Testing and Validation Policy](testing.md)

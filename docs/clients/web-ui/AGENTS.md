@@ -25,8 +25,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Keep first-launch Init and Restore presentation and client-side usability
   behavior here; keep their Server connection contract in
   `../../client-modules/web-ui/`, shared lifecycle authority in
-  `../../server/lifecycle-design.md`, and workflow authority in
-  `../../server/init-design.md` and `../../server/restore-design.md`.
+  `../../server/lifecycle/lifecycle-design.md`, and workflow authority in
+  `../../server/lifecycle/init/init-design.md` and `../../server/lifecycle/restore/restore-design.md`.
 - Keep Web UI-specific material directly in this folder; move shared client-application material to the parent `../` directory.
 - Use `../../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.

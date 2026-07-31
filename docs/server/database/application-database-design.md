@@ -107,7 +107,7 @@ selected backend. An unsafe or invalid locator, unavailable or
 integrity-failing configured database, or deployment identifier mismatch fails
 closed before state is read or changed and without exposing Init or Restore as
 a fallback. Cross-store ordering, sealing, and crash reconciliation are defined
-in the [Server Lifecycle Design](../lifecycle-design.md).
+in the [Server Lifecycle Design](../lifecycle/lifecycle-design.md).
 
 ## Log Module Separation
 
@@ -184,9 +184,9 @@ persisted by the Application Database backend.
 - [Open Questions](../../open-questions.md)
 - [Glossary](../../glossary.md)
 - [Server Architecture Design](../server-architecture-design.md)
-- [Server Lifecycle Design](../lifecycle-design.md)
-- [Server Init Design](../init-design.md)
-- [Server Restore Design](../restore-design.md)
+- [Server Lifecycle Design](../lifecycle/lifecycle-design.md)
+- [Server Init Design](../lifecycle/init/init-design.md)
+- [Server Restore Design](../lifecycle/restore/restore-design.md)
 - [SQLite Application Database Design](sqlite/sqlite-application-database-design.md)
 - [Log Module Design](../../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../../testing.md)

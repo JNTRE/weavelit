@@ -84,7 +84,7 @@ trusted lifecycle state. It owns initialization requests, first-user and
 Administrators Group creation, initial Log Module configuration and assignment,
 recovery-key generation and delivery, proof verification, and the atomic
 creation of new application state. Its detailed workflow is defined in the
-[Server Init Design](init-design.md).
+[Server Init Design](lifecycle/init/init-design.md).
 
 `weavelit-server-restore` owns only the existing-state workflow. It uses the
 lifecycle crate to select and reopen an eligible Application Database and to
@@ -214,9 +214,9 @@ impact, and validation performed.
 - [Core Statements](../core-statements.md)
 - [Security Model](../security-model.md)
 - [Glossary](../glossary.md)
-- [Server Lifecycle Design](lifecycle-design.md)
-- [Server Init Design](init-design.md)
-- [Server Restore Design](restore-design.md)
+- [Server Lifecycle Design](lifecycle/lifecycle-design.md)
+- [Server Init Design](lifecycle/init/init-design.md)
+- [Server Restore Design](lifecycle/restore/restore-design.md)
 - [Application Database Design](database/application-database-design.md)
 - [Log Module Design](../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../testing.md)

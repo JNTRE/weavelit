@@ -1,19 +1,19 @@
 # Server Lifecycle Design
 
 This document defines the shared Server-owned lifecycle boundary used before
-the **[Weavelit Server](../glossary.md#applications-and-interfaces)** enters
+the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** enters
 normal operation. It owns startup classification, the deployment record,
-**[Application Database](../glossary.md#applications-and-interfaces)** selection
+**[Application Database](../../glossary.md#applications-and-interfaces)** selection
 and locator persistence, workflow arbitration, mutation serialization, and
-irreversible sealing. The [Server Init Design](init-design.md) and
-[Server Restore Design](restore-design.md) own their distinct application-state
+irreversible sealing. The [Server Init Design](init/init-design.md) and
+[Server Restore Design](restore/restore-design.md) own their distinct application-state
 workflows.
 
 ## Crate And Runtime Boundary
 
 `weavelit-server-lifecycle` is the internal base crate shared by
-**[Init](../glossary.md#states-and-requests)** and
-**[Restore](../glossary.md#states-and-requests)**. It owns the trusted lifecycle
+**[Init](../../glossary.md#states-and-requests)** and
+**[Restore](../../glossary.md#states-and-requests)**. It owns the trusted lifecycle
 state and operations that both workflows require. The Init and Restore crates
 depend on it but do not depend on each other.
 
@@ -192,11 +192,11 @@ restricted pre-operational state to normal operation.
 
 ## Related Documents
 
-- [Core Statements](../core-statements.md)
-- [Security Model](../security-model.md)
-- [Glossary](../glossary.md)
-- [Server Architecture Design](server-architecture-design.md)
-- [Server Init Design](init-design.md)
-- [Server Restore Design](restore-design.md)
-- [Testing and Validation Policy](../testing.md)
-- [Application Database Design](database/application-database-design.md)
+- [Core Statements](../../core-statements.md)
+- [Security Model](../../security-model.md)
+- [Glossary](../../glossary.md)
+- [Server Architecture Design](../server-architecture-design.md)
+- [Server Init Design](init/init-design.md)
+- [Server Restore Design](restore/restore-design.md)
+- [Testing and Validation Policy](../../testing.md)
+- [Application Database Design](../database/application-database-design.md)

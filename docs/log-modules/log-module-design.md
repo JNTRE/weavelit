@@ -53,7 +53,7 @@ Restore does not seal the replacement deployment until the restored Audit Log
 assignment can durably record the required Restore result without recovery
 secrets or backup contents. A failure remains non-operational and follows the
 post-commit reconciliation rules in the
-[Server Restore Design](../server/restore-design.md). A restored Log Module
+[Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored Log Module
 never reads backup contents or Application Database state directly.
 
 ## Related Documents
@@ -63,4 +63,4 @@ never reads backup contents or Application Database state directly.
 - [Open Questions](../open-questions.md)
 - [Glossary](../glossary.md)
 - [Application Database Design](../server/database/application-database-design.md)
-- [Server Restore Design](../server/restore-design.md)
+- [Server Restore Design](../server/lifecycle/restore/restore-design.md)

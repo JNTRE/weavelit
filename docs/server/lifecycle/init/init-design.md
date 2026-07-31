@@ -1,14 +1,14 @@
 # Server Init Design
 
 This document defines the Server-owned implementation boundary for
-**[Init](../glossary.md#states-and-requests)**. It defines how the normal Server
+**[Init](../../../glossary.md#states-and-requests)**. It defines how the normal Server
 runtime exposes a restricted initialization contract, handles new-state
 requests and recovery-key delivery, and atomically creates initial application
 state. The shared lifecycle, selected
-**[Application Database](../glossary.md#applications-and-interfaces)** locator,
+**[Application Database](../../../glossary.md#applications-and-interfaces)** locator,
 deployment record, and transition into normal operation belong to the
-[Server Lifecycle Design](lifecycle-design.md).
-**[Client Modules](../glossary.md#applications-and-interfaces)** own transport
+[Server Lifecycle Design](../lifecycle-design.md).
+**[Client Modules](../../../glossary.md#applications-and-interfaces)** own transport
 and presentation only; they cannot create alternative initialization behavior.
 
 ## Runtime And Client Module Boundary
@@ -16,7 +16,7 @@ and presentation only; they cannot create alternative initialization behavior.
 `weavelit-server-init` is the dedicated Server-owned crate for initialization.
 The normal `weavelit-server` runtime composes it with
 `weavelit-server-lifecycle` and uses it only to process
-**[Init](../glossary.md#states-and-requests)** requests. The Init crate owns
+**[Init](../../../glossary.md#states-and-requests)** requests. The Init crate owns
 normalized new-state requests, Server semantic validation, initial
 recovery-key generation and delivery, and the atomic initial-state transition.
 It does not own startup classification, the deployment record, the selected
@@ -39,7 +39,7 @@ directly inside the process after a routing or composition defect. The runtime
 lifecycle gate and Client Module route removal are additional controls, not
 the Init operation's authority.
 
-An Init-capable **[Client Module](../glossary.md#applications-and-interfaces)**
+An Init-capable **[Client Module](../../../glossary.md#applications-and-interfaces)**
 may translate its connection surface into these operations while the Server is
 uninitialized. It owns request decoding, client-specific interaction, and
 presentation of normalized results. It may also expose shared lifecycle status
@@ -58,7 +58,7 @@ functions. A client-supplied state or route cannot alter that gate.
 
 ## Shared Lifecycle Dependency
 
-The [Server Lifecycle Design](lifecycle-design.md) owns startup classification,
+The [Server Lifecycle Design](../lifecycle-design.md) owns startup classification,
 the deployment record, the database locator, Application Database selection,
 workflow arbitration, mutation serialization, and sealing. Init receives only a
 validated lifecycle authority and selected database bound to the trusted
@@ -67,8 +67,8 @@ state, locator path, or database handle from a client.
 
 Lifecycle preflight rejects an initialized, pending, unavailable, mismatched, or
 integrity-failing database before Init accepts the first
-**[Administrator](../glossary.md#identities-and-access)** password,
-**[Log Module](../glossary.md#applications-and-interfaces)** credentials, or
+**[Administrator](../../../glossary.md#identities-and-access)** password,
+**[Log Module](../../../glossary.md#applications-and-interfaces)** credentials, or
 other application secrets. Database selection may change only before Init
 creates its pending checkpoint. Init persists all user-selected application
 configuration other than the minimum database locator during finalization.
@@ -76,18 +76,18 @@ configuration other than the minimum database locator during finalization.
 ## Request And Secret Handling
 
 The final normalized `InitializeServer` request contains the first local
-**[Human User](../glossary.md#identities-and-access)**, their password, initial
-**[Log Module](../glossary.md#applications-and-interfaces)** configurations,
-explicit **[System Log](../glossary.md#applications-and-interfaces)** and
-**[Audit Log](../glossary.md#applications-and-interfaces)** assignments, and
+**[Human User](../../../glossary.md#identities-and-access)**, their password, initial
+**[Log Module](../../../glossary.md#applications-and-interfaces)** configurations,
+explicit **[System Log](../../../glossary.md#applications-and-interfaces)** and
+**[Audit Log](../../../glossary.md#applications-and-interfaces)** assignments, and
 the recovery-key proof required for the pending checkpoint. The use case creates
-the system-defined **[Administrators Group](../glossary.md#identities-and-access)**
+the system-defined **[Administrators Group](../../../glossary.md#identities-and-access)**
 and adds the first user without accepting client-defined grants. The request
 does not duplicate the selected database connection configuration.
 
 Client applications submit user-supplied secrets over HTTPS and must not place
 them in URLs or persistent client storage.
-**[Client Modules](../glossary.md#applications-and-interfaces)** pass secret
+**[Client Modules](../../../glossary.md#applications-and-interfaces)** pass secret
 values unchanged to the Init crate and do not log or retain them. Client-side
 validation may improve usability but is never authoritative; the Init crate
 validates every value, never returns it, and persists it only in its intended
@@ -103,7 +103,7 @@ owner.
 ## Recovery-Key Delivery And Finalization
 
 Recovery-key delivery uses the
-**[Application Database](../glossary.md#applications-and-interfaces)**'s
+**[Application Database](../../../glossary.md#applications-and-interfaces)**'s
 non-operational `InitializationPending` checkpoint so the Server never becomes
 initialized before the requesting client proves possession of the private key:
 
@@ -123,8 +123,8 @@ initialized before the requesting client proves possession of the private key:
 3. The Init crate obtains the reopened selected database from the lifecycle
    authority, verifies that the deployment identifiers, checkpoint, and proof
    match, validates the complete request, verifies the
-   **[Log Module](../glossary.md#applications-and-interfaces)** assignments and
-   durable **[Audit Log](../glossary.md#applications-and-interfaces)** delivery,
+   **[Log Module](../../../glossary.md#applications-and-interfaces)** assignments and
+   durable **[Audit Log](../../../glossary.md#applications-and-interfaces)** delivery,
    and atomically replaces the checkpoint with complete initialized application
    state bound to the deployment identifier.
 4. After the database commit succeeds, the lifecycle crate atomically seals the
@@ -165,10 +165,10 @@ exposed again.
 ## Concurrency, Lifecycle, And Errors
 
 The lifecycle crate serializes deployment-record and locator mutation across
-**[Init](../glossary.md#states-and-requests)** and Restore. Recovery-key
+**[Init](../../../glossary.md#states-and-requests)** and Restore. Recovery-key
 preparation, reset, and finalization run only under its exclusive workflow
 mutation permit. The
-**[Application Database](../glossary.md#applications-and-interfaces)**'s atomic
+**[Application Database](../../../glossary.md#applications-and-interfaces)**'s atomic
 state transitions remain the final one-time guard. Concurrent or stale requests
 are rechecked against current trusted state; at most one workflow can commit,
 and every later attempt returns `AlreadyInitialized` or finds the Init
@@ -189,8 +189,8 @@ supported interface. Init never partially exposes normal application behavior.
 
 All Init failures use the Server's centralized typed error presentation and
 compose the shared lifecycle categories defined in the
-[Server Lifecycle Design](lifecycle-design.md).
-**[Client Modules](../glossary.md#applications-and-interfaces)** receive
+[Server Lifecycle Design](../lifecycle-design.md).
+**[Client Modules](../../../glossary.md#applications-and-interfaces)** receive
 actionable, redacted, machine-readable categories. Init-specific categories are
 `recovery_key_confirmation_required`,
 `recovery_key_confirmation_invalid`, and `initialization_failed`. Raw Rust,
@@ -206,28 +206,28 @@ concurrency under a lifecycle mutation permit, direct invocation of every
 mutating entry point after sealing, rejection before secret reading or side
 effects, and the one-time `AlreadyInitialized` guard.
 
-**[Application Database](../glossary.md#applications-and-interfaces)**
+**[Application Database](../../../glossary.md#applications-and-interfaces)**
 integration tests verify Init-checkpoint transitions and atomic one-time
 new-state persistence. Init-capable
-**[Client Module](../glossary.md#applications-and-interfaces)** contract tests
+**[Client Module](../../../glossary.md#applications-and-interfaces)** contract tests
 verify one-time private-key delivery, finalization, normalized errors, rejection
 of normal functions before Init, and rejection of Init after completion. Shared
 lifecycle tests own status, database selection, startup classification, and seal
 reconciliation. Server process tests verify the in-process transition to normal
 operation.
-**[Web UI](../glossary.md#applications-and-interfaces)** end-to-end tests cover
+**[Web UI](../../../glossary.md#applications-and-interfaces)** end-to-end tests cover
 the complete first-launch workflow and recovery from an interrupted delivery.
 
 ## Related Documents
 
-- [Init User Story](user-stories/init-user-story.md)
-- [Core Statements](../core-statements.md)
-- [Security Model](../security-model.md)
-- [Server Architecture Design](server-architecture-design.md)
-- [Server Lifecycle Design](lifecycle-design.md)
-- [Application Database Design](database/application-database-design.md)
-- [Log Module Design](../log-modules/log-module-design.md)
-- [Development Container Design](../containers/dev/development-container-design.md)
-- [Production Container Design](../containers/prod/production-container-design.md)
-- [Testing and Validation Policy](../testing.md)
-- [Milestone 1](../plan/milestones/milestones.md#milestone-1-core-server-application)
+- [Init User Story](../../user-stories/init-user-story.md)
+- [Core Statements](../../../core-statements.md)
+- [Security Model](../../../security-model.md)
+- [Server Architecture Design](../../server-architecture-design.md)
+- [Server Lifecycle Design](../lifecycle-design.md)
+- [Application Database Design](../../database/application-database-design.md)
+- [Log Module Design](../../../log-modules/log-module-design.md)
+- [Development Container Design](../../../containers/dev/development-container-design.md)
+- [Production Container Design](../../../containers/prod/production-container-design.md)
+- [Testing and Validation Policy](../../../testing.md)
+- [Milestone 1](../../../plan/milestones/milestones.md#milestone-1-core-server-application)

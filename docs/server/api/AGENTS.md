@@ -7,9 +7,9 @@ through which clients invoke supported
 **[Operations](../../glossary.md#applications-and-interfaces)** without
 duplicating service-specific behavior. The restricted unauthenticated Init
 and Restore lifecycle is owned by the
-[Server Lifecycle Design](../lifecycle-design.md), with workflow semantics in
-the [Server Init Design](../init-design.md) and
-[Server Restore Design](../restore-design.md). Shared wire conventions used by
+[Server Lifecycle Design](../lifecycle/lifecycle-design.md), with workflow semantics in
+the [Server Init Design](../lifecycle/init/init-design.md) and
+[Server Restore Design](../lifecycle/restore/restore-design.md). Shared wire conventions used by
 those contracts remain coordinated here.
 
 ## Purpose and Scope
@@ -19,9 +19,9 @@ Use this section to understand what this directory owns, what it does not own, a
 - This directory owns Server API contract design, including request, result, error, compatibility, pagination, and idempotency behavior.
 - It does not own service-specific **[Operation](../../glossary.md#applications-and-interfaces)** semantics; those belong in `../../service-modules/`.
 - It does not own pre-operational availability, database selection, or lifecycle
-  gating; those belong in `../lifecycle-design.md`. Init recovery-key delivery
-  belongs in `../init-design.md`, and Restore backup and private recovery-key
-  handling belong in `../restore-design.md`.
+  gating; those belong in `../lifecycle/lifecycle-design.md`. Init recovery-key delivery
+  belongs in `../lifecycle/init/init-design.md`, and Restore backup and private recovery-key
+  handling belong in `../lifecycle/restore/restore-design.md`.
 - API decisions that are not yet settled remain in `../../open-questions.md` until they can be recorded as a commitment.
 
 ## Asset Inventory

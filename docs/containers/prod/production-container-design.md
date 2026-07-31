@@ -44,7 +44,7 @@ When implemented, the production image must:
 
 - [Milestone 14](../../plan/milestones/milestones.md#milestone-14-build-support-for-a-server-oci-image)
 - [Development Container Design](../dev/development-container-design.md)
-- [Server Lifecycle Design](../../server/lifecycle-design.md)
-- [Server Init Design](../../server/init-design.md)
-- [Server Restore Design](../../server/restore-design.md)
+- [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md)
+- [Server Init Design](../../server/lifecycle/init/init-design.md)
+- [Server Restore Design](../../server/lifecycle/restore/restore-design.md)
 - [Open Questions](../../open-questions.md)
