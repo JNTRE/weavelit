@@ -29,8 +29,10 @@ represented, and how does `logout` remove local credentials?
 **[Automation Identities](glossary.md#identities-and-access)**. How are their
 credentials generated, displayed once, stored by a scheduler or trigger,
 rotated, expired, revoked, and recovered? What default and maximum validity
-periods apply, and how is **[Responsible Owner](glossary.md#identities-and-access)**
-transfer or suspension handled?
+periods apply? What confirmation, notification, and audit behavior applies when
+an Administrator reassigns the
+**[Responsible Owner](glossary.md#identities-and-access)** of an
+owner-status-disabled Automation Identity?
 
 ## Automation and Accountability
 
@@ -53,24 +55,24 @@ access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 Administration Permission? Which group-grant changes require additional
 confirmation or reauthentication?
 
-### 6. Client Module admin and user planes
+### 6. Client Module plane and capability schema
 
 The restricted **[Init](glossary.md#states-and-requests)** and
 **[Restore](glossary.md#states-and-requests)** contracts are exposed through
 **[Client Modules](glossary.md#applications-and-interfaces)** that declare the
 corresponding pre-operational capabilities while the Server is uninitialized.
-Those capabilities are distinct from normal authenticated access. How are
-**admin plane** and **user plane** defined for normal Client Module API and
-command structure? What naming, route and command organization, authorization
-requirements, and access classes apply to each normal section, and what
-declaration schema composes those sections with pre-operational capabilities?
-How does that schema represent the
-**[Web UI](glossary.md#applications-and-interfaces)** with Init, Restore,
-authenticated user-plane, and authenticated admin-plane functions and the
-**[Weavelit CLI](glossary.md#applications-and-interfaces)** with user-plane
-operational functions only? How does this application-interface terminology
-remain distinct from host-level deployment administration and separate
-network-plane architecture?
+Those capabilities are distinct from the normal authenticated
+**[User Plane](glossary.md#applications-and-interfaces)** and
+**[Administration Plane](glossary.md#applications-and-interfaces)**. What route
+and command organization maps functions to their declared plane and access
+class, and what declaration schema composes the planes with pre-operational
+capabilities? How does that schema represent the
+**[Web UI](glossary.md#applications-and-interfaces)** with Init and Restore
+capabilities plus User Plane and Administration Plane functions, and the
+**[Weavelit CLI](glossary.md#applications-and-interfaces)** with User Plane and
+Administration Plane functions? How does the resulting route and command
+terminology remain distinct from host-level deployment administration and
+separate network-plane architecture?
 
 ## API, Security, and Operations
 

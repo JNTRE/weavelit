@@ -33,11 +33,13 @@ owning documentation when its additional context is needed.
   behavior. During **[Init](glossary.md#states-and-requests)**, a client
   application may submit the first local Human User's password over HTTPS
   through an Init-capable Client Module only to that same Server-owned logic.
-- Local Human User accounts are created only through server-administration
-  functions and may be disabled but are never deleted. Weavelit has no
-  email-based invitation or recovery mechanism. An Administrator with an
-  authenticated, usable session and access to a server-administration surface
-  can initiate a password reset for any local Human User, including themselves.
+- Local Human User accounts are created only through
+  **[Administration Plane](glossary.md#applications-and-interfaces)** functions
+  or the Init-capable pre-operational capability and may be disabled but are
+  never deleted. Weavelit has no email-based invitation or recovery mechanism.
+  An Administrator with an authenticated, usable session and access to an
+  Administration Plane can initiate a password reset for any local Human User,
+  including themselves.
 - Local **[Multifactor Authentication](glossary.md#identities-and-access)** is
   optional by default. The initial supported MFA method uses a password and a
   time-based one-time password (TOTP); a Human User who enrolls in TOTP must
@@ -54,27 +56,24 @@ owning documentation when its additional context is needed.
 - A local Human User who is required to use MFA but has not enrolled, or whose
   enrollment has been reset, cannot obtain a usable session until completing
   TOTP enrollment. An MFA reset immediately invalidates the prior enrollment.
-- An Administrator can disable an MFA Module through server-administration
-  functions even when Human Users have active enrollments that depend on it.
-  Before applying the change, the Server reports the number of affected Human
-  Users. Disabling the MFA Module immediately prevents enrollment and
-  verification through that method and terminates the affected Human Users'
-  sessions.
+- An Administrator can disable an MFA Module through an Administration Plane
+  even when Human Users have active enrollments that depend on it. Before
+  applying the change, the Server reports the number of affected Human Users.
+  Disabling the MFA Module immediately prevents enrollment and verification
+  through that method and terminates the affected Human Users' sessions.
 - Disabling an MFA Module does not remove a Human User's MFA requirement. An
   affected Human User whose account requires MFA must enroll in an enabled MFA
   Module before obtaining a usable session. An affected Human User whose
   account does not require MFA may authenticate without MFA and can enroll in
   any enabled MFA Module.
-- An Administrator with access to a server-administration surface can require
-  MFA for, or reset the MFA enrollment of, any local Human User, including
-  themselves. An Administrator who has enrolled in MFA must complete TOTP
-  verification for the current session before requiring MFA or resetting an
-  MFA enrollment.
+- An Administrator with access to an Administration Plane can require MFA for,
+  or reset the MFA enrollment of, any local Human User, including themselves.
+  An Administrator who has enrolled in MFA must complete TOTP verification for
+  the current session before requiring MFA or resetting an MFA enrollment.
 - Resetting an MFA enrollment clears the prior factor data and, when MFA
   remains required, forces the Human User to enroll in an enabled MFA Module
   before obtaining a usable session. An Administrator who cannot authenticate
-  cannot use an application administration surface to recover their own
-  account.
+  cannot use an Administration Plane to recover their own account.
 - The Server records MFA policy changes and resets in audit records without
   recording TOTP secrets or codes. Weavelit provides no host-level,
   out-of-band, or unauthenticated password or MFA reset. If no Administrator can
@@ -132,8 +131,9 @@ owning documentation when its additional context is needed.
   initialized Application Database state carry the same deployment identifier;
   a missing or mismatched component fails closed after the record leaves
   `Uninitialized`.
-- An encrypted backup may be created through server-administration functions
-  and downloaded by an Administrator. The Server encrypts it for the recovery
+- An encrypted backup may be created through an
+  **[Administration Plane](glossary.md#applications-and-interfaces)** and
+  downloaded by an Administrator. The Server encrypts it for the recovery
   public key and does not expose the private recovery key during ordinary
   backup operations. **[Restore](glossary.md#states-and-requests)** is available
   only on a genuinely uninitialized replacement Server after the shared
@@ -208,28 +208,49 @@ owning documentation when its additional context is needed.
   group-scoped, or server-administration. Human User access is delivered only
   through Group membership; self-service features still require a Group grant
   to the Client Module through which they are accessed. A disabled account,
-  Client Module, Service Module, or Operation overrides any group grant.
+  Client Module, Service Module, or Operation overrides any group grant. A
+  **[User Plane](glossary.md#applications-and-interfaces)** function uses the
+  self-service or group-scoped access class. An
+  **[Administration Plane](glossary.md#applications-and-interfaces)** function
+  uses the server-administration access class. Plane classification does not
+  replace authorization of each request. A Client Module compiles and registers
+  only its declared planes, and its corresponding client implements only those
+  planes. This capability boundary removes undeclared routes and client
+  workflows but does not authorize use of a declared function; the Server core
+  independently authorizes every request against current effective grants.
 - Browser navigation and page visibility are usability controls only. The
   Server independently enforces its current lifecycle state and authorizes
   every normal **[Web UI](glossary.md#applications-and-interfaces)** request.
-  During normal operation it rejects administrative requests without the
+  During normal operation it rejects Administration Plane requests without the
   Server Administration Permission; while uninitialized it accepts only the
   restricted Init and Restore contracts.
-- The Weavelit CLI is operations-only. The server does not accept Weavelit CLI
-  credentials for administrative functions.
+- The Weavelit CLI Client Module exposes both User Plane and Administration
+  Plane functions. The Server applies the same current-grant authorization to
+  CLI requests as to requests through any other Client Module and does not
+  treat the CLI or its credentials as an authorization authority.
 
 ## Automation Accountability
 
 - Each **[Automation Identity](glossary.md#identities-and-access)** has an
-  active **[Responsible Owner](glossary.md#identities-and-access)**.
+  assigned **[Responsible Owner](glossary.md#identities-and-access)** and is
+  usable only while that owner's Human User account remains active. The Server
+  treats the Automation Identity as disabled and rejects its authentication and
+  Operation requests whenever the owner is inactive.
 - Only an **[Administrator](glossary.md#identities-and-access)** may create or
   manage an **[Automation Identity](glossary.md#identities-and-access)**,
   including its credentials and named
   **[Operation](glossary.md#applications-and-interfaces)** scopes.
+- An Automation Identity's named Operation scopes are independent of its
+  Responsible Owner's effective grants. Responsibility neither requires
+  equivalent owner grants nor gives the owner authority to manage the
+  Automation Identity.
 - Automation credentials are scoped to named operations and can be revoked or
-  expired by an administrator.
+  expired by an administrator. Assigning a new active Responsible Owner removes
+  only the owner-status disablement; it does not change Operation scopes or
+  restore an expired or revoked credential.
 - Audit records identify the authenticated principal that initiated an action
-  and the Responsible Owner of an Automation Identity when applicable.
+  and the Responsible Owner assigned to an Automation Identity when the action
+  occurred.
 
 ## Related Documents
 

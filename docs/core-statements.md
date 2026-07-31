@@ -266,7 +266,7 @@ when its additional context is needed.
 - The Weavelit CLI is a peer client application installed on a user's local
   machine; its first supported platform is macOS 26 and later on Apple Silicon
   (`arm64`). It does not contain provider credentials, provider integration
-  logic, or administrative functions.
+  logic, or Server authorization policy.
 - The Weavelit Server and Weavelit CLI communicate through the versioned
   application interface and can be packaged and upgraded independently within
   that interface's compatibility policy.
@@ -319,9 +319,12 @@ when its additional context is needed.
 - Administrators can view System Logs and Audit Logs in a read-only Web UI
   logging area and configure Log Modules through server-administration
   functions. Future administrative surfaces may provide equivalent access.
-- The Weavelit CLI requests only supported operational tasks. The Weavelit CLI
-  does not implement administrative commands, and the server does not accept
-  Weavelit CLI credentials for administrative functions.
+- The Weavelit CLI and its Client Module expose both
+  **[User Plane](glossary.md#applications-and-interfaces)** and
+  **[Administration Plane](glossary.md#applications-and-interfaces)**
+  functions. The CLI presents only those declared capabilities, while the
+  Server independently authorizes every request from current effective grants
+  and does not treat the CLI or its credentials as an authorization authority.
 - Weavelit is an API-first application with a stable, versioned, machine-
   readable interface for explicitly supported operations.
 - During normal operation, Weavelit exposes its application interface as an
@@ -387,7 +390,10 @@ when its additional context is needed.
   server-administration. Human User access is delivered only through Group
   membership; self-service features still require a Group grant to the Client
   Module through which they are accessed. The Server remains default-deny when
-  a feature's required access is not granted.
+  a feature's required access is not granted. Each Client Module compiles and
+  registers only its declared User Plane and Administration Plane capabilities,
+  and its corresponding client implements only those capabilities. This
+  capability boundary does not replace Server authorization of each request.
 - The Weavelit CLI and Web UI connect through
   **[Client Modules](glossary.md#applications-and-interfaces)** that translate
   requests into the same supported operation contracts. MCP adapters will use

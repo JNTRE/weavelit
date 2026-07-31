@@ -1,6 +1,6 @@
 # Weavelit CLI Agent Guide
 
-This folder documents the **[Weavelit CLI](../../glossary.md#applications-and-interfaces)**, Weavelit's separately packaged operations-only command-line application. It is the dedicated home for Weavelit CLI detail within the broader client-application documentation boundary.
+This folder documents the **[Weavelit CLI](../../glossary.md#applications-and-interfaces)**, Weavelit's separately packaged command-line application for **[User Plane](../../glossary.md#applications-and-interfaces)** and **[Administration Plane](../../glossary.md#applications-and-interfaces)** functions. It is the dedicated home for Weavelit CLI detail within the broader client-application documentation boundary.
 
 ## Purpose and Scope
 

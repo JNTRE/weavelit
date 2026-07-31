@@ -34,7 +34,13 @@ connections, configuration, resources, lifecycle, or backup and retention
 behavior. They may use the same workspace-pinned third-party dependency, such
 as `rusqlite`, without sharing persistence behavior.
 
-**Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for modules activated during Init or imported by Restore, and configured only through server-administration functions.
+**Log Module** - A reusable server-side Rust library that receives pre-redacted
+structured **[System Logs](#applications-and-interfaces)**,
+**[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers
+them to a configured destination. Log Modules are available to
+**[Administrators](#identities-and-access)**, disabled by default except for
+modules activated during Init or imported by Restore, and configured only
+through an **[Administration Plane](#applications-and-interfaces)**.
 
 **MFA Module** - A compiled-in server-side Rust library that implements one
 specific **[Multifactor Authentication (MFA)](#identities-and-access)** method,
@@ -50,15 +56,61 @@ plugins.
 
 **Audit Log** - A structured, pre-redacted accountability record for a consequential action. It identifies the authenticated principal, **[Responsible Owner](#identities-and-access)** when applicable, action or **[Operation](#applications-and-interfaces)**, target, time, result, and correlation identifier. An Audit Log is distinct from a System Log.
 
-**Weavelit CLI** - The separately packaged operations-only command-line
-application used on a user's local system. It interacts with the
+**Weavelit CLI** - The separately packaged command-line application used on a
+user's local system. It interacts with the
 **[Weavelit Server](#applications-and-interfaces)** through the Weavelit CLI
-**[Client Module](#applications-and-interfaces)**. Its first supported platform
-is macOS 26 and later on Apple Silicon (`arm64`).
+**[Client Module](#applications-and-interfaces)**, whose normal API surface
+includes both a **[User Plane](#applications-and-interfaces)** and an
+**[Administration Plane](#applications-and-interfaces)**. Its first supported
+platform is macOS 26 and later on Apple Silicon (`arm64`).
 
-**Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)**. It provides Init-capable and Restore-capable administration surfaces while the Server is uninitialized. During normal operation, a **[Human User](#identities-and-access)** whose **[Group](#identities-and-access)** grants the Web UI **[Client Module](#applications-and-interfaces)** can use self-service account functions and view their own Group memberships and effective access. Only an **[Administrator](#identities-and-access)** can use its normal administrative functions.
+**Web UI** - The browser-based management client included with the
+**[Weavelit Server](#applications-and-interfaces)**. It consumes the API surface
+exposed by the Web UI **[Client Module](#applications-and-interfaces)**. While
+the Server is uninitialized, it presents that module's Init-capable and
+Restore-capable pre-operational capabilities. During normal operation, a
+**[Human User](#identities-and-access)** whose
+**[Group](#identities-and-access)** grants access to the Web UI Client Module can
+use its **[User Plane](#applications-and-interfaces)** functions and view their
+own Group memberships and effective access. Only an
+**[Administrator](#identities-and-access)** can use its
+**[Administration Plane](#applications-and-interfaces)** functions.
 
-**Client Module** - A reusable server-side Rust library that provides and maintains one client-facing connection surface to the Weavelit Server. It authenticates normal application requests and translates accepted client requests into Server-owned contracts, while the Server remains the final authorization authority. A Client Module may also declare an Init-capable administration surface, a Restore-capable administration surface, or both. While the Server is uninitialized, each capability exposes only its corresponding restricted pre-operational contract; neither capability remains available after the deployment is initialized.
+**Client Module** - A reusable server-side Rust library that provides and
+maintains one client-facing connection surface to the Weavelit Server. During
+normal operation, it exposes a **[User Plane](#applications-and-interfaces)**,
+an **[Administration Plane](#applications-and-interfaces)**, or both, and
+translates accepted client requests into Server-owned contracts while the
+Server remains the final authentication and authorization authority. A Client
+Module compiles and registers only its declared planes; an undeclared plane and
+its routes, handlers, and client-facing contracts are absent. Its corresponding
+client implements user experience only for those declared planes. A Client
+Module may separately declare an Init-capable pre-operational capability, a
+Restore-capable pre-operational capability, or both. While the Server is
+uninitialized, each capability exposes only its corresponding restricted
+pre-operational contract; neither capability remains available after the
+deployment is initialized.
+
+**User Plane** - The normal authenticated portion of a
+**[Client Module](#applications-and-interfaces)** API surface that exposes
+non-administrative functions. Each User Plane function has either the
+self-service or group-scoped access class and remains subject to its declared
+grants and Server authorization. The name classifies the function, not the
+principal: a **[Human User](#identities-and-access)**,
+**[Administrator](#identities-and-access)**, or
+**[Automation Identity](#identities-and-access)** may use a User Plane function
+when authorized. The User Plane does not include server-administration
+functions or pre-operational Init and Restore capabilities.
+
+**Administration Plane** - The normal authenticated portion of a
+**[Client Module](#applications-and-interfaces)** API surface that exposes
+server-administration functions. Each Administration Plane function has the
+server-administration access class and requires both access to the Client
+Module and the effective
+**[Server Administration Permission](#identities-and-access)**. The
+Administration Plane does not include host-level administration or the
+pre-operational Init and Restore capabilities, which cannot require an existing
+Administrator.
 
 **Service Module** - A reusable server-side Rust library that authenticates with and communicates with one named external service through exactly one **[Service Connection](#applications-and-interfaces)** type and implements its supported Operations. Supporting the same external service through another Service Connection type requires a separately named Service Module.
 
@@ -78,19 +130,42 @@ is macOS 26 and later on Apple Silicon (`arm64`).
 
 ## Identities and Access
 
-**Human User** - A locally or externally authenticated person.
+**Human User** - A locally or externally authenticated person represented by a
+Weavelit account. A Human User is active when that account is enabled and is
+inactive when that account is disabled.
 
 **Group** - A collection of **[Human Users](#identities-and-access)** that grants its members access to **[Client Modules](#applications-and-interfaces)**, **[Service Modules](#applications-and-interfaces)**, named **[Operations](#applications-and-interfaces)**, and the **[Server Administration Permission](#identities-and-access)**. A Human User's effective grants are the additive union of its groups' grants; Human Users receive no direct grants.
 
-**Server Administration Permission** - The built-in permission, granted through a **[Group](#identities-and-access)**, that allows a **[Human User](#identities-and-access)** with Web UI **[Client Module](#applications-and-interfaces)** access to administer Weavelit through the **[Web UI](#applications-and-interfaces)**. It does not itself grant Web UI Client Module access, **[Service Modules](#applications-and-interfaces)**, or named **[Operations](#applications-and-interfaces)**.
+**Server Administration Permission** - The built-in permission, granted through
+a **[Group](#identities-and-access)**, that allows a
+**[Human User](#identities-and-access)** with access to a
+**[Client Module](#applications-and-interfaces)** Administration Plane to use
+its server-administration functions. It does not itself grant access to a
+Client Module, **[Service Modules](#applications-and-interfaces)**, or named
+**[Operations](#applications-and-interfaces)**.
 
 **Administrator** - A **[Human User](#identities-and-access)** whose effective group grants include the Server Administration Permission.
 
-**Administrators Group** - The system-created **[Group](#identities-and-access)** made during Init. It grants the **[Web UI](#applications-and-interfaces)** **[Client Module](#applications-and-interfaces)** and the Server Administration Permission, but no named Operations. Its members can view logs and configure Log Modules through server-administration functions.
+**Administrators Group** - The system-created
+**[Group](#identities-and-access)** made during Init. It grants the
+**[Web UI](#applications-and-interfaces)**
+**[Client Module](#applications-and-interfaces)** and the Server Administration
+Permission, but no named Operations. Its members can view logs and configure
+Log Modules through the Web UI Client Module's Administration Plane.
 
-**Automation Identity** - A non-human principal created and managed by an **[Administrator](#identities-and-access)** with explicitly assigned named Operations for scheduled or triggered work.
+**Automation Identity** - A non-human principal created and managed by an
+**[Administrator](#identities-and-access)** with explicitly assigned named
+Operations for scheduled or triggered work. Its Operation scopes are
+independent of its Responsible Owner's effective grants, but it is usable only
+while an active Responsible Owner is assigned.
 
-**Responsible Owner** - The active **[Human User](#identities-and-access)** accountable for an **[Automation Identity](#identities-and-access)** and its configured work. Responsibility does not grant authority to change the Automation Identity's permissions or credentials.
+**Responsible Owner** - The **[Human User](#identities-and-access)** assigned
+accountability for an **[Automation Identity](#identities-and-access)** and its
+configured work. Responsibility does not require the owner to possess the
+Automation Identity's Operation grants and does not grant authority to change
+its permissions or credentials. If the owner's account becomes inactive, the
+Automation Identity is disabled until an Administrator assigns a new active
+Responsible Owner.
 
 **Local Authentication** - Weavelit's self-contained default authentication method for human users and Automation Identities.
 

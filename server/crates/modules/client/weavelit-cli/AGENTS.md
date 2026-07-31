@@ -1,9 +1,9 @@
 # Weavelit CLI Client Module Crate Agent Guide
 
 This directory is reserved for the compiled-in Weavelit CLI Client Module
-crate. It exposes the Weavelit CLI's authenticated `/api/v1/` request
-namespace, validates client requests as Operational Requests, and passes them
-to the Server's shared authorization policy.
+crate. It exposes the Weavelit CLI's authenticated User Plane and Administration
+Plane `/api/v1/` request namespaces, validates and translates client requests,
+and passes them to Server-owned contracts and shared authorization policy.
 
 ## Purpose and Scope
 
@@ -11,7 +11,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns the Weavelit CLI Client Module's Server connection-surface behavior.
 - It does not own the separately packaged Weavelit CLI application; that belongs in the dedicated client source tree.
-- It does not own Server administration functions, Service Module provider behavior, or provider credentials.
+- It does not own Server authorization policy, administration behavior, Service Module provider behavior, or provider credentials.
 
 ## Asset Inventory
 
@@ -40,4 +40,5 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Mount Weavelit CLI routes beneath `/api/v1/` on the configured Server HTTPS listener and make them unavailable when this Client Module is disabled.
 - Derive caller identity from Server-validated credentials, never from claims supplied by the Weavelit CLI.
-- Permit operations-only access; do not accept Weavelit CLI credentials for administrative functions or expose provider or automation credentials.
+- Compile and register both the declared User Plane and Administration Plane routes, translate accepted requests into Server-owned contracts, and pass every request to shared Server authorization.
+- Do not implement authorization decisions or expose provider or automation credentials.
