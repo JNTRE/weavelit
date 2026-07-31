@@ -109,9 +109,12 @@ restored account credentials and completes any restored MFA requirement through
 normal authentication.
 
 If no restored Administrator can authenticate because of a password or MFA
-lockout, a Host Administrator uses the host-local
-**[Admin CLI](../glossary.md#applications-and-interfaces)** account-recovery
-workflow. The Restore surface does not reopen.
+lockout, the deployment remains inaccessible through supported application
+interfaces. Restore does not reopen and Weavelit provides no out-of-band
+password or MFA reset. Deployment operators are responsible for maintaining
+and testing backup and Administrator-account practices appropriate to their
+needs; restoring a valid backup does not guarantee usable credentials or MFA
+factors.
 
 ## Resume Interrupted Restore
 

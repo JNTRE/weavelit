@@ -35,11 +35,9 @@ owning documentation when its additional context is needed.
   through an Init-capable Client Module only to that same Server-owned logic.
 - Local Human User accounts are created only through server-administration
   functions and may be disabled but are never deleted. Weavelit has no
-  email-based invitation or recovery mechanism. An Administrator with access
-  to a server-administration surface can initiate a password reset for any
-  local Human User, including themselves. A Host Administrator can perform the
-  same local-account administration functions with the Admin CLI without an
-  application session.
+  email-based invitation or recovery mechanism. An Administrator with an
+  authenticated, usable session and access to a server-administration surface
+  can initiate a password reset for any local Human User, including themselves.
 - Local **[Multifactor Authentication](glossary.md#identities-and-access)** is
   optional by default. The initial supported MFA method uses a password and a
   time-based one-time password (TOTP); a Human User who enrolls in TOTP must
@@ -77,12 +75,14 @@ owning documentation when its additional context is needed.
   before obtaining a usable session. An Administrator who cannot authenticate
   cannot use an application administration surface to recover their own
   account.
-- A **[Host Administrator](glossary.md#identities-and-access)** can use the
-  **[Admin CLI](glossary.md#applications-and-interfaces)** without an
-  application session to reset MFA enrollment for any local Human User,
-  including the sole Administrator following an MFA lockout. The Server records
-  MFA policy changes and resets in audit records without recording TOTP secrets
-  or codes.
+- The Server records MFA policy changes and resets in audit records without
+  recording TOTP secrets or codes. Weavelit provides no host-level,
+  out-of-band, or unauthenticated password or MFA reset. If no Administrator can
+  authenticate, the deployment remains inaccessible through supported
+  application interfaces. Restore may reproduce the same unusable credentials
+  and factor enrollments and is not guaranteed to restore access. Preventing
+  and preparing for total Administrator lockout belongs to deployment account,
+  credential, backup, and Restore practices outside Weavelit.
 - **[Web UI](glossary.md#applications-and-interfaces)** browser sessions use
   secure, server-managed session handling.
 - The **[Weavelit CLI](glossary.md#applications-and-interfaces)** never

@@ -2,8 +2,8 @@
 
 This directory is reserved for the Debian package assets that install the
 Weavelit Server on Ubuntu 26.04 LTS `amd64`. The resulting versioned package
-includes the Server, Web UI assets, and Admin CLI without requiring Rust,
-source code, or development tooling on the host.
+includes the Server and Web UI assets without requiring Rust, source code, or
+development tooling on the host.
 
 ## Purpose and Scope
 

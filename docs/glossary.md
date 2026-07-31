@@ -58,9 +58,9 @@ is macOS 26 and later on Apple Silicon (`arm64`).
 
 **Operations CLI** - Previous name for the **[Weavelit CLI](#applications-and-interfaces)**. This term is retained here only as a compatibility alias; all other documentation must use Weavelit CLI. Code or configuration may retain the previous name only where required for compatibility.
 
-**Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)**. It provides Init-capable and Restore-capable administration surfaces while the Server is uninitialized. During normal operation, a **[Human User](#identities-and-access)** whose **[Group](#identities-and-access)** grants the Web UI **[Client Module](#applications-and-interfaces)** can use self-service account functions and view their own Group memberships and effective access. Only an **[Administrator](#identities-and-access)** can use its normal administrative functions.
+**Admin CLI** - Deprecated name for a previously planned host-local Server administration tool. Weavelit does not implement this application, and it must not be introduced as an account-recovery, Init, Restore, or general administration interface. This term is retained only for historical compatibility; all other documentation, code, and configuration must not use it.
 
-**Admin CLI** - The host-local server administration tool, available only to a Unix account with `sudo` authority on the Weavelit Server host. It provides initialized-state local-account recovery when an Administrator cannot obtain an application session; it does not expose Init or Restore.
+**Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)**. It provides Init-capable and Restore-capable administration surfaces while the Server is uninitialized. During normal operation, a **[Human User](#identities-and-access)** whose **[Group](#identities-and-access)** grants the Web UI **[Client Module](#applications-and-interfaces)** can use self-service account functions and view their own Group memberships and effective access. Only an **[Administrator](#identities-and-access)** can use its normal administrative functions.
 
 **Client Module** - A reusable server-side Rust library that provides and maintains one client-facing connection surface to the Weavelit Server. It authenticates normal application requests and translates accepted client requests into Server-owned contracts, while the Server remains the final authorization authority. A Client Module may also declare an Init-capable administration surface, a Restore-capable administration surface, or both. While the Server is uninitialized, each capability exposes only its corresponding restricted pre-operational contract; neither capability remains available after the deployment is initialized.
 
@@ -81,8 +81,6 @@ is macOS 26 and later on Apple Silicon (`arm64`).
 **Operation** - A specific named, validated, permissionable task implemented by a Service Module that the Server can authorize, audit, and execute.
 
 ## Identities and Access
-
-**Host Administrator** - A person with `sudo` authority on the **[Weavelit Server](#applications-and-interfaces)** host who may run the **[Admin CLI](#applications-and-interfaces)**.
 
 **Human User** - A locally or externally authenticated person.
 

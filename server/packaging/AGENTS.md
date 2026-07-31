@@ -1,9 +1,9 @@
 # Server Packaging Agent Guide
 
 This directory is reserved for assets that package the Weavelit Server for
-installation. The Server package includes the Server executable, Web UI assets,
-and Admin CLI; it does not install source code or development tooling on the
-supported host.
+installation. The Server package includes the Server executable and Web UI
+assets; it does not install source code or development tooling on the supported
+host.
 
 ## Purpose and Scope
 
@@ -39,6 +39,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Package the Server, its Web UI assets, and the Admin CLI as one Server release artifact.
+- Package the Server and its Web UI assets as one Server release artifact.
 - Do not make package installation create application users, configure Service Connections, complete Init, or start normal Server operation against uninitialized state.
 - Keep platform-specific package files in their named child boundary.

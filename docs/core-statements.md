@@ -258,7 +258,7 @@ when its additional context is needed.
 - The Weavelit Server owns the HTTPS API, operation catalog, authorization,
   System Logs, Audit Logs, Log Module configuration, authentication
   configuration, provider integrations, and provider credentials.
-- The Weavelit Server package includes the Web UI and Admin CLI.
+- The Weavelit Server package includes the Web UI.
 - The Web UI is a single-page application built with TypeScript and React.
   Its production asset bundle is built as part of the Weavelit Server package,
   installed with the Server's file structure, and is not separately installed
@@ -270,11 +270,6 @@ when its additional context is needed.
 - The Weavelit Server and Weavelit CLI communicate through the versioned
   application interface and can be packaged and upgraded independently within
   that interface's compatibility policy.
-- The **[Admin CLI](glossary.md#applications-and-interfaces)** runs only on the
-  Weavelit Server host and requires a Unix account with `sudo` authority; it is
-  not a remotely callable Weavelit interface. It provides initialized-state
-  account recovery when an Administrator cannot obtain an application session;
-  it does not expose Init or backup Restore.
 - The normal Server runtime composes `weavelit-server-lifecycle`,
   `weavelit-server-init`, and `weavelit-server-restore`. The lifecycle crate
   owns the shared pre-operational state, database selection, serialization, and
@@ -352,10 +347,10 @@ when its additional context is needed.
 - An Administrator who can access a server-administration surface can perform
   the available local-account administration functions for any local Human
   User, including themselves, such as initiating a password reset or resetting
-  an MFA enrollment. A Host Administrator can use the Admin CLI to perform the
-  same local-account administration functions without an application session,
-  including to clear the MFA enrollment of the sole Administrator after an MFA
-  lockout.
+  an MFA enrollment. These functions require an authenticated, usable
+  Administrator session and the Server Administration Permission; Weavelit
+  provides no host-level, out-of-band, or unauthenticated account-recovery
+  interface.
 - The Server provides each supported local MFA method through a compiled-in
   **[MFA Module](glossary.md#applications-and-interfaces)**. MFA Modules are
   released as part of the Server package, not installed as runtime plugins.
@@ -365,9 +360,13 @@ when its additional context is needed.
   User.
 - Administrators configure MFA Module enablement through server-administration
   functions. A disabled MFA Module cannot enroll or verify factors.
-- Init creates the first local Human User without an enrolled MFA factor. A
-  Host Administrator can use the Admin CLI to reset MFA enrollment for any
-  local Human User, including themselves.
+- Init creates the first local Human User without an enrolled MFA factor.
+- If no Administrator can authenticate, the deployment remains inaccessible
+  through supported application interfaces. This fail-closed state is an
+  accepted outcome. Deployment operators are responsible for choosing and
+  testing their Administrator-account continuity, credential-custody, backup,
+  and Restore practices. Restore may reproduce unusable passwords or MFA
+  enrollments and does not guarantee renewed administrative access.
 - **[External Authentication](glossary.md#identities-and-access)** through
   OpenID Connect providers and external workload identities is optional, not a
   deployment requirement.

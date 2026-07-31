@@ -12,7 +12,7 @@ Glossary, or an architecture decision record rather than remaining here.
 Which additional compiled-in **[MFA Modules](glossary.md#applications-and-interfaces)**
 will Weavelit support after TOTP, and how can a Human User enroll, replace, or
 retire multiple MFA methods without weakening an MFA requirement or creating an
-account-recovery gap?
+unintended access-loss path?
 
 ### 2. Weavelit CLI login and credential storage
 
@@ -69,8 +69,7 @@ How does that schema represent the
 authenticated user-plane, and authenticated admin-plane functions and the
 **[Weavelit CLI](glossary.md#applications-and-interfaces)** with user-plane
 operational functions only? How does this application-interface terminology
-remain distinct from the host-local
-**[Admin CLI](glossary.md#applications-and-interfaces)** and from separate
+remain distinct from host-level deployment administration and separate
 network-plane architecture?
 
 ## API, Security, and Operations
@@ -136,16 +135,12 @@ on Apple Silicon (`arm64`)?
 
 For the post-MVP OCI-compliant production Server image, how does the build and
 verification workflow prove that the image contains the same versioned,
-prebuilt Server release output used to assemble the `.deb` package? How does a
-container deployment expose the host-local, initialized-state account-recovery
-functions of the **[Admin CLI](glossary.md#applications-and-interfaces)** to a
-**[Host Administrator](glossary.md#identities-and-access)** with equivalent
-`sudo` authority without creating a remotely callable interface, and how are
-those actions authorized and audited? How are the Server-local Application
-Database deployment record, locator, and typed secret references persisted and
-protected across container replacement? What persistent-volume and backup
-model, TLS termination, secret injection mechanism, supported orchestrators,
-image provenance, and upgrade and rollback policy apply?
+prebuilt Server release output used to assemble the `.deb` package? How are the
+Server-local Application Database deployment record, locator, and typed secret
+references persisted and protected across container replacement? What
+persistent-volume and backup model, TLS termination, secret injection
+mechanism, supported orchestrators, image provenance, and upgrade and rollback
+policy apply?
 
 ### 12. Zendesk reference integration
 
@@ -166,14 +161,12 @@ meet, and which visual foundations remain local to Weavelit?
 
 ### 14. Server release-version source
 
-The **[Weavelit Server](glossary.md#applications-and-interfaces)** Rust
-workspace manifest currently defines one shared `$X.Y.Z$` version for the
-Server and **[Admin CLI](glossary.md#applications-and-interfaces)**. When
-release automation and package workflows are introduced, can they reliably
-derive and validate every Server release artifact's version from that manifest,
-including its release tag and platform package metadata? Revisit whether the
-workspace manifest remains the appropriate single source of truth after that
-validation.
+The **[Weavelit Server](glossary.md#applications-and-interfaces)** crate
+manifest currently defines the Server version. When release automation and
+package workflows are introduced, can they reliably derive and validate every
+Server release artifact's version from that manifest, including its release tag
+and platform package metadata? Revisit whether that manifest remains the
+appropriate single source of truth after that validation.
 
 ## Related Documents
 

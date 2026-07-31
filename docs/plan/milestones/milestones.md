@@ -23,9 +23,10 @@ goals, completion state, dates, progress, or assigned issues.
 
 This milestone establishes the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**
 foundation: one-time **[Init](../../glossary.md#states-and-requests)**, durable
-application and log state, default-deny access, account recovery, encrypted
-backup and **[Restore](../../glossary.md#states-and-requests)**, HTTPS operation,
-and a reproducible development environment.
+application and log state, default-deny access, authenticated account
+administration, encrypted backup and
+**[Restore](../../glossary.md#states-and-requests)**, HTTPS operation, and a
+reproducible development environment.
 
 ### Milestone 2: MFA Module - TOTP
 

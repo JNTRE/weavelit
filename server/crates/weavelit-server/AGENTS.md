@@ -12,7 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns the Server executable's composition and lifecycle behavior.
 - It does not own individual Application Database backends or module implementations; those belong in sibling crate paths.
-- It does not own Web UI source, Admin CLI behavior, tests, or packaging; those remain under their named Server paths.
+- It does not own Web UI source, tests, or packaging; those remain under their named Server paths.
 
 ## Asset Inventory
 
