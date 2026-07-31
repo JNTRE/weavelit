@@ -5,19 +5,17 @@ are the authoritative source for milestone titles, summaries, goals, state,
 dates, progress, and assigned issues. This document is a repository navigation
 index only. If this index differs from GitHub, GitHub controls.
 
-## Example Milestone
+## Milestones
 
-The following entry demonstrates the local index format only. It does not
-represent a live milestone.
-
-### Milestone NUMBER: Milestone title
+### Milestone Example: Example Milestone title
 
 [Open GitHub Milestone NUMBER](https://github.com/JNTRE/weavelit/milestone/NUMBER).
 
+This example demonstrates the local index format only and does not represent a
+live milestone.
+
 Briefly summarize the milestone's intended delivery outcome without copying its
 goals, completion state, dates, progress, or assigned issues.
-
-## Milestones
 
 ### Milestone 1: Core Server Application
 
