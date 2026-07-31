@@ -143,16 +143,12 @@ state transition. A failure before commit leaves no partial application state.
 
 The restored state carries a durable post-commit Restore-result obligation. The
 Restore crate loads the restored Audit Log assignment, proves that it can
-durably record the Restore result with the
-**[System Principal](../../../glossary.md#identities-and-access)** as the acting
-principal, and marks that obligation complete. The record identifies the
-`Restore` action, replacement deployment identifier as its target, time, result,
-and correlation identifier without treating the requester, private recovery
-key, or backup content as an application identity; Responsible Owner does not
-apply to this record. The lifecycle crate seals the deployment record
-`Initialized` only after the database commit and required Audit Log result are
-durable. The runtime then removes every pre-operational route, loads application
-state, and enables normal authenticated operation without a restart.
+durably record the Restore result without a private key, backup content, or
+fabricated authenticated principal, and marks that obligation complete. The
+lifecycle crate seals the deployment record `Initialized` only after the
+database commit and required Audit Log result are durable. The runtime then
+removes every pre-operational route, loads application state, and enables normal
+authenticated operation without a restart.
 
 If the database commit succeeds but Audit Log recording, sealing, or in-process
 activation fails, the Server exposes no routes and fails closed. On startup,
@@ -202,12 +198,9 @@ wrong recovery keys, compatibility rejection, duplicate and invalid restored
 state, unavailable required components, session invalidation, recovery-public-
 key preservation, protected-secret re-encryption, private-key and plaintext
 non-persistence, redaction, Restore-checkpoint validation, atomic rollback,
-retry and reset, durable Audit Log result handling with the
-**[System Principal](../../../glossary.md#identities-and-access)**, rejection of
-requester or recovery-key identity attribution, every
-Restore-specific crash point, concurrency with Init and Restore requests,
-direct invocation after sealing, and rejection before key or artifact
-processing.
+retry and reset, durable Audit Log result handling, every Restore-specific crash
+point, concurrency with Init and Restore requests, direct invocation after
+sealing, and rejection before key or artifact processing.
 
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify

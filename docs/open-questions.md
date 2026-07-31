@@ -107,11 +107,9 @@ in-place database migration. What versioned backup format, cryptographic
 envelope, recovery-key format, compatibility window, and artifact-retention
 policy apply? How do upload retries, protected encrypted staging and cleanup,
 interrupted Restore, crash reconciliation, and durable Restore-result Audit Log
-recording work? Which additional fields, if any, identify the backup format
-beyond the required
-**[System Principal](glossary.md#identities-and-access)**, Restore action,
-replacement deployment target, time, result, and correlation identifier without
-exposing backup contents? How are the
+recording work? What fields identify the Restore result, replacement deployment,
+backup format, correlation, and unauthenticated pre-operational actor without
+exposing backup contents or implying a fabricated Human User? How are the
 separate System Log and Audit Log databases and remote Log Module destinations
 backed up, protected, restored, and migrated? What configuration bounds and
 execution behavior apply to their independent retention and purge policies?
