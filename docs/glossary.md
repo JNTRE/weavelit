@@ -56,8 +56,6 @@ application used on a user's local system. It interacts with the
 **[Client Module](#applications-and-interfaces)**. Its first supported platform
 is macOS 26 and later on Apple Silicon (`arm64`).
 
-**Operations CLI** - Previous name for the **[Weavelit CLI](#applications-and-interfaces)**. This term is retained here only as a compatibility alias; all other documentation must use Weavelit CLI. Code or configuration may retain the previous name only where required for compatibility.
-
 **Admin CLI** - Deprecated name for a previously planned host-local Server administration tool. Weavelit does not implement this application, and it must not be introduced as an account-recovery, Init, Restore, or general administration interface. This term is retained only for historical compatibility; all other documentation, code, and configuration must not use it.
 
 **Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)**. It provides Init-capable and Restore-capable administration surfaces while the Server is uninitialized. During normal operation, a **[Human User](#identities-and-access)** whose **[Group](#identities-and-access)** grants the Web UI **[Client Module](#applications-and-interfaces)** can use self-service account functions and view their own Group memberships and effective access. Only an **[Administrator](#identities-and-access)** can use its normal administrative functions.
