@@ -25,7 +25,8 @@ Use these ownership boundaries:
 
 - `vision.md` owns the high-level product purpose and system relationships.
 - `spec.md` owns cross-cutting settled product and technical requirements.
-- `security-model.md` owns cross-cutting security requirements and constraints.
+- `security-model.md` owns protected-asset classifications, trust assumptions,
+  cross-cutting security invariants, and approved security profiles.
 - `glossary.md` owns canonical terminology and definitions.
 - `open-questions.md` owns unresolved product and architecture decisions.
 - Component and module design documents own implementation-specific contracts,

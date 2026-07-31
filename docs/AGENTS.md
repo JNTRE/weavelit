@@ -28,7 +28,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Technical Specification, Glossary, or an architecture decision record.
 - `plan/`: Delivery-planning documentation, including navigation to authoritative GitHub Issues and Milestones and the GitHub Project standards.
-- `security-model.md`: Security requirements and implementation constraints supporting the Technical Specification, not a complete implementation design.
+- `security-model.md`: Protected assets, trust assumptions, cross-cutting security invariants, and approved security profiles supporting the Technical Specification.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
 - `spec.md`: RFC 2119 technical specification and highest-level product and technical authority.

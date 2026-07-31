@@ -3,9 +3,10 @@
 This document is the canonical destination for implementation-specific design
 for **[Automation Identities](../../glossary.md#identities-and-access)** in the
 **[Weavelit Server](../../glossary.md#applications-and-interfaces)**. Binding
-cross-cutting requirements remain in the
-[Security Model](../../security-model.md) until implementation work transfers
-the relevant detail here.
+application requirements remain in the [Technical Specification](../../spec.md),
+and cross-cutting credential and accountability invariants remain in the
+[Security Model](../../security-model.md). This document owns how the Server
+implements those requirements and invariants.
 
 ## Current Scope
 

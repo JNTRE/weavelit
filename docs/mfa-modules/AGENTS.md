@@ -7,7 +7,7 @@ This folder documents compiled-in server-side **[MFA Modules](../glossary.md#app
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns method-specific MFA Module design for enrollment, verification, and protected factor-data handling.
-- It does not own MFA policy, authorization, session usability, recovery, audit records, or Module enablement; those remain Server responsibilities defined in `../security-model.md`.
+- It does not own MFA policy, authorization, session usability, recovery, audit records, or Module enablement; those remain Server responsibilities defined by `../spec.md` and the approved profiles in `../security-model.md`.
 - This guide covers this MFA Module documentation boundary; keep general authentication design in `../server/authentication/` and canonical commitments in the top-level documentation.
 
 ## Asset Inventory

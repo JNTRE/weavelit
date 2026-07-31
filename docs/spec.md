@@ -191,7 +191,9 @@ feature MUST declare and enforce the grants it requires and exactly one access
 class: self-service, group-scoped, or server-administration. Human User access
 MUST be delivered only through Group membership; a self-service feature still
 requires a Group grant to the Client Module through which it is accessed. The
-Server MUST deny access by default whenever that access is absent. A
+Server MUST deny access by default whenever that access is absent. An inactive
+Human User or a disabled Client Module, Service Module, or Operation MUST remain
+unusable regardless of any Group grant. A
 **[User Plane](glossary.md#applications-and-interfaces)** function MUST use the
 self-service or group-scoped access class. An
 **[Administration Plane](glossary.md#applications-and-interfaces)** function

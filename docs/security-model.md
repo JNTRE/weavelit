@@ -1,259 +1,227 @@
 # Weavelit Security Model
 
-This document records security requirements and implementation constraints that
-support the product boundaries in the [Technical Specification](spec.md). It
-is not a complete implementation design.
+This document defines Weavelit's stable security model beneath the
+[Technical Specification](spec.md). It owns protected-asset classifications,
+trust assumptions, cross-cutting security invariants, and approved security
+profiles whose consistency must not depend on incidental implementation
+choices. The Technical
+Specification owns application behavior and high-level security outcomes;
+component design documents own implementation structure, libraries, data
+formats, control flow, and error handling.
 
-## Maintenance Policy
+When Weavelit standardizes a security mechanism across implementations, this
+document owns the approved mechanism and minimum security profile. Component
+designs explain how their implementation satisfies that profile without
+weakening it. This document does not repeat requirements merely to summarize
+the Technical Specification or component designs.
 
-This document is an initial collection of cross-cutting security requirements
-and implementation constraints. As a component is implemented, move its
-implementation-specific security detail to the owning documentation:
+## Trust Boundaries And Assumptions
 
-- [Authentication Design](server/authentication/authentication-design.md)
-- [Authorization Design](server/authorization/authorization-design.md)
-- [Automation Identity Design](server/automation-identities/automation-identity-design.md)
+The Server-owned authentication, authorization, lifecycle, cryptographic, and
+persistence contracts form the trusted application enforcement boundary.
+Compiled-in modules operate within the Server process but remain limited to
+their declared responsibilities. A
+**[Client Module](glossary.md#applications-and-interfaces)** may authenticate
+and translate requests, but it is not an authorization authority.
 
-Do this incrementally as implementation work makes the component's ownership
-clear; do not migrate requirements merely to complete a wholesale
-reorganization. Keep cross-cutting security constraints here, and link to the
-owning documentation when its additional context is needed.
+Client applications, AI agents, agent instructions, caller-supplied identity or
+permission claims, request payloads, and imported backups are untrusted. The
+Server validates them within the owning Server contract before they can change
+trusted state or cause an external side effect. Client validation, route
+visibility, and presentation controls improve usability but provide no security
+authority.
 
-## Authentication
+This model addresses unauthorized or malformed requests, untrusted or
+compromised clients and agents, credential disclosure through interfaces,
+logging, or persistence, hostile imported data, authorization bypass, and
+partial or failed security-sensitive workflows. It does not claim to preserve
+application security after a person with sufficient host authority can replace
+the Server binary, read protected Server state, or destroy all deployment
+anchors.
 
-- **[Local Authentication](glossary.md#identities-and-access)** is Weavelit's
-  self-contained default. **[External Authentication](glossary.md#identities-and-access)** through OpenID Connect is optional.
-- Local human passwords are stored only with a modern adaptive password-hashing
-  algorithm from a maintained library. Passwords are never stored in plaintext
-  or reversibly encrypted.
-- Local human password creation, changes, resets, storage, and verification
-  occur only in Server-owned authentication logic. Client Modules and client
-  applications may request those workflows, but do not persist password values
-  or password verifiers, or implement separate password-hashing or verification
-  behavior. During **[Init](glossary.md#states-and-requests)**, a client
-  application may submit the first local Human User's password over HTTPS
-  through an Init-capable Client Module only to that same Server-owned logic.
-- Local Human User accounts are created only through
-  **[Administration Plane](glossary.md#applications-and-interfaces)** functions
-  or the Init-capable pre-operational capability and may be disabled but are
-  never deleted. Weavelit has no email-based invitation or recovery mechanism.
-  An Administrator with an authenticated, usable session and access to an
-  Administration Plane can initiate a password reset for any local Human User,
-  including themselves.
-- Local **[Multifactor Authentication](glossary.md#identities-and-access)** is
-  optional by default. The initial supported MFA method uses a password and a
-  time-based one-time password (TOTP); a Human User who enrolls in TOTP must
-  complete TOTP verification whenever they authenticate, and an Administrator
-  can require MFA for a local Human User.
-- The Server owns local MFA policy, authorization, session usability, recovery,
-  audit records, and **[MFA Module](glossary.md#applications-and-interfaces)**
-  enablement. An MFA Module owns its method-specific enrollment, verification,
-  and protected factor-data handling.
-- The TOTP MFA Module enrolls a Human User's factor by confirming a current
-  password and a generated TOTP code. It may provide the TOTP provisioning
-  value only to that Human User during enrollment; it never returns the secret
-  after enrollment or records TOTP secrets or codes in logs or audit records.
-- A local Human User who is required to use MFA but has not enrolled, or whose
-  enrollment has been reset, cannot obtain a usable session until completing
-  TOTP enrollment. An MFA reset immediately invalidates the prior enrollment.
-- An Administrator can disable an MFA Module through an Administration Plane
-  even when Human Users have active enrollments that depend on it. Before
-  applying the change, the Server reports the number of affected Human Users.
-  Disabling the MFA Module immediately prevents enrollment and verification
-  through that method and terminates the affected Human Users' sessions.
-- Disabling an MFA Module does not remove a Human User's MFA requirement. An
-  affected Human User whose account requires MFA must enroll in an enabled MFA
-  Module before obtaining a usable session. An affected Human User whose
-  account does not require MFA may authenticate without MFA and can enroll in
-  any enabled MFA Module.
-- An Administrator with access to an Administration Plane can require MFA for,
-  or reset the MFA enrollment of, any local Human User, including themselves.
-  An Administrator who has enrolled in MFA must complete TOTP verification for
-  the current session before requiring MFA or resetting an MFA enrollment.
-- Resetting an MFA enrollment clears the prior factor data and, when MFA
-  remains required, forces the Human User to enroll in an enabled MFA Module
-  before obtaining a usable session. An Administrator who cannot authenticate
-  cannot use an Administration Plane to recover their own account.
-- The Server records MFA policy changes and resets in audit records without
-  recording TOTP secrets or codes. Weavelit provides no host-level,
-  out-of-band, or unauthenticated password or MFA reset. If no Administrator can
-  authenticate, the deployment remains inaccessible through supported
-  application interfaces. Restore may reproduce the same unusable credentials
-  and factor enrollments and is not guaranteed to restore access. Preventing
-  and preparing for total Administrator lockout belongs to deployment account,
-  credential, backup, and Restore practices outside Weavelit.
-- **[Web UI](glossary.md#applications-and-interfaces)** browser sessions use
-  secure, server-managed session handling.
-- The **[Weavelit CLI](glossary.md#applications-and-interfaces)** never
-  stores provider credentials. Its user-credential storage and login flow
-  are specified separately.
-- The Server receives, stores, and, where applicable, refreshes or revokes the
-  sensitive authentication material for every
-  **[Service Connection](glossary.md#applications-and-interfaces)**, including
-  connections associated with a **[Human User](glossary.md#identities-and-access)**.
-  Sensitive material may be supplied only through a declared Service Connection
-  setup workflow; it is never returned to, retained by, or otherwise disclosed
-  to **[Client Modules](glossary.md#applications-and-interfaces)**, client
-  applications, or audit records.
-- The Server protects reversibly encrypted application data with Server-local
-  at-rest key material that is separate from the backup recovery key pair.
-  During Init, the Server retains only the recovery public key and delivers the
-  private recovery key once to the requesting client over HTTPS. The person
-  completing Init records the private recovery key outside Weavelit. The
-  private recovery key is never stored in the Application Database, Server
-  configuration, container volume, logs, or ordinary backup artifact.
-- Client applications transmit user-supplied initialization secrets and
-  **[Restore](glossary.md#states-and-requests)** private recovery keys over
-  HTTPS and do not log them, retain them after the request, or place them in
-  URLs, browser history, or client-side persistent storage. A Restore-capable
-  client reads a user-selected encrypted backup only to transmit it and does
-  not create or retain another copy. Init-capable and Restore-capable Client
-  Modules pass these inputs only to their corresponding Server-owned contracts
-  and do not decrypt, log, or retain them. The Server never returns submitted
-  secrets and persists each accepted secret only in its intended protected
-  representation, such as a password verifier or encrypted credential.
-- The Server-local Application Database locator contains no inline secret
-  values or environment-variable interpolation. It may contain typed secret
-  references only. The Server accepts a referenced secret file only when the
-  opened object is a bounded regular non-symlink file without group or world
-  access, and it never logs the secret, its contents, or its path. The locator
-  is written atomically, protected against unauthorized reading and
-  modification, and treated as integrity-sensitive Server configuration.
-- The Server-local deployment record is separate from the Application Database
-  locator. It contains a unique deployment identifier and the lifecycle state
-  `Uninitialized`, `InitializationPending`, or `Initialized`. The record is
-  written atomically and protected against unauthorized modification. No
-  supported operation can reset or unseal `Initialized`;
-  `InitializationPending` may return to `Uninitialized` only through an explicit
-  Server-owned pre-operational recovery operation after the Application Database
-  is confirmed to contain no application state. It can never return after Init
-  or Restore commits application state. The locator and every pending or
-  initialized Application Database state carry the same deployment identifier;
-  a missing or mismatched component fails closed after the record leaves
-  `Uninitialized`.
-- An encrypted backup may be created through an
-  **[Administration Plane](glossary.md#applications-and-interfaces)** and
-  downloaded by an Administrator. The Server encrypts it for the recovery
-  public key and does not expose the private recovery key during ordinary
-  backup operations. **[Restore](glossary.md#states-and-requests)** is available
-  only on a genuinely uninitialized replacement Server after the shared
-  pre-operational contract selects an eligible Application Database and before
-  Init creates application state. It requires the encrypted backup and matching
-  private recovery key through a Restore-capable Client Module. The private key
-  authorizes decryption of that backup only; it is not an application identity,
-  proof of host authority, or authorization for normal administration.
-- The Server treats every submitted backup as untrusted even when the recovery
-  key can decrypt it. Before application-state mutation, the Restore contract
-  enforces bounded upload, cryptographic-work, structural, collection, string,
-  execution-time, and concurrency limits, bounds any decompression the format
-  supports, and validates the backup's authenticity, integrity, format version,
-  compatibility, and complete contents. A rejected backup leaves the selected
-  database uninitialized and produces only stable, redacted errors.
-- Restore never persists the private recovery key, decrypted backup plaintext,
-  or unwrapped backup keys. If temporary staging is required, the Server may
-  persist only the bounded encrypted artifact in protected storage and removes
-  it after success or failure. A successful Restore persists only the matching
-  public recovery key, invalidates all restored sessions, re-encrypts protected
-  secret material with the replacement Server's own at-rest key, atomically
-  commits state bound to the replacement deployment identifier, verifies that
-  the restored Audit Log assignment can durably record a Restore result without
-  recovery secrets or backup contents, and seals the deployment before normal
-  routes become available.
+TLS-protected HTTPS is an application invariant; the deployment operator
+supplies and protects the TLS material and controls network exposure, host
+access, filesystem protections, and custody of secrets retained outside
+Weavelit. A
+person with sufficient host authority can replace the Server binary or destroy
+all persistent deployment anchors. Weavelit cannot distinguish complete
+destruction of those anchors from a new installation; preventing and detecting
+that action belongs to deployment access control and monitoring.
 
-## Authorization
+## Protected Assets
 
-- **[Init](glossary.md#states-and-requests)** and
-  **[Restore](glossary.md#states-and-requests)** are the sole unauthenticated
-  application exceptions. While the Server is uninitialized, it exposes only
-  these restricted pre-operational contracts through Client Modules that
-  explicitly declare the corresponding capability and rejects normal
-  application requests. Because no application identity exists yet, the
-  deployer is responsible for limiting network access to these surfaces with
-  TLS, firewall, and other network controls.
-- The Server derives Init and Restore availability from trusted Server state,
-  never from a client claim. No supported operation re-enables either contract
-  after Init or Restore succeeds. Every mutating entry point independently
-  validates the deployment record, selected database, deployment identifier,
-  and eligible lifecycle state before reading request secrets or backup content
-  or causing side effects; runtime routing is an additional control, not that
-  entry point's authority. Before exposing routes, startup reconciles a matching
-  initialized database with an `InitializationPending` deployment record by
-  sealing the record; inability to persist that seal fails closed. When any
-  retained anchor identifies an existing deployment, an unavailable, missing,
-  malformed, unsafe, mismatched, or integrity-failing deployment record,
-  configured Application Database, or locator must not cause the Server to
-  expose Init or Restore as a fallback.
-- A person with sufficient host authority can erase the deployment record,
-  locator, and database together or replace the Server binary. Weavelit cannot
-  distinguish complete removal of every persistent deployment anchor from a
-  genuinely new installation; preventing or detecting that host-level action
-  belongs to deployment access control, filesystem protection, and backup or
-  monitoring policy.
-- The server derives the caller's identity from validated credentials and makes
-  the final authorization decision for every
-  **[Operation](glossary.md#applications-and-interfaces)**.
-- Authorization is default-deny and granted to named operations, not broadly to
-  provider integrations.
-- **[Groups](glossary.md#identities-and-access)** are the only source of
-  **[Client Module](glossary.md#applications-and-interfaces)**,
-  **[Service Module](glossary.md#applications-and-interfaces)**, named
-  **[Operation](glossary.md#applications-and-interfaces)**, and
-  **[Server Administration Permission](glossary.md#identities-and-access)**
-  grants for **[Human Users](glossary.md#identities-and-access)**. A Human
-  User's effective grants are the additive union of its groups' grants.
-- Except for the restricted pre-operational Init and Restore contracts, every
-  new client-facing
-  **[Client Module](glossary.md#applications-and-interfaces)** and feature must
-  declare and enforce its required grants and one access class: self-service,
-  group-scoped, or server-administration. Human User access is delivered only
-  through Group membership; self-service features still require a Group grant
-  to the Client Module through which they are accessed. A disabled account,
-  Client Module, Service Module, or Operation overrides any group grant. A
-  **[User Plane](glossary.md#applications-and-interfaces)** function uses the
-  self-service or group-scoped access class. An
-  **[Administration Plane](glossary.md#applications-and-interfaces)** function
-  uses the server-administration access class. Plane classification does not
-  replace authorization of each request. A Client Module compiles and registers
-  only its declared planes, and its corresponding client implements only those
-  planes. This capability boundary removes undeclared routes and client
-  workflows but does not authorize use of a declared function; the Server core
-  independently authorizes every request against current effective grants.
-- Browser navigation and page visibility are usability controls only. The
-  Server independently enforces its current lifecycle state and authorizes
-  every normal **[Web UI](glossary.md#applications-and-interfaces)** request.
-  During normal operation it rejects Administration Plane requests without the
-  Server Administration Permission; while uninitialized it accepts only the
-  restricted Init and Restore contracts.
-- The Weavelit CLI Client Module exposes both User Plane and Administration
-  Plane functions. The Server applies the same current-grant authorization to
-  CLI requests as to requests through any other Client Module and does not
-  treat the CLI or its credentials as an authorization authority.
+The security model protects:
 
-## Automation Accountability
+- **[Human User](glossary.md#identities-and-access)** passwords, password
+  verifiers, MFA provisioning values, factor data, authentication codes, and
+  sessions;
+- **[Automation Identity](glossary.md#identities-and-access)** credentials,
+  named **[Operation](glossary.md#applications-and-interfaces)** scopes, and
+  **[Responsible Owner](glossary.md#identities-and-access)** assignments;
+- **[Service Connection](glossary.md#applications-and-interfaces)** credentials
+  and other provider authentication material;
+- Server-local at-rest keys, backup recovery private keys, unwrapped backup
+  keys, and decrypted backup content;
+- **[Application Database](glossary.md#applications-and-interfaces)** state and
+  the integrity of the deployment record and database locator; and
+- the confidentiality and integrity properties of
+  **[System Logs](glossary.md#applications-and-interfaces)**,
+  **[Audit Logs](glossary.md#applications-and-interfaces)**, and client-visible
+  errors.
 
-- Each **[Automation Identity](glossary.md#identities-and-access)** has an
-  assigned **[Responsible Owner](glossary.md#identities-and-access)** and is
-  usable only while that owner's Human User account remains active. The Server
-  treats the Automation Identity as disabled and rejects its authentication and
-  Operation requests whenever the owner is inactive.
-- Only an **[Administrator](glossary.md#identities-and-access)** may create or
-  manage an **[Automation Identity](glossary.md#identities-and-access)**,
-  including its credentials and named
-  **[Operation](glossary.md#applications-and-interfaces)** scopes.
-- An Automation Identity's named Operation scopes are independent of its
-  Responsible Owner's effective grants. Responsibility neither requires
-  equivalent owner grants nor gives the owner authority to manage the
-  Automation Identity.
-- Automation credentials are scoped to named operations and can be revoked or
-  expired by an administrator. Assigning a new active Responsible Owner removes
-  only the owner-status disablement; it does not change Operation scopes or
-  restore an expired or revoked credential.
-- Audit records identify the authenticated principal that initiated an action
-  and the Responsible Owner assigned to an Automation Identity when the action
-  occurred.
+## Password And Session Security Profile
+
+Local **[Human User](glossary.md#identities-and-access)** passwords must be
+stored only with a modern adaptive
+password-hashing algorithm from a maintained implementation. Passwords must
+never be stored in plaintext or reversibly encrypted. The approved algorithm
+and minimum protection profile belong to this security model once selected;
+the Authentication Design owns the library, encoded representation, parameter
+application, verification flow, and migration mechanics.
+
+Password creation, change, reset, storage, hashing, and verification must occur
+only in Server-owned authentication logic. Client applications and
+**[Client Modules](glossary.md#applications-and-interfaces)** may request or
+transport these workflows, but they must not persist passwords or password
+verifiers or implement independent password hashing or verification. Browser
+sessions must use secure, Server-managed session handling.
+
+## Multifactor Authentication Security Profile
+
+The initial **[Time-Based One-Time Password (TOTP)](glossary.md#identities-and-access)**
+enrollment flow must confirm both the
+**[Human User](glossary.md#identities-and-access)**'s current password and a
+current code generated from the new provisioning value. The provisioning value
+may be disclosed only to that Human User during enrollment and must never be
+returned after enrollment. The Server must exclude TOTP provisioning values,
+secrets, and codes before System Logs or Audit Logs reach a Log Module.
+
+A Human User who is required to use MFA but has no valid enrollment must not
+receive a usable session until enrollment in an enabled
+**[MFA Module](glossary.md#applications-and-interfaces)** is complete.
+Resetting an enrollment must immediately invalidate its prior factor data and,
+when MFA remains required, force new enrollment before another usable session
+is issued.
+
+Before disabling an MFA Module with dependent enrollments, the Server must
+report the number of affected Human Users. Disabling the module must immediately
+prevent enrollment and verification through that method and terminate every
+session belonging to an affected Human User. Disablement must not remove any
+Human User's MFA requirement. A Human User who still requires MFA must enroll
+through an enabled MFA Module; a Human User without an MFA requirement may
+authenticate without MFA and may enroll through any enabled MFA Module.
+
+An Administrator who has enrolled in MFA must complete TOTP verification for
+the current session before requiring MFA for a Human User or resetting an MFA
+enrollment. The Server must record MFA policy changes and resets without
+recording provisioning values, secrets, or codes.
+
+## Secret And Key Material Security Profile
+
+Server-local at-rest key material and the backup recovery key pair must remain
+distinct and must not be substituted for one another. At-rest key material
+protects reversibly encrypted application values. The recovery public key
+protects backup artifacts, and the corresponding private key is accepted only
+to decrypt a compatible backup.
+
+Sensitive authentication material submitted through a
+**[Service Connection](glossary.md#applications-and-interfaces)** type's
+declared setup workflow must terminate in Server-owned credential handling. The
+Server alone stores, uses, refreshes, or revokes that material. It must not
+return the material to a client, retain it in a Client Module, or include it in
+an Audit Log.
+
+Client applications must transmit initialization secrets, credentials, and
+**[Restore](glossary.md#states-and-requests)** private recovery keys over HTTPS.
+They must not log them, place them in URLs or browser history, or retain them in
+client-side persistent storage. A Restore-capable client may read a selected
+encrypted backup only to transmit it and must not retain another copy.
+**[Init](glossary.md#states-and-requests)**-capable and Restore-capable Client
+Modules must pass sensitive inputs only to their corresponding Server-owned
+contracts and must not decrypt, log, or retain them.
+
+The Server must never return a submitted secret and may persist it only in its
+intended protected representation, such as a password verifier or encrypted
+credential. The backup recovery private key must not be persisted in the
+Application Database, Server configuration, a container volume, logs, or an
+ordinary backup artifact. Possession of that private key authorizes decryption
+of its compatible backup only; it is not an application identity, proof of host
+authority, or authorization for another function.
+
+## Backup Input Security Profile
+
+The Server must treat every submitted backup as untrusted even when the supplied
+recovery key can decrypt it. Before application-state mutation, Restore must
+bound upload size, cryptographic work, decompression, parsed structures,
+collections, strings, execution time, and concurrency. It must validate the
+backup's authenticity, integrity, format version, compatibility, references,
+and complete contents. A rejected backup must leave the selected database
+without application state and expose only stable, redacted errors.
+
+Restore must not persist a private recovery key, unwrapped backup key, or
+decrypted backup plaintext. If temporary staging is required, the Server may
+persist only the bounded encrypted artifact in protected storage and must remove
+it according to the Restore workflow's success, failure, and interruption
+rules. The Restore Design owns concrete formats, algorithms, bounds, validation
+order, staging mechanics, and cleanup flow.
+
+## Log And Client Output Security Profile
+
+The Server must remove secrets and unnecessary sensitive payload data before a
+System Log or Audit Log reaches a Log Module. Log Modules receive already
+redacted records and must not become an alternate sanitization boundary.
+
+System Logs, Audit Logs, and client-visible errors must not contain passwords,
+password verifiers, MFA provisioning values or codes, Service Connection
+credentials, private or unwrapped keys, decrypted backup content, or other
+submitted secrets. Client-visible errors must also exclude raw internal traces,
+dependency-specific details, and sensitive filesystem information. Redaction
+must preserve the accountability fields required for an Audit Log and the
+diagnostic classification required for a System Log.
+
+## Component Security Ownership
+
+- The [Authentication Design](server/authentication/authentication-design.md)
+  owns password, session, local MFA policy, and external-authentication
+  implementation.
+- MFA Module designs own method-specific enrollment, verification, and
+  protected factor-data implementation; the Server retains policy,
+  authorization, session, recovery, and audit authority.
+- The [Authorization Design](server/authorization/authorization-design.md) owns
+  grant evaluation, access-class enforcement, disablement precedence, and
+  per-request authorization implementation.
+- The [Automation Identity Design](server/automation-identities/automation-identity-design.md)
+  owns credential lifecycle, Responsible Owner enforcement, scope mechanics,
+  and accountability integration.
+- Server Audit design owns Audit Log construction and pre-redaction, Server
+  Observability design owns System Log construction and pre-redaction, and
+  Server API design owns stable client-error presentation and redaction. Log
+  Module designs own processing of records only after the Server completes the
+  pre-redaction boundary.
+- The [Server Lifecycle Design](server/lifecycle/lifecycle-design.md),
+  [Server Init Design](server/lifecycle/init/init-design.md), and
+  [Server Restore Design](server/lifecycle/restore/restore-design.md) own
+  deployment-state integrity, sensitive workflow handling, and fail-closed
+  lifecycle implementation.
+
+Every component design and implementation must preserve the trust boundaries
+and security profiles in this document. A component may strengthen a local
+control but must not weaken, bypass, or reinterpret these invariants.
+
+Security-sensitive behavior changes must include automated evidence under the
+[Testing and Validation Policy](testing.md). Evidence must exercise the
+applicable denial path, secret non-disclosure and non-persistence properties,
+redaction boundary, and fail-closed behavior rather than testing only successful
+requests.
 
 ## Related Documents
 
 - [Technical Specification](spec.md)
 - [Glossary](glossary.md)
+- [Authentication Design](server/authentication/authentication-design.md)
+- [Authorization Design](server/authorization/authorization-design.md)
+- [Automation Identity Design](server/automation-identities/automation-identity-design.md)
+- [Server Lifecycle Design](server/lifecycle/lifecycle-design.md)
 - [Server Init Design](server/lifecycle/init/init-design.md)
+- [Server Restore Design](server/lifecycle/restore/restore-design.md)
+- [Testing and Validation Policy](testing.md)

@@ -16,7 +16,7 @@ those contracts remain coordinated here.
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Server API contract design, including request, result, error, compatibility, pagination, and idempotency behavior.
+- This directory owns Server API contract design, including request, result, stable client-error presentation and redaction, compatibility, pagination, and idempotency behavior.
 - It does not own service-specific **[Operation](../../glossary.md#applications-and-interfaces)** semantics; those belong in `../../service-modules/`.
 - It does not own pre-operational availability, database selection, or lifecycle
   gating; those belong in `../lifecycle/lifecycle-design.md`. Init recovery-key delivery

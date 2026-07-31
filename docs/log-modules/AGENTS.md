@@ -7,6 +7,7 @@ This folder documents server-side **[Log Modules](../glossary.md#applications-an
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns Log Module design, including log storage, delivery, retention, backup, restore, and migration boundaries.
+- Log Modules receive records only after Server Audit or Observability completes the applicable pre-redaction boundary; they do not own sanitization of source records.
 - It does not own Server application-state storage; its design remains in `../open-questions.md` until a dedicated documentation boundary is warranted.
 - It does not own Audit Log accountability or System Log operational-diagnosis semantics; those belong in `../server/audit/` and `../server/observability/`.
 

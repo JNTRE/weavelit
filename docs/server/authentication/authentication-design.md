@@ -2,9 +2,11 @@
 
 This document is the canonical destination for implementation-specific
 authentication design for the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**.
-Binding cross-cutting requirements remain in the
-[Security Model](../../security-model.md) until implementation work transfers
-the relevant detail here.
+Binding application requirements remain in the
+[Technical Specification](../../spec.md), and approved authentication and
+session security profiles remain in the
+[Security Model](../../security-model.md). This document owns how the Server
+implements those requirements and profiles.
 
 ## Current Scope
 

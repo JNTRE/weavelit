@@ -6,9 +6,9 @@ This folder documents the **[Weavelit Server](../../glossary.md#applications-and
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Audit Log design for **[Operation](../../glossary.md#applications-and-interfaces)** accountability, including the authenticated principal, result, and correlation identifier.
+- This directory owns Audit Log construction and pre-redaction design for **[Operation](../../glossary.md#applications-and-interfaces)** accountability, including the authenticated principal, result, and correlation identifier, before records reach a Log Module.
 - It does not own operational diagnosis, metrics, or tracing; those belong in the sibling `../observability/` directory.
-- Audit retention, redaction, and backup decisions that remain unsettled belong in `../../open-questions.md`.
+- Audit destination retention and backup decisions that remain unsettled belong in `../../open-questions.md`; required pre-redaction follows `../../security-model.md`.
 
 ## Asset Inventory
 
