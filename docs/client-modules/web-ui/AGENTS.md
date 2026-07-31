@@ -22,6 +22,11 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
+- Keep the Web UI Client Module's Init-capable and Restore-capable transport
+  behavior here. `../../server/lifecycle-design.md` owns availability and
+  database selection, `../../server/init-design.md` owns fresh-state secrets and
+  recovery-key delivery, and `../../server/restore-design.md` owns backup and
+  private recovery-key handling.
 - Keep Web UI Client Module documentation directly in this folder; move shared Client Module material to the parent `../` directory.
 - Use `../../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.

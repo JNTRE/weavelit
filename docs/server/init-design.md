@@ -1,155 +1,230 @@
 # Server Init Design
 
 This document defines the Server-owned implementation boundary for
-**[Init](../glossary.md#states-and-requests)**. It makes interactive,
-host-local bootstrap, and future container bootstrap adapters invoke one
-initialization workflow while keeping Server validation, secret handling, and
-state changes outside those adapters.
+**[Init](../glossary.md#states-and-requests)**. It defines how the normal Server
+runtime exposes a restricted initialization contract, handles new-state
+requests and recovery-key delivery, and atomically creates initial application
+state. The shared lifecycle, selected
+**[Application Database](../glossary.md#applications-and-interfaces)** locator,
+deployment record, and transition into normal operation belong to the
+[Server Lifecycle Design](lifecycle-design.md).
+**[Client Modules](../glossary.md#applications-and-interfaces)** own transport
+and presentation only; they cannot create alternative initialization behavior.
 
-## Crate And Adapter Boundary
+## Runtime And Client Module Boundary
 
 `weavelit-server-init` is the dedicated Server-owned crate for initialization.
-It exposes one named `InitializeServer` use case and the normalized in-memory
-request that it accepts. It owns bootstrap configuration processing,
-secret-file handling, Server semantic validation, recovery-key delivery, and
-the atomic initial-state transition.
+The normal `weavelit-server` runtime composes it with
+`weavelit-server-lifecycle` and uses it only to process
+**[Init](../glossary.md#states-and-requests)** requests. The Init crate owns
+normalized new-state requests, Server semantic validation, initial
+recovery-key generation and delivery, and the atomic initial-state transition.
+It does not own startup classification, the deployment record, the selected
+database locator, Application Database selection, or final lifecycle sealing.
 
-Before input collection, an adapter calls the crate's non-mutating
-`PreflightInitializeServer` helper with the selected backend and the minimum
-connection configuration needed to open it. It returns an opaque preflight
-handle only when the target is eligible for Init. The handle is bound to the
-selected Application Database and is supplied to `InitializeServer`, which
-rechecks eligibility during its final atomic state transition. Preflight is not
-an alternative initialization path and cannot create or modify application
-state.
+The lifecycle crate exposes shared pre-operational status and Application
+Database selection. The Init crate exposes Server-owned operations for
+preparing or resetting initial recovery-key delivery and invoking the final
+`InitializeServer` use case. These operations form the new-state workflow;
+none is an alternative path that can create complete application state
+independently.
 
-The normal `weavelit-server` runtime does not depend on
-`weavelit-server-init` and does not expose an Init interface. It opens existing
-application state for normal operation and does not start normally when that
-state is absent or invalid.
+Every mutating Init operation independently calls the lifecycle authority,
+which opens and validates the deployment record and selected database before
+the Init crate reads request secrets or changes database state. The Init crate
+derives lifecycle state and the deployment identifier only from that authority
+and never accepts either from a caller. An `Initialized` record rejects every
+mutating operation before side effects, even if the operation is invoked
+directly inside the process after a routing or composition defect. The runtime
+lifecycle gate and Client Module route removal are additional controls, not
+the Init operation's authority.
 
-The **[Admin CLI](../glossary.md#applications-and-interfaces)** is a host-local
-adapter. It owns command parsing, interactive prompts, and presentation of
-normalized results. It has no direct Application Database or driver access and
-cannot create an alternative initialization path. Interactive prompts and
-non-interactive bootstrap both first use Server-owned preflight, then create the
-same normalized request and invoke `InitializeServer`.
+An Init-capable **[Client Module](../glossary.md#applications-and-interfaces)**
+may translate its connection surface into these operations while the Server is
+uninitialized. It owns request decoding, client-specific interaction, and
+presentation of normalized results. It may also expose shared lifecycle status
+and database selection through the lifecycle contract, but it has no direct
+Application Database, driver, locator-file, secret-file, or lifecycle-state
+access. The Web UI Client Module is Init-capable. Another Client Module may
+expose Init only by declaring that capability and using the same Server-owned
+operations.
 
-A future container bootstrap adapter passes its mounted bootstrap-configuration
-path to `weavelit-server-init`. It reuses the same parser, secret-file rules,
-and use case without depending on Admin CLI presentation code.
+The runtime uses the lifecycle classification before dispatching any client
+request. It exposes Init operations only while the lifecycle authority reports
+that the new-state workflow is eligible or already pending, and it rejects
+every normal application function during that period. After successful Init or
+Restore, it exposes no Init operation and serves only normal authenticated
+functions. A client-supplied state or route cannot alter that gate.
 
-## Bootstrap Configuration
+## Shared Lifecycle Dependency
 
-Non-interactive bootstrap uses a human-authored TOML file. Its top-level
-`format_version` field is required. Unsupported versions fail safely rather
-than being inferred or partially interpreted.
+The [Server Lifecycle Design](lifecycle-design.md) owns startup classification,
+the deployment record, the database locator, Application Database selection,
+workflow arbitration, mutation serialization, and sealing. Init receives only a
+validated lifecycle authority and selected database bound to the trusted
+deployment identifier. It never accepts a deployment identifier, lifecycle
+state, locator path, or database handle from a client.
 
-The configuration contains non-sensitive operational values and typed
-secret-file references only. Secret-bearing fields are represented by
-`SecretFileReference` values, exposed as TOML `*_file` fields. Inline secret
-values, secret encodings, and environment-variable interpolation are rejected.
+Lifecycle preflight rejects an initialized, pending, unavailable, mismatched, or
+integrity-failing database before Init accepts the first
+**[Administrator](../glossary.md#identities-and-access)** password,
+**[Log Module](../glossary.md#applications-and-interfaces)** credentials, or
+other application secrets. Database selection may change only before Init
+creates its pending checkpoint. Init persists all user-selected application
+configuration other than the minimum database locator during finalization.
 
-The initial Administrator password, Log Module credentials, future Application
-Database credentials, and any host-supplied private keys or certificates are
-secret-bearing values. The generated backup recovery private key is not
-bootstrap input.
+## Request And Secret Handling
 
-`weavelit-server-init` owns bootstrap schema parsing, structural validation,
-secret-file reference handling, and conversion to the normalized request. It
-never reads bootstrap secrets from environment variables. Unrelated non-secret
-environment configuration remains valid; a future explicitly named secret
-environment variable is unsupported and must be rejected rather than read.
+The final normalized `InitializeServer` request contains the first local
+**[Human User](../glossary.md#identities-and-access)**, their password, initial
+**[Log Module](../glossary.md#applications-and-interfaces)** configurations,
+explicit **[System Log](../glossary.md#applications-and-interfaces)** and
+**[Audit Log](../glossary.md#applications-and-interfaces)** assignments, and
+the recovery-key proof required for the pending checkpoint. The use case creates
+the system-defined **[Administrators Group](../glossary.md#identities-and-access)**
+and adds the first user without accepting client-defined grants. The request
+does not duplicate the selected database connection configuration.
 
-Preflight reads only the selected backend's non-sensitive configuration. When a
-future backend cannot be opened without a secret, the Init crate may read only
-the referenced connection secret needed for that opening; the adapter never
-reads it. For the MVP SQLite backend, preflight needs no secret. After preflight
-accepts the target, the adapter may collect the initial Administrator password,
-Log Module credentials, and other initialization secrets. An already initialized
-target therefore rejects before those values are prompted for or read.
+Client applications submit user-supplied secrets over HTTPS and must not place
+them in URLs or persistent client storage.
+**[Client Modules](../glossary.md#applications-and-interfaces)** pass secret
+values unchanged to the Init crate and do not log or retain them. Client-side
+validation may improve usability but is never authoritative; the Init crate
+validates every value, never returns it, and persists it only in its intended
+protected representation, such as a password verifier or encrypted credential.
 
-## Secret Files And Recovery-Key Delivery
+The Init crate accepts a referenced secret file only when the opened object is
+a bounded regular non-symlink file with no group or world access. It verifies
+the opened object before reading UTF-8 content, trims at most one final newline,
+and never logs the secret, its contents, or its path. The Server process must be
+able to read the file; package and deployment policy determine its permitted
+owner.
 
-The Init crate accepts a secret file only when the opened object is a
-bounded-size regular non-symlink file with no group or world access. It
-defensively verifies the opened file, reads UTF-8 content once, trims at most
-one final newline, and never logs the secret, its contents, or its path.
+## Recovery-Key Delivery And Finalization
 
-The shared rule does not require a specific file owner. In a future production
-container, the Server and any bootstrap adapter run as a dedicated non-root
-service user; mounted secret files are readable only by that user. Packaged
-host deployments leave service-account and file-owner choices to the
-**[Host Administrator](../glossary.md#identities-and-access)**, provided the
-Server process can read the file and it is not group- or world-accessible.
+Recovery-key delivery uses the
+**[Application Database](../glossary.md#applications-and-interfaces)**'s
+non-operational `InitializationPending` checkpoint so the Server never becomes
+initialized before the requesting client proves possession of the private key:
 
-During Init, the Server generates a backup recovery key pair and retains only
-the public key. Interactive Init may display the private key once after an
-explicit confirmation. Non-interactive bootstrap requires an explicit output
-file and never prints or logs the private key. Future container bootstrap uses
-the same mounted output-file mechanism.
+1. Recovery-key preparation requires a selected, uninitialized Application
+   Database. Under the lifecycle authority's exclusive mutation permit, the
+   Init crate generates the recovery key pair and asks the database contract to
+   atomically record an Init checkpoint containing the deployment identifier,
+   public key, and a unique delivery nonce. The lifecycle crate advances the
+   deployment record to `InitializationPending`. Init returns the private key
+   once over HTTPS only after both writes are durable. The private key exists
+   only transiently in Server memory and response handling and is never
+   persisted.
+2. The client saves the private key outside Weavelit and derives the
+   key-format-defined proof of possession for the delivery nonce. It submits
+   that proof, but not the private key, with the complete normalized
+   `InitializeServer` request.
+3. The Init crate obtains the reopened selected database from the lifecycle
+   authority, verifies that the deployment identifiers, checkpoint, and proof
+   match, validates the complete request, verifies the
+   **[Log Module](../glossary.md#applications-and-interfaces)** assignments and
+   durable **[Audit Log](../glossary.md#applications-and-interfaces)** delivery,
+   and atomically replaces the checkpoint with complete initialized application
+   state bound to the deployment identifier.
+4. After the database commit succeeds, the lifecycle crate atomically seals the
+   deployment record `Initialized`. Only after that seal is durable does the
+   runtime close every pre-operational gate, load the committed application
+   state, and enable normal authenticated operation in the same process.
 
-Recovery-key delivery and initialization use a recoverable two-phase protocol:
+Proof of possession confirms that the requesting client retained the delivered
+key long enough to finalize Init; safeguarding the downloaded private key
+outside Weavelit remains the responsibility of the person completing Init. The
+Server never redisplays a private key associated with an existing checkpoint.
 
-1. The Init crate creates a restrictive, unique staging file beside the requested
-   output path, writes and synchronizes the private key, and records an
-   `InitializationPending` checkpoint containing only the public key and a
-   delivery nonce. Normal Server startup treats this checkpoint as uninitialized.
-2. It finalizes the staging file at the requested output path without replacing
-   an existing file, then atomically replaces the checkpoint with the complete
-   initialized state.
+If the response containing a newly generated private key is lost, the Server
+retains only the unusable public-key checkpoint. The client may explicitly
+reset recovery-key delivery while no application state exists. After verifying
+the matching checkpoint and confirming that the database contains no
+application state, the lifecycle crate first returns the deployment record to
+`Uninitialized`, and the Init crate then atomically discards the checkpoint.
+The private key is invalidated only when both writes succeed. If a crash or
+database failure occurs between them, lifecycle startup classification observes
+the still-present Init checkpoint, advances the record back to
+`InitializationPending`, and requires the reset to be retried. The next
+successful preparation generates a new pair. A client that still has the
+private key instead resumes by proving possession and resubmitting the final
+request. Reset is never available after the database contains initialized
+application state or the deployment record is sealed.
 
-If a delivery or final-state write fails, the checkpoint prevents a new key pair
-from being generated. A retry using the same output path verifies the staged or
-final key against the pending public key and resumes the same `InitializeServer`
-workflow. If neither delivery file remains, the crate safely discards the
-non-operational checkpoint before beginning a new attempt. It never marks the
-Server initialized before private-key delivery succeeds, and it never overwrites
-an unrelated output file.
+A validation, Log Module, Audit Log, or final persistence failure leaves the
+checkpoint intact so the same key can be used with a corrected request. An
+external Log Module destination may retain a non-application artifact created
+during validation; cleanup belongs to that module's design. If application
+state commits but deployment-record sealing or in-process activation fails, the
+Server exposes no routes and fails closed. On the next startup, a matching
+initialized database and `InitializationPending` deployment record cause the
+lifecycle crate to complete the seal before normal operation; Init is never
+exposed again.
 
-## Initialization Lifecycle And Errors
+## Concurrency, Lifecycle, And Errors
 
-`PreflightInitializeServer` identifies and opens the configured
-**[Application Database](../glossary.md#applications-and-interfaces)** before
-interactive initialization secrets are collected or read. If the database is
-already initialized, it returns `AlreadyInitialized` without changing state.
+The lifecycle crate serializes deployment-record and locator mutation across
+**[Init](../glossary.md#states-and-requests)** and Restore. Recovery-key
+preparation, reset, and finalization run only under its exclusive workflow
+mutation permit. The
+**[Application Database](../glossary.md#applications-and-interfaces)**'s atomic
+state transitions remain the final one-time guard. Concurrent or stale requests
+are rechecked against current trusted state; at most one workflow can commit,
+and every later attempt returns `AlreadyInitialized` or finds the Init
+interface unavailable.
 
-The complete application-owned initial state commits atomically. A failure in
-validation, recovery-key generation, Log Module setup, durable Audit Log
-validation, or persistence leaves the Server uninitialized and safely
-retryable. A non-application destination may retain an artifact such as an
-empty Log Module file; its cleanup behavior belongs to its module design.
+Init uses the shared lifecycle progression:
 
-All Init failures use the Server's centralized, typed error presentation.
-Interactive and bootstrap modes provide actionable, redacted output. Bootstrap
-also provides a stable machine-readable category and defined nonzero exit
-status. The initial categories are `already_initialized`,
-`configuration_invalid`, `secret_file_unsafe`, `secret_file_unavailable`,
-`storage_unavailable`, `storage_integrity_failure`, and
-`initialization_failed`. Raw Rust, dependency, SQL, filesystem, and
-operating-system errors never reach users or automation.
+```text
+Uninitialized -> DatabaseSelected -> InitializationPending -> Initialized
+```
+
+The deployment record remains `Uninitialized` through `DatabaseSelected`.
+Database selection may change only before `InitializationPending`. Failure
+before locator persistence leaves the deployment record `Uninitialized`; later
+validation or persistence failures leave the last durable non-operational state
+safely retryable. The `Initialized` transition is irreversible through every
+supported interface. Init never partially exposes normal application behavior.
+
+All Init failures use the Server's centralized typed error presentation and
+compose the shared lifecycle categories defined in the
+[Server Lifecycle Design](lifecycle-design.md).
+**[Client Modules](../glossary.md#applications-and-interfaces)** receive
+actionable, redacted, machine-readable categories. Init-specific categories are
+`recovery_key_confirmation_required`,
+`recovery_key_confirmation_invalid`, and `initialization_failed`. Raw Rust,
+dependency, cryptographic, SQL, filesystem, and operating-system errors never
+reach clients or logs.
 
 ## Test Evidence
 
-`weavelit-server-init` has direct tests for preflight-before-prompt behavior,
-normalized-request validation, TOML parsing and version rejection, secret-file
-safety, environment rejection, recovery-key staging and reconciliation,
-redaction, atomic rollback, retry behavior, and the one-time
-`AlreadyInitialized` guard.
+`weavelit-server-init` has direct tests for normalized-request validation,
+recovery-key generation, one-time delivery, proof, reset, Init-checkpoint
+validation, atomic new-state creation, redaction, rollback, retry behavior,
+concurrency under a lifecycle mutation permit, direct invocation of every
+mutating entry point after sealing, rejection before secret reading or side
+effects, and the one-time `AlreadyInitialized` guard.
 
-Admin CLI process-level tests verify interactive and bootstrap command wiring,
-stable normalized error output, and high-risk rejection cases. Interactive
-tests use a testable input/output abstraction rather than a real terminal; the
-selected no-echo terminal facility receives focused integration coverage.
-Application Database integration tests verify atomic one-time persistence. A
-future container bootstrap adapter has mount-based smoke tests while reusing
-the same Init crate.
+**[Application Database](../glossary.md#applications-and-interfaces)**
+integration tests verify Init-checkpoint transitions and atomic one-time
+new-state persistence. Init-capable
+**[Client Module](../glossary.md#applications-and-interfaces)** contract tests
+verify one-time private-key delivery, finalization, normalized errors, rejection
+of normal functions before Init, and rejection of Init after completion. Shared
+lifecycle tests own status, database selection, startup classification, and seal
+reconciliation. Server process tests verify the in-process transition to normal
+operation.
+**[Web UI](../glossary.md#applications-and-interfaces)** end-to-end tests cover
+the complete first-launch workflow and recovery from an interrupted delivery.
 
 ## Related Documents
 
+- [Init User Story](init-user-story.md)
 - [Core Statements](../core-statements.md)
 - [Security Model](../security-model.md)
 - [Server Architecture Design](server-architecture-design.md)
+- [Server Lifecycle Design](lifecycle-design.md)
 - [Application Database Design](database/application-database-design.md)
 - [Log Module Design](../log-modules/log-module-design.md)
 - [Development Container Design](../containers/dev/development-container-design.md)

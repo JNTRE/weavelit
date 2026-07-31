@@ -52,20 +52,74 @@ such as `weavelit-server-log-sqlite`, without
 requiring a `weavelit-server-log` crate before it has a meaningful shared
 contract or code.
 
-`weavelit-server-init` is the dedicated Server-owned crate for the shared Init
-use case. It is not a runtime module and is not linked into the normal
-`weavelit-server` runtime. Its detailed adapter and lifecycle boundary is
-defined in the [Server Init Design](init-design.md).
+The pre-operational Server crates are:
+
+```text
+weavelit-server-lifecycle
+weavelit-server-init
+weavelit-server-restore
+```
+
+`weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
+shared by **[Init](../glossary.md#states-and-requests)** and
+**[Restore](../glossary.md#states-and-requests)**. The two workflow crates own
+meaningfully different application-state transitions, so neither is an
+implementation detail of the other.
+
+## Pre-Operational Crate Boundaries
+
+`weavelit-server-lifecycle` owns the shared trusted mechanisms required before
+the **[Weavelit Server](../glossary.md#applications-and-interfaces)** can enter
+normal operation: deployment-record and database-locator types and persistence,
+startup classification, deployment-identifier binding, Application Database
+selection orchestration, mutation serialization, lifecycle eligibility, and
+seal reconciliation. The runtime supplies its compiled-in Application Database
+backend catalog and uses the lifecycle result to choose which routes may exist.
+The lifecycle crate does not create new application state, interpret backup
+contents, handle a private recovery key, or implement client presentation.
+
+`weavelit-server-init` owns only the new-state workflow. It uses the lifecycle
+crate to select and reopen the Application Database and to validate and advance
+trusted lifecycle state. It owns initialization requests, first-user and
+Administrators Group creation, initial Log Module configuration and assignment,
+recovery-key generation and delivery, proof verification, and the atomic
+creation of new application state. Its detailed workflow is defined in the
+[Server Init Design](init-design.md).
+
+`weavelit-server-restore` owns only the existing-state workflow. It uses the
+lifecycle crate to select and reopen an eligible Application Database and to
+validate and advance trusted lifecycle state. It owns bounded encrypted backup
+staging, backup and recovery-key validation, authenticated decryption, format
+and compatibility validation, restored-session invalidation, protected-secret
+re-encryption, atomic restoration, and verification that the restored Audit Log
+assignment can durably record the Restore result. It never exposes the private
+recovery key or decrypted backup contents outside its Server-owned boundary.
+
+The Init and Restore crates depend on the lifecycle and Application Database
+contracts but do not depend on each other. Each mutating workflow entry point
+calls the lifecycle authority itself before reading secrets or backup content
+or causing side effects; a prior runtime or routing check is not sufficient.
+This dependency direction keeps lifecycle enforcement consistent without
+allowing either workflow to invoke or re-enable the other.
+
+The `weavelit-server` runtime composes all three crates and exposes Init-capable
+or Restore-capable **[Client Module](../glossary.md#applications-and-interfaces)**
+routes only when the trusted lifecycle state permits them. All three crates
+remain compiled into the Server after the deployment is sealed. "Unavailable"
+or "disabled" means that the runtime exposes no corresponding routes and the
+workflow entry points independently reject direct invocation; it does not mean
+that Rust crates are dynamically unloaded.
 
 ## Compiled-In Component Boundaries
 
 The **[Weavelit Server](../glossary.md#applications-and-interfaces)** composes
 supported **[Application Database](../glossary.md#applications-and-interfaces)**
-backends and runtime modules as compiled-in Rust crates. It owns backend and
-module selection, common configuration validation, and lifecycle behavior.
-Component crates own their implementation-specific behavior, including
-validation of their connection and storage settings, behind their documented
-boundaries.
+backends, pre-operational components, and runtime modules as compiled-in Rust
+crates. The runtime owns composition; `weavelit-server-lifecycle` owns shared
+pre-operational lifecycle behavior; and component crates own their
+implementation-specific behavior behind their documented boundaries. The
+runtime supplies backend and module catalogs, while each implementation owns
+validation of its connection and storage settings.
 
 A shared Server crate boundary must not erase the distinction between product
 concepts. In particular, an Application Database backend is not a runtime
@@ -158,8 +212,11 @@ impact, and validation performed.
 ## Related Documents
 
 - [Core Statements](../core-statements.md)
+- [Security Model](../security-model.md)
 - [Glossary](../glossary.md)
+- [Server Lifecycle Design](lifecycle-design.md)
 - [Server Init Design](init-design.md)
+- [Server Restore Design](restore-design.md)
 - [Application Database Design](database/application-database-design.md)
 - [Log Module Design](../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../testing.md)

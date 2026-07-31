@@ -55,13 +55,18 @@ confirmation or reauthentication?
 
 ### 6. Client Module admin and user planes
 
-How are **admin plane** and **user plane** defined as sections of a
-**[Client Module](glossary.md#applications-and-interfaces)**'s API and command
-structure? What naming, route and command organization, authorization
-requirements, and access classes apply to each section? How does a Client Module
-declare that it exposes one or both sections, including the
-**[Web UI](glossary.md#applications-and-interfaces)** with user-plane and
-authorized admin-plane functions and the
+The restricted **[Init](glossary.md#states-and-requests)** and
+**[Restore](glossary.md#states-and-requests)** contracts are exposed through
+**[Client Modules](glossary.md#applications-and-interfaces)** that declare the
+corresponding pre-operational capabilities while the Server is uninitialized.
+Those capabilities are distinct from normal authenticated access. How are
+**admin plane** and **user plane** defined for normal Client Module API and
+command structure? What naming, route and command organization, authorization
+requirements, and access classes apply to each normal section, and what
+declaration schema composes those sections with pre-operational capabilities?
+How does that schema represent the
+**[Web UI](glossary.md#applications-and-interfaces)** with Init, Restore,
+authenticated user-plane, and authenticated admin-plane functions and the
 **[Weavelit CLI](glossary.md#applications-and-interfaces)** with user-plane
 operational functions only? How does this application-interface terminology
 remain distinct from the host-local
@@ -72,27 +77,40 @@ network-plane architecture?
 
 ### 7. HTTPS edge and public API protection
 
-Where does TLS terminate, how are certificates renewed, which ports and source
-networks are allowed, and what request-size, rate-limit, CORS, and browser-CSRF
-controls apply?
+Where does TLS terminate, how are certificates renewed, and which ports and
+source networks are allowed? What concrete request-size, request-rate,
+cryptographic-work, decompression, parsing, execution-time, and concurrency
+limits satisfy the security requirements for the unauthenticated
+**[Init](glossary.md#states-and-requests)** and
+**[Restore](glossary.md#states-and-requests)** surfaces? What CORS and
+browser-CSRF controls apply to those surfaces and the authenticated API?
 
 ### 8. API contract and compatibility policy
 
 API routes are versioned under `/api/v1/`. What is the wire format and
 compatibility policy for
-**[Operational Requests](glossary.md#states-and-requests)**, results, errors,
-pagination, and idempotency keys? What server and Weavelit CLI versions are
+**[Operational Requests](glossary.md#states-and-requests)**, the restricted
+**[Init](glossary.md#states-and-requests)** and
+**[Restore](glossary.md#states-and-requests)** contracts, results, errors,
+pagination, and idempotency keys? What Server and Weavelit CLI versions are
 supported together?
 
 ### 9. Application Database and log backup, retention, and recovery
 
 The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
-SQLite and is selected during Init; Weavelit does not support in-place database
-migration. What compatibility window and artifact-retention policy applies to
-versioned Application Database backups? How are the separate System Log and
-Audit Log databases and remote Log Module destinations backed up, protected,
-restored, and migrated? What configuration bounds and execution behavior apply
-to their independent retention and purge policies?
+SQLite and is selected through the shared pre-operational contract before
+either **[Init](glossary.md#states-and-requests)** or
+**[Restore](glossary.md#states-and-requests)**; Weavelit does not support
+in-place database migration. What versioned backup format, cryptographic
+envelope, recovery-key format, compatibility window, and artifact-retention
+policy apply? How do upload retries, protected encrypted staging and cleanup,
+interrupted Restore, crash reconciliation, and durable Restore-result Audit Log
+recording work? What fields identify the Restore result, replacement deployment,
+backup format, correlation, and unauthenticated pre-operational actor without
+exposing backup contents or implying a fabricated Human User? How are the
+separate System Log and Audit Log databases and remote Log Module destinations
+backed up, protected, restored, and migrated? What configuration bounds and
+execution behavior apply to their independent retention and purge policies?
 
 ### 10. Secrets and provider credential management
 
@@ -118,12 +136,16 @@ on Apple Silicon (`arm64`)?
 
 For the post-MVP OCI-compliant production Server image, how does the build and
 verification workflow prove that the image contains the same versioned,
-prebuilt Server release output used to assemble the `.deb` package? What host
-administration boundary applies to Admin CLI functions other than its defined
-non-interactive Init bootstrap mode, and how are those actions authorized and
-audited? What persistent-volume and backup model, TLS termination, secret
-injection mechanism, supported orchestrators, image provenance, and upgrade
-and rollback policy apply?
+prebuilt Server release output used to assemble the `.deb` package? How does a
+container deployment expose the host-local, initialized-state account-recovery
+functions of the **[Admin CLI](glossary.md#applications-and-interfaces)** to a
+**[Host Administrator](glossary.md#identities-and-access)** with equivalent
+`sudo` authority without creating a remotely callable interface, and how are
+those actions authorized and audited? How are the Server-local Application
+Database deployment record, locator, and typed secret references persisted and
+protected across container replacement? What persistent-volume and backup
+model, TLS termination, secret injection mechanism, supported orchestrators,
+image provenance, and upgrade and rollback policy apply?
 
 ### 12. Zendesk reference integration
 

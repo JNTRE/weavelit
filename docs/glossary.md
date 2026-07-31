@@ -12,21 +12,29 @@ provider integrations, and provider credentials.
 
 **Application Database** - The server-owned persistent database for Weavelit
 application state, including users, sessions, policy, secrets, Service
-Connections, and operational state. It is selected and configured during
-**[Init](#states-and-requests)**, is separate from every
+Connections, and operational state. It is selected and configured through the
+shared pre-operational Server contract before **[Init](#states-and-requests)**
+or **[Restore](#states-and-requests)**, is separate from every
 **[Log Module](#applications-and-interfaces)** destination, and is not a
 module. Application Database persistence uses an internal backend contract;
 each supported backend is a dedicated Rust crate. The Server core owns backend
-selection, common bootstrap-configuration validation, and lifecycle behavior.
-Each backend validates its own connection and storage settings. Backends are
-compiled into the Server package and are not runtime-installable plugins. The
-MVP backend is SQLite. Application Database state and a Log Module destination
-never share Weavelit-owned persistence logic or implementation crates, files,
-schemas, connections, configuration, resources, lifecycle, or backup and
-retention behavior. They may use the same workspace-pinned third-party
-dependency, such as `rusqlite`, without sharing persistence behavior.
+composition, validation and persistence of the pre-operational selection, and
+lifecycle behavior. Each backend validates its own connection and storage
+settings. The Server retains the minimum protected Server-local configuration
+required to reopen the selected Application Database. A separate protected
+Server-local deployment record, the database locator, and pending or initialized
+database state carry one matching deployment identifier so completed Init or
+Restore cannot be reopened by losing or replacing only one component;
+application-owned configuration remains in the database. Backends are compiled
+into the Server package and are not runtime-installable plugins. The MVP backend
+is SQLite.
+Application Database state and a Log Module destination never share
+Weavelit-owned persistence logic or implementation crates, files, schemas,
+connections, configuration, resources, lifecycle, or backup and retention
+behavior. They may use the same workspace-pinned third-party dependency, such
+as `rusqlite`, without sharing persistence behavior.
 
-**Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for the module selected during **[Init](#states-and-requests)**, and configured only through server-administration functions.
+**Log Module** - A reusable server-side Rust library that receives pre-redacted structured **[System Logs](#applications-and-interfaces)**, **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers them to a configured destination. Log Modules are available to **[Administrators](#identities-and-access)**, disabled by default except for modules activated during Init or imported by Restore, and configured only through server-administration functions.
 
 **MFA Module** - A compiled-in server-side Rust library that implements one
 specific **[Multifactor Authentication (MFA)](#identities-and-access)** method,
@@ -50,11 +58,11 @@ is macOS 26 and later on Apple Silicon (`arm64`).
 
 **Operations CLI** - Previous name for the **[Weavelit CLI](#applications-and-interfaces)**. This term is retained here only as a compatibility alias; all other documentation must use Weavelit CLI. Code or configuration may retain the previous name only where required for compatibility.
 
-**Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)** and available after authentication and Init. A **[Human User](#identities-and-access)** whose **[Group](#identities-and-access)** grants the Web UI **[Client Module](#applications-and-interfaces)** can use self-service account functions and view their own Group memberships and effective access. Only an **[Administrator](#identities-and-access)** can use its administrative functions.
+**Web UI** - The browser-based management client included with the **[Weavelit Server](#applications-and-interfaces)**. It provides Init-capable and Restore-capable administration surfaces while the Server is uninitialized. During normal operation, a **[Human User](#identities-and-access)** whose **[Group](#identities-and-access)** grants the Web UI **[Client Module](#applications-and-interfaces)** can use self-service account functions and view their own Group memberships and effective access. Only an **[Administrator](#identities-and-access)** can use its normal administrative functions.
 
-**Admin CLI** - The host-local server administration tool, available only to a Unix account with `sudo` authority on the Weavelit Server host.
+**Admin CLI** - The host-local server administration tool, available only to a Unix account with `sudo` authority on the Weavelit Server host. It provides initialized-state local-account recovery when an Administrator cannot obtain an application session; it does not expose Init or Restore.
 
-**Client Module** - A reusable server-side Rust library that provides and maintains one client-facing connection surface to the Weavelit Server. It authenticates and translates that client's requests into the shared **[Operation](#applications-and-interfaces)** contract, while the Server remains the final authorization authority.
+**Client Module** - A reusable server-side Rust library that provides and maintains one client-facing connection surface to the Weavelit Server. It authenticates normal application requests and translates accepted client requests into Server-owned contracts, while the Server remains the final authorization authority. A Client Module may also declare an Init-capable administration surface, a Restore-capable administration surface, or both. While the Server is uninitialized, each capability exposes only its corresponding restricted pre-operational contract; neither capability remains available after the deployment is initialized.
 
 **Service Module** - A reusable server-side Rust library that authenticates with and communicates with one named external service through exactly one **[Service Connection](#applications-and-interfaces)** type and implements its supported Operations. Supporting the same external service through another Service Connection type requires a separately named Service Module.
 
@@ -105,7 +113,9 @@ from a shared secret and the current time by an authenticator application.
 
 ## States and Requests
 
-**Init** - The first-time process and state in which a **[Host Administrator](#identities-and-access)** creates the **[Administrators Group](#identities-and-access)**, creates the first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, selects and configures the **[Application Database](#applications-and-interfaces)** in a host-local bootstrap step, then separately selects, configures, and activates one or more initial Log Modules and assigns configured Log Modules to System Logs and Audit Logs. The same Log Module may receive both log types, but it does not reuse Application Database resources. Init must validate both assignments, including durable Audit Log recording, before the Server starts normal operation.
+**Init** - The pre-operational process by which an uninitialized **[Weavelit Server](#applications-and-interfaces)** creates new application state after the shared Server contract selects and configures the **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Restore](#states-and-requests)** and is exposed only through Init-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Init creates the **[Administrators Group](#identities-and-access)** and first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, and selects, configures, and activates one or more initial Log Modules with assignments for System Logs and Audit Logs. The same Log Module may receive both log types but does not reuse Application Database resources. Init completes only after the Server validates the Application Database and both Log Module assignments, including durable Audit Log recording, commits initialized database state, and irreversibly seals its Server-local deployment record before transitioning directly to normal operation.
+
+**Restore** - The pre-operational process by which an uninitialized replacement **[Weavelit Server](#applications-and-interfaces)** imports existing application state from a compatible encrypted backup after the shared Server contract selects and configures an eligible **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Init](#states-and-requests)** and is exposed only through Restore-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Restore supplies the backup and its private recovery key; the Server validates the backup before mutation, invalidates restored sessions, re-encrypts protected secret material with the replacement Server's at-rest key, commits the restored state under the replacement deployment identifier, and irreversibly seals the deployment before transitioning directly to normal operation. Restore does not support in-place migration between Application Database technologies and becomes unavailable after the deployment is initialized.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.
 

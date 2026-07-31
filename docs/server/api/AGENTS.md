@@ -1,6 +1,16 @@
 # Server API Agent Guide
 
-This folder documents the authenticated HTTPS application interface of the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**. It will define the stable, versioned contract through which clients invoke supported **[Operations](../../glossary.md#applications-and-interfaces)** without duplicating service-specific behavior.
+This folder documents the normal authenticated HTTPS application interface of
+the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** and
+shared API contract conventions. It will define the stable, versioned contract
+through which clients invoke supported
+**[Operations](../../glossary.md#applications-and-interfaces)** without
+duplicating service-specific behavior. The restricted unauthenticated Init
+and Restore lifecycle is owned by the
+[Server Lifecycle Design](../lifecycle-design.md), with workflow semantics in
+the [Server Init Design](../init-design.md) and
+[Server Restore Design](../restore-design.md). Shared wire conventions used by
+those contracts remain coordinated here.
 
 ## Purpose and Scope
 
@@ -8,6 +18,10 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns Server API contract design, including request, result, error, compatibility, pagination, and idempotency behavior.
 - It does not own service-specific **[Operation](../../glossary.md#applications-and-interfaces)** semantics; those belong in `../../service-modules/`.
+- It does not own pre-operational availability, database selection, or lifecycle
+  gating; those belong in `../lifecycle-design.md`. Init recovery-key delivery
+  belongs in `../init-design.md`, and Restore backup and private recovery-key
+  handling belong in `../restore-design.md`.
 - API decisions that are not yet settled remain in `../../open-questions.md` until they can be recorded as a commitment.
 
 ## Asset Inventory
@@ -38,7 +52,9 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
-- Preserve the Server's API-first, authenticated, versioned application-interface commitments in `../../core-statements.md`.
+- Preserve the Server's API-first, versioned interface, including the restricted
+  Init and Restore exceptions and normal authenticated-operation commitments in
+  `../../core-statements.md`.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.

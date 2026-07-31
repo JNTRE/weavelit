@@ -24,7 +24,8 @@ goals, completion state, dates, progress, or assigned issues.
 This milestone establishes the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**
 foundation: one-time **[Init](../../glossary.md#states-and-requests)**, durable
 application and log state, default-deny access, account recovery, encrypted
-backup and restore, HTTPS operation, and a reproducible development environment.
+backup and **[Restore](../../glossary.md#states-and-requests)**, HTTPS operation,
+and a reproducible development environment.
 
 ### Milestone 2: MFA Module - TOTP
 
@@ -42,8 +43,11 @@ enablement and disablement under Server-owned MFA policy.
 This milestone establishes the
 **[Web UI](../../glossary.md#applications-and-interfaces)**
 **[Client Module](../../glossary.md#applications-and-interfaces)** as the
-Server-owned browser connection surface, with secure sessions, validated
-identity, shared authorization enforcement, and credential-safe responses.
+Server-owned browser connection surface, including its restricted
+**[Init](../../glossary.md#states-and-requests)** and
+**[Restore](../../glossary.md#states-and-requests)** contracts and its normal
+authenticated functions, with secure sessions, validated identity, shared
+authorization enforcement, and credential-safe responses.
 
 ### Milestone 4: Service Module - Zendesk
 
@@ -99,8 +103,9 @@ This milestone produces and validates the MVP
 package and native
 **[Weavelit CLI](../../glossary.md#applications-and-interfaces)** artifact,
 including clean installation, **[Init](../../glossary.md#states-and-requests)**,
-service startup, authenticated operation, and operator documentation on their
-supported platforms.
+**[Restore](../../glossary.md#states-and-requests)**, service startup,
+authenticated operation, and operator documentation on their supported
+platforms.
 
 ### Milestone 9: Build an Additional Service Module
 
@@ -164,9 +169,10 @@ usability, authorization, and audit records.
 This milestone packages the verified, prebuilt
 **[Weavelit Server](../../glossary.md#applications-and-interfaces)** release
 output as a production OCI image while preserving the single-process
-application and **[Init](../../glossary.md#states-and-requests)** boundaries and
-defining secure deployment, persistence, provenance, upgrade, and rollback
-behavior.
+application, shared pre-operational lifecycle,
+**[Init](../../glossary.md#states-and-requests)**, and
+**[Restore](../../glossary.md#states-and-requests)** boundaries and defining
+secure deployment, persistence, provenance, upgrade, and rollback behavior.
 
 ## Related Documents
 

@@ -25,10 +25,14 @@ When implemented, the production image must:
   or runtime stage and without compiling source code at container startup;
 - preserve the Server-owned
   **[Init](../../glossary.md#states-and-requests)** and
-  application-configuration boundaries; container inputs and bootstrap adapters
-  must not create an alternative configuration surface;
-- run the Server and any bootstrap adapter as a dedicated non-root service
-  user, with mounted secret files readable only by that user;
+  **[Restore](../../glossary.md#states-and-requests)** boundaries and their
+  shared lifecycle; container inputs supply only the host and process settings
+  needed to start in restricted uninitialized mode and must not select the
+  **[Application Database](../../glossary.md#applications-and-interfaces)** or
+  create an alternative Init or Restore path;
+- run the Server as a dedicated non-root service user, persist its protected
+  deployment record and Application Database locator across container
+  replacement, and make mounted secret files readable only by that user;
 - exclude Rust, Cargo, source code, test tooling, and build dependencies;
 - document and test host administration, persistent state and backups, TLS
   termination, non-secret configuration, secret injection, provenance, upgrade,
@@ -40,5 +44,7 @@ When implemented, the production image must:
 
 - [Milestone 14](../../plan/milestones/milestones.md#milestone-14-build-support-for-a-server-oci-image)
 - [Development Container Design](../dev/development-container-design.md)
+- [Server Lifecycle Design](../../server/lifecycle-design.md)
 - [Server Init Design](../../server/init-design.md)
+- [Server Restore Design](../../server/restore-design.md)
 - [Open Questions](../../open-questions.md)

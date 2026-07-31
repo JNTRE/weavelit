@@ -15,14 +15,18 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Weavelit Server.
-- `api/`: Documentation for the Server's authenticated HTTPS application interface.
+- `api/`: Documentation for the Server's normal authenticated HTTPS application interface and shared API contract; restricted pre-operational lifecycle and workflow design remain in their named Server documents.
 - `authentication/`: Documentation for the Server's human authentication and Automation Identity credential-validation design.
 - `authorization/`: Documentation for the Server's permission and policy-evaluation design.
 - `automation-identities/`: Documentation for **[Automation Identity](../glossary.md#identities-and-access)** lifecycle, ownership, and accountability design.
 - `audit/`: Documentation for the Server's accountability and Audit Log design.
 - `database/`: Documentation for Application Database backend boundaries and their implementation design.
-- `init-design.md`: Server-owned Init crate, adapter, bootstrap, secret-file, and error-boundary design.
+- `init-design.md`: Server-owned fresh-state Init contract, request and secret handling, initial recovery-key delivery, atomic state creation, and error-boundary design.
+- `init-user-story.md`: Web UI first-launch setup sequence, user responsibilities, visible transitions, and interrupted workflow behavior.
+- `lifecycle-design.md`: Shared pre-operational startup classification, deployment-record and database-locator persistence, database selection, workflow arbitration, concurrency, and sealing design.
 - `observability/`: Documentation for Server System Log design and future operational diagnosis.
+- `restore-design.md`: Server-owned Restore contract, backup and recovery-key validation, restored-state transformation, atomic persistence, audit completion, and error-boundary design.
+- `restore-user-story.md`: Web UI Restore sequence, user responsibilities, visible transitions, and interrupted workflow behavior.
 - `server-architecture-design.md`: Shared Server workspace, crate-composition, and lifecycle design rules.
 
 ## Usage Guidance

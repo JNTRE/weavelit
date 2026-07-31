@@ -135,27 +135,63 @@ when its additional context is needed.
   Rust crate that owns its database-driver integration, schema migrations,
   transaction behavior, connection health handling, and backend-specific
   errors, including validation of its connection and storage settings. The
-  Server core owns backend selection, common bootstrap-configuration validation,
-  and lifecycle behavior.
+  Server core owns composition of the available backends, validation and
+  persistence of the backend selected through the shared pre-operational
+  contract, and lifecycle behavior.
 - The MVP Application Database uses the SQLite backend crate.
 - The MVP default Log Module uses SQLite and stores System Logs and Audit Logs
   in a database separate from the Application Database. Selecting SQLite for
   both creates separate implementations and resources.
-- **[Init](glossary.md#states-and-requests)** selects and configures the
-  Application Database in a host-local bootstrap step, then separately selects,
-  configures, and activates one or more initial Log Modules. Init assigns
-  configured Log Modules separately to System Logs and Audit Logs; the same Log
-  Module may receive both types. Init does not complete, and the Server does
-  not begin normal operation, until both assignments are valid and the Audit
-  Log assignment can durably record Audit Logs.
+- Before **[Init](glossary.md#states-and-requests)** or backup
+  **[Restore](glossary.md#states-and-requests)** completes,
+  the Server runs in a restricted uninitialized mode. It serves only the
+  Server-owned Init and Restore contracts through
+  **[Client Modules](glossary.md#applications-and-interfaces)** that explicitly
+  declare the corresponding pre-operational administration capability and does
+  not accept normal application functions. Init and Restore are mutually
+  exclusive paths to initialized state and cannot require an existing
+  Administrator.
+- The shared pre-operational Server contract selects and configures the
+  Application Database through a capable Client Module administration surface
+  before either Init creates new application state or Restore imports existing
+  application state. The Server validates the selection and persists only the
+  backend identifier, connection settings, and secret references required to
+  reopen the selected Application Database in protected Server-local
+  configuration. It then opens the Application Database without requiring a
+  restart. All other application-owned configuration is persisted in the
+  Application Database.
+- Init separately selects, configures, and activates one or more initial Log
+  Modules and creates the first Human User and Administrators Group. Restore
+  obtains those application-owned settings and identities from the validated
+  backup instead of creating replacement initial state.
+- Init assigns configured Log Modules separately to System Logs and Audit Logs;
+  the same Log Module may receive both types. Init does not complete, and the
+  Server does not begin normal operation, until both assignments are valid and
+  the Audit Log assignment can durably record Audit Logs. Successful Init
+  transitions the running Server directly to normal operation without requiring
+  a restart.
+- On first startup, the Server creates a protected Server-local deployment
+  record with a unique deployment identifier and lifecycle state. The shared
+  pre-operational lifecycle binds the Application Database locator and every
+  pending or initialized database state to that identifier. Before Init or
+  Restore commits initialized state, the record becomes
+  `InitializationPending`; after the database commit, the Server irreversibly
+  seals the record `Initialized` through supported application interfaces. No
+  supported interface can unseal the record or reopen Init or Restore. After
+  sealing, loss, malformed state, or mismatch of any one retained deployment
+  record, locator, or database component fails closed. Complete removal of
+  every persistent deployment anchor is host-level destruction and may appear
+  to the Server as a new installation.
 - The Application Database is not a module and cannot be enabled, disabled, or
-  changed after Init. Weavelit does not support in-place migration between
+  changed after the deployment is initialized. Weavelit does not support
+  in-place migration between
   Application Database technologies. Application Database backends are
   compiled into the Server package and are not runtime-installable plugins.
 - Init creates a distinct backup recovery key pair. The Server retains only
-  the public recovery key, and the Host Administrator retains the private
-  recovery key outside Weavelit. This key pair is separate from the Server's
-  at-rest key material used to protect reversibly encrypted application data.
+  the public recovery key, and the person completing Init receives the private
+  recovery key once and retains it outside Weavelit. This key pair is separate
+  from the Server's at-rest key material used to protect reversibly encrypted
+  application data.
 - An Administrator can create and download a versioned, encrypted Application
   Database backup through server-administration functions. The backup contains
   the application state required to restore operational status, including
@@ -163,13 +199,16 @@ when its additional context is needed.
   factor data, and Service Connection credentials. The Server encrypts each
   backup for the retained public recovery key; it never stores or redisplays
   the private recovery key.
-- A Host Administrator can use the Admin CLI to import a compatible backup into
-  a separately initialized Server after that Server's Application Database is
-  selected and configured. Import requires the private recovery key, validates
-  the backup before replacing application state, invalidates all active
-  sessions, and re-encrypts restored secret material with the replacement
-  Server's own at-rest key. The workflow does not support in-place migration
-  between Application Database technologies.
+- A person can use a Restore-capable Client Module administration surface to
+  import a compatible backup into a replacement Server after selecting and
+  configuring its Application Database and before Init creates new application
+  state. The separate Server-owned Restore contract requires the private
+  recovery key, validates the backup before replacing application state,
+  invalidates all active sessions, and re-encrypts restored secret material
+  with the replacement Server's own at-rest key. A successful Restore seals the
+  replacement deployment and transitions the running Server directly to normal
+  operation. The workflow does not support in-place migration between
+  Application Database technologies.
 - Post-MVP, Administrators can independently configure System Log and Audit Log
   retention and purging for each Log Module.
 - Each integration defines its supported operations, required permissions,
@@ -207,6 +246,9 @@ when its additional context is needed.
   **[Weavelit Server](glossary.md#applications-and-interfaces)** and the
   **[Weavelit CLI](glossary.md#applications-and-interfaces)**.
 - The Weavelit Server is one deployable application process. The Server core,
+  the Server-owned lifecycle crate and workflow crates for
+  **[Init](glossary.md#states-and-requests)** and
+  **[Restore](glossary.md#states-and-requests)**,
   **[Application Database](glossary.md#applications-and-interfaces)** backends,
   **[Client Modules](glossary.md#applications-and-interfaces)**,
   **[Service Modules](glossary.md#applications-and-interfaces)**,
@@ -230,31 +272,43 @@ when its additional context is needed.
   that interface's compatibility policy.
 - The **[Admin CLI](glossary.md#applications-and-interfaces)** runs only on the
   Weavelit Server host and requires a Unix account with `sudo` authority; it is
-  not a remotely callable Weavelit interface.
-- The Admin CLI supports interactive **[Init](glossary.md#states-and-requests)**
-  and an explicit non-interactive bootstrap mode that reads a local bootstrap
-  configuration file. Both invoke the same Server-owned `InitializeServer` use
-  case in `weavelit-server-init`; the normal Server runtime does not expose an
-  Init interface. Non-interactive bootstrap uses versioned TOML, runs only
-  against uninitialized Server state, reads sensitive values only from local
-  files referenced by the configuration, and does not log or persist those
-  values or the configuration. This non-interactive mode applies only to Init;
-  other Admin CLI functions remain host-local administrative actions. The
-  detailed boundary is defined in the [Server Init Design](server/init-design.md).
+  not a remotely callable Weavelit interface. It provides initialized-state
+  account recovery when an Administrator cannot obtain an application session;
+  it does not expose Init or backup Restore.
+- The normal Server runtime composes `weavelit-server-lifecycle`,
+  `weavelit-server-init`, and `weavelit-server-restore`. The lifecycle crate
+  owns the shared pre-operational state, database selection, serialization, and
+  sealing authority. The Init crate owns creation of new application state. The
+  Restore crate owns backup validation, recovery-key handling, and restoration
+  of existing application state. The runtime exposes each contract only through
+  Client Modules that declare the corresponding capability while the Server is
+  uninitialized, and every mutating entry point independently rejects invocation
+  after the deployment is initialized. The crates remain compiled into the
+  Server; their pre-operational functions become unavailable after sealing.
+- The Web UI Client Module provides both Init-capable and Restore-capable
+  administration surfaces. Another Client Module may provide either only when
+  it declares the capability and implements the corresponding Server-owned
+  contract. The detailed boundaries are defined in the
+  [Server Lifecycle Design](server/lifecycle-design.md),
+  [Server Init Design](server/init-design.md), and
+  [Server Restore Design](server/restore-design.md).
 - Package installation, service configuration, and future container adapters
-  may supply only the host and process settings, paths, and references needed
-  before Init or Server startup. They do not create a second application
-  configuration surface: Init establishes initial application configuration,
-  and authenticated server-administration functions own mutable application
-  settings thereafter.
-- **[Init](glossary.md#states-and-requests)**, creation of the
-  **[Administrators Group](glossary.md#identities-and-access)**, creation of
-  the first local **[Human User](glossary.md#identities-and-access)**, and
-  assignment of that user to the Administrators Group, and selection,
-  configuration, activation, and System Log and Audit Log assignment of one or
-  more initial Log Modules are performed through the Admin CLI.
+  supply only the host and process settings required for the Server to start in
+  restricted uninitialized mode. They do not select the Application Database or
+  create a second application-configuration surface: Init creates or Restore
+  imports application configuration, the Server persists the selected
+  Application Database locator locally, and authenticated
+  server-administration functions own mutable application settings thereafter.
+- Application Database selection and either **[Init](glossary.md#states-and-requests)**
+  or Restore are performed through a Client Module administration surface that
+  declares the applicable pre-operational capability. Init creates the
+  **[Administrators Group](glossary.md#identities-and-access)**, creates the
+  first local **[Human User](glossary.md#identities-and-access)**, assigns that
+  user to the Administrators Group, and selects, configures, activates, and
+  assigns one or more initial Log Modules to System Logs and Audit Logs. Restore
+  imports the corresponding application state from the validated backup.
   External-authentication configuration is optional server administration.
-- After **[Init](glossary.md#states-and-requests)**, a
+- During normal operation, a
   **[Human User](glossary.md#identities-and-access)** with a Group grant to the
   **[Web UI](glossary.md#applications-and-interfaces)**
   **[Client Module](glossary.md#applications-and-interfaces)** can use
@@ -275,20 +329,25 @@ when its additional context is needed.
   Weavelit CLI credentials for administrative functions.
 - Weavelit is an API-first application with a stable, versioned, machine-
   readable interface for explicitly supported operations.
-- Weavelit exposes its application interface as an authenticated HTTPS API.
+- During normal operation, Weavelit exposes its application interface as an
+  authenticated HTTPS API. Before Init or Restore completes, the same listener
+  exposes only the restricted pre-operational contracts through Client Modules
+  that declare the corresponding capability.
 - One configurable HTTPS listener serves the Web UI browser routes and the
-  authenticated API routes. API routes are versioned under `/api/v1/`.
+  API routes. API routes are versioned under `/api/v1/`.
 - The Weavelit CLI uses the API routes on that listener; it does not use Web
   UI browser routes.
-- Network reachability is limited by TLS, firewall and other network controls,
-  and client authentication.
+- Network reachability is limited by TLS, firewall, and other deployment network
+  controls. Normal operation additionally requires client authentication; the
+  deployer is responsible for limiting access to the unauthenticated Init and
+  Restore surfaces while the Server is uninitialized.
 - Weavelit provides local human accounts and local automation credentials as
   its self-contained **[Local Authentication](glossary.md#identities-and-access)** model.
 - Local **[Human User](glossary.md#identities-and-access)** accounts are
   created only through server-administration functions, including the
-  **[Admin CLI](glossary.md#applications-and-interfaces)** during
-  **[Init](glossary.md#states-and-requests)**. Accounts can be disabled but
-  are not deleted. Weavelit provides no email-based invitation or recovery
+  Init-capable Client Module administration surface during
+  **[Init](glossary.md#states-and-requests)**. Accounts can be disabled but are
+  not deleted. Weavelit provides no email-based invitation or recovery
   mechanism.
 - An Administrator who can access a server-administration surface can perform
   the available local-account administration functions for any local Human
@@ -337,10 +396,13 @@ when its additional context is needed.
 - The Weavelit CLI translates user or agent commands into typed
   **[Operational Requests](glossary.md#states-and-requests)** and returns
   machine-readable results.
-- The Web UI is an API client through which permitted Human Users access
-  self-service, group-scoped, and server-administration functions after init.
-- Weavelit derives client identity from server-validated credentials and
-  authorizes every requested operation at the gateway.
+- The Web UI is an API client through which a person may complete Init or
+  Restore while the Server is uninitialized and permitted Human Users access
+  self-service, group-scoped, and server-administration functions during normal
+  operation.
+- Outside the restricted pre-operational contracts, Weavelit derives client
+  identity from server-validated credentials and authorizes every requested
+  operation at the gateway.
 - Host-level administration is separate from Weavelit's application client
   interfaces.
 - The Weavelit Server is packaged as a `.deb` application for a controlled
@@ -364,5 +426,7 @@ when its additional context is needed.
 - [Vision](vision.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
+- [Server Lifecycle Design](server/lifecycle-design.md)
 - [Server Init Design](server/init-design.md)
+- [Server Restore Design](server/restore-design.md)
 - [Testing and Validation Policy](testing.md)

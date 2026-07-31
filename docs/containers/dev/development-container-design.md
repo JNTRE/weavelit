@@ -12,8 +12,8 @@ behavior.
 
 The development image is reserved for Milestone 1. Its Containerfile remains a
 non-runnable placeholder until the Server defines its development
-configuration, persistent-state location, bootstrap secret-file interface, and
-startup behavior.
+configuration, protected persistent-state location, database-locator and
+secret-reference mounts, and startup behavior.
 
 The placeholder's `org.opencontainers.image.description` label points to this
 document.
@@ -28,9 +28,16 @@ When implemented, the development image must:
   quality-gate suite;
 - keep non-secret development configuration outside the image and receive it
   through environment variables;
-- mount the versioned bootstrap configuration and bootstrap secrets as local
-  files, never include secrets in the build context, image layers, or
-  environment variables; and
+- persist the Server-owned deployment record and
+  **[Application Database](../../glossary.md#applications-and-interfaces)**
+  locator together in explicitly managed state, mount any referenced secrets as
+  local files, and never include secrets in the build context, image layers, or
+  environment variables;
+- start an unconfigured Server in restricted pre-operational mode, leave
+  Application Database selection to the shared lifecycle contract, and leave
+  fresh or restored application state to a
+  **[Client Module](../../glossary.md#applications-and-interfaces)** with the
+  corresponding Init or Restore capability; and
 - use explicitly managed volumes for future persistent Server state and any
   optional build-cache data.
 
@@ -45,6 +52,8 @@ state, and secret mounts follow this design.
 
 - [Testing and Validation Policy](../../testing.md)
 - [Milestone 1](../../plan/milestones/milestones.md#milestone-1-core-server-application)
+- [Server Lifecycle Design](../../server/lifecycle-design.md)
 - [Server Init Design](../../server/init-design.md)
+- [Server Restore Design](../../server/restore-design.md)
 - [Production Container Design](../prod/production-container-design.md)
 - [Open Questions](../../open-questions.md)

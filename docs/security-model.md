@@ -30,7 +30,9 @@ owning documentation when its additional context is needed.
   occur only in Server-owned authentication logic. Client Modules and client
   applications may request those workflows, but do not persist password values
   or password verifiers, or implement separate password-hashing or verification
-  behavior.
+  behavior. During **[Init](glossary.md#states-and-requests)**, a client
+  application may submit the first local Human User's password over HTTPS
+  through an Init-capable Client Module only to that same Server-owned logic.
 - Local Human User accounts are created only through server-administration
   functions and may be disabled but are never deleted. Weavelit has no
   email-based invitation or recovery mechanism. An Administrator with access
@@ -96,26 +98,97 @@ owning documentation when its additional context is needed.
   applications, or audit records.
 - The Server protects reversibly encrypted application data with Server-local
   at-rest key material that is separate from the backup recovery key pair.
-  During Init, the Server retains only the recovery public key; the Host
-  Administrator records the private recovery key outside Weavelit. The private
-  recovery key is never stored in the Application Database, Server
+  During Init, the Server retains only the recovery public key and delivers the
+  private recovery key once to the requesting client over HTTPS. The person
+  completing Init records the private recovery key outside Weavelit. The
+  private recovery key is never stored in the Application Database, Server
   configuration, container volume, logs, or ordinary backup artifact.
-- Init bootstrap configuration contains no inline secret values or
-  environment-variable interpolation. It references secret files only; the
-  Server accepts a bounded regular non-symlink file without group or world
-  access and never logs the secret, its contents, or its path. The detailed
-  adapter and recovery-key delivery behavior is defined in the
-  [Server Init Design](server/init-design.md).
+- Client applications transmit user-supplied initialization secrets and
+  **[Restore](glossary.md#states-and-requests)** private recovery keys over
+  HTTPS and do not log them, retain them after the request, or place them in
+  URLs, browser history, or client-side persistent storage. A Restore-capable
+  client reads a user-selected encrypted backup only to transmit it and does
+  not create or retain another copy. Init-capable and Restore-capable Client
+  Modules pass these inputs only to their corresponding Server-owned contracts
+  and do not decrypt, log, or retain them. The Server never returns submitted
+  secrets and persists each accepted secret only in its intended protected
+  representation, such as a password verifier or encrypted credential.
+- The Server-local Application Database locator contains no inline secret
+  values or environment-variable interpolation. It may contain typed secret
+  references only. The Server accepts a referenced secret file only when the
+  opened object is a bounded regular non-symlink file without group or world
+  access, and it never logs the secret, its contents, or its path. The locator
+  is written atomically, protected against unauthorized reading and
+  modification, and treated as integrity-sensitive Server configuration.
+- The Server-local deployment record is separate from the Application Database
+  locator. It contains a unique deployment identifier and the lifecycle state
+  `Uninitialized`, `InitializationPending`, or `Initialized`. The record is
+  written atomically and protected against unauthorized modification. No
+  supported operation can reset or unseal `Initialized`;
+  `InitializationPending` may return to `Uninitialized` only through an explicit
+  Server-owned pre-operational recovery operation after the Application Database
+  is confirmed to contain no application state. It can never return after Init
+  or Restore commits application state. The locator and every pending or
+  initialized Application Database state carry the same deployment identifier;
+  a missing or mismatched component fails closed after the record leaves
+  `Uninitialized`.
 - An encrypted backup may be created through server-administration functions
   and downloaded by an Administrator. The Server encrypts it for the recovery
   public key and does not expose the private recovery key during ordinary
-  backup operations. Recovery is a host-local Admin CLI action that requires
-  the private recovery key. The replacement Server validates the backup,
-  invalidates active sessions, and re-encrypts restored secret material with
-  its own Server-local at-rest key.
+  backup operations. **[Restore](glossary.md#states-and-requests)** is available
+  only on a genuinely uninitialized replacement Server after the shared
+  pre-operational contract selects an eligible Application Database and before
+  Init creates application state. It requires the encrypted backup and matching
+  private recovery key through a Restore-capable Client Module. The private key
+  authorizes decryption of that backup only; it is not an application identity,
+  proof of host authority, or authorization for normal administration.
+- The Server treats every submitted backup as untrusted even when the recovery
+  key can decrypt it. Before application-state mutation, the Restore contract
+  enforces bounded upload, cryptographic-work, structural, collection, string,
+  execution-time, and concurrency limits, bounds any decompression the format
+  supports, and validates the backup's authenticity, integrity, format version,
+  compatibility, and complete contents. A rejected backup leaves the selected
+  database uninitialized and produces only stable, redacted errors.
+- Restore never persists the private recovery key, decrypted backup plaintext,
+  or unwrapped backup keys. If temporary staging is required, the Server may
+  persist only the bounded encrypted artifact in protected storage and removes
+  it after success or failure. A successful Restore persists only the matching
+  public recovery key, invalidates all restored sessions, re-encrypts protected
+  secret material with the replacement Server's own at-rest key, atomically
+  commits state bound to the replacement deployment identifier, verifies that
+  the restored Audit Log assignment can durably record a Restore result without
+  recovery secrets or backup contents, and seals the deployment before normal
+  routes become available.
 
 ## Authorization
 
+- **[Init](glossary.md#states-and-requests)** and
+  **[Restore](glossary.md#states-and-requests)** are the sole unauthenticated
+  application exceptions. While the Server is uninitialized, it exposes only
+  these restricted pre-operational contracts through Client Modules that
+  explicitly declare the corresponding capability and rejects normal
+  application requests. Because no application identity exists yet, the
+  deployer is responsible for limiting network access to these surfaces with
+  TLS, firewall, and other network controls.
+- The Server derives Init and Restore availability from trusted Server state,
+  never from a client claim. No supported operation re-enables either contract
+  after Init or Restore succeeds. Every mutating entry point independently
+  validates the deployment record, selected database, deployment identifier,
+  and eligible lifecycle state before reading request secrets or backup content
+  or causing side effects; runtime routing is an additional control, not that
+  entry point's authority. Before exposing routes, startup reconciles a matching
+  initialized database with an `InitializationPending` deployment record by
+  sealing the record; inability to persist that seal fails closed. When any
+  retained anchor identifies an existing deployment, an unavailable, missing,
+  malformed, unsafe, mismatched, or integrity-failing deployment record,
+  configured Application Database, or locator must not cause the Server to
+  expose Init or Restore as a fallback.
+- A person with sufficient host authority can erase the deployment record,
+  locator, and database together or replace the Server binary. Weavelit cannot
+  distinguish complete removal of every persistent deployment anchor from a
+  genuinely new installation; preventing or detecting that host-level action
+  belongs to deployment access control, filesystem protection, and backup or
+  monitoring policy.
 - The server derives the caller's identity from validated credentials and makes
   the final authorization decision for every
   **[Operation](glossary.md#applications-and-interfaces)**.
@@ -128,17 +201,20 @@ owning documentation when its additional context is needed.
   **[Server Administration Permission](glossary.md#identities-and-access)**
   grants for **[Human Users](glossary.md#identities-and-access)**. A Human
   User's effective grants are the additive union of its groups' grants.
-- Every new client-facing **[Client Module](glossary.md#applications-and-interfaces)**
-  and feature must declare and enforce its required grants and one access
-  class: self-service, group-scoped, or server-administration. Human User
-  access is delivered only through Group membership; self-service features
-  still require a Group grant to the Client Module through which they are
-  accessed. A disabled account, Client Module, Service Module, or Operation
-  overrides any group grant.
+- Except for the restricted pre-operational Init and Restore contracts, every
+  new client-facing
+  **[Client Module](glossary.md#applications-and-interfaces)** and feature must
+  declare and enforce its required grants and one access class: self-service,
+  group-scoped, or server-administration. Human User access is delivered only
+  through Group membership; self-service features still require a Group grant
+  to the Client Module through which they are accessed. A disabled account,
+  Client Module, Service Module, or Operation overrides any group grant.
 - Browser navigation and page visibility are usability controls only. The
-  Server independently authorizes every **[Web UI](glossary.md#applications-and-interfaces)**
-  request and rejects administrative requests without the Server Administration
-  Permission.
+  Server independently enforces its current lifecycle state and authorizes
+  every normal **[Web UI](glossary.md#applications-and-interfaces)** request.
+  During normal operation it rejects administrative requests without the
+  Server Administration Permission; while uninitialized it accepts only the
+  restricted Init and Restore contracts.
 - The Weavelit CLI is operations-only. The server does not accept Weavelit CLI
   credentials for administrative functions.
 

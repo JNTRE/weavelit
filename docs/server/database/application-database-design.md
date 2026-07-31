@@ -18,9 +18,10 @@ the shared contract and owns all SQLite-specific behavior. An Application
 Database backend is not a runtime **[Module](../../glossary.md#applications-and-interfaces)**.
 
 The **[Weavelit Server](../../glossary.md#applications-and-interfaces)** owns
-backend composition and lifecycle. It reads the selected backend and its
-host-managed bootstrap configuration, validates the selected backend and common
-configuration structure, constructs the compiled-in backend, and calls it
+backend composition. The `weavelit-server-lifecycle` crate presents the
+available compiled-in backends during the shared pre-operational workflow,
+validates and persists the selected backend's minimum connection configuration
+in a protected Server-local locator, constructs that backend, and calls it
 through the shared contract. Each backend validates its own connection and
 storage settings. A future backend independently selects its own connection and
 concurrency model behind that same contract.
@@ -31,20 +32,35 @@ The initial contract expresses Server application intent rather than storage
 mechanics. It supports only these capabilities:
 
 1. Inspect whether the Application Database is uninitialized,
-   `InitializationPending`, or initialized.
-2. Atomically create, reconcile, or discard a non-operational initialization
-   checkpoint containing a recovery public key and delivery nonce only.
-3. Atomically replace an eligible checkpoint with the complete
-   application-owned initial state exactly once.
-4. Load the initialized application-owned state required by Server startup.
+   `InitializationPending`, or initialized, including the deployment identifier
+   and workflow discriminator bound to pending or initialized state.
+2. Atomically create, reconcile, or discard a non-operational Init or Restore
+   checkpoint containing the deployment identifier, workflow discriminator,
+   and only the non-secret metadata defined by that workflow's contract.
+3. Atomically replace an eligible Init checkpoint with complete new application
+   state bound to that deployment identifier exactly once.
+4. Atomically replace an eligible Restore checkpoint with complete validated
+   restored application state bound to that deployment identifier exactly once.
+   The backend receives normalized state and never parses, decrypts, stages, or
+   validates a backup artifact or private recovery key.
+5. Load the initialized application-owned state and deployment identifier
+   required by Server startup.
 
-The initial write persists the complete supplied state and marks the database
+Each final write persists the complete supplied state and marks the database
 initialized as one operation. A pending checkpoint is not application state and
-normal Server startup refuses to operate from it. It permits the Init crate to
-reconcile recovery-key output delivery without creating a new key pair or
-persisting bootstrap configuration. If the final write fails, the checkpoint
-remains available for the same Init workflow to resume or safely discard. A
-later initialization attempt returns the stable `AlreadyInitialized` error.
+permits only the workflow identified by its discriminator. An Init checkpoint
+prevents a new key pair from being generated while the requesting client proves
+possession of the delivered private key. A Restore checkpoint prevents Init or
+a second Restore attempt from replacing its in-progress workflow. If a final
+write fails, the checkpoint remains available for that same workflow to resume
+or reset safely according to its owning design. Every later Init or Restore
+attempt returns the stable `AlreadyInitialized` error.
+
+The backend compares the expected deployment identifier on every checkpoint,
+discard, finalization, load, and restore operation. It rejects a mismatch before
+changing state. The identifier is an integrity binding between this database
+and the Server-local deployment record and locator; it is not an authentication
+credential or secret.
 
 The contract initially exposes these storage-neutral error categories:
 
@@ -52,34 +68,46 @@ The contract initially exposes these storage-neutral error categories:
 AlreadyInitialized
 NotInitialized
 InvalidState
+DeploymentMismatch
 ConfigurationInvalid
 Unavailable
 IntegrityFailure
 ```
 
-`ConfigurationInvalid` means that host-managed backend configuration must be
-corrected. `Unavailable` means an otherwise valid backend cannot currently be
-opened, queried, locked, or used. `IntegrityFailure` prevents normal operation
-when persisted data, schema, or migration history is damaged or incompatible.
-Backend-specific error details remain private and are mapped to these safe
-categories before reaching the Server.
+`DeploymentMismatch` means the database is bound to another deployment
+identifier and must never be initialized, loaded, or restored by this Server.
+`ConfigurationInvalid` means that the selected backend configuration or
+Server-local locator must be corrected. `Unavailable` means an otherwise valid
+backend cannot currently be opened, queried, locked, or used. `IntegrityFailure`
+prevents normal operation when persisted data, schema, migration history, or
+locator integrity is damaged or incompatible. Backend-specific error details
+remain private and are mapped to these safe categories before reaching the
+Server.
 
-## Bootstrap And Operational State
+## Deployment Record, Locator, And Operational State
 
-Host-managed bootstrap configuration identifies the compiled-in backend and
-its connection settings before the Server can open the Application Database;
-it remains outside the Application Database. Application-owned operational
-state is persisted through the contract, including durable Server configuration
-such as the listening IP address.
+The Server-local deployment record contains a unique deployment identifier and
+the lifecycle state `Uninitialized`, `InitializationPending`, or `Initialized`.
+The separate locator repeats that identifier, identifies the compiled-in
+backend, and contains only the typed non-secret connection settings and typed
+secret-file references needed to reopen the Application Database. Both remain
+outside the Application Database and are persisted atomically by the Server.
+Application-owned operational state and the matching deployment identifier are
+persisted through the database contract.
 
-**[Init](../../glossary.md#states-and-requests)** is a host-local
-**[Admin CLI](../../glossary.md#applications-and-interfaces)** workflow, not a
-network-exposed Server function. Post-Init administration changes operational
-state through its own authorized administration boundary and cannot rerun Init.
-The Server-owned preflight checks initialized state before interactive
-initialization secrets are accepted, and the contract's final atomic write
-returns `AlreadyInitialized` on every later attempt. The detailed Init workflow
-and adapter boundary are defined in the [Server Init Design](../init-design.md).
+The shared lifecycle contract selects the Application Database through a
+**[Client Module](../../glossary.md#applications-and-interfaces)** that declares
+an **[Init](../../glossary.md#states-and-requests)** or
+**[Restore](../../glossary.md#states-and-requests)** capability while the Server
+is in restricted uninitialized mode. It validates database eligibility before
+either workflow accepts later secrets or backup content, and the database's
+final atomic write returns `AlreadyInitialized` on every later attempt.
+Post-initialization administration cannot rerun either workflow or change the
+selected backend. An unsafe or invalid locator, unavailable or
+integrity-failing configured database, or deployment identifier mismatch fails
+closed before state is read or changed and without exposing Init or Restore as
+a fallback. Cross-store ordering, sealing, and crash reconciliation are defined
+in the [Server Lifecycle Design](../lifecycle-design.md).
 
 ## Log Module Separation
 
@@ -97,19 +125,20 @@ pre-redacted records from the Server; they never read or modify Application
 Database state. The Application Database never acts as a Log Module destination,
 fallback, or queue.
 
-Application Database selection and configuration occur in a distinct host-local
-Init step before Log Module selection and configuration. Selecting the same
-underlying technology for both does not reuse an Application Database backend
-or its resources.
+Application Database selection and configuration occur through the shared
+pre-operational Client Module surface. Init then selects and configures initial
+Log Modules; Restore imports their application-owned configuration from the
+validated backup. Selecting the same underlying technology for both does not
+reuse an Application Database backend or its resources.
 
-## Backup And Recovery
+## Backup And Restore
 
 During **[Init](../../glossary.md#states-and-requests)**, the Server creates a
 backup recovery key pair. The Server persists only the public key. The
-**[Host Administrator](../../glossary.md#identities-and-access)** receives the
-private key once and stores it outside Weavelit. This recovery key pair is not
-used to protect the Server's normal database fields and is separate from the
-Server-local at-rest key material used for reversibly encrypted data.
+person completing Init receives the private key once over HTTPS, proves
+possession to finalize Init, and stores it outside Weavelit. This recovery key
+pair is not used to protect the Server's normal database fields and is separate
+from the Server-local at-rest key material used for reversibly encrypted data.
 
 An **[Administrator](../../glossary.md#identities-and-access)** with the
 **[Server Administration Permission](../../glossary.md#identities-and-access)**
@@ -128,14 +157,25 @@ sessions, which are invalidated on restore. System Logs and Audit Logs are
 separate Log Module data and are outside this Application Database backup
 contract.
 
-Recovery is a host-local Admin CLI operation. After a replacement Server has
-completed the minimal Init required to select and configure its Application
-Database, the Host Administrator supplies the backup and private recovery key.
-The Server verifies backup authenticity, integrity, version compatibility, and
-contents before atomically replacing the target application state. It then
-protects restored reversibly encrypted data using its own Server-local at-rest
-key material. The private recovery key is never persisted, logged, or included
-in an ordinary backup artifact.
+**[Restore](../../glossary.md#states-and-requests)** is exposed through a
+Restore-capable Client Module after the shared lifecycle contract selects and
+configures the replacement Server's Application Database and before Init
+creates new application state. The person completing Restore supplies the
+encrypted backup and matching private recovery key over HTTPS. The
+`weavelit-server-restore` crate validates and decrypts the artifact outside the
+database backend, then supplies complete normalized restored state through the
+atomic restore operation.
+
+The restore operation verifies the expected deployment identifier and eligible
+Restore checkpoint before replacing application state. The Restore crate
+invalidates restored sessions, re-encrypts reversibly encrypted data using the
+replacement Server's own at-rest key material, preserves only the matching
+public recovery key, and verifies durable Restore-result Audit Log recording.
+The lifecycle crate seals the deployment record `Initialized` after the atomic
+database commit and before normal routes become available. A failure after the
+database commit fails closed and is reconciled before route exposure on the
+next startup. The private recovery key and decrypted backup contents are never
+persisted by the Application Database backend.
 
 ## Related Documents
 
@@ -144,7 +184,9 @@ in an ordinary backup artifact.
 - [Open Questions](../../open-questions.md)
 - [Glossary](../../glossary.md)
 - [Server Architecture Design](../server-architecture-design.md)
+- [Server Lifecycle Design](../lifecycle-design.md)
 - [Server Init Design](../init-design.md)
+- [Server Restore Design](../restore-design.md)
 - [SQLite Application Database Design](sqlite/sqlite-application-database-design.md)
 - [Log Module Design](../../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../../testing.md)
