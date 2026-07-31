@@ -2,8 +2,9 @@
 
 This document records architecture and product decisions that remain open after
 the current Vision decisions. It describes the complete intended application,
-not a release roadmap. Resolved decisions belong in the Vision, Core Statements,
-Glossary, or an architecture decision record rather than remaining here.
+not a release roadmap. Resolved decisions belong in the Vision, Technical
+Specification, Glossary, or an architecture decision record rather than
+remaining here.
 
 ## Identity and Credentials
 
@@ -173,6 +174,6 @@ appropriate single source of truth after that validation.
 ## Related Documents
 
 - [Vision](vision.md)
-- [Core Statements](core-statements.md)
+- [Technical Specification](spec.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)

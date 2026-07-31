@@ -22,7 +22,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Keep MFA Module design aligned with `../security-model.md` and record settled commitments in `../core-statements.md`.
+- Keep MFA Module design aligned with `../security-model.md` and record settled commitments in `../spec.md`.
 - Use `../glossary.md` for canonical terminology and record unresolved MFA method or enrollment-lifecycle decisions in `../open-questions.md`.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

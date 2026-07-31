@@ -24,7 +24,7 @@ affected consequences and links in the same change.
 Use these ownership boundaries:
 
 - `vision.md` owns the high-level product purpose and system relationships.
-- `core-statements.md` owns cross-cutting settled product and technical truths.
+- `spec.md` owns cross-cutting settled product and technical requirements.
 - `security-model.md` owns cross-cutting security requirements and constraints.
 - `glossary.md` owns canonical terminology and definitions.
 - `open-questions.md` owns unresolved product and architecture decisions.
@@ -233,7 +233,7 @@ maintenance process.
 ## Related Documents
 
 - [Docs Agent Guide](AGENTS.md)
-- [Core Statements](core-statements.md)
+- [Technical Specification](spec.md)
 - [Glossary](glossary.md)
 - [Open Questions](open-questions.md)
 - [Testing and Validation Policy](testing.md)

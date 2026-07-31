@@ -177,7 +177,7 @@ secure deployment, persistence, provenance, upgrade, and rollback behavior.
 
 ## Related Documents
 
-- [Core Statements](../../core-statements.md)
+- [Technical Specification](../../spec.md)
 - [Open Questions](../../open-questions.md)
 - [Testing and Validation Policy](../../testing.md)
 - [Issue Index](../issues/issues.md)

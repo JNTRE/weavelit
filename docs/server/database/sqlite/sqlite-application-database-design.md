@@ -99,7 +99,7 @@ from the outset.
 ## Related Documents
 
 - [Application Database Design](../application-database-design.md)
-- [Core Statements](../../../core-statements.md)
+- [Technical Specification](../../../spec.md)
 - [Security Model](../../../security-model.md)
 - [Testing and Validation Policy](../../../testing.md)
 - [Log Module Design](../../../log-modules/log-module-design.md)

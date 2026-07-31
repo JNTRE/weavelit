@@ -211,7 +211,7 @@ impact, and validation performed.
 
 ## Related Documents
 
-- [Core Statements](../core-statements.md)
+- [Technical Specification](../spec.md)
 - [Security Model](../security-model.md)
 - [Glossary](../glossary.md)
 - [Server Lifecycle Design](lifecycle/lifecycle-design.md)

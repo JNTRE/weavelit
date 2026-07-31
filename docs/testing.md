@@ -138,7 +138,7 @@ tests to a final hardening phase.
 
 ## Related Documents
 
-- [Core Statements](core-statements.md)
+- [Technical Specification](spec.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
 - [Server Init Design](server/lifecycle/init/init-design.md)

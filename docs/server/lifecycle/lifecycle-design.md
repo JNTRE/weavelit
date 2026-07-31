@@ -192,7 +192,7 @@ restricted pre-operational state to normal operation.
 
 ## Related Documents
 
-- [Core Statements](../../core-statements.md)
+- [Technical Specification](../../spec.md)
 - [Security Model](../../security-model.md)
 - [Glossary](../../glossary.md)
 - [Server Architecture Design](../server-architecture-design.md)

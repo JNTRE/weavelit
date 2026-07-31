@@ -8,7 +8,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns the shared Server lifecycle design used before normal authenticated operation.
 - The `init/` and `restore/` child directories own the distinct application-state workflows that consume the shared lifecycle contract.
-- Product commitments remain in `../../core-statements.md`.
+- Product commitments remain in `../../spec.md`.
 - Cross-cutting security requirements remain in `../../security-model.md`.
 - User-visible lifecycle narratives remain in `../user-stories/`.
 

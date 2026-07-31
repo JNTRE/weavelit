@@ -221,7 +221,7 @@ the complete first-launch workflow and recovery from an interrupted delivery.
 ## Related Documents
 
 - [Init User Story](../../user-stories/init-user-story.md)
-- [Core Statements](../../../core-statements.md)
+- [Technical Specification](../../../spec.md)
 - [Security Model](../../../security-model.md)
 - [Server Architecture Design](../../server-architecture-design.md)
 - [Server Lifecycle Design](../lifecycle-design.md)

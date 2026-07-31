@@ -7,7 +7,7 @@ This folder documents the implementation-design boundaries of the **[Weavelit Se
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns shared **[Weavelit Server](../glossary.md#applications-and-interfaces)** implementation-design documentation and routing to server-boundary documentation.
-- It does not own product commitments, security requirements, or unresolved decisions; those remain in `../core-statements.md`, `../security-model.md`, and `../open-questions.md`.
+- It does not own product commitments, security requirements, or unresolved decisions; those remain in `../spec.md`, `../security-model.md`, and `../open-questions.md`.
 - The `api/`, `authentication/`, `authorization/`, `automation-identities/`, `audit/`, `database/`, `lifecycle/`, `observability/`, and `user-stories/` child directories own detailed documentation for their respective Server boundaries and user-visible lifecycle workflows.
 
 ## Asset Inventory
@@ -35,7 +35,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
   [Documentation Standards](../documentation-standards.md) and apply its
   authority, document-type, lifecycle, structure, and writing rules.
 - Keep broad shared Server design documentation directly in this folder; place pre-operational lifecycle design, boundary-specific detail, and user-visible lifecycle narratives in their appropriate child directories.
-- Update `../core-statements.md` for settled commitments and `../open-questions.md` for unresolved choices instead of treating local design documentation as their replacement.
+- Update `../spec.md` for settled commitments and `../open-questions.md` for unresolved choices instead of treating local design documentation as their replacement.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 
 ## Standards and Conventions

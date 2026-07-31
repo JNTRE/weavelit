@@ -505,7 +505,6 @@ automation interfaces.
 
 ## Related Documents
 
-- [Core Statements](core-statements.md)
 - [Vision](vision.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)

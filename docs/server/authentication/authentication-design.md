@@ -18,5 +18,5 @@ implementation-specific decisions have moved here yet.
 ## Related Documents
 
 - [Security Model](../../security-model.md)
-- [Core Statements](../../core-statements.md)
+- [Technical Specification](../../spec.md)
 - [Glossary](../../glossary.md)

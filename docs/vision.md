@@ -23,12 +23,12 @@ agents that perform scheduled or triggered work. Every automation has an active
 **[Responsible Owner](glossary.md#identities-and-access)** who is accountable
 for the work it performs.
 
-The [Core Statements](core-statements.md) define the current product and
+The [Technical Specification](spec.md) defines the current product and
 technical commitments. The [Glossary](glossary.md) defines the canonical names
 used throughout the documentation.
 
 ## Related Documents
 
-- [Core Statements](core-statements.md)
+- [Technical Specification](spec.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)

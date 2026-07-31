@@ -34,7 +34,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Keep SQLite-specific driver, schema migration, transaction, connection-health,
   and error behavior in this folder.
 - Update shared backend-contract documentation in `../` and canonical decisions
-  in `../../../core-statements.md` or `../../../open-questions.md` rather than
+  in `../../../spec.md` or `../../../open-questions.md` rather than
   duplicating them here.
 - Make minimal, targeted changes and update this inventory when assets are
   added, removed, renamed, or moved.

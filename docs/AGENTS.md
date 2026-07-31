@@ -22,19 +22,18 @@ Use this section as the source of truth for what assets belong in this directory
 - `client-modules/`: Documentation for the server-side **[Client Modules](glossary.md#applications-and-interfaces)** that provide client-facing connection surfaces to the Weavelit Server.
 - `clients/`: Documentation for individual client applications, including the **[Weavelit CLI](glossary.md#applications-and-interfaces)** and **[Web UI](glossary.md#applications-and-interfaces)**.
 - `containers/`: Development and production OCI container-image documentation.
-- `core-statements.md`: Current product, security, and technical truths; expand or replace statements only after a clear decision.
 - `documentation-standards.md`: Shared authority, document-type, lifecycle, structure, and writing standards for production documentation under `docs/`.
 - `glossary.md`: Canonical definitions for Weavelit applications, interfaces, identities, access, states, and requests.
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
-- `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Core Statements, Glossary, or an architecture decision record.
+- `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Technical Specification, Glossary, or an architecture decision record.
 - `plan/`: Delivery-planning documentation, including navigation to authoritative GitHub Issues and Milestones and the GitHub Project standards.
-- `security-model.md`: Security requirements and implementation constraints supporting the Core Statements, not a complete implementation design.
+- `security-model.md`: Security requirements and implementation constraints supporting the Technical Specification, not a complete implementation design.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
 - `spec.md`: RFC 2119 technical specification and highest-level product and technical authority.
 - `testing.md`: Cross-cutting test design, automated validation, deployment confidence, and agent test-authoring policy.
-- `vision.md`: High-level intended product, system relationships, and links to the Core Statements and Glossary.
+- `vision.md`: High-level intended product, system relationships, and links to the Technical Specification and Glossary.
 
 ## Usage Guidance
 
@@ -44,10 +43,10 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before creating or updating a production document, read the [Documentation Standards](documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Make minimal, targeted edits; avoid broad rewrites unless explicitly requested.
 - Use `glossary.md` for canonical terms and keep their usage consistent across the documentation.
-- Record settled product, security, or technical commitments in `core-statements.md`; remove a resolved item from `open-questions.md` and place its decision in the appropriate canonical document or an architecture decision record.
+- Record settled product, security, or technical commitments in `spec.md`; remove a resolved item from `open-questions.md` and place its decision in the appropriate canonical document or an architecture decision record.
 - Keep GitHub Milestones aligned with canonical documents for settled product,
   security, and technical decisions instead of redefining those decisions.
-- Keep security constraints in `security-model.md` aligned with `core-statements.md`, and preserve each document's stated scope.
+- Keep security constraints in `security-model.md` aligned with `spec.md`, and preserve each document's stated scope.
 
 ## Standards and Conventions
 
@@ -70,5 +69,5 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Include only valid, repository-relative links to existing canonical documents.
 - Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
 - Remove stale links and add canonical links so the section reflects current source-of-truth references.
-- Keep intended product and technical commitments in `core-statements.md`; do not leave resolved decisions in `open-questions.md`.
+- Keep intended product and technical commitments in `spec.md`; do not leave resolved decisions in `open-questions.md`.
 - Do not restate a canonical decision in multiple documents when a link to its owning document preserves the needed context.

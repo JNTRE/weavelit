@@ -1,7 +1,7 @@
 # Weavelit Security Model
 
 This document records security requirements and implementation constraints that
-support the product boundaries in the [Core Statements](core-statements.md). It
+support the product boundaries in the [Technical Specification](spec.md). It
 is not a complete implementation design.
 
 ## Maintenance Policy
@@ -254,6 +254,6 @@ owning documentation when its additional context is needed.
 
 ## Related Documents
 
-- [Core Statements](core-statements.md)
+- [Technical Specification](spec.md)
 - [Glossary](glossary.md)
 - [Server Init Design](server/lifecycle/init/init-design.md)

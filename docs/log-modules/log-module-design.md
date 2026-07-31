@@ -58,7 +58,7 @@ never reads backup contents or Application Database state directly.
 
 ## Related Documents
 
-- [Core Statements](../core-statements.md)
+- [Technical Specification](../spec.md)
 - [Security Model](../security-model.md)
 - [Open Questions](../open-questions.md)
 - [Glossary](../glossary.md)

@@ -191,5 +191,5 @@ from a shared secret and the current time by an authenticator application.
 ## Related Documents
 
 - [Vision](vision.md)
-- [Core Statements](core-statements.md)
+- [Technical Specification](spec.md)
 - [Security Model](security-model.md)
