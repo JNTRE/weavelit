@@ -106,10 +106,11 @@ either **[Init](glossary.md#states-and-requests)** or
 in-place database migration. What versioned backup format, cryptographic
 envelope, recovery-key format, compatibility window, and artifact-retention
 policy apply? How do upload retries, protected encrypted staging and cleanup,
-interrupted Restore, crash reconciliation, and durable Restore-result Audit Log
-recording work? What fields identify the Restore result, replacement deployment,
-backup format, correlation, and unauthenticated pre-operational actor without
-exposing backup contents or implying a fabricated Human User? How are the
+interrupted Restore, and crash reconciliation work? What delivery and
+deduplication semantics apply when Init or Restore retries its required durable
+System Log completion result after application-state commit but before sealing?
+Which additional fields, if any, identify the backup format without exposing
+backup contents? How are the
 separate System Log and Audit Log databases and remote Log Module destinations
 backed up, protected, restored, and migrated? What configuration bounds and
 execution behavior apply to their independent retention and purge policies?

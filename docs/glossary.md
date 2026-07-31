@@ -52,9 +52,21 @@ enablement. MFA Modules use maintained third-party libraries where appropriate,
 are released as part of the Server package, and are not runtime-installable
 plugins.
 
-**System Log** - A structured, pre-redacted diagnostic record of Weavelit Server lifecycle events, operational state, configuration changes, authentication failures, authorization denials, dependency failures, provider failures, or internal errors. A System Log supports operation and diagnosis; it is not an Audit Log.
+**System Log** - A structured, pre-redacted diagnostic record of Weavelit
+Server lifecycle events, operational state, configuration changes,
+authentication failures, authorization denials, dependency failures, provider
+failures, or internal errors. Init and Restore actions and results are System
+Logs because they occur before authenticated application actions are available.
+A durable lifecycle-completion System Log identifies the workflow, deployment,
+time, result, and correlation identifier. A System Log supports operation and
+diagnosis; it is not an Audit Log.
 
-**Audit Log** - A structured, pre-redacted accountability record for a consequential action. It identifies the authenticated principal, **[Responsible Owner](#identities-and-access)** when applicable, action or **[Operation](#applications-and-interfaces)**, target, time, result, and correlation identifier. An Audit Log is distinct from a System Log.
+**Audit Log** - A structured, pre-redacted accountability record for a
+consequential authenticated application action. It identifies the authenticated
+principal, **[Responsible Owner](#identities-and-access)** when applicable,
+action or **[Operation](#applications-and-interfaces)**, target, time, result,
+and correlation identifier. Init and Restore actions are not Audit Logs. An
+Audit Log is distinct from a System Log.
 
 **Weavelit CLI** - The separately packaged command-line application used on a
 user's local system. It interacts with the
@@ -182,9 +194,9 @@ from a shared secret and the current time by an authenticator application.
 
 ## States and Requests
 
-**Init** - The pre-operational process by which an uninitialized **[Weavelit Server](#applications-and-interfaces)** creates new application state after the shared Server contract selects and configures the **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Restore](#states-and-requests)** and is exposed only through Init-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Init creates the **[Administrators Group](#identities-and-access)** and first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, and selects, configures, and activates one or more initial Log Modules with assignments for System Logs and Audit Logs. The same Log Module may receive both log types but does not reuse Application Database resources. Init completes only after the Server validates the Application Database and both Log Module assignments, including durable Audit Log recording, commits initialized database state, and irreversibly seals its Server-local deployment record before transitioning directly to normal operation.
+**Init** - The pre-operational process by which an uninitialized **[Weavelit Server](#applications-and-interfaces)** creates new application state after the shared Server contract selects and configures the **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Restore](#states-and-requests)** and is exposed only through Init-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Init creates the **[Administrators Group](#identities-and-access)** and first local **[Human User](#identities-and-access)**, adds that user to the Administrators Group, and selects, configures, and activates one or more initial Log Modules with assignments for System Logs and Audit Logs. The same Log Module may receive both log types but does not reuse Application Database resources. Init completes only after the Server validates the Application Database and both Log Module assignments, commits initialized database state, durably records the Init result through the System Log assignment, and irreversibly seals its Server-local deployment record before transitioning directly to normal operation.
 
-**Restore** - The pre-operational process by which an uninitialized replacement **[Weavelit Server](#applications-and-interfaces)** imports existing application state from a compatible encrypted backup after the shared Server contract selects and configures an eligible **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Init](#states-and-requests)** and is exposed only through Restore-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Restore supplies the backup and its private recovery key; the Server validates the backup before mutation, invalidates restored sessions, re-encrypts protected secret material with the replacement Server's at-rest key, commits the restored state under the replacement deployment identifier, and irreversibly seals the deployment before transitioning directly to normal operation. Restore does not support in-place migration between Application Database technologies and becomes unavailable after the deployment is initialized.
+**Restore** - The pre-operational process by which an uninitialized replacement **[Weavelit Server](#applications-and-interfaces)** imports existing application state from a compatible encrypted backup after the shared Server contract selects and configures an eligible **[Application Database](#applications-and-interfaces)**. It is mutually exclusive with **[Init](#states-and-requests)** and is exposed only through Restore-capable **[Client Modules](#applications-and-interfaces)** while normal application functions are unavailable. The person completing Restore supplies the backup and its private recovery key; the Server validates the backup before mutation, invalidates restored sessions, re-encrypts protected secret material with the replacement Server's at-rest key, commits the restored state under the replacement deployment identifier, durably records the Restore result through the restored System Log assignment, and irreversibly seals the deployment before transitioning directly to normal operation. Restore does not support in-place migration between Application Database technologies and becomes unavailable after the deployment is initialized.
 
 **Operational Request** - A typed request for a supported **[Operation](#applications-and-interfaces)** accepted through a **[Client Module](#applications-and-interfaces)** and processed by the **[Weavelit Server](#applications-and-interfaces)**.
 

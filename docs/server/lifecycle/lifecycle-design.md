@@ -149,10 +149,14 @@ The deployment record remains `Uninitialized` through `DatabaseSelected`.
 Before either workflow commits application state, its database checkpoint and
 the deployment record become `InitializationPending` using crash-safe ordering.
 The Application Database performs the workflow's complete state replacement
-atomically and remains the final one-time guard. After that commit, the
-lifecycle crate seals the deployment record `Initialized`. Only after the seal
-is durable may the runtime remove all pre-operational routes, load application
-state, and enable normal authenticated operation in the same process.
+atomically and remains the final one-time guard. The committed state carries a
+workflow-specific System Log completion obligation with non-secret event fields.
+After that commit, the owning workflow durably delivers the completion result
+through the committed System Log assignment and marks the obligation complete.
+Only then does the lifecycle crate seal the deployment record `Initialized`.
+Only after the seal is durable may the runtime remove all pre-operational routes,
+load application state, and enable normal authenticated operation in the same
+process.
 
 If database state commits but sealing or in-process activation fails, the
 runtime exposes no routes and fails closed. On restart, the lifecycle crate
@@ -160,9 +164,9 @@ verifies the matching initialized state, completes any workflow-specific
 post-commit requirement, seals the record, and only then permits normal
 operation. The lifecycle crate does not interpret a workflow-specific
 obligation: it invokes the workflow crate that created it and seals only after
-that crate reports durable completion. Init currently has no post-commit
-obligation after its atomic state write; Restore owns its required durable Audit
-Log result. Neither Init nor Restore is exposed again.
+that crate reports durable completion. Init and Restore each own their required
+System Log result. Reconciliation retries incomplete completion logging and does
+not seal until the result is durable. Neither Init nor Restore is exposed again.
 
 ## Errors And Sensitive Output
 

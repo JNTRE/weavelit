@@ -90,7 +90,7 @@ not consume or modify that source file.
    secrets with the replacement Server's at-rest key, and atomically commits
    restored application state bound to the replacement deployment identifier.
 6. The Server durably records the required Restore result through the restored
-   Audit Log assignment and irreversibly seals the deployment record
+   System Log assignment and irreversibly seals the deployment record
    `Initialized`.
 7. Only after the seal is durable does the Server remove every pre-operational
    surface and enable normal authenticated operation. No process restart is
@@ -134,7 +134,7 @@ workflow opens or refreshes. It never infers progress only from browser state.
 - A safe reset is offered only when the Server proves that no application state
   committed. Reset removes pending Restore state and never redisplays or
   reconstructs the private recovery key.
-- If application state commits but Restore-result Audit Log recording or
+- If application state commits but Restore-result System Log recording or
   deployment sealing is interrupted, the Server exposes no routes. On restart
   it completes Restore-specific reconciliation and sealing before presenting
   normal sign-in; it never reopens Init or the upload workflow.

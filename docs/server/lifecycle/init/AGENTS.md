@@ -1,6 +1,6 @@
 # Server Init Agent Guide
 
-This folder documents the Server-owned implementation boundary for **[Init](../../../glossary.md#states-and-requests)**. It applies the shared lifecycle contract to fresh application-state creation, request and secret handling, recovery-key delivery, and finalization.
+This folder documents the Server-owned implementation boundary for **[Init](../../../glossary.md#states-and-requests)**. It applies the shared lifecycle contract to fresh application-state creation, request and secret handling, recovery-key delivery, System Log completion, and finalization.
 
 ## Purpose and Scope
 
@@ -16,7 +16,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server Init design.
-- `init-design.md`: Fresh-state Init contract, request and secret handling, initial recovery-key delivery, atomic state creation, and error-boundary design.
+- `init-design.md`: Fresh-state Init contract, request and secret handling, initial recovery-key delivery, atomic state creation, System Log completion, and error-boundary design.
 
 ## Usage Guidance
 

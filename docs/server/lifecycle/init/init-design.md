@@ -123,12 +123,19 @@ initialized before the requesting client proves possession of the private key:
 3. The Init crate obtains the reopened selected database from the lifecycle
    authority, verifies that the deployment identifiers, checkpoint, and proof
    match, validates the complete request, verifies the
-   **[Log Module](../../../glossary.md#applications-and-interfaces)** assignments and
-   durable **[Audit Log](../../../glossary.md#applications-and-interfaces)** delivery,
-   and atomically replaces the checkpoint with complete initialized application
-   state bound to the deployment identifier.
-4. After the database commit succeeds, the lifecycle crate atomically seals the
-   deployment record `Initialized`. Only after that seal is durable does the
+   **[Log Module](../../../glossary.md#applications-and-interfaces)** assignments
+   and durable delivery for each assigned log type, and atomically replaces the
+   checkpoint with complete initialized application state bound to the
+   deployment identifier. The committed state includes the non-secret Init
+   completion-event fields as a pending obligation.
+4. The Init crate loads the committed
+   **[System Log](../../../glossary.md#applications-and-interfaces)** assignment,
+   durably records the successful Init result, and marks the completion
+   obligation satisfied. The record identifies Init, the deployment identifier,
+   time, result, and correlation identifier without passwords, recovery-key
+   material, or other submitted secrets.
+5. After the completion result is durable, the lifecycle crate atomically seals
+   the deployment record `Initialized`. Only after that seal is durable does the
    runtime close every pre-operational gate, load the committed application
    state, and enable normal authenticated operation in the same process.
 
@@ -152,15 +159,17 @@ private key instead resumes by proving possession and resubmitting the final
 request. Reset is never available after the database contains initialized
 application state or the deployment record is sealed.
 
-A validation, Log Module, Audit Log, or final persistence failure leaves the
-checkpoint intact so the same key can be used with a corrected request. An
+A validation, Log Module, or final persistence failure before the database
+commit leaves the checkpoint intact so the same key can be used with a
+corrected request. An
 external Log Module destination may retain a non-application artifact created
 during validation; cleanup belongs to that module's design. If application
-state commits but deployment-record sealing or in-process activation fails, the
-Server exposes no routes and fails closed. On the next startup, a matching
-initialized database and `InitializationPending` deployment record cause the
-lifecycle crate to complete the seal before normal operation; Init is never
-exposed again.
+state commits but System Log completion, deployment-record sealing, or
+in-process activation fails, the Server exposes no routes and fails closed. On
+the next startup, a matching initialized database and `InitializationPending`
+deployment record cause the Init crate to retry completion logging and the
+lifecycle crate to seal only after the result is durable. Init is never exposed
+again.
 
 ## Concurrency, Lifecycle, And Errors
 
@@ -201,8 +210,9 @@ reach clients or logs.
 
 `weavelit-server-init` has direct tests for normalized-request validation,
 recovery-key generation, one-time delivery, proof, reset, Init-checkpoint
-validation, atomic new-state creation, redaction, rollback, retry behavior,
-concurrency under a lifecycle mutation permit, direct invocation of every
+validation, atomic new-state creation, durable System Log completion and
+post-commit reconciliation, redaction, rollback, retry behavior, concurrency
+under a lifecycle mutation permit, direct invocation of every
 mutating entry point after sealing, rejection before secret reading or side
 effects, and the one-time `AlreadyInitialized` guard.
 

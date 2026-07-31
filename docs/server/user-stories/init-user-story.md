@@ -122,11 +122,14 @@ redisplays that private key.
    Init reads request secrets or changes state.
 5. The Server validates the complete request, creates the fixed Administrators
    Group and membership, protects submitted secrets, and confirms that the
-   Audit Log assignment can durably record Audit Logs.
+   System Log and Audit Log assignments can durably record their assigned log
+   type.
 6. The Application Database atomically commits the initialized application
-   state. The lifecycle crate then irreversibly seals the deployment record
+   state.
+7. The Server durably records the successful Init result through the committed
+   System Log assignment, then irreversibly seals the deployment record
    `Initialized`.
-7. Only after the seal is durable does the Server remove the Init surface and
+8. Only after the seal is durable does the Server remove the Init surface and
    enable normal authenticated operation. No process restart is required.
 
 If validation fails before the database commit, the Web UI keeps the person in

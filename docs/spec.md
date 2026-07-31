@@ -276,14 +276,23 @@ Group grants and the requested Operation.
 
 ## Logging And Accountability
 
-The Server MUST record consequential actions as
+The Server MUST record consequential authenticated application actions as
 **[Audit Logs](glossary.md#applications-and-interfaces)** and MUST emit
 **[System Logs](glossary.md#applications-and-interfaces)** for operational
 diagnosis. System Logs MUST cover Server lifecycle events, operational state,
 configuration changes, authentication failures, authorization denials,
-dependency failures, provider failures, and internal errors. Audit Logs MUST
-capture the caller, Responsible Owner when applicable, Operation, target, time,
+dependency failures, provider failures, and internal errors. Init and Restore
+actions and results MUST be System Logs and MUST NOT be attributed to an
+authenticated principal or written as Audit Logs. Audit Logs MUST capture the
+caller, Responsible Owner when applicable, action or Operation, target, time,
 result, and correlation identifier.
+
+After Init or Restore commits application state, the Server MUST durably record
+that workflow's successful completion through the committed System Log
+assignment before sealing the deployment. The record MUST include the workflow,
+deployment identifier, time, result, and correlation identifier. Reconciliation
+after interruption MUST retry completion logging and MUST NOT seal until the
+result is durable.
 
 System Logs and Audit Logs MUST be structured and pre-redacted before they
 reach a Log Module. They MUST exclude secrets and unnecessary sensitive
@@ -392,10 +401,10 @@ named Operations.
 Init MUST assign configured Log Modules separately to System Logs and Audit
 Logs; the same Log Module MAY receive both types. Init MUST NOT complete, and
 the Server MUST NOT begin normal operation, until both assignments are valid
-and the Audit Log assignment can durably record Audit Logs. After the
-Application Database commit and deployment seal are complete, successful Init
-MUST transition the running Server directly to normal operation without a
-restart.
+and can durably record their assigned log type. After the Application Database
+commit, the Server MUST durably record the Init result through the committed
+System Log assignment before sealing. Successful Init MUST then transition the
+running Server directly to normal operation without a restart.
 
 Init MUST create a distinct backup recovery key pair. The Server MUST retain
 only the public recovery key, and the person completing Init MUST receive the
@@ -425,7 +434,8 @@ configuration, and Log Module assignments from the validated backup instead of
 creating replacement initial state.
 
 A successful Restore MUST commit the restored state under the replacement
-deployment identifier, seal the replacement deployment, and transition the
+deployment identifier, durably record the Restore result through the restored
+System Log assignment, seal the replacement deployment, and transition the
 running Server directly to normal operation without a restart. Restore MUST NOT
 support in-place migration between Application Database technologies.
 

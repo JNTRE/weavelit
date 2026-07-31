@@ -6,7 +6,7 @@ This folder documents **[System Log](../../glossary.md#applications-and-interfac
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Server System Log construction, classification, and pre-redaction design before records reach a Log Module, plus future observability design documentation.
+- This directory owns Server System Log construction, classification, and pre-redaction design before records reach a Log Module, including durable Init and Restore completion results, plus future observability design documentation.
 - It does not own implementation artifacts or claims that metrics, tracing, monitoring, or alerting design is currently defined.
 - Audit accountability belongs in the sibling `../audit/` directory.
 

@@ -141,21 +141,24 @@ does not receive the backup artifact or private recovery key and independently
 verifies the expected deployment identifier, checkpoint kind, and one-time
 state transition. A failure before commit leaves no partial application state.
 
-The restored state carries a durable post-commit Restore-result obligation. The
-Restore crate loads the restored Audit Log assignment, proves that it can
-durably record the Restore result without a private key, backup content, or
-fabricated authenticated principal, and marks that obligation complete. The
-lifecycle crate seals the deployment record `Initialized` only after the
-database commit and required Audit Log result are durable. The runtime then
-removes every pre-operational route, loads application state, and enables normal
-authenticated operation without a restart.
+The restored state carries a durable post-commit Restore-result obligation with
+non-secret event fields. The Restore crate
+loads the restored System Log assignment, durably records the Restore result,
+and marks that obligation complete. The record identifies Restore, the
+replacement deployment identifier, time, result, and correlation identifier
+without recovery keys, backup contents, restored identities, or other protected
+values. The lifecycle crate seals the deployment
+record `Initialized` only after the database commit and required System Log
+result are durable. The runtime then removes every pre-operational route, loads
+application state, and enables normal authenticated operation without a restart.
 
-If the database commit succeeds but Audit Log recording, sealing, or in-process
+If the database commit succeeds but System Log recording, sealing, or in-process
 activation fails, the Server exposes no routes and fails closed. On startup,
 the lifecycle crate recognizes the matching initialized database and pending
 deployment record, invokes Restore-specific post-commit reconciliation, and
-seals only after the durable Restore-result obligation is complete. Init and a
-second Restore never reopen.
+seals only after the durable Restore-result obligation is complete.
+Reconciliation retries completion logging until the result is durable. Init and
+a second Restore never reopen.
 
 ## Interruption, Retry, And Reset
 
@@ -198,9 +201,10 @@ wrong recovery keys, compatibility rejection, duplicate and invalid restored
 state, unavailable required components, session invalidation, recovery-public-
 key preservation, protected-secret re-encryption, private-key and plaintext
 non-persistence, redaction, Restore-checkpoint validation, atomic rollback,
-retry and reset, durable Audit Log result handling, every Restore-specific crash
-point, concurrency with Init and Restore requests, direct invocation after
-sealing, and rejection before key or artifact processing.
+retry and reset, durable System Log result handling and post-commit
+reconciliation, every Restore-specific crash point, concurrency with Init and
+Restore requests, direct invocation after sealing, and rejection before key or
+artifact processing.
 
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify

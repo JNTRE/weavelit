@@ -37,10 +37,12 @@ configuration and two explicit assignments to the same Server-owned
 validation; no client defines an alternative Log Module initialization path.
 
 Init rejects an absent, disabled, unconfigured, or incompatible assignment. It
-also rejects an Audit Log assignment unless its configured Log Module can
-durably record Audit Logs. Init remains incomplete, and the Server does not
-begin normal operation, until valid System Log and Audit Log assignments are
-persisted.
+also rejects an assignment unless its configured Log Module can durably record
+the assigned log type. After Init commits application state, it durably records
+the Init completion result through the committed System Log assignment before
+the deployment is sealed. Init remains incomplete, and the Server does not begin
+normal operation, until both assignments are valid and the completion result is
+durable.
 
 During **[Restore](../glossary.md#states-and-requests)**, the Server imports Log
 Module configurations, enabled state, assignments, and protected credentials
@@ -49,10 +51,10 @@ or Audit Log destination data. Every referenced Log Module must be compiled
 into the replacement Server, and every restored configuration and assignment
 must satisfy the same Server-owned validation used during normal administration.
 
-Restore does not seal the replacement deployment until the restored Audit Log
-assignment can durably record the required Restore result without recovery
-secrets or backup contents. A failure remains non-operational and follows the
-post-commit reconciliation rules in the
+Restore validates both restored assignments and does not seal the replacement
+deployment until the restored System Log assignment durably records the required
+Restore result without recovery secrets or backup contents. A failure remains
+non-operational and follows the post-commit reconciliation rules in the
 [Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored Log Module
 never reads backup contents or Application Database state directly.
 

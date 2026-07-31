@@ -1,6 +1,6 @@
 # Server Restore Agent Guide
 
-This folder documents the Server-owned implementation boundary for **[Restore](../../../glossary.md#states-and-requests)**. It applies the shared lifecycle contract to backup and recovery-key validation, restored-state transformation, atomic persistence, audit completion, and finalization.
+This folder documents the Server-owned implementation boundary for **[Restore](../../../glossary.md#states-and-requests)**. It applies the shared lifecycle contract to backup and recovery-key validation, restored-state transformation, atomic persistence, System Log completion, and finalization.
 
 ## Purpose and Scope
 
@@ -16,7 +16,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server Restore design.
-- `restore-design.md`: Restore contract, backup and recovery-key validation, restored-state transformation, atomic persistence, audit completion, and error-boundary design.
+- `restore-design.md`: Restore contract, backup and recovery-key validation, restored-state transformation, atomic persistence, System Log completion, and error-boundary design.
 
 ## Usage Guidance
 

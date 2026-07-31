@@ -170,7 +170,7 @@ The restore operation verifies the expected deployment identifier and eligible
 Restore checkpoint before replacing application state. The Restore crate
 invalidates restored sessions, re-encrypts reversibly encrypted data using the
 replacement Server's own at-rest key material, preserves only the matching
-public recovery key, and verifies durable Restore-result Audit Log recording.
+public recovery key, and verifies durable Restore-result System Log recording.
 The lifecycle crate seals the deployment record `Initialized` after the atomic
 database commit and before normal routes become available. A failure after the
 database commit fails closed and is reconciled before route exposure on the
