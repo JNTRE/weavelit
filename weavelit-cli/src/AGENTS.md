@@ -2,8 +2,10 @@
 
 This directory is reserved for the Weavelit CLI application source. The CLI
 runs on a user's local macOS system, authenticates to the Weavelit Server, and
-submits only supported Operations through the Server's versioned HTTPS API; it
-does not contain provider credentials, provider integrations, or administration.
+submits User Plane and Administration Plane requests through the Weavelit CLI
+Client Module's versioned HTTPS API. It does not contain provider credentials,
+provider integrations, Server authorization policy, or Server administration
+behavior.
 
 ## Purpose and Scope
 
@@ -25,8 +27,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Read `../../docs/clients/weavelit-cli/` for application requirements and `../../docs/client-modules/weavelit-cli/` for the Server connection boundary before changing behavior.
-- Keep local client workflow and structured result handling here; leave identity derivation, authorization, and provider work with the Server.
-- Add focused end-to-end or smoke tests for sign-in, sign-out, permitted Operation invocation, and expected client failure behavior, following `../../docs/testing.md`.
+- Keep local command workflow and structured result handling here; leave identity derivation, authorization, administration behavior, and provider work with the Server.
+- Add focused end-to-end or smoke tests for sign-in, sign-out, permitted and denied User Plane and Administration Plane requests, and expected client failure behavior, following `../../docs/testing.md`.
 
 ## Standards and Conventions
 
@@ -39,5 +41,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Use the configured Server HTTPS listener and `/api/v1/` routes for supported Operations; do not use Web UI browser routes.
-- Do not add administrative commands, provider credentials, or provider-integration logic to the Weavelit CLI.
+- Implement commands only for the User Plane and Administration Plane declared by the Weavelit CLI Client Module; command visibility is a usability control rather than authorization.
+- Do not add provider credentials, provider-integration logic, or Server authorization policy to the Weavelit CLI.
 - Preserve Server-owned authorization decisions and canonical API requirements instead of duplicating them locally.

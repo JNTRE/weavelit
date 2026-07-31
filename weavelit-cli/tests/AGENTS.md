@@ -2,8 +2,9 @@
 
 This directory is reserved for focused Weavelit CLI tests. It verifies the
 installed client's user-facing behavior against the versioned Server interface,
-including authentication, permitted Operation invocation, structured results,
-and the failure conditions most likely to make a release unusable.
+including authentication, User Plane and Administration Plane requests,
+structured results, and the failure conditions most likely to make a release
+unusable.
 
 ## Purpose and Scope
 
@@ -38,6 +39,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Cover sign-in, sign-out, permitted invocation, denied or unavailable access, and structured result behavior as each workflow is implemented.
+- Cover sign-in, sign-out, permitted and denied User Plane and Administration Plane requests, unavailable access, and structured result behavior as each workflow is implemented.
 - Verify the separately packaged CLI against the versioned Server interface on its supported macOS `arm64` platform when release workflows are introduced.
 - Use controlled Server fixtures; do not depend on a live provider as part of the default CLI test suite.
