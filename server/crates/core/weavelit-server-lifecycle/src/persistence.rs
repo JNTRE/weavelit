@@ -4,7 +4,7 @@ use weavelit_server_database::{DatabaseError, DatabaseInspection};
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
-    LifecycleError, LifecycleState, SelectionError, TrustedBackendContext,
+    LifecycleClassification, LifecycleError, LifecycleState, SelectionError, TrustedBackendContext,
     ValidatedConnectionSettings,
     filesystem::{Inventory, StateRoot},
     format::{
@@ -220,6 +220,86 @@ impl LifecycleStore {
             .inspect(self.record.deployment_identifier())
             .map_err(map_database_error_to_lifecycle)?;
         Ok(database)
+    }
+
+    /// Classifies startup state from the current anchor set and performs the documented
+    /// reconciliation for the `Uninitialized` record with a pending database checkpoint.
+    ///
+    /// Applies the full startup matrix. For an `Uninitialized` record with a pending
+    /// checkpoint, advances the deployment record to `InitializationPending` in documented
+    /// cross-store order before returning. Performs no other mutation: no checkpoint
+    /// creation, locator replacement, sealing, state loading, or route changes.
+    pub fn classify_startup(
+        &mut self,
+        catalog: &BackendCatalog,
+        context: &TrustedBackendContext,
+    ) -> Result<LifecycleClassification, LifecycleError> {
+        match self.record.state() {
+            LifecycleState::Uninitialized => {
+                let Some(locator) = self.locator.as_ref() else {
+                    return Ok(LifecycleClassification::UninitializedWithoutDatabase);
+                };
+                let mut db = catalog.reopen(locator.settings(), context)?;
+                let inspection = db
+                    .inspect(self.record.deployment_identifier())
+                    .map_err(map_database_error_to_lifecycle)?;
+                match inspection {
+                    DatabaseInspection::Uninitialized => {
+                        Ok(LifecycleClassification::UninitializedWithDatabase)
+                    }
+                    DatabaseInspection::Pending(checkpoint) => {
+                        let kind = checkpoint.workflow();
+                        let generation = self.locator.as_ref().unwrap().generation();
+                        let new_record = DeploymentRecord::new(
+                            self.record.deployment_identifier(),
+                            LifecycleState::InitializationPending,
+                            Some(generation),
+                        )
+                        .map_err(|_| LifecycleError::InvalidState)?;
+                        let permit = RecordPersistencePermit;
+                        self.replace_record(&permit, new_record)?;
+                        Ok(LifecycleClassification::InitializationPending(kind))
+                    }
+                    DatabaseInspection::Initialized { .. } => Err(LifecycleError::InvalidState),
+                }
+            }
+            LifecycleState::InitializationPending => {
+                // Record must have a locator (enforced by domain invariant).
+                let locator = self
+                    .locator
+                    .as_ref()
+                    .ok_or(LifecycleError::IntegrityFailure)?;
+                let mut db = catalog.reopen(locator.settings(), context)?;
+                let inspection = db
+                    .inspect(self.record.deployment_identifier())
+                    .map_err(map_database_error_to_lifecycle)?;
+                match inspection {
+                    DatabaseInspection::Pending(checkpoint) => Ok(
+                        LifecycleClassification::InitializationPending(checkpoint.workflow()),
+                    ),
+                    DatabaseInspection::Initialized { .. } => {
+                        Ok(LifecycleClassification::PostCommitReconciliationRequired)
+                    }
+                    DatabaseInspection::Uninitialized => Err(LifecycleError::InvalidState),
+                }
+            }
+            LifecycleState::Initialized => {
+                let locator = self
+                    .locator
+                    .as_ref()
+                    .ok_or(LifecycleError::IntegrityFailure)?;
+                let mut db = catalog.reopen(locator.settings(), context)?;
+                let inspection = db
+                    .inspect(self.record.deployment_identifier())
+                    .map_err(map_database_error_to_lifecycle)?;
+                match inspection {
+                    DatabaseInspection::Initialized { .. } => {
+                        Ok(LifecycleClassification::Initialized)
+                    }
+                    _ => Err(LifecycleError::InvalidState),
+                }
+            }
+        }
     }
 
     fn create(

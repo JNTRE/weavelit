@@ -8,12 +8,12 @@ operation.
 
 - This crate owns lifecycle record and locator domain types, stable identifiers,
   typed connection declarations and values, common input validation, trusted
-  backend context, factory dispatch, classifications, protected anchor formats,
-  trusted-root filesystem behavior, Application Database selection and restart
-  reopening, and redacted errors.
+  backend context, factory dispatch, classifications, startup classification and
+  reconciliation, protected anchor formats, trusted-root filesystem behavior,
+  Application Database selection and restart reopening, and redacted errors.
 - It reuses the Application Database contract and deployment identifier.
-- It does not own concrete backend registration, startup database classification,
-  workflow mutation, Client Modules, or runtime composition.
+- It does not own concrete backend registration, workflow mutation, Client
+  Modules, or runtime composition.
 
 ## Asset Inventory
 
@@ -24,8 +24,9 @@ operation.
   restart reopening, protected formats, trusted-root operations, anchor store,
   and factory contract.
 - `tests/`: Fake-backend contract, real-filesystem persistence, selection
-  eligibility and replacement, restart reopening, validation-order,
-  malformed/tampered input, and redaction tests.
+  eligibility and replacement, restart reopening, startup classification matrix,
+  record advancement, validation-order, malformed/tampered input, and redaction
+  tests.
 
 ## Usage Guidance
 

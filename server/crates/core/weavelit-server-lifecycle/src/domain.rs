@@ -561,7 +561,7 @@ impl fmt::Debug for DatabaseLocator {
     }
 }
 
-/// Capability classification later startup orchestration may compute.
+/// Capability classification returned by startup orchestration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleClassification {
     /// No database has been selected.
@@ -570,6 +570,9 @@ pub enum LifecycleClassification {
     UninitializedWithDatabase,
     /// One workflow owns the non-operational pending state.
     InitializationPending(WorkflowKind),
+    /// The Init or Restore workflow committed the database but the deployment record
+    /// has not yet been sealed; workflow-specific post-commit reconciliation is required.
+    PostCommitReconciliationRequired,
     /// The deployment is sealed for normal operation.
     Initialized,
 }
