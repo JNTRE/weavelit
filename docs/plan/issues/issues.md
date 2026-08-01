@@ -23,19 +23,6 @@ startup without exposing normal operation.
 | --- | --- | --- |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
-### #36 Create the Server lifecycle contract and backend catalog
-
-[Open GitHub Issue #36](https://github.com/JNTRE/weavelit/issues/36).
-
-**Summary:** Introduce a backend-neutral `weavelit-server-lifecycle` crate that
-defines the trusted lifecycle domain and runtime-supplied Application Database
-backend catalog needed by later persistence and orchestration work.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#34 Establish trusted pre-operational lifecycle foundation](https://github.com/JNTRE/weavelit/issues/34) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
 ### #37 Persist protected deployment records and database locators
 
 [Open GitHub Issue #37](https://github.com/JNTRE/weavelit/issues/37).
