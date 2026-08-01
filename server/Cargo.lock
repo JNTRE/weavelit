@@ -5,3 +5,7 @@ version = 4
 [[package]]
 name = "weavelit-server"
 version = "0.1.0"
+
+[[package]]
+name = "weavelit-server-database"
+version = "0.1.0"

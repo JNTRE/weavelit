@@ -21,11 +21,36 @@ where the decision first arose.
 
 ## Rust Crate Naming
 
-Internal Server Rust crates use this package-name convention:
+Server core, workflow, and infrastructure Rust crates use this package-name
+convention:
 
 ```text
 weavelit-server-<component>[-<specific-component>]
 ```
+
+Compiled-in Module crates use this package-name convention:
+
+```text
+weavelit-module-<module-type>-<implementation>
+```
+
+`<module-type>` is `client`, `log`, `mfa`, or `service` and reflects the
+canonical Module category. `<implementation>` identifies the client surface,
+log destination, MFA method, or external service. For example:
+
+```text
+weavelit-module-client-cli
+weavelit-module-client-webui
+weavelit-module-mfa-totp
+weavelit-module-service-zendesk
+```
+
+Source directories group crates by ownership under `server/crates/core/`,
+`server/crates/database/`, and `server/crates/modules/`. A grouping directory is
+not a Cargo package and contains no `Cargo.toml`; each package lives in a child
+directory whose name matches its Cargo package name. The workspace manifest
+lists each supported compiled-in crate explicitly rather than discovering
+packages through a broad directory glob.
 
 `<component>` names the Server concern. The optional
 `<specific-component>` names a concrete backend, destination, provider, or
@@ -48,9 +73,8 @@ weavelit-server-database-sqlite
 The first crate owns the shared Application Database contract; the second owns
 the SQLite implementation. This convention also permits a future dedicated
 **[Log Module](../glossary.md#applications-and-interfaces)** implementation crate
-such as `weavelit-server-log-sqlite`, without
-requiring a `weavelit-server-log` crate before it has a meaningful shared
-contract or code.
+such as `weavelit-module-log-sqlite`, without requiring a shared Log Module
+crate before it has meaningful shared code or a shared contract.
 
 The pre-operational Server crates are:
 

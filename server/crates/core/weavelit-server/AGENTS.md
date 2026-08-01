@@ -27,10 +27,10 @@ Use this section as the source of truth for what assets belong in this directory
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read the relevant canonical Server design under `../../../docs/server/` before changing lifecycle, Init, Restore, API, authentication, authorization, audit, database, or observability behavior.
+- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- Read the relevant canonical Server design under `../../../../docs/server/` before changing lifecycle, Init, Restore, API, authentication, authorization, audit, database, or observability behavior.
 - Keep provider-specific work in Service Module crates and client-facing request translation in Client Module crates.
-- Add focused tests for changed behavior in the appropriate Server test boundary, following `../../../docs/testing.md`.
+- Add focused tests for changed behavior in the appropriate Server test boundary, following `../../../../docs/testing.md`.
 
 ## Standards and Conventions
 
@@ -49,4 +49,4 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
   fallback for missing or invalid deployment state.
 - Preserve the Server's default-deny authorization and its ownership of final authorization decisions.
 - Keep provider credentials and provider-integration behavior in the trusted Server environment; never move them into client applications.
-- Keep canonical Server requirements in `../../../docs/` and update their owning document instead of restating them here.
+- Keep canonical Server requirements in `../../../../docs/` and update their owning document instead of restating them here.

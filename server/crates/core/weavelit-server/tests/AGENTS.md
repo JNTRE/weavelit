@@ -11,7 +11,7 @@ Use this section to understand what this directory owns, what it does not own, a
 - This directory owns focused integration tests for Server executable behavior.
 - It does not replace unit tests colocated with pure implementation logic.
 - It does not own cross-package, release, Web UI, or full Server workflow tests;
-  those belong in `../../../tests/`.
+  those belong in `../../../../tests/`.
 
 ## Asset Inventory
 
@@ -24,8 +24,8 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
-  `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read the owning Server design and `../../../../docs/testing.md` before adding
+  `../../../AGENTS.md`, `../../../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- Read the owning Server design and `../../../../../docs/testing.md` before adding
   or changing a test.
 - Test observable executable behavior through public interfaces with isolated
   temporary resources; do not assert private implementation call order.

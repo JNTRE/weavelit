@@ -18,7 +18,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and Service Module crate-boundary rules.
-- `zendesk/`: Zendesk Service Module crate boundary.
+- `weavelit-module-service-zendesk/`: Zendesk Service Module crate boundary.
 
 ## Usage Guidance
 
