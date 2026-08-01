@@ -95,6 +95,36 @@ metadata to be absent. Every malformed or contradictory persisted combination
 returns `IntegrityFailure`. Inspection emits no diagnostics and returns only
 payload-free storage-neutral errors.
 
+## Checkpoint Transactions
+
+`SqliteDatabase` implements the complete `ApplicationDatabase` contract after
+the read and mutation paths are available. Trait inspection delegates to the
+inherent read-only operation. Create, reconcile, and discard each begin an
+immediate SQLite transaction, load and validate the bounded lifecycle state
+under that write lock, and commit only the allowed result. Separate backend
+instances therefore serialize and recheck stale requests before any write.
+
+Creation inserts a pending singleton row only when inspection returns
+`Uninitialized`. A pending row returns `InvalidState` even when the requested
+checkpoint is identical, and initialized state returns `AlreadyInitialized`.
+Reconciliation commits no data change and succeeds only when deployment,
+workflow, and opaque metadata match exactly. Discard deletes exactly one row
+only when deployment and workflow match; the resulting absence represents an
+unbound uninitialized database.
+
+Reconciliation and discard return `NotInitialized` for an absent row,
+`AlreadyInitialized` for initialized state, `DeploymentMismatch` for another
+valid deployment, and `InvalidState` for a wrong workflow or metadata.
+Malformed state returns `IntegrityFailure` for every operation before mutation.
+SQL parameters bind identifiers and metadata as BLOBs and workflow as a fixed
+internal string. Driver payloads, SQL, paths, identifiers, and metadata are
+never included in returned errors or ordinary diagnostics.
+
+Real-SQLite tests use separate stale backend instances to prove serialized
+rechecking and test-only table triggers to force insert and delete failures.
+The trigger failures roll back fully and remain unchanged after reopen without
+adding a production failure-injection mechanism.
+
 Each shared Application Database contract write is one SQLite transaction unless
 the contract explicitly defines a broader atomic workflow. A failed migration
 or write rolls back completely.

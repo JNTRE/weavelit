@@ -91,6 +91,22 @@ the expected deployment identifier and workflow and removes only that matching
 pending checkpoint. These operations expose no transaction, query, migration,
 path, connection, or backend-selection mechanism.
 
+Checkpoint creation is one-shot: it succeeds only while no lifecycle-state row
+exists. Any pending checkpoint rejects another creation with `InvalidState`,
+including an identical request; callers use reconciliation for retry. An
+initialized row returns `AlreadyInitialized`. Reconciliation succeeds only when
+deployment identifier, workflow, and metadata all match exactly and never
+changes durable state. Discard requires the matching deployment and workflow,
+removes exactly that pending row, and returns the database to unbound
+`Uninitialized` state.
+
+Reconciliation or discard without a pending row returns `NotInitialized`.
+After a valid persisted identifier is decoded, a different deployment returns
+`DeploymentMismatch` before workflow or metadata comparison. A wrong workflow
+or metadata returns `InvalidState`; malformed durable state returns
+`IntegrityFailure`. Every mutation validates current state under the same
+serialized transaction that performs its write.
+
 Each final write persists the complete supplied state and marks the database
 initialized as one operation. A pending checkpoint is not application state and
 permits only the workflow identified by its discriminator. An Init checkpoint

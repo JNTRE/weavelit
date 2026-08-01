@@ -27,7 +27,7 @@ impl SqliteDatabase {
     }
 }
 
-fn inspect_connection(
+pub(super) fn inspect_connection(
     connection: &Connection,
     expected_deployment_identifier: DeploymentIdentifier,
 ) -> Result<DatabaseInspection, DatabaseError> {

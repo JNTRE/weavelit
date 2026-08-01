@@ -2,6 +2,7 @@ use rusqlite::{Error, ErrorCode};
 use weavelit_server_database::DatabaseError;
 
 pub(super) enum ErrorContext {
+    Checkpoint,
     Open,
     Configure,
     Health,
@@ -15,7 +16,8 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
         Error::SqliteFailure(failure, _) => map_error_code(failure.code),
         _ => match context {
             ErrorContext::Open => DatabaseError::ConfigurationInvalid,
-            ErrorContext::Configure
+            ErrorContext::Checkpoint
+            | ErrorContext::Configure
             | ErrorContext::Health
             | ErrorContext::Inspect
             | ErrorContext::Migration => DatabaseError::IntegrityFailure,
