@@ -352,7 +352,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(
             directory.path(),
-            fs::Permissions::from_mode(ROOT_MODE.into()),
+            fs::Permissions::from_mode(ROOT_MODE as u32),
         )
         .unwrap();
         let canonical_path = directory.path().canonicalize().unwrap();
