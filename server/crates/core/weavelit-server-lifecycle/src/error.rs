@@ -175,3 +175,34 @@ impl fmt::Display for BackendOpenError {
 }
 
 impl StdError for BackendOpenError {}
+
+/// Stable payload-free failure category returned by database selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum SelectionError {
+    /// Submitted connection fields or backend factory invocation failed.
+    Open(BackendOpenError),
+    /// The current deployment record does not permit database selection.
+    NotAllowed,
+    /// The candidate database is not eligible for selection.
+    CandidateIneligible,
+    /// The current selection cannot be replaced because it has a checkpoint.
+    ReplacementIneligible,
+    /// Lifecycle persistence could not complete after successful preflight.
+    Lifecycle(LifecycleError),
+}
+
+impl fmt::Display for SelectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::Open(error) => return error.fmt(formatter),
+            Self::NotAllowed => "database selection is not allowed in this state",
+            Self::CandidateIneligible => "candidate database is not eligible for selection",
+            Self::ReplacementIneligible => "current database selection cannot be replaced",
+            Self::Lifecycle(error) => return error.fmt(formatter),
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl StdError for SelectionError {}

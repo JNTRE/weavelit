@@ -23,7 +23,7 @@ pub use domain::{
 };
 pub use error::{
     BackendOpenError, CatalogError, ConnectionValidationError, DomainError, FieldDeclarationError,
-    IdentifierError, LifecycleError,
+    IdentifierError, LifecycleError, SelectionError,
 };
 pub use persistence::{
     AnchorLoadState, LifecycleStore, LocatorPersistencePermit, RecordPersistencePermit,

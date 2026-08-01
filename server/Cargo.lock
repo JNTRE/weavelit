@@ -446,6 +446,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "weavelit-server-database",
+ "weavelit-server-database-sqlite",
  "zeroize",
 ]
 

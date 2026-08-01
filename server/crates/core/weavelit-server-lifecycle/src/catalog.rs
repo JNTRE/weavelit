@@ -7,8 +7,8 @@ use crate::{
     ApplicationDatabase, BackendIdentifier, BackendOpenError, CatalogError,
     ConnectionFieldIdentifier, ConnectionFieldRequirement, ConnectionValidationError,
     ConnectionValue, ConnectionValueKind, FieldDeclarationError, LifecycleError,
-    SecretClassification, ValidatedConnectionField, ValidatedConnectionSettings,
-    domain::MAX_CONNECTION_FIELDS,
+    LocatorConnectionSettings, SecretClassification, ValidatedConnectionField,
+    ValidatedConnectionSettings, domain::MAX_CONNECTION_FIELDS,
 };
 
 const MAX_BACKENDS: usize = 64;
@@ -361,6 +361,72 @@ impl BackendCatalog {
             .factory
             .open(context, &settings)
             .map_err(BackendOpenError::Factory)
+    }
+
+    /// Validates submitted fields, opens the backend, and returns both settings and database.
+    pub fn validate_and_open(
+        &self,
+        identifier: &BackendIdentifier,
+        context: &TrustedBackendContext,
+        inputs: Vec<ConnectionFieldInput>,
+    ) -> Result<(ValidatedConnectionSettings, Box<dyn ApplicationDatabase>), BackendOpenError> {
+        let entry = self
+            .entry(identifier)
+            .ok_or(BackendOpenError::ConnectionInvalid(
+                ConnectionValidationError::UnknownBackend,
+            ))?;
+        let settings = entry
+            .declaration
+            .validate(inputs)
+            .map_err(BackendOpenError::ConnectionInvalid)?;
+        let database = entry
+            .factory
+            .open(context, &settings)
+            .map_err(BackendOpenError::Factory)?;
+        Ok((settings, database))
+    }
+
+    /// Opens the backend using settings reconstructed from a trusted persisted locator.
+    pub fn reopen(
+        &self,
+        locator_settings: &LocatorConnectionSettings,
+        context: &TrustedBackendContext,
+    ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+        let identifier = locator_settings.backend_identifier();
+        let entry = self
+            .entry(identifier)
+            .ok_or(LifecycleError::IntegrityFailure)?;
+
+        let mut validated: Vec<ValidatedConnectionField> =
+            Vec::with_capacity(locator_settings.len());
+        for locator_field in locator_settings.iter() {
+            let declaration = entry
+                .declaration
+                .fields
+                .iter()
+                .find(|d| d.identifier() == locator_field.identifier())
+                .ok_or(LifecycleError::IntegrityFailure)?;
+            if declaration.value_kind() != locator_field.value().kind() {
+                return Err(LifecycleError::IntegrityFailure);
+            }
+            validated.push(ValidatedConnectionField::new(
+                locator_field.identifier().clone(),
+                declaration.classification(),
+                locator_field.value().clone(),
+            ));
+        }
+        for declaration in entry.declaration.fields() {
+            if declaration.requirement() == ConnectionFieldRequirement::Required
+                && !validated
+                    .iter()
+                    .any(|f| f.identifier() == declaration.identifier())
+            {
+                return Err(LifecycleError::IntegrityFailure);
+            }
+        }
+        validated.sort_by(|a, b| a.identifier().cmp(b.identifier()));
+        let settings = ValidatedConnectionSettings::new(identifier.clone(), validated);
+        entry.factory.open(context, &settings)
     }
 
     fn entry(&self, identifier: &BackendIdentifier) -> Option<&BackendEntry> {

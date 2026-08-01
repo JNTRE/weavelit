@@ -1,7 +1,11 @@
 use std::{fmt, path::Path};
 
+use weavelit_server_database::{DatabaseError, DatabaseInspection};
+
 use crate::{
-    DatabaseLocator, DeploymentRecord, LifecycleError, LifecycleState, ValidatedConnectionSettings,
+    BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
+    LifecycleError, LifecycleState, SelectionError, TrustedBackendContext,
+    ValidatedConnectionSettings,
     filesystem::{Inventory, StateRoot},
     format::{
         AnchorKey, KEY_FILE_LIMIT, KEY_FILE_NAME, LOCATOR_ENVELOPE_LIMIT, RECORD_ENVELOPE_LIMIT,
@@ -143,6 +147,81 @@ impl LifecycleStore {
         Ok(())
     }
 
+    /// Preflights, selects, or replaces the Application Database using the backend catalog.
+    ///
+    /// Requires the deployment record to be `Uninitialized`. If a locator already exists,
+    /// reopens the current database and inspects it; the current selection can only be
+    /// replaced while it remains uninitialized with no checkpoint. Fully preflights the
+    /// candidate before atomically persisting the new locator.
+    pub fn select_database(
+        &mut self,
+        catalog: &BackendCatalog,
+        context: &TrustedBackendContext,
+        backend: &BackendIdentifier,
+        inputs: Vec<ConnectionFieldInput>,
+    ) -> Result<Box<dyn weavelit_server_database::ApplicationDatabase>, SelectionError> {
+        if self.record.state() != LifecycleState::Uninitialized {
+            return Err(SelectionError::NotAllowed);
+        }
+
+        // Replacement eligibility: current database must be uninitialized with no checkpoint.
+        if let Some(locator) = &self.locator {
+            let mut current_db = catalog
+                .reopen(locator.settings(), context)
+                .map_err(SelectionError::Lifecycle)?;
+            match current_db
+                .inspect(self.record.deployment_identifier())
+                .map_err(map_database_error)?
+            {
+                DatabaseInspection::Uninitialized => {}
+                DatabaseInspection::Pending(_) | DatabaseInspection::Initialized { .. } => {
+                    return Err(SelectionError::ReplacementIneligible);
+                }
+            }
+        }
+
+        // Preflight: validate fields, open candidate, and inspect.
+        let (settings, mut new_db) = catalog
+            .validate_and_open(backend, context, inputs)
+            .map_err(SelectionError::Open)?;
+        match new_db
+            .inspect(self.record.deployment_identifier())
+            .map_err(map_database_error)?
+        {
+            DatabaseInspection::Uninitialized => {}
+            DatabaseInspection::Pending(_) | DatabaseInspection::Initialized { .. } => {
+                return Err(SelectionError::CandidateIneligible);
+            }
+        }
+
+        // Persist the new locator atomically.
+        let permit = LocatorPersistencePermit;
+        let locator = self
+            .create_locator(&permit, settings)
+            .map_err(SelectionError::Lifecycle)?;
+        self.replace_locator(&permit, locator)
+            .map_err(SelectionError::Lifecycle)?;
+
+        Ok(new_db)
+    }
+
+    /// Reopens the selected Application Database from the persisted locator.
+    ///
+    /// Requires a locator to be present. Reconstructs the backend from stored settings
+    /// using the backend catalog and validates the deployment binding.
+    pub fn reopen_selected_database(
+        &self,
+        catalog: &BackendCatalog,
+        context: &TrustedBackendContext,
+    ) -> Result<Box<dyn weavelit_server_database::ApplicationDatabase>, LifecycleError> {
+        let locator = self.locator.as_ref().ok_or(LifecycleError::InvalidState)?;
+        let mut database = catalog.reopen(locator.settings(), context)?;
+        database
+            .inspect(self.record.deployment_identifier())
+            .map_err(map_database_error_to_lifecycle)?;
+        Ok(database)
+    }
+
     fn create(
         root: StateRoot,
         load_state: AnchorLoadState,
@@ -238,6 +317,23 @@ fn cleanup(root: &StateRoot, names: &[String]) -> Result<(), LifecycleError> {
         root.remove(name)?;
     }
     Ok(())
+}
+
+fn map_database_error(error: DatabaseError) -> SelectionError {
+    SelectionError::Lifecycle(map_database_error_to_lifecycle(error))
+}
+
+fn map_database_error_to_lifecycle(error: DatabaseError) -> LifecycleError {
+    match error {
+        DatabaseError::DeploymentMismatch => LifecycleError::DeploymentMismatch,
+        DatabaseError::Unavailable => LifecycleError::DependencyUnavailable,
+        DatabaseError::IntegrityFailure => LifecycleError::IntegrityFailure,
+        DatabaseError::ConfigurationInvalid => LifecycleError::ConfigurationInvalid,
+        DatabaseError::InvalidState
+        | DatabaseError::AlreadyInitialized
+        | DatabaseError::NotInitialized => LifecycleError::InvalidState,
+        _ => LifecycleError::InvalidState,
+    }
 }
 
 #[cfg(test)]
