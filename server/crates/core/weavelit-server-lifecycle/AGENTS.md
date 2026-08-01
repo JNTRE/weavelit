@@ -9,11 +9,12 @@ operation.
 - This crate owns lifecycle record and locator domain types, stable identifiers,
   typed connection declarations and values, common input validation, trusted
   backend context, factory dispatch, classifications, startup classification and
-  reconciliation, protected anchor formats, trusted-root filesystem behavior,
-  Application Database selection and restart reopening, and redacted errors.
+  reconciliation, workflow arbitration and crash reconciliation, protected anchor
+  formats, trusted-root filesystem behavior, Application Database selection and
+  restart reopening, and redacted errors.
 - It reuses the Application Database contract and deployment identifier.
-- It does not own concrete backend registration, workflow mutation, Client
-  Modules, or runtime composition.
+- It does not own concrete backend registration, workflow-specific metadata
+  interpretation, sealing, runtime composition, or Client Modules.
 
 ## Asset Inventory
 
@@ -21,12 +22,12 @@ operation.
 - `Cargo.toml`: Package metadata, exact protected-format and safe-filesystem
   dependencies, and isolated test support.
 - `src/`: Lifecycle domain, errors, catalog validation, database selection and
-  restart reopening, protected formats, trusted-root operations, anchor store,
-  and factory contract.
+  restart reopening, startup classification, workflow arbitration, protected
+  formats, trusted-root operations, anchor store, and factory contract.
 - `tests/`: Fake-backend contract, real-filesystem persistence, selection
   eligibility and replacement, restart reopening, startup classification matrix,
-  record advancement, validation-order, malformed/tampered input, and redaction
-  tests.
+  record advancement, workflow arbitration and contention, crash-point ordering,
+  validation-order, malformed/tampered input, and redaction tests.
 
 ## Usage Guidance
 

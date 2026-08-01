@@ -206,3 +206,37 @@ impl fmt::Display for SelectionError {
 }
 
 impl StdError for SelectionError {}
+
+/// Stable payload-free failure category returned by workflow arbitration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum WorkflowError {
+    /// The current deployment record state does not permit this operation.
+    NotAllowed,
+    /// No database has been selected.
+    DatabaseNotSelected,
+    /// A pending workflow checkpoint already exists.
+    AlreadyPending,
+    /// The database is already initialized.
+    AlreadyInitialized,
+    /// The workflow kind, deployment binding, or checkpoint metadata does not match.
+    StateMismatch,
+    /// Lifecycle persistence or database access failed.
+    Lifecycle(LifecycleError),
+}
+
+impl fmt::Display for WorkflowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::NotAllowed => "workflow operation is not allowed in this state",
+            Self::DatabaseNotSelected => "no database has been selected",
+            Self::AlreadyPending => "a pending workflow checkpoint already exists",
+            Self::AlreadyInitialized => "the database is already initialized",
+            Self::StateMismatch => "workflow state does not match",
+            Self::Lifecycle(error) => return error.fmt(formatter),
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl StdError for WorkflowError {}
