@@ -150,11 +150,14 @@ complete `ApplicationDatabase` implementation documented above. It does not
 expose the raw connection, arbitrary query execution, or URI or
 connection-string configuration.
 
-The lifecycle crate supplies a code-defined database location under the
-protected Server state directory. The SQLite backend schema exposes no path or
-filename field to a client. The Server and SQLite backend exclusively create,
-place, reopen, and manage the database file and its journal or write-ahead-log
-sidecar files.
+The lifecycle crate supplies the exact code-defined
+`WEAVELIT_STATE_ROOT/application.sqlite3` location. The SQLite backend schema
+exposes no path or filename field to a client. The Server and SQLite backend
+exclusively create, place, reopen, and manage that file and the code-owned
+`application.sqlite3-journal`, `application.sqlite3-wal`, and
+`application.sqlite3-shm` recovery sidecars. The lifecycle root inventory
+recognizes those names but never deletes the sidecars; SQLite owns their
+validation, recovery, and removal.
 
 The backend opens that location for reading, writing, and creation with
 `SQLITE_OPEN_NO_MUTEX` and `SQLITE_OPEN_NOFOLLOW`. It deliberately omits

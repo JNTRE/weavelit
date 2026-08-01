@@ -154,10 +154,13 @@ the lifecycle state `Uninitialized`, `InitializationPending`, or `Initialized`.
 The separate locator repeats that identifier, identifies the compiled-in
 backend, and contains only the typed non-secret connection settings and
 Server-encrypted secret connection values needed to reopen the Application
-Database. Both remain outside the Application Database and are persisted
-atomically by the Server. The locator never contains plaintext secrets or a
-caller-supplied path or file reference. Application-owned operational state and
-the matching deployment identifier are persisted through the database contract.
+Database. Both remain outside the Application Database, and each file write is
+atomic. Locator replacement first publishes an immutable generation, then
+atomically replaces the deployment record's generation pointer as the cross-file
+commit point defined in the [Server Lifecycle Design](../lifecycle/lifecycle-design.md).
+The locator never contains plaintext secrets or a caller-supplied path or file
+reference. Application-owned operational state and the matching deployment
+identifier are persisted through the database contract.
 
 The shared lifecycle contract selects the Application Database through a
 **[Client Module](../../glossary.md#applications-and-interfaces)** that declares
