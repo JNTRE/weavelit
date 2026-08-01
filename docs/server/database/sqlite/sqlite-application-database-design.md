@@ -72,6 +72,15 @@ records itself atomically. An absent ledger is eligible only when no
 Application Database-owned table exists; otherwise startup fails with
 `IntegrityFailure` rather than recreating history.
 
+After ledger validation and pending migration application, the backend builds
+the expected application-owned schema by applying the exact embedded migrations
+to an isolated in-memory SQLite connection. It compares that schema with every
+installed table, index, and trigger whose name or owning table begins with
+`weavelit_`. A dropped or altered table or constraint, missing production
+trigger, or added trigger or index fails with `IntegrityFailure` before the
+database reports readiness. Schema SQL remains private and is never returned or
+logged.
+
 The lifecycle schema uses one singleton row. No row represents uninitialized
 state. A row always contains a 16-byte deployment identifier and represents
 either pending state with an `init` or `restore` discriminator and at most 4 KiB

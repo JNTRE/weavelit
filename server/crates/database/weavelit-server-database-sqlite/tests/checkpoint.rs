@@ -279,7 +279,7 @@ fn absent_and_initialized_states_return_stable_categories() {
 fn insert_trigger_failure_rolls_back_checkpoint_creation() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
-    drop(SqliteDatabase::open(&path).unwrap());
+    let mut database = SqliteDatabase::open(&path).unwrap();
     let connection = Connection::open(&path).unwrap();
     connection
         .execute_batch(
@@ -289,7 +289,6 @@ fn insert_trigger_failure_rolls_back_checkpoint_creation() {
         )
         .unwrap();
     drop(connection);
-    let mut database = SqliteDatabase::open(&path).unwrap();
 
     let error = database
         .create_checkpoint(&checkpoint(identifier(10), WorkflowKind::Init, b"secret"))
@@ -298,6 +297,10 @@ fn insert_trigger_failure_rolls_back_checkpoint_creation() {
 
     assert_eq!(error, DatabaseError::IntegrityFailure);
     assert!(snapshot(&path).is_empty());
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("DROP TRIGGER test_reject_checkpoint_insert;")
+        .unwrap();
     assert_eq!(
         SqliteDatabase::open(&path)
             .unwrap()
@@ -316,7 +319,6 @@ fn delete_trigger_failure_rolls_back_checkpoint_discard() {
     let persisted = checkpoint(deployment_identifier, WorkflowKind::Restore, b"secret");
     let mut database = SqliteDatabase::open(&path).unwrap();
     database.create_checkpoint(&persisted).unwrap();
-    drop(database);
     let before = snapshot(&path);
     let connection = Connection::open(&path).unwrap();
     connection
@@ -327,7 +329,6 @@ fn delete_trigger_failure_rolls_back_checkpoint_discard() {
         )
         .unwrap();
     drop(connection);
-    let mut database = SqliteDatabase::open(&path).unwrap();
 
     let error = database
         .discard_checkpoint(deployment_identifier, WorkflowKind::Restore)
@@ -336,6 +337,10 @@ fn delete_trigger_failure_rolls_back_checkpoint_discard() {
 
     assert_eq!(error, DatabaseError::IntegrityFailure);
     assert_eq!(snapshot(&path), before);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("DROP TRIGGER test_reject_checkpoint_delete;")
+        .unwrap();
     assert_eq!(
         SqliteDatabase::open(&path)
             .unwrap()
@@ -350,7 +355,7 @@ fn delete_trigger_failure_rolls_back_checkpoint_discard() {
 fn malformed_state_is_rejected_before_any_mutation() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
-    drop(SqliteDatabase::open(&path).unwrap());
+    let mut database = SqliteDatabase::open(&path).unwrap();
     let connection = Connection::open(&path).unwrap();
     connection
         .execute_batch(
@@ -370,7 +375,6 @@ fn malformed_state_is_rejected_before_any_mutation() {
     drop(connection);
     let before = snapshot(&path);
     let expected = checkpoint(identifier(12), WorkflowKind::Init, b"metadata");
-    let mut database = SqliteDatabase::open(&path).unwrap();
 
     assert_eq!(
         database.create_checkpoint(&expected),

@@ -270,3 +270,55 @@ fn lifecycle_schema_represents_valid_states_and_rejects_invalid_shapes() {
     assert!(invalid_initialized_shape.is_err());
     assert!(oversized_metadata.is_err());
 }
+
+#[test]
+fn dropped_migrated_table_is_rejected_on_reopen() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    bootstrap(&path);
+    direct_connection(&path)
+        .execute_batch("DROP TABLE weavelit_lifecycle_state;")
+        .unwrap();
+
+    assert_integrity_failure_is_redacted(open_error(&path), &path);
+}
+
+#[test]
+fn altered_migrated_constraints_are_rejected_on_reopen() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    bootstrap(&path);
+    direct_connection(&path)
+        .execute_batch(
+            "DROP TABLE weavelit_lifecycle_state; \
+             CREATE TABLE weavelit_lifecycle_state ( \
+                 singleton INTEGER PRIMARY KEY, \
+                 deployment_identifier BLOB, \
+                 state TEXT, \
+                 workflow_kind TEXT, \
+                 checkpoint_metadata BLOB \
+             );",
+        )
+        .unwrap();
+
+    assert_integrity_failure_is_redacted(open_error(&path), &path);
+}
+
+#[test]
+fn added_trigger_on_migrated_table_is_rejected_on_reopen() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    bootstrap(&path);
+    direct_connection(&path)
+        .execute_batch(
+            "CREATE TRIGGER rewrite_checkpoint_metadata \
+             AFTER INSERT ON weavelit_lifecycle_state \
+             BEGIN \
+                 UPDATE weavelit_lifecycle_state \
+                 SET checkpoint_metadata = X'00' WHERE singleton = NEW.singleton; \
+             END;",
+        )
+        .unwrap();
+
+    assert_integrity_failure_is_redacted(open_error(&path), &path);
+}

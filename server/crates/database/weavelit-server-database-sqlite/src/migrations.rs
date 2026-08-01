@@ -33,6 +33,14 @@ struct AppliedMigration {
     checksum: Vec<u8>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct SchemaObject {
+    object_type: String,
+    name: String,
+    table_name: String,
+    sql: Option<String>,
+}
+
 pub(super) fn apply_pending(connection: &mut Connection) -> Result<(), DatabaseError> {
     apply_migrations(connection, MIGRATIONS)
 }
@@ -64,6 +72,7 @@ fn apply_migrations(
         };
 
         let Some(next_migration) = migrations.get(applied.len()) else {
+            validate_schema(&transaction, migrations)?;
             transaction
                 .commit()
                 .map_err(|error| map_sqlite_error(error, ErrorContext::Migration))?;
@@ -89,6 +98,50 @@ fn apply_migrations(
             .commit()
             .map_err(|error| map_sqlite_error(error, ErrorContext::Migration))?;
     }
+}
+
+fn validate_schema(
+    transaction: &Transaction<'_>,
+    migrations: &[Migration],
+) -> Result<(), DatabaseError> {
+    let actual = load_application_schema(transaction)?;
+    let expected_connection = Connection::open_in_memory()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Migration))?;
+    for migration in migrations {
+        expected_connection
+            .execute_batch(migration.sql)
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Migration))?;
+    }
+    let expected = load_application_schema(&expected_connection)?;
+
+    if actual != expected {
+        return Err(DatabaseError::IntegrityFailure);
+    }
+
+    Ok(())
+}
+
+fn load_application_schema(connection: &Connection) -> Result<Vec<SchemaObject>, DatabaseError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema \
+             WHERE name GLOB 'weavelit_*' OR tbl_name GLOB 'weavelit_*' \
+             ORDER BY type, name, tbl_name",
+        )
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Migration))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(SchemaObject {
+                object_type: row.get(0)?,
+                name: row.get(1)?,
+                table_name: row.get(2)?,
+                sql: row.get(3)?,
+            })
+        })
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Migration))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Migration))
 }
 
 fn validate_registry(migrations: &[Migration]) -> Result<(), DatabaseError> {

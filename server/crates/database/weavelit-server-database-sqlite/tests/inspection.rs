@@ -97,7 +97,7 @@ fn assert_malformed_fixture(
 ) {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
-    drop(SqliteDatabase::open(&path).unwrap());
+    let database = SqliteDatabase::open(&path).unwrap();
     let connection = rebuild_unconstrained_lifecycle_table(&path);
     insert_raw_state(
         &connection,
@@ -108,7 +108,6 @@ fn assert_malformed_fixture(
         checkpoint_metadata,
     );
     drop(connection);
-    let database = SqliteDatabase::open(&path).unwrap();
 
     let error = database.inspect(identifier(9)).unwrap_err();
 
@@ -262,7 +261,7 @@ fn pending_restore_supports_empty_and_maximum_metadata() {
 fn deployment_mismatch_precedes_state_interpretation_and_is_redacted() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
-    drop(SqliteDatabase::open(&path).unwrap());
+    let database = SqliteDatabase::open(&path).unwrap();
     let connection = rebuild_unconstrained_lifecycle_table(&path);
     insert_raw_state(
         &connection,
@@ -273,7 +272,6 @@ fn deployment_mismatch_precedes_state_interpretation_and_is_redacted() {
         None,
     );
     drop(connection);
-    let database = SqliteDatabase::open(&path).unwrap();
 
     let error = database.inspect(identifier(9)).unwrap_err();
 
@@ -317,12 +315,11 @@ fn malformed_persisted_shapes_fail_integrity_validation() {
 fn duplicate_lifecycle_rows_fail_cardinality_validation() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
-    drop(SqliteDatabase::open(&path).unwrap());
+    let database = SqliteDatabase::open(&path).unwrap();
     let connection = rebuild_unconstrained_lifecycle_table(&path);
     insert_raw_state(&connection, 1, &[9_u8; 16], "initialized", None, None);
     insert_raw_state(&connection, 2, &[9_u8; 16], "initialized", None, None);
     drop(connection);
-    let database = SqliteDatabase::open(&path).unwrap();
 
     let error = database.inspect(identifier(9)).unwrap_err();
 
