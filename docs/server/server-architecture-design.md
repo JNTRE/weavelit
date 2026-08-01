@@ -257,14 +257,7 @@ package. Internal workspace members are not exceptions.
   with warnings denied, all 27 locked workspace tests, and locked release builds.
   The lockfile and feature graph were reviewed for excluded optional features.
 
-### Planned Production Dependency Candidates
-
-The following candidates are selected by the accepted
-[Lifecycle Anchor Protection And Serialization Profile](lifecycle/lifecycle-anchor-profile-decision.md).
-They remain candidates until the lifecycle implementation adds them, reviews
-the locked feature graph, and completes the stated safe-failure validation.
-
-#### `base64` Candidate
+#### `base64`
 
 - **Source and version:** crates.io `=0.23.0`.
 - **Owner and behavior:** `weavelit-server-lifecycle` uses canonical unpadded
@@ -279,14 +272,15 @@ the locked feature graph, and completes the stated safe-failure validation.
   and later and uses the MIT or Apache-2.0 license. The unarchived upstream was
   active at the August 1, 2026 review, and the GitHub Advisory Database review
   found no advisory matching version 0.23.0.
-- **Safe failure and required validation:** decoding must use only the URL-safe
-  no-padding engine, enforce exact decoded lengths and bounds, reject invalid
+- **Safe failure and validation:** decoding uses only the URL-safe
+  no-padding engine, enforces exact decoded lengths and bounds, rejects invalid
   trailing bits and non-canonical text by re-encoding, and never include rejected
-  text in errors. Official vectors, boundary values, every non-canonical form,
-  filename grammar, redaction, and locked feature review are required before
-  approval.
+  text in errors. Known-answer, invalid alphabet, padding, trailing-bit,
+  wrong-length, filename grammar, and redaction tests pass. The locked graph
+  excludes `std` and `simd-unsafe`; `make -C server check` passes all 78 tests
+  and the locked release build.
 
-#### `chacha20poly1305` Candidate
+#### `chacha20poly1305`
 
 - **Source and version:** crates.io `=0.11.0`.
 - **Owner and behavior:** `weavelit-server-lifecycle` uses the RustCrypto
@@ -306,14 +300,16 @@ the locked feature graph, and completes the stated safe-failure validation.
   an independent NCC Group audit with no significant findings, and the GitHub
   Advisory Database review found no advisory matching version 0.11.0 or its
   `aead` 0.6.1 abstraction.
-- **Safe failure and required validation:** authentication must complete before
+- **Safe failure and validation:** authentication completes before
   payload parsing, authentication errors expose no plaintext and collapse to
   one redacted integrity result, tags are never truncated, and nonce generation
-  has no weak fallback. Known-answer, wrong-key, nonce, associated-data,
-  tampering, truncation, and sensitive-output tests plus locked feature review
-  are required before approval.
+  has no weak fallback. The exact published known-answer vector and wrong-key,
+  wrong-nonce, wrong-associated-data, tampering, truncation, restart, and
+  sensitive-output tests pass. The locked graph contains only `alloc` and
+  `zeroize` capabilities; `make -C server check` passes all 78 tests and the
+  locked release build.
 
-#### `getrandom` Candidate
+#### `getrandom`
 
 - **Source and version:** crates.io `=0.4.3`.
 - **Owner and behavior:** `weavelit-server-lifecycle` obtains operating-system
@@ -329,12 +325,15 @@ the locked feature graph, and completes the stated safe-failure validation.
   later and uses the MIT or Apache-2.0 license. The unarchived `getrandom`
   upstream was active at the August 1, 2026 review, and the GitHub Advisory
   Database review found no advisory matching version 0.4.3.
-- **Safe failure and required validation:** any operating-system randomness
+- **Safe failure and validation:** any operating-system randomness
   failure stops key, identifier, nonce, or temporary-file creation without a
-  deterministic or lower-quality fallback. Focused failure-injection, uniqueness,
-  redaction, and locked target-resolution tests are required before approval.
+  deterministic or lower-quality fallback. Focused failure injection proves the
+  payload-free unavailable category and no fallback; first-start, restart,
+  locator replacement, and temporary-file tests exercise nonzero random values.
+  The locked graph excludes optional features; `make -C server check` passes all
+  78 tests and the locked release build.
 
-#### `rustix` Candidate
+#### `rustix`
 
 - **Source and version:** crates.io `=1.1.4`.
 - **Owner and behavior:** `weavelit-server-lifecycle` uses safe Unix APIs to
@@ -354,14 +353,16 @@ the locked feature graph, and completes the stated safe-failure validation.
   The unarchived Bytecode Alliance upstream was active at the August 1, 2026
   review, and the GitHub Advisory Database review found no advisory matching
   version 1.1.4.
-- **Safe failure and required validation:** no operation follows a state-root or
+- **Safe failure and validation:** no operation follows a state-root or
   child symlink or falls back from a failed ownership, mode, type, link-count,
   atomic-replacement, or synchronization check. Isolated real-filesystem tests
-  cover every path component and file type, operation failure, crash point, and
-  redacted mapping; locked Linux and development-target feature graphs are
-  required before approval.
+  cover final and intermediate symlinks, exact root and file modes, regular-file
+  and hard-link checks, closed inventory and cardinality, process locking,
+  write/sync/rename/directory-sync failures, cleanup, and redacted mapping. The
+  locked graph enables only `std`, `fs`, and `process`; `make -C server check`
+  passes all 78 tests and the locked release build.
 
-#### `zeroize` Candidate
+#### `zeroize`
 
 - **Source and version:** crates.io `=1.9.0`.
 - **Owner and behavior:** `weavelit-server-lifecycle` uses `Zeroizing` and the
@@ -374,13 +375,15 @@ the locked feature graph, and completes the stated safe-failure validation.
   later and uses the MIT or Apache-2.0 license. The unarchived RustCrypto
   utilities upstream was active at the August 1, 2026 review, and the GitHub
   Advisory Database review found no advisory matching version 1.9.0.
-- **Safe failure and required validation:** sensitive owned buffers must be
+- **Safe failure and validation:** sensitive owned buffers are
   zeroized on normal and error exits without claiming protection against
   unavoidable copies, process memory inspection, swapping, or host compromise.
-  Drop-path and error-path tests plus locked feature review are required before
-  approval.
+  The key wrapper and every decrypted plaintext allocation use `Zeroizing`;
+  successful, wrong-key, tampered, malformed, and restart paths exercise their
+  drop behavior. The locked graph enables only `alloc`; `make -C server check`
+  passes all 78 tests and the locked release build.
 
-#### `serde` Candidate
+#### `serde`
 
 - **Source and version:** crates.io `=1.0.229`.
 - **Owner and behavior:** `weavelit-server-lifecycle` derives the bounded
@@ -393,12 +396,14 @@ the locked feature graph, and completes the stated safe-failure validation.
   and later and uses the MIT or Apache-2.0 license. The unarchived Serde
   upstream was active at the August 1, 2026 review, and the GitHub Advisory
   Database review found no advisory matching version 1.0.229.
-- **Safe failure and required validation:** every anchor model must deny unknown
-  fields and validate lengths, versions, enum values, and binary encodings before
-  domain construction. Duplicate, unknown, missing, and out-of-range field
-  tests plus locked feature review are required before approval.
+- **Safe failure and validation:** every anchor model denies unknown
+  fields and validates lengths, versions, enum values, and binary encodings before
+  domain construction. Duplicate, unknown, missing, reordered, invalid enum,
+  wrong-length, oversized, and malformed model tests pass. The locked graph
+  enables only `derive` and `std`; `make -C server check` passes all 78 tests and
+  the locked release build.
 
-#### `serde_json` Candidate
+#### `serde_json`
 
 - **Source and version:** crates.io `=1.0.151`.
 - **Owner and behavior:** `weavelit-server-lifecycle` parses and emits the
@@ -412,12 +417,13 @@ the locked feature graph, and completes the stated safe-failure validation.
   and later and uses the MIT or Apache-2.0 license. The unarchived Serde JSON
   upstream was active at the August 1, 2026 review, and the GitHub Advisory
   Database review found no advisory matching version 1.0.151.
-- **Safe failure and required validation:** file-size bounds apply before parse;
+- **Safe failure and validation:** file-size bounds apply before parse;
   authenticated plaintext is parsed with bounded typed structures; trailing
   content, duplicate or unknown fields, unsupported versions, and malformed
-  input fail closed without raw parser output. Depth, size, malformed-input,
-  deterministic-writer, redaction, and locked feature tests are required before
-  approval.
+  input fail closed without raw parser output. The exact deterministic writer
+  vector and whitespace, ordering, trailing-content, invalid UTF-8, size,
+  malformed-input, and redaction tests pass. The locked graph enables only
+  `std`; `make -C server check` passes all 78 tests and the locked release build.
 
 The workspace manifest owns an approved shared dependency's identity, version,
 source, and any workspace-wide security baseline. A single-consumer dependency

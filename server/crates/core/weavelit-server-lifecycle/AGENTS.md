@@ -8,18 +8,22 @@ operation.
 
 - This crate owns lifecycle record and locator domain types, stable identifiers,
   typed connection declarations and values, common input validation, trusted
-  backend context, factory dispatch, classifications, and redacted errors.
+  backend context, factory dispatch, classifications, protected anchor formats,
+  trusted-root filesystem behavior, and redacted errors.
 - It reuses the Application Database contract and deployment identifier.
-- It does not own filesystem persistence, serialization, cryptography, concrete
-  backend registration, selection orchestration, startup classification logic,
-  workflow mutation, Client Modules, or runtime composition.
+- It does not own concrete backend registration, database preflight or opening,
+  selection eligibility, startup database classification, workflow mutation,
+  Client Modules, or runtime composition.
 
 ## Asset Inventory
 
 - `AGENTS.md`: Local lifecycle contract and validation rules.
-- `Cargo.toml`: Package metadata and the backend-neutral database dependency.
-- `src/`: Lifecycle domain, errors, catalog validation, and factory contract.
-- `tests/`: Fake-backend contract, validation-order, and redaction tests.
+- `Cargo.toml`: Package metadata, exact protected-format and safe-filesystem
+  dependencies, and isolated test support.
+- `src/`: Lifecycle domain, errors, catalog validation, protected formats,
+  trusted-root operations, anchor store, and factory contract.
+- `tests/`: Fake-backend contract, real-filesystem persistence, validation-order,
+  restart, malformed/tampered input, and redaction tests.
 
 ## Usage Guidance
 
@@ -27,8 +31,8 @@ operation.
   repository root.
 - Read the Server Lifecycle Design, Server Architecture Design, Application
   Database Design, Security Model, and Testing and Validation Policy.
-- Keep persistence and crypto work in the issue that owns lifecycle anchors;
-  do not add placeholders for deferred behavior.
+- Preserve the exact anchor profile and known-answer vector in the Server
+  Lifecycle Design; format changes require an explicit migration decision.
 - Run the package tests during development and `make -C server check` before
   handoff.
 
@@ -41,8 +45,15 @@ operation.
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep the crate free of SQLite, Client Module, filesystem, crypto, and runtime
-  dependencies until an owning issue changes that boundary.
+- Keep the crate free of SQLite, Client Module, and runtime dependencies; it
+  must not open an Application Database during anchor persistence.
+- Keep filesystem operations relative to one validated root handle, reject
+  unsafe entries, and never weaken synchronization, locking, or no-follow rules.
+- Keep raw locator and record persistence gated by crate-owned unforgeable
+  permits; expose only authority methods after their owning issue implements
+  eligibility checks.
+- Keep key and decrypted payload buffers under maintained zeroization and never
+  add custom cryptographic primitives.
 - Reject unknown, duplicate, missing, wrongly typed, misclassified, or oversized
   fields before a backend factory is invoked.
 - Pass local paths only through trusted Server context, never through declared

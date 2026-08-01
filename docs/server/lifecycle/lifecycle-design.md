@@ -31,12 +31,11 @@ Modules, generate or accept private recovery keys, interpret backup contents,
 or implement client presentation. Those responsibilities remain in their
 workflow and Client Module boundaries.
 
-The initial `weavelit-server-lifecycle` contract is implemented without
-persistence or cryptography. It defines the three canonical lifecycle states,
-the nonzero 16-byte locator generation, version 1 deployment-record and locator
-domain values, and the later startup capability classifications. It reuses the
-Application Database contract's 16-byte deployment identifier rather than
-defining another deployment identity.
+The backend-neutral domain and catalog layer defines the three canonical
+lifecycle states, the nonzero 16-byte locator generation, version 1
+deployment-record and locator domain values, and the later startup capability
+classifications. It reuses the Application Database contract's 16-byte
+deployment identifier rather than defining another deployment identity.
 
 The runtime builds `BackendCatalog` from compiled-in backend registrations. A
 registration declares one lowercase kebab-case backend identifier, at most 64
@@ -63,6 +62,35 @@ failures to payload-free lifecycle categories and returns a boxed
 `ApplicationDatabase`. Public errors and diagnostic formatting contain no
 identifier text, connection value, local path, raw backend failure, or factory
 implementation detail.
+
+`LifecycleStore` implements the protected anchor profile beneath that contract.
+It opens one trusted root without following any path component, validates its
+closed inventory, holds the process-lifetime lock, and creates or authenticates
+the key, deployment record, and active locator before returning. It never opens
+an Application Database. `FirstStartCreated`, `FirstStartResumed`, and
+`Retained` report whether the store created both anchors, recovered the sole
+permitted key-only interruption, or reopened retained state.
+
+Validated request settings retain the catalog's trusted secret classifications.
+Before locator persistence, the store converts them to backend-bound typed
+field/value pairs without persisting a caller-controlled classification. The
+complete locator payload is encrypted. A later database-selection operation
+must revalidate retained field types and classifications against the current
+runtime catalog before invoking its backend factory.
+
+Locator replacement durably publishes an immutable generation, then atomically
+replaces the deployment record pointer as the commit point, authenticates on
+reopen, and removes the prior generation. Record replacement requires the same
+deployment identifier and active locator generation. Both operations remain
+persistence mechanisms; eligibility and backend preflight remain owned by the
+selection and startup-classification work.
+
+Raw locator creation and replacement require a non-exhaustive
+`LocatorPersistencePermit`; raw record replacement requires a non-exhaustive
+`RecordPersistencePermit`. Only code inside `weavelit-server-lifecycle` can
+construct those capabilities. Later public selection and transition authorities
+hold them after independently validating eligibility; other crates cannot call
+the persistence primitives directly.
 
 ## Deployment Record And Database Locator
 

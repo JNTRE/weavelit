@@ -342,6 +342,100 @@ impl fmt::Debug for ValidatedConnectionSettings {
     }
 }
 
+impl ValidatedConnectionSettings {
+    /// Removes transient classifications for encrypted locator persistence.
+    pub fn into_locator_settings(self) -> LocatorConnectionSettings {
+        let fields = self
+            .fields
+            .into_vec()
+            .into_iter()
+            .map(|field| LocatorConnectionField::new(field.identifier, field.value))
+            .collect();
+        LocatorConnectionSettings::new(self.backend_identifier, fields)
+    }
+}
+
+/// One typed field/value pair stored inside the encrypted locator.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LocatorConnectionField {
+    identifier: ConnectionFieldIdentifier,
+    value: ConnectionValue,
+}
+
+impl LocatorConnectionField {
+    pub(crate) const fn new(identifier: ConnectionFieldIdentifier, value: ConnectionValue) -> Self {
+        Self { identifier, value }
+    }
+
+    /// Returns the persisted field identifier.
+    pub const fn identifier(&self) -> &ConnectionFieldIdentifier {
+        &self.identifier
+    }
+
+    /// Returns the persisted typed value.
+    pub const fn value(&self) -> &ConnectionValue {
+        &self.value
+    }
+}
+
+impl fmt::Debug for LocatorConnectionField {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocatorConnectionField")
+            .field("kind", &self.value.kind())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Canonically ordered typed settings stored inside one encrypted locator.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LocatorConnectionSettings {
+    backend_identifier: BackendIdentifier,
+    fields: Box<[LocatorConnectionField]>,
+}
+
+impl LocatorConnectionSettings {
+    pub(crate) fn new(
+        backend_identifier: BackendIdentifier,
+        mut fields: Vec<LocatorConnectionField>,
+    ) -> Self {
+        fields.sort_by(|left, right| left.identifier.cmp(&right.identifier));
+        Self {
+            backend_identifier,
+            fields: fields.into_boxed_slice(),
+        }
+    }
+
+    /// Returns the backend that owns these settings.
+    pub const fn backend_identifier(&self) -> &BackendIdentifier {
+        &self.backend_identifier
+    }
+
+    /// Returns the number of persisted fields.
+    pub const fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Returns whether no fields are persisted.
+    pub const fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    /// Iterates over persisted fields in canonical identifier order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &LocatorConnectionField> {
+        self.fields.iter()
+    }
+}
+
+impl fmt::Debug for LocatorConnectionSettings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocatorConnectionSettings")
+            .field("field_count", &self.fields.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Validated deployment record domain value without persistence concerns.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DeploymentRecord {
@@ -403,15 +497,27 @@ impl fmt::Debug for DeploymentRecord {
 pub struct DatabaseLocator {
     deployment_identifier: DeploymentIdentifier,
     generation: LocatorGeneration,
-    settings: ValidatedConnectionSettings,
+    settings: LocatorConnectionSettings,
 }
 
 impl DatabaseLocator {
     /// Creates locator content from validated catalog values.
-    pub const fn new(
+    pub fn from_validated(
         deployment_identifier: DeploymentIdentifier,
         generation: LocatorGeneration,
         settings: ValidatedConnectionSettings,
+    ) -> Self {
+        Self::from_persisted(
+            deployment_identifier,
+            generation,
+            settings.into_locator_settings(),
+        )
+    }
+
+    pub(crate) const fn from_persisted(
+        deployment_identifier: DeploymentIdentifier,
+        generation: LocatorGeneration,
+        settings: LocatorConnectionSettings,
     ) -> Self {
         Self {
             deployment_identifier,
@@ -441,7 +547,7 @@ impl DatabaseLocator {
     }
 
     /// Returns the canonically ordered validated settings.
-    pub const fn settings(&self) -> &ValidatedConnectionSettings {
+    pub const fn settings(&self) -> &LocatorConnectionSettings {
         &self.settings
     }
 }
@@ -559,7 +665,7 @@ mod tests {
                 ConnectionValue::string("sensitive-secret"),
             )],
         );
-        let locator = DatabaseLocator::new(deployment_identifier, generation, settings);
+        let locator = DatabaseLocator::from_validated(deployment_identifier, generation, settings);
         let output = format!("{locator:?}");
 
         assert!(!output.contains("sensitive"));

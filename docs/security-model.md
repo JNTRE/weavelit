@@ -170,6 +170,14 @@ zeroized on normal and error exits where the maintained facilities can control
 their storage, without claiming protection against unavoidable copies, swap,
 process-memory inspection, or host compromise.
 
+The lifecycle anchor store implements this profile with maintained
+XChaCha20-Poly1305, operating-system randomness, strict typed JSON, canonical
+Base64url, zeroizing key and plaintext buffers, and safe directory-relative
+Unix operations. It authenticates before parsing, never opens the Application
+Database while loading anchors, and maps malformed, wrong-key, tampered,
+unsupported, unsafe, partial, or unavailable state to payload-free lifecycle
+categories.
+
 Lifecycle diagnostics must contain only an approved fixed category and reason
 code. They must not include dynamic identifiers, backend or field names,
 cryptographic values, plaintext or ciphertext, file facts, paths, sizes, raw
