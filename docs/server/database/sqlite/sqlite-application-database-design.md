@@ -14,14 +14,14 @@ SQLite-specific error mapping. It does not own Server lifecycle decisions,
 shared contract types, or **[Log Module](../../../glossary.md#applications-and-interfaces)**
 destinations.
 
-After implementation-time approval, the crate declares `rusqlite` with its
-`bundled` feature in its own manifest as the initial consumer. If a second
-Server crate requires `rusqlite`, the change promotes its shared source,
-version, and security baseline to `server/Cargo.toml`'s
-`[workspace.dependencies]`. `server/Cargo.lock` records the resolved version.
-Bundling provides a known SQLite release and consistent behavior across
-development, CI, packaging, and deployment without relying on a host SQLite
-shared library.
+The crate declares `rusqlite = "=0.40.1"` with default features disabled and
+only the `bundled` feature enabled. It remains in the crate manifest as the
+initial single consumer. If a second Server crate requires `rusqlite`, that
+change promotes its shared source, version, and security baseline to
+`server/Cargo.toml`'s `[workspace.dependencies]`. `server/Cargo.lock` records the
+resolved version. Bundling provides a known SQLite release and consistent
+behavior across development, CI, packaging, and deployment without relying on
+a host SQLite shared library.
 
 The backend uses explicit Weavelit-owned SQL and does not use an ORM. It does
 not enable runtime SQLite extension loading or execute user-supplied SQL.
@@ -68,15 +68,39 @@ serializes access to it. The MVP does not use a connection pool. This is a
 SQLite-specific choice, not a constraint on a future Application Database
 backend.
 
+The connection baseline exposes only a trusted-path `SqliteDatabase::open`
+constructor. It does not expose the raw connection, arbitrary query execution,
+URI or connection-string configuration, or an `ApplicationDatabase`
+implementation. Migrations and durable contract behavior are added with their
+own schema and state work.
+
 The lifecycle crate supplies a code-defined database location under the
 protected Server state directory. The SQLite backend schema exposes no path or
 filename field to a client. The Server and SQLite backend exclusively create,
 place, reopen, and manage the database file and its journal or write-ahead-log
 sidecar files.
 
-The backend enables foreign-key enforcement, write-ahead logging, and a bounded
-busy timeout. It applies and validates migrations before it is ready. A real,
-lightweight database query verifies connection health.
+The backend opens that location for reading, writing, and creation with
+`SQLITE_OPEN_NO_MUTEX` and `SQLITE_OPEN_NOFOLLOW`. It deliberately omits
+`SQLITE_OPEN_URI`, so query-like text in a supplied path is treated as a literal
+filename and cannot select SQLite URI behavior. `SQLITE_OPEN_NOFOLLOW` rejects a
+symbolic link in the supplied database path. The lifecycle boundary must supply
+a symlink-free path beneath the protected Server state directory; protection of
+those parent directories remains a Server deployment responsibility.
+
+Before returning a connection, the backend performs and verifies this fixed
+configuration sequence:
+
+1. Enable foreign-key enforcement and verify `foreign_keys` is `1`.
+2. Request write-ahead logging and verify the returned journal mode is `wal`.
+3. Set a five-second busy timeout through the driver API and verify
+   `busy_timeout` is `5000` milliseconds.
+4. Execute the fixed internal `SELECT 1` health query and require the integer
+   result `1`.
+
+The fixed query is not caller-supplied SQL and does not assume that migrations
+or application schema already exist. Later migration work runs only after this
+connection baseline reports readiness.
 
 Failure to open, migrate, validate, or query the Application Database prevents
 safe startup. The backend reports a typed, redacted contract error rather than
@@ -91,12 +115,22 @@ operating-system messages, SQL, filesystem paths, connection settings, or
 secrets. Diagnostics may include deliberately redacted structured context such
 as a migration identifier.
 
-Integration tests use a new `tempfile` temporary directory and a real SQLite
-database file for each test. Tests reopen the file to verify persistence and
-allow the directory to remove database and WAL sidecar files automatically.
-They cover successful and idempotent migrations, restart persistence, migration
-and write rollback, invalid configuration, unavailable storage, incompatible
-migration history, and error and diagnostic redaction.
+The connection baseline maps SQLite `DatabaseCorrupt` and `NotADatabase` codes
+to `IntegrityFailure`. Busy, locked, read-only, permission, input/output,
+disk-full, cannot-open, and locking-protocol codes map to `Unavailable`. A path
+that the driver cannot represent maps to `ConfigurationInvalid`. An unexpected
+failure in fixed internal configuration or health logic maps to
+`IntegrityFailure`, and a completed setting whose verified value does not match
+the required value maps to `ConfigurationInvalid`. The mapper discards driver
+payloads immediately and emits no ordinary diagnostic containing them.
+
+Integration tests use the test-only `tempfile = "=3.27.0"` dependency to create
+a new temporary directory and real SQLite database file for each test. Tests
+reopen the file to verify persistence and allow the directory to remove database
+and WAL sidecar files automatically. They cover successful and idempotent
+migrations, restart persistence, migration and write rollback, invalid
+configuration, unavailable storage, incompatible migration history, and error
+and diagnostic redaction.
 
 The MVP scope does not defer quality obligations: every selected behavior has
 its required security, diagnostics, safe failure, and automated test evidence

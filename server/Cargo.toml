@@ -3,4 +3,5 @@ resolver = "2"
 members = [
 	"crates/core/weavelit-server",
 	"crates/database/weavelit-server-database",
+	"crates/database/weavelit-server-database-sqlite",
 ]

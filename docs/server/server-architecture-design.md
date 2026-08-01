@@ -190,19 +190,38 @@ replacement rationale, a named owner, and a removal condition or follow-on
 issue. It receives the same approval and validation evidence as a released
 package. Internal workspace members are not exceptions.
 
-No production dependencies are currently approved.
+#### `rusqlite`
+
+- **Source and version:** crates.io `=0.40.1`.
+- **Owner and behavior:** `weavelit-server-database-sqlite` uses the dependency
+  for the Milestone 1 SQLite Application Database connection, configuration,
+  health, migration, and transaction behavior. The Rust standard library and
+  existing workspace code do not provide a SQLite driver.
+- **Features:** default features are disabled and only `bundled` is enabled.
+  Runtime extension loading, SQLCipher, URI, UUID, time, statement-cache, WASM,
+  and runtime-bindgen features are not enabled. Bundling supplies a consistent
+  SQLite implementation without a host shared-library dependency.
+- **Maintenance and license:** `rusqlite` 0.40.1 was released on June 6, 2026,
+  and its upstream repository remained active at the August 1, 2026 review.
+  `rusqlite` and `libsqlite3-sys` use the MIT license; bundled SQLite is in the
+  public domain.
+- **Advisory review:** the August 1, 2026 GitHub Advisory Database review found
+  no advisory matching `rusqlite` 0.40.1 or `libsqlite3-sys` 0.38.1.
+- **Safe failure:** the backend excludes URI interpretation, rejects symbolic
+  links in the database path, verifies every required connection setting and a
+  fixed health query, and maps driver failures to payload-free storage-neutral
+  errors without exposing paths, SQL, raw dependency messages, or connection
+  settings.
+- **Validation:** ten focused real-SQLite package tests cover configuration,
+  health, reopen, unavailable storage, invalid database content, symbolic-link
+  rejection, literal query-like filenames, invalid paths, and redaction.
+  `make -C server check` passes formatting, Clippy with warnings denied, all 17
+  locked workspace tests, and locked release builds. The locked feature graph
+  and transitive resolution were reviewed for excluded capabilities.
 
 ### Planned Production Dependency Candidates
 
-The following candidates are selected for a documented future behavior but are
-not approved production dependencies. A candidate does not authorize adding a
-dependency. The implementation change must declare an exact version and move
-the candidate to the approved registry with all required approval and
-validation evidence.
-
-| Package | Intended source | Owning crate | Planned behavior | Intended features and security baseline |
-| --- | --- | --- | --- | --- |
-| `rusqlite` | crates.io | `weavelit-server-database-sqlite` | Milestone 1 SQLite Application Database backend | `bundled`; do not enable runtime SQLite extension loading; select only additional features required by the backend |
+No production dependency candidates are currently selected.
 
 The workspace manifest owns an approved shared dependency's identity, version,
 source, and any workspace-wide security baseline. A single-consumer dependency

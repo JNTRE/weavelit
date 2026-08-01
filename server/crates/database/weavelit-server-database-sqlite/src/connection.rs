@@ -1,0 +1,117 @@
+use std::{path::Path, time::Duration};
+
+use rusqlite::{Connection, OpenFlags};
+use weavelit_server_database::DatabaseError;
+
+use crate::error::{ErrorContext, map_sqlite_error};
+
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const BUSY_TIMEOUT_MILLISECONDS: i64 = 5_000;
+const EXPECTED_HEALTH_RESULT: i64 = 1;
+
+/// SQLite Application Database backend with one privately owned connection.
+pub struct SqliteDatabase {
+    connection: Connection,
+}
+
+impl SqliteDatabase {
+    /// Opens and verifies a SQLite database at a trusted Server-supplied path.
+    pub fn open(path: &Path) -> Result<Self, DatabaseError> {
+        let connection = Connection::open_with_flags(path, trusted_open_flags())
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Open))?;
+
+        configure_connection(&connection)?;
+        let database = Self { connection };
+        database.verify_health()?;
+
+        Ok(database)
+    }
+
+    fn verify_health(&self) -> Result<(), DatabaseError> {
+        let result: i64 = self
+            .connection
+            .query_row("SELECT 1", [], |row| row.get(0))
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Health))?;
+        if result != EXPECTED_HEALTH_RESULT {
+            return Err(DatabaseError::IntegrityFailure);
+        }
+
+        Ok(())
+    }
+}
+
+fn trusted_open_flags() -> OpenFlags {
+    OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_CREATE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW
+}
+
+fn configure_connection(connection: &Connection) -> Result<(), DatabaseError> {
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Configure))?;
+    let foreign_keys: i64 = connection
+        .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Configure))?;
+    if foreign_keys != 1 {
+        return Err(DatabaseError::ConfigurationInvalid);
+    }
+
+    let journal_mode: String = connection
+        .pragma_update_and_check(None, "journal_mode", "wal", |row| row.get(0))
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Configure))?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        return Err(DatabaseError::ConfigurationInvalid);
+    }
+
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Configure))?;
+    let busy_timeout: i64 = connection
+        .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Configure))?;
+    if busy_timeout != BUSY_TIMEOUT_MILLISECONDS {
+        return Err(DatabaseError::ConfigurationInvalid);
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_configures_and_verifies_real_sqlite_connection() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let database_path = temporary_directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("application.db");
+        let database = SqliteDatabase::open(&database_path).expect("a new database should open");
+
+        let foreign_keys: i64 = database
+            .connection
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        let journal_mode: String = database
+            .connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let busy_timeout: i64 = database
+            .connection
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        let health_result: i64 = database
+            .connection
+            .query_row("SELECT 1", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(busy_timeout, BUSY_TIMEOUT_MILLISECONDS);
+        assert_eq!(health_result, EXPECTED_HEALTH_RESULT);
+    }
+}

@@ -22,19 +22,6 @@ storage-specific behavior to lifecycle callers.
 | --- | --- | --- |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
-### #28 Create the Application Database contract crate
-
-[Open GitHub Issue #28](https://github.com/JNTRE/weavelit/issues/28).
-
-**Summary:** Introduce the backend-neutral Application Database contract
-crate that defines the minimal pre-operational state and checkpoint boundary
-without exposing or depending on SQLite implementation details.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
 ### #29 Establish the SQLite backend connection baseline
 
 [Open GitHub Issue #29](https://github.com/JNTRE/weavelit/issues/29).
