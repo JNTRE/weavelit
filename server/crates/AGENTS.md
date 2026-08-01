@@ -1,9 +1,8 @@
 # Server Crates Agent Guide
 
 This directory is the Rust source boundary for the Weavelit Server package. It
-groups the Server executable with the internal Application Database backend and
-the compiled-in Client, MFA, Log, and Service Module crates that are released
-together with the Server.
+groups core orchestration, Application Database, and compiled-in Client, MFA,
+Log, and Service Module crates that are released together with the Server.
 
 ## Purpose and Scope
 
@@ -18,9 +17,9 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and Rust crate-boundary rules.
-- `database/`: Internal Application Database backend crates; `database/sqlite/` owns the MVP backend implementation.
+- `core/`: Server runtime, lifecycle, Init, and Restore crates.
+- `database/`: Internal Application Database contract and backend crates.
 - `modules/`: Compiled-in Client, MFA, Log, and Service Module crate boundaries.
-- `weavelit-server/`: Weavelit Server executable crate.
 
 ## Usage Guidance
 
@@ -42,5 +41,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep all Rust code in this directory on the Rust 1.97 stable toolchain required by `../../docs/testing.md`.
+- Keep grouping directories free of Cargo manifests; each package belongs in a child directory named for its Cargo package.
 - Keep Server package components as compiled-in crates; do not create runtime-installable module plugins.
 - Preserve the canonical module and database boundaries in `../../docs/` rather than duplicating their decisions here.

@@ -1,7 +1,7 @@
 # Application Database Crates Agent Guide
 
-This directory is reserved for Rust crates that implement the Weavelit Server's
-internal Application Database backend contract. The Server core selects,
+This directory groups the Rust crates that define and implement the Weavelit
+Server's internal Application Database contract. The Server core selects,
 configures, and manages these compiled-in backends; they are separate from Log
 Module destinations and do not operate as runtime plugins.
 
@@ -9,7 +9,8 @@ Module destinations and do not operate as runtime plugins.
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Application Database backend crate boundaries.
+- This directory owns the shared Application Database contract and backend
+  crate boundaries.
 - It does not own Server business logic, backend selection, or Log Module storage and delivery behavior.
 - Child paths own backend-specific driver, migration, transaction, health, and error behavior.
 
@@ -18,7 +19,8 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and Application Database crate-boundary rules.
-- `sqlite/`: MVP SQLite Application Database backend crate boundary.
+- `weavelit-server-database/`: Backend-neutral Application Database contract crate.
+- `weavelit-server-database-sqlite/`: MVP SQLite Application Database backend crate boundary.
 
 ## Usage Guidance
 
@@ -40,5 +42,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep Application Database backends compiled into the Server package and inaccessible as runtime-installable plugins.
+- Keep this grouping directory free of a Cargo manifest; each contract or backend package belongs in its named child directory.
 - Keep Application Database state separate from every Log Module destination.
 - Preserve backend contract decisions in `../../../docs/server/database/` rather than duplicating them here.

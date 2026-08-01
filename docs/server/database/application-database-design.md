@@ -50,6 +50,63 @@ mechanics. It supports only these capabilities:
 5. Load the initialized application-owned state and deployment identifier
    required by Server startup.
 
+The Rust contract is synchronous and object-safe. `ApplicationDatabase`
+requires a movable backend and takes exclusive mutable access for every call;
+it does not require a backend to be safe for concurrent shared access. The
+lifecycle boundary serializes workflow mutation and decides where blocking
+storage calls execute when it composes the backend. This keeps runtime and
+executor dependencies out of the persistence contract while allowing a future
+backend to implement the same operations with its own connection model.
+
+`DeploymentIdentifier` is an opaque 16-byte value. The lifecycle boundary
+generates it cryptographically, and the contract rejects the reserved all-zero
+representation. The contract exposes only its binary representation and
+redacts it from diagnostic formatting. A migrated database with no checkpoint
+or application state is unbound. Creating the first checkpoint binds the
+database to its deployment identifier; discarding that matching checkpoint
+returns the otherwise empty database to unbound state. Pending and initialized
+state always carry the persisted binding.
+
+`DatabaseInspection` represents uninitialized, pending, and initialized state.
+A pending result contains a `WorkflowCheckpoint` whose `WorkflowKind`
+discriminates Init from Restore. `CheckpointMetadata` is an immutable opaque
+byte sequence limited to 4 KiB. The owning workflow defines and validates its
+encoding and meaning, ensures that it contains only non-secret values, and
+decides whether an empty value is valid. The Application Database stores,
+returns, and compares those bytes exactly but never parses or interprets them.
+Diagnostic formatting reports only the metadata length.
+
+Inspection is read-only. An absent lifecycle-state record returns
+`Uninitialized`. A valid persisted deployment identifier is compared with the
+trusted expected identifier before workflow state is returned; a different
+identifier returns `DeploymentMismatch`. Invalid persisted identifiers,
+cardinality, state values, workflow discriminators, metadata bounds, or
+contradictory field combinations return `IntegrityFailure`.
+
+Inspection receives the trusted expected deployment identifier and rejects a
+different persisted binding. Checkpoint creation receives the complete desired
+checkpoint. Reconciliation verifies that the same deployment identifier,
+workflow, and metadata remain durable without changing them. Discard receives
+the expected deployment identifier and workflow and removes only that matching
+pending checkpoint. These operations expose no transaction, query, migration,
+path, connection, or backend-selection mechanism.
+
+Checkpoint creation is one-shot: it succeeds only while no lifecycle-state row
+exists. Any pending checkpoint rejects another creation with `InvalidState`,
+including an identical request; callers use reconciliation for retry. An
+initialized row returns `AlreadyInitialized`. Reconciliation succeeds only when
+deployment identifier, workflow, and metadata all match exactly and never
+changes durable state. Discard requires the matching deployment and workflow,
+removes exactly that pending row, and returns the database to unbound
+`Uninitialized` state.
+
+Reconciliation or discard without a pending row returns `NotInitialized`.
+After a valid persisted identifier is decoded, a different deployment returns
+`DeploymentMismatch` before workflow or metadata comparison. A wrong workflow
+or metadata returns `InvalidState`; malformed durable state returns
+`IntegrityFailure`. Every mutation validates current state under the same
+serialized transaction that performs its write.
+
 Each final write persists the complete supplied state and marks the database
 initialized as one operation. A pending checkpoint is not application state and
 permits only the workflow identified by its discriminator. An Init checkpoint
@@ -86,7 +143,9 @@ backend cannot currently be opened, queried, locked, or used. `IntegrityFailure`
 prevents normal operation when persisted data, schema, migration history, or
 locator integrity is damaged or incompatible. Backend-specific error details
 remain private and are mapped to these safe categories before reaching the
-Server.
+Server. `DatabaseError` variants carry no dynamic payload and use stable,
+storage-neutral display text. Invalid contract inputs use the same redaction
+rule and never include the rejected identifier or metadata.
 
 ## Deployment Record, Locator, And Operational State
 

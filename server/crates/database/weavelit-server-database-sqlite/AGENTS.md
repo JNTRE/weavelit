@@ -1,6 +1,6 @@
 # SQLite Application Database Crate Agent Guide
 
-This directory is reserved for the Rust crate that implements the MVP SQLite
+This directory contains the Rust crate that implements the MVP SQLite
 Application Database backend. It owns SQLite-specific driver integration,
 schema migrations, transaction behavior, connection health handling, and
 backend-specific errors behind the Server's internal backend contract.
@@ -18,6 +18,10 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and SQLite backend crate-boundary rules.
+- `Cargo.toml`: Package manifest and exact production and test dependencies.
+- `migrations/`: Immutable embedded SQL migrations for the SQLite schema.
+- `src/`: Trusted-path connection setup, migrations, state inspection, atomic checkpoint operations, and private error mapping.
+- `tests/`: Public-boundary connection, migration, inspection, and checkpoint tests using isolated real SQLite files.
 
 ## Usage Guidance
 

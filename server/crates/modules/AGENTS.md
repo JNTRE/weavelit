@@ -18,10 +18,10 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and compiled-in module-boundary rules.
-- `client/`: Client Module crate boundaries for client-facing Server connection surfaces.
-- `log/`: Log Module crate boundary for pre-redacted System and Audit Log destinations.
-- `mfa/`: MFA Module crate boundaries for method-specific factor handling.
-- `service/`: Service Module crate boundaries for external service integrations and Operations.
+- `client/`: Client Module grouping for client-facing Server connection-surface crates.
+- `log/`: Log Module grouping for pre-redacted System and Audit Log destination crates.
+- `mfa/`: MFA Module grouping for method-specific factor-handling crates.
+- `service/`: Service Module grouping for external-service integration crates and Operations.
 
 ## Usage Guidance
 
@@ -42,6 +42,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
+- Keep category directories free of Cargo manifests; each Module package belongs in a child directory named `weavelit-module-<module-type>-<implementation>`.
 - Keep all modules compiled into the Server package; do not introduce runtime-installable plugins.
 - Keep module request translation and provider behavior subject to final Server authorization and policy evaluation.
 - Preserve module-specific requirements in their canonical `../../../docs/` boundary rather than duplicating them here.

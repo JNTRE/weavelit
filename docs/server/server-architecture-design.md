@@ -21,11 +21,36 @@ where the decision first arose.
 
 ## Rust Crate Naming
 
-Internal Server Rust crates use this package-name convention:
+Server core, workflow, and infrastructure Rust crates use this package-name
+convention:
 
 ```text
 weavelit-server-<component>[-<specific-component>]
 ```
+
+Compiled-in Module crates use this package-name convention:
+
+```text
+weavelit-module-<module-type>-<implementation>
+```
+
+`<module-type>` is `client`, `log`, `mfa`, or `service` and reflects the
+canonical Module category. `<implementation>` identifies the client surface,
+log destination, MFA method, or external service. For example:
+
+```text
+weavelit-module-client-cli
+weavelit-module-client-webui
+weavelit-module-mfa-totp
+weavelit-module-service-zendesk
+```
+
+Source directories group crates by ownership under `server/crates/core/`,
+`server/crates/database/`, and `server/crates/modules/`. A grouping directory is
+not a Cargo package and contains no `Cargo.toml`; each package lives in a child
+directory whose name matches its Cargo package name. The workspace manifest
+lists each supported compiled-in crate explicitly rather than discovering
+packages through a broad directory glob.
 
 `<component>` names the Server concern. The optional
 `<specific-component>` names a concrete backend, destination, provider, or
@@ -48,9 +73,8 @@ weavelit-server-database-sqlite
 The first crate owns the shared Application Database contract; the second owns
 the SQLite implementation. This convention also permits a future dedicated
 **[Log Module](../glossary.md#applications-and-interfaces)** implementation crate
-such as `weavelit-server-log-sqlite`, without
-requiring a `weavelit-server-log` crate before it has a meaningful shared
-contract or code.
+such as `weavelit-module-log-sqlite`, without requiring a shared Log Module
+crate before it has meaningful shared code or a shared contract.
 
 The pre-operational Server crates are:
 
@@ -166,19 +190,64 @@ replacement rationale, a named owner, and a removal condition or follow-on
 issue. It receives the same approval and validation evidence as a released
 package. Internal workspace members are not exceptions.
 
-No production dependencies are currently approved.
+#### `rusqlite`
+
+- **Source and version:** crates.io `=0.40.1`.
+- **Owner and behavior:** `weavelit-server-database-sqlite` uses the dependency
+  for the Milestone 1 SQLite Application Database connection, configuration,
+  health, migration, and transaction behavior. The Rust standard library and
+  existing workspace code do not provide a SQLite driver.
+- **Features:** default features are disabled and only `bundled` is enabled.
+  Runtime extension loading, SQLCipher, URI, UUID, time, statement-cache, WASM,
+  and runtime-bindgen features are not enabled. Bundling supplies a consistent
+  SQLite implementation without a host shared-library dependency.
+- **Maintenance and license:** `rusqlite` 0.40.1 was released on June 6, 2026,
+  and its upstream repository remained active at the August 1, 2026 review.
+  `rusqlite` and `libsqlite3-sys` use the MIT license; bundled SQLite is in the
+  public domain.
+- **Advisory review:** the August 1, 2026 GitHub Advisory Database review found
+  no advisory matching `rusqlite` 0.40.1 or `libsqlite3-sys` 0.38.1.
+- **Safe failure:** the backend excludes URI interpretation, rejects symbolic
+  links in the database path, verifies every required connection setting and a
+  fixed health query, and maps driver failures to payload-free storage-neutral
+  errors without exposing paths, SQL, raw dependency messages, or connection
+  settings.
+- **Validation:** ten focused real-SQLite package tests cover configuration,
+  health, reopen, unavailable storage, invalid database content, symbolic-link
+  rejection, literal query-like filenames, invalid paths, and redaction.
+  `make -C server check` passes formatting, Clippy with warnings denied, all 17
+  locked workspace tests, and locked release builds. The locked feature graph
+  and transitive resolution were reviewed for excluded capabilities.
+
+#### `sha2`
+
+- **Source and version:** crates.io `=0.11.0`.
+- **Owner and behavior:** `weavelit-server-database-sqlite` uses SHA-256 to bind
+  each immutable embedded migration file to its migration-ledger entry. The
+  standard library and existing approved dependencies do not provide SHA-256.
+- **Features:** default features are disabled and no optional features are
+  enabled. Allocation, object-identifier, and zeroization features are absent;
+  the locked graph contains only the digest primitives and CPU-feature support
+  required by SHA-256.
+- **Maintenance and license:** `sha2` 0.11.0 supports Rust 1.85 and later, and
+  its RustCrypto upstream remained active at the August 1, 2026 review. The
+  crate uses the MIT or Apache-2.0 license.
+- **Advisory review:** the August 1, 2026 GitHub Advisory Database review found
+  no advisory matching `sha2` 0.11.0.
+- **Safe failure:** the backend hashes exact embedded migration bytes, stores
+  the 32-byte digest without logging it, validates every applied ledger entry
+  before pending work, and returns only `IntegrityFailure` when migration
+  identity, sequence, or checksum cannot be trusted.
+- **Validation:** checksum known-vector and registry tests plus seven real-file
+  migration tests cover ordered bootstrap, idempotent reopen, unknown, missing,
+  reordered, and mismatched history, missing-ledger refusal, schema constraints,
+  and transaction rollback. `make -C server check` passes formatting, Clippy
+  with warnings denied, all 27 locked workspace tests, and locked release builds.
+  The lockfile and feature graph were reviewed for excluded optional features.
 
 ### Planned Production Dependency Candidates
 
-The following candidates are selected for a documented future behavior but are
-not approved production dependencies. A candidate does not authorize adding a
-dependency. The implementation change must declare an exact version and move
-the candidate to the approved registry with all required approval and
-validation evidence.
-
-| Package | Intended source | Owning crate | Planned behavior | Intended features and security baseline |
-| --- | --- | --- | --- | --- |
-| `rusqlite` | crates.io | `weavelit-server-database-sqlite` | Milestone 1 SQLite Application Database backend | `bundled`; do not enable runtime SQLite extension loading; select only additional features required by the backend |
+No production dependency candidates are currently selected.
 
 The workspace manifest owns an approved shared dependency's identity, version,
 source, and any workspace-wide security baseline. A single-consumer dependency

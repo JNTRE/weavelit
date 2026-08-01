@@ -14,14 +14,14 @@ SQLite-specific error mapping. It does not own Server lifecycle decisions,
 shared contract types, or **[Log Module](../../../glossary.md#applications-and-interfaces)**
 destinations.
 
-After implementation-time approval, the crate declares `rusqlite` with its
-`bundled` feature in its own manifest as the initial consumer. If a second
-Server crate requires `rusqlite`, the change promotes its shared source,
-version, and security baseline to `server/Cargo.toml`'s
-`[workspace.dependencies]`. `server/Cargo.lock` records the resolved version.
-Bundling provides a known SQLite release and consistent behavior across
-development, CI, packaging, and deployment without relying on a host SQLite
-shared library.
+The crate declares `rusqlite = "=0.40.1"` with default features disabled and
+only the `bundled` feature enabled. It remains in the crate manifest as the
+initial single consumer. If a second Server crate requires `rusqlite`, that
+change promotes its shared source, version, and security baseline to
+`server/Cargo.toml`'s `[workspace.dependencies]`. `server/Cargo.lock` records the
+resolved version. Bundling provides a known SQLite release and consistent
+behavior across development, CI, packaging, and deployment without relying on
+a host SQLite shared library.
 
 The backend uses explicit Weavelit-owned SQL and does not use an ORM. It does
 not enable runtime SQLite extension loading or execute user-supplied SQL.
@@ -57,6 +57,83 @@ its ledger entry run in one SQLite transaction. An unknown, missing, or
 checksum-mismatched applied migration is an integrity or compatibility failure:
 the backend changes nothing and refuses to report readiness.
 
+The initial registry contains `0001_create_migration_ledger.sql` and
+`0002_create_lifecycle_state.sql`. Each entry has a one-based sequence, the
+filename without `.sql` as its identifier, and SQL embedded through
+`include_str!`. `sha2 = "=0.11.0"` computes a 32-byte SHA-256 digest directly
+over the exact embedded UTF-8 file bytes with default features disabled. The
+ledger stores the digest as a 32-byte BLOB and rejects updates or deletes.
+
+Migration application repeats one `BEGIN IMMEDIATE` transaction at a time. The
+transaction validates that ledger rows form the exact contiguous prefix of the
+embedded registry, then applies at most the next SQL migration and inserts its
+ledger row before commit. The bootstrap transaction creates the ledger and
+records itself atomically. An absent ledger is eligible only when no
+Application Database-owned table exists; otherwise startup fails with
+`IntegrityFailure` rather than recreating history.
+
+After ledger validation and before every pending migration, the backend builds
+the expected application-owned schema for the already-applied migration prefix
+in an isolated in-memory SQLite connection. It compares that schema with every
+installed table, index, and trigger whose name or owning table begins with
+`weavelit_`. A dropped or altered table or constraint, missing production
+trigger, or added trigger or index fails with `IntegrityFailure` before another
+migration can change the database. The complete schema receives the same check
+before readiness. Schema SQL remains private and is never returned or logged.
+
+The lifecycle schema uses one singleton row. No row represents uninitialized
+state. A row always contains a 16-byte deployment identifier and represents
+either pending state with an `init` or `restore` discriminator and at most 4 KiB
+of opaque checkpoint metadata, or initialized state with no pending workflow or
+checkpoint metadata. This schema does not expose production state operations;
+inspection and mutation remain owned by their later contract work.
+
+State inspection is exposed first as the inherent read-only
+`SqliteDatabase::inspect` operation. It performs one query ordered by the
+singleton key and limited to two rows. Zero rows returns `Uninitialized`, one
+row is decoded, and two rows fails with `IntegrityFailure`. The complete
+`ApplicationDatabase` implementation is added only when all mutation methods
+are available.
+
+Inspection first requires a valid 16-byte nonzero persisted deployment
+identifier. A valid identifier different from the trusted expected identifier
+returns `DeploymentMismatch` before state fields are interpreted or returned.
+For a matching identifier, `pending` requires `init` or `restore` and present
+metadata within the 4 KiB bound; `initialized` requires both workflow and
+metadata to be absent. Every malformed or contradictory persisted combination
+returns `IntegrityFailure`. Inspection emits no diagnostics and returns only
+payload-free storage-neutral errors.
+
+## Checkpoint Transactions
+
+`SqliteDatabase` implements the complete `ApplicationDatabase` contract after
+the read and mutation paths are available. Trait inspection delegates to the
+inherent read-only operation. Create, reconcile, and discard each begin an
+immediate SQLite transaction, load and validate the bounded lifecycle state
+under that write lock, and commit only the allowed result. Separate backend
+instances therefore serialize and recheck stale requests before any write.
+
+Creation inserts a pending singleton row only when inspection returns
+`Uninitialized`. A pending row returns `InvalidState` even when the requested
+checkpoint is identical, and initialized state returns `AlreadyInitialized`.
+Reconciliation commits no data change and succeeds only when deployment,
+workflow, and opaque metadata match exactly. Discard deletes exactly one row
+only when deployment and workflow match; the resulting absence represents an
+unbound uninitialized database.
+
+Reconciliation and discard return `NotInitialized` for an absent row,
+`AlreadyInitialized` for initialized state, `DeploymentMismatch` for another
+valid deployment, and `InvalidState` for a wrong workflow or metadata.
+Malformed state returns `IntegrityFailure` for every operation before mutation.
+SQL parameters bind identifiers and metadata as BLOBs and workflow as a fixed
+internal string. Driver payloads, SQL, paths, identifiers, and metadata are
+never included in returned errors or ordinary diagnostics.
+
+Real-SQLite tests use separate stale backend instances to prove serialized
+rechecking and test-only table triggers to force insert and delete failures.
+The trigger failures roll back fully and remain unchanged after reopen without
+adding a production failure-injection mechanism.
+
 Each shared Application Database contract write is one SQLite transaction unless
 the contract explicitly defines a broader atomic workflow. A failed migration
 or write rolls back completely.
@@ -68,15 +145,38 @@ serializes access to it. The MVP does not use a connection pool. This is a
 SQLite-specific choice, not a constraint on a future Application Database
 backend.
 
+The backend exposes a trusted-path `SqliteDatabase::open` constructor and the
+complete `ApplicationDatabase` implementation documented above. It does not
+expose the raw connection, arbitrary query execution, or URI or
+connection-string configuration.
+
 The lifecycle crate supplies a code-defined database location under the
 protected Server state directory. The SQLite backend schema exposes no path or
 filename field to a client. The Server and SQLite backend exclusively create,
 place, reopen, and manage the database file and its journal or write-ahead-log
 sidecar files.
 
-The backend enables foreign-key enforcement, write-ahead logging, and a bounded
-busy timeout. It applies and validates migrations before it is ready. A real,
-lightweight database query verifies connection health.
+The backend opens that location for reading, writing, and creation with
+`SQLITE_OPEN_NO_MUTEX` and `SQLITE_OPEN_NOFOLLOW`. It deliberately omits
+`SQLITE_OPEN_URI`, so query-like text in a supplied path is treated as a literal
+filename and cannot select SQLite URI behavior. `SQLITE_OPEN_NOFOLLOW` rejects a
+symbolic link in the supplied database path. The lifecycle boundary must supply
+a symlink-free path beneath the protected Server state directory; protection of
+those parent directories remains a Server deployment responsibility.
+
+Before returning a connection, the backend performs and verifies this fixed
+configuration sequence:
+
+1. Enable foreign-key enforcement and verify `foreign_keys` is `1`.
+2. Request write-ahead logging and verify the returned journal mode is `wal`.
+3. Set a five-second busy timeout through the driver API and verify
+   `busy_timeout` is `5000` milliseconds.
+4. Execute the fixed internal `SELECT 1` health query and require the integer
+   result `1`.
+
+The fixed query is not caller-supplied SQL and does not assume that migrations
+or application schema already exist. Later migration work runs only after this
+connection baseline reports readiness.
 
 Failure to open, migrate, validate, or query the Application Database prevents
 safe startup. The backend reports a typed, redacted contract error rather than
@@ -91,12 +191,22 @@ operating-system messages, SQL, filesystem paths, connection settings, or
 secrets. Diagnostics may include deliberately redacted structured context such
 as a migration identifier.
 
-Integration tests use a new `tempfile` temporary directory and a real SQLite
-database file for each test. Tests reopen the file to verify persistence and
-allow the directory to remove database and WAL sidecar files automatically.
-They cover successful and idempotent migrations, restart persistence, migration
-and write rollback, invalid configuration, unavailable storage, incompatible
-migration history, and error and diagnostic redaction.
+The connection baseline maps SQLite `DatabaseCorrupt` and `NotADatabase` codes
+to `IntegrityFailure`. Busy, locked, read-only, permission, input/output,
+disk-full, cannot-open, and locking-protocol codes map to `Unavailable`. A path
+that the driver cannot represent maps to `ConfigurationInvalid`. An unexpected
+failure in fixed internal configuration or health logic maps to
+`IntegrityFailure`, and a completed setting whose verified value does not match
+the required value maps to `ConfigurationInvalid`. The mapper discards driver
+payloads immediately and emits no ordinary diagnostic containing them.
+
+Integration tests use the test-only `tempfile = "=3.27.0"` dependency to create
+a new temporary directory and real SQLite database file for each test. Tests
+reopen the file to verify persistence and allow the directory to remove database
+and WAL sidecar files automatically. They cover successful and idempotent
+migrations, restart persistence, migration and write rollback, invalid
+configuration, unavailable storage, incompatible migration history, and error
+and diagnostic redaction.
 
 The MVP scope does not defer quality obligations: every selected behavior has
 its required security, diagnostics, safe failure, and automated test evidence
