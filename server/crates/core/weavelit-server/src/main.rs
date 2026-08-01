@@ -1,16 +1,24 @@
-const PLACEHOLDER_OUTPUT: &str = "weavelit-server placeholder";
+use weavelit_server::{StartupError, classify_restricted_startup, read_state_root};
 
 fn main() {
-    println!("{PLACEHOLDER_OUTPUT}");
+    let state_root = match read_state_root() {
+        Ok(path) => path,
+        Err(error) => {
+            present_error(error);
+            std::process::exit(1);
+        }
+    };
+
+    match classify_restricted_startup(&state_root) {
+        Ok(_outcome) => {}
+        Err(error) => {
+            present_error(error);
+            std::process::exit(1);
+        }
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::PLACEHOLDER_OUTPUT;
-
-    #[test]
-    fn reports_placeholder_output() {
-        // Temporary executable-spine test; remove it with the placeholder startup code.
-        assert_eq!(PLACEHOLDER_OUTPUT, "weavelit-server placeholder");
-    }
+fn present_error(error: StartupError) {
+    let (category, reason) = error.category_reason();
+    eprintln!("{{\"category\":\"{category}\",\"reason\":\"{reason}\"}}");
 }

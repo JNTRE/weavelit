@@ -1,18 +1,21 @@
 # Weavelit Server Executable Agent Guide
 
-This directory is reserved for the Weavelit Server executable crate. It will
-assemble the trusted Server runtime that owns restricted pre-operational
-startup, normal authenticated HTTPS API, authorization, authentication
-configuration, provider integrations, and provider credentials while using the
-adjacent compiled-in crates.
+This crate assembles the trusted restricted lifecycle startup runtime, composes
+the SQLite backend catalog, and classifies startup state before any capability
+is exposed. Normal authenticated operation, HTTPS API, authorization,
+authentication configuration, and provider integrations are deferred to later
+epics.
 
 ## Purpose and Scope
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Use this section to understand what this directory owns, what it does not own,
+and where child paths own detailed rules.
 
-- This directory owns the Server executable's composition and lifecycle behavior.
-- It does not own individual Application Database backends or module implementations; those belong in sibling crate paths.
-- It does not own Web UI source, tests, or packaging; those remain under their named Server paths.
+- This directory owns the Server executable's restricted startup composition,
+  SQLite backend factory, state-root configuration reading, startup classification
+  dispatch, and stable error presentation.
+- It does not own individual Application Database backends, lifecycle domain,
+  module implementations, Web UI source, or packaging.
 
 ## Asset Inventory
 
@@ -20,8 +23,14 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and Server executable-boundary rules.
 - `Cargo.toml`: Rust package manifest for the Weavelit Server executable crate.
-- `src/`: Rust implementation source and executable entry point for the Weavelit Server.
-- `tests/`: Crate-local integration tests for the Server executable.
+- `src/lib.rs`: Restricted lifecycle startup composition, SQLite backend factory,
+  state-root configuration reading, `classify_restricted_startup`, and stable
+  error presentation.
+- `src/main.rs`: Thin executable entry point that reads state-root configuration
+  and calls the library composition function.
+- `tests/startup.rs`: Composition and process-level tests for restricted startup
+  covering fresh start, restart persistence, selection, pending states, and
+  fail-closed failure categories.
 
 ## Usage Guidance
 
