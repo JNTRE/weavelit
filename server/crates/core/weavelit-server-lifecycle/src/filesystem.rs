@@ -350,11 +350,7 @@ mod tests {
 
     fn root() -> (tempfile::TempDir, StateRoot) {
         let directory = tempfile::tempdir().unwrap();
-        fs::set_permissions(
-            directory.path(),
-            fs::Permissions::from_mode(ROOT_MODE as u32),
-        )
-        .unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let canonical_path = directory.path().canonicalize().unwrap();
         let root = StateRoot::open(&canonical_path).unwrap();
         (directory, root)
