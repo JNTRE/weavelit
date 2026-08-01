@@ -9,31 +9,7 @@ may be included for context. If this index differs from GitHub, GitHub controls.
 
 ## Open Issues
 
-### #27 Establish Application Database and SQLite foundation
-
-[Open GitHub Issue #27](https://github.com/JNTRE/weavelit/issues/27).
-
-**Summary:** Establish the backend-neutral Application Database contract and
-its MVP SQLite implementation so the Server can inspect and persist eligible
-pre-operational database state safely across restarts without exposing
-storage-specific behavior to lifecycle callers.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
-### #32 Implement atomic workflow checkpoint operations
-
-[Open GitHub Issue #32](https://github.com/JNTRE/weavelit/issues/32).
-
-**Summary:** Implement atomic, deployment-bound Init and Restore checkpoint
-creation, reconciliation, and discard without allowing conflicting or partial
-workflow mutation.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
+There are currently no open issues.
 
 ## Example Issue
 
