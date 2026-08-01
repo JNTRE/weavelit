@@ -79,6 +79,22 @@ of opaque checkpoint metadata, or initialized state with no pending workflow or
 checkpoint metadata. This schema does not expose production state operations;
 inspection and mutation remain owned by their later contract work.
 
+State inspection is exposed first as the inherent read-only
+`SqliteDatabase::inspect` operation. It performs one query ordered by the
+singleton key and limited to two rows. Zero rows returns `Uninitialized`, one
+row is decoded, and two rows fails with `IntegrityFailure`. The complete
+`ApplicationDatabase` implementation is added only when all mutation methods
+are available.
+
+Inspection first requires a valid 16-byte nonzero persisted deployment
+identifier. A valid identifier different from the trusted expected identifier
+returns `DeploymentMismatch` before state fields are interpreted or returned.
+For a matching identifier, `pending` requires `init` or `restore` and present
+metadata within the 4 KiB bound; `initialized` requires both workflow and
+metadata to be absent. Every malformed or contradictory persisted combination
+returns `IntegrityFailure`. Inspection emits no diagnostics and returns only
+payload-free storage-neutral errors.
+
 Each shared Application Database contract write is one SQLite transaction unless
 the contract explicitly defines a broader atomic workflow. A failed migration
 or write rolls back completely.

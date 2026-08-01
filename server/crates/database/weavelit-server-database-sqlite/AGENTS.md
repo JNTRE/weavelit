@@ -20,7 +20,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and SQLite backend crate-boundary rules.
 - `Cargo.toml`: Package manifest and exact production and test dependencies.
 - `migrations/`: Immutable embedded SQL migrations for the SQLite schema.
-- `src/`: Trusted-path connection setup, health verification, and private error mapping.
+- `src/`: Trusted-path connection setup, migrations, read-only state inspection, and private error mapping.
 - `tests/`: Public-boundary integration tests using isolated real SQLite files.
 
 ## Usage Guidance

@@ -76,6 +76,13 @@ decides whether an empty value is valid. The Application Database stores,
 returns, and compares those bytes exactly but never parses or interprets them.
 Diagnostic formatting reports only the metadata length.
 
+Inspection is read-only. An absent lifecycle-state record returns
+`Uninitialized`. A valid persisted deployment identifier is compared with the
+trusted expected identifier before workflow state is returned; a different
+identifier returns `DeploymentMismatch`. Invalid persisted identifiers,
+cardinality, state values, workflow discriminators, metadata bounds, or
+contradictory field combinations return `IntegrityFailure`.
+
 Inspection receives the trusted expected deployment identifier and rejects a
 different persisted binding. Checkpoint creation receives the complete desired
 checkpoint. Reconciliation verifies that the same deployment identifier,

@@ -12,7 +12,7 @@ const EXPECTED_HEALTH_RESULT: i64 = 1;
 
 /// SQLite Application Database backend with one privately owned connection.
 pub struct SqliteDatabase {
-    connection: Connection,
+    pub(super) connection: Connection,
 }
 
 impl SqliteDatabase {
