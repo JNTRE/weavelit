@@ -22,19 +22,6 @@ storage-specific behavior to lifecycle callers.
 | --- | --- | --- |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
-### #29 Establish the SQLite backend connection baseline
-
-[Open GitHub Issue #29](https://github.com/JNTRE/weavelit/issues/29).
-
-**Summary:** Introduce the dedicated SQLite Application Database backend with
-an approved driver, trusted connection boundary, safe configuration, and
-redacted opening and health behavior.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
 ### #30 Implement SQLite migrations and lifecycle schema
 
 [Open GitHub Issue #30](https://github.com/JNTRE/weavelit/issues/30).
