@@ -9,7 +9,83 @@ may be included for context. If this index differs from GitHub, GitHub controls.
 
 ## Open Issues
 
-There are currently no open issues.
+### #27 Establish Application Database and SQLite foundation
+
+[Open GitHub Issue #27](https://github.com/JNTRE/weavelit/issues/27).
+
+**Summary:** Establish the backend-neutral Application Database contract and
+its MVP SQLite implementation so the Server can inspect and persist eligible
+pre-operational database state safely across restarts without exposing
+storage-specific behavior to lifecycle callers.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
+
+### #28 Create the Application Database contract crate
+
+[Open GitHub Issue #28](https://github.com/JNTRE/weavelit/issues/28).
+
+**Summary:** Introduce the backend-neutral Application Database contract
+crate that defines the minimal pre-operational state and checkpoint boundary
+without exposing or depending on SQLite implementation details.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
+| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
+
+### #29 Establish the SQLite backend connection baseline
+
+[Open GitHub Issue #29](https://github.com/JNTRE/weavelit/issues/29).
+
+**Summary:** Introduce the dedicated SQLite Application Database backend with
+an approved driver, trusted connection boundary, safe configuration, and
+redacted opening and health behavior.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
+| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
+
+### #30 Implement SQLite migrations and lifecycle schema
+
+[Open GitHub Issue #30](https://github.com/JNTRE/weavelit/issues/30).
+
+**Summary:** Provide an integrity-checked, forward-only SQLite migration
+system and the minimal durable lifecycle schema required for state inspection
+and checkpoint operations.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
+| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
+
+### #31 Implement database state inspection and deployment binding
+
+[Open GitHub Issue #31](https://github.com/JNTRE/weavelit/issues/31).
+
+**Summary:** Implement the SQLite read-side contract for safe durable-state
+classification and deployment-identifier mismatch rejection without workflow
+mutation.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
+| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
+
+### #32 Implement atomic workflow checkpoint operations
+
+[Open GitHub Issue #32](https://github.com/JNTRE/weavelit/issues/32).
+
+**Summary:** Implement atomic, deployment-bound Init and Restore checkpoint
+creation, reconciliation, and discard without allowing conflicting or partial
+workflow mutation.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
+| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
 ## Example Issue
 
