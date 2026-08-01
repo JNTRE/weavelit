@@ -23,19 +23,6 @@ startup without exposing normal operation.
 | --- | --- | --- |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
-### #35 Define lifecycle anchor protection and serialization profile
-
-[Open GitHub Issue #35](https://github.com/JNTRE/weavelit/issues/35).
-
-**Summary:** Define the versioned serialization, integrity protection, trusted
-state-root and filename contract, and Server-local at-rest key custody profile
-for the deployment record and Application Database locator.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#34 Establish trusted pre-operational lifecycle foundation](https://github.com/JNTRE/weavelit/issues/34) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
 ### #36 Create the Server lifecycle contract and backend catalog
 
 [Open GitHub Issue #36](https://github.com/JNTRE/weavelit/issues/36).
