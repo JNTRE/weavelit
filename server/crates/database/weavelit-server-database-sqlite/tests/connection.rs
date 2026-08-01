@@ -70,6 +70,7 @@ fn non_database_file_is_an_integrity_failure_and_redacted() {
 }
 
 #[test]
+#[cfg(unix)]
 fn final_component_symlink_is_rejected() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let target_path = database_path(&temporary_directory, "target.db");
@@ -84,6 +85,7 @@ fn final_component_symlink_is_rejected() {
 }
 
 #[test]
+#[cfg(unix)]
 fn parent_component_symlink_is_rejected() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let target_directory = database_path(&temporary_directory, "target");
@@ -99,6 +101,7 @@ fn parent_component_symlink_is_rejected() {
 }
 
 #[test]
+#[cfg(unix)]
 fn query_like_filename_is_treated_as_a_literal_path() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(
@@ -112,6 +115,7 @@ fn query_like_filename_is_treated_as_a_literal_path() {
 }
 
 #[test]
+#[cfg(unix)]
 fn unrepresentable_path_is_invalid_configuration_and_redacted() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
