@@ -145,11 +145,10 @@ serializes access to it. The MVP does not use a connection pool. This is a
 SQLite-specific choice, not a constraint on a future Application Database
 backend.
 
-The connection baseline exposes only a trusted-path `SqliteDatabase::open`
-constructor. It does not expose the raw connection, arbitrary query execution,
-URI or connection-string configuration, or an `ApplicationDatabase`
-implementation. Migrations and durable contract behavior are added with their
-own schema and state work.
+The backend exposes a trusted-path `SqliteDatabase::open` constructor and the
+complete `ApplicationDatabase` implementation documented above. It does not
+expose the raw connection, arbitrary query execution, or URI or
+connection-string configuration.
 
 The lifecycle crate supplies a code-defined database location under the
 protected Server state directory. The SQLite backend schema exposes no path or

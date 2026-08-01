@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use weavelit_server_database::{
-    DatabaseError, DatabaseInspection, DeploymentIdentifier, WorkflowKind,
+    DatabaseError, DatabaseInspection, DeploymentIdentifier, MAX_CHECKPOINT_METADATA_LENGTH,
+    WorkflowKind,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -233,7 +234,7 @@ fn initialized_state_returns_deployment_binding() {
 
 #[test]
 fn pending_restore_supports_empty_and_maximum_metadata() {
-    for metadata in [Vec::new(), vec![7_u8; 4096]] {
+    for metadata in [Vec::new(), vec![7_u8; MAX_CHECKPOINT_METADATA_LENGTH]] {
         let temporary_directory = tempfile::tempdir().unwrap();
         let path = database_path(&temporary_directory);
         let expected_identifier = identifier(4);
@@ -283,7 +284,7 @@ fn deployment_mismatch_precedes_state_interpretation_and_is_redacted() {
 #[test]
 fn malformed_persisted_shapes_fail_integrity_validation() {
     let valid_identifier = [9_u8; 16];
-    let oversized_metadata = vec![0_u8; 4097];
+    let oversized_metadata = vec![0_u8; MAX_CHECKPOINT_METADATA_LENGTH + 1];
     let cases: &[MalformedCase<'_>] = &[
         (&[9_u8; 15], "initialized", None, None),
         (&[0_u8; 16], "initialized", None, None),

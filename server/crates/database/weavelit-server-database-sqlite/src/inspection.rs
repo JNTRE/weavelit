@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use weavelit_server_database::{
-    CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
-    WorkflowCheckpoint, WorkflowKind,
+    CheckpointMetadata, DEPLOYMENT_IDENTIFIER_LENGTH, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 
 use crate::SqliteDatabase;
@@ -58,7 +58,7 @@ fn decode_row(
     row: &LifecycleRow,
     expected_deployment_identifier: DeploymentIdentifier,
 ) -> Result<DatabaseInspection, DatabaseError> {
-    let identifier_bytes: [u8; 16] = row
+    let identifier_bytes: [u8; DEPLOYMENT_IDENTIFIER_LENGTH] = row
         .deployment_identifier
         .as_slice()
         .try_into()
