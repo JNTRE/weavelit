@@ -73,18 +73,18 @@ other resources.
 
 ## Create The First Administrator
 
-1. The person enters the required fields for the first local
-   **[Human User](../../glossary.md#identities-and-access)** and chooses a password.
+1. The person enters the desired username and password for the first local
+   **[Human User](../../glossary.md#identities-and-access)**.
 2. The Web UI keeps the password only in current-page memory and submits it over
    HTTPS as part of finalization. It does not place the password in a URL,
    browser history, logs, or persistent client storage.
-3. The Server creates the system-defined
-   **[Administrators Group](../../glossary.md#identities-and-access)** and adds the
-   first Human User. The Web UI does not ask the person to define or alter that
-   Group's initial grants.
+3. The Web UI does not ask the person to select or configure a Group. The Server
+   creates the system-defined
+   **[Administrators Group](../../glossary.md#identities-and-access)** and applies
+   the first Human User's membership automatically during finalization.
 
-Creating this account does not authenticate it and does not create a browser
-session.
+Collecting these account details does not create or authenticate the Human User
+and does not create a browser session.
 
 ## Save The Recovery Key
 
@@ -120,10 +120,10 @@ redisplays that private key.
 4. The lifecycle authority independently reloads and validates the deployment
    record, locator, database state, and matching deployment identifiers before
    Init reads request secrets or changes state.
-5. The Server validates the complete request, creates the fixed Administrators
-   Group and membership, protects submitted secrets, and confirms that the
-   System Log and Audit Log assignments can durably record their assigned log
-   type.
+5. The Server validates the complete request, creates the first Human User and
+   the system-defined Administrators Group, adds the user to that Group,
+   protects submitted secrets, and confirms that the System Log and Audit Log
+   assignments can durably record their assigned log type.
 6. The Application Database atomically commits the initialized application
    state.
 7. The Server durably records the successful Init result through the committed
