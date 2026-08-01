@@ -1,22 +1,22 @@
-# Server Authorization Agent Guide
+# Server User Stories Agent Guide
 
-This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** authorization design that makes the final default-deny decision for each requested **[Operation](../../glossary.md#applications-and-interfaces)**. It separates permission and policy evaluation from caller authentication and service-specific behavior.
+This folder owns the user-visible **[Init](../../glossary.md#states-and-requests)** and **[Restore](../../glossary.md#states-and-requests)** narratives for the **[Web UI](../../glossary.md#applications-and-interfaces)**. It translates Server lifecycle contracts into interaction sequences, user responsibilities, visible transitions, and interrupted-workflow behavior without redefining the implementation designs in the parent directory.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Server authorization design for named **[Operation](../../glossary.md#applications-and-interfaces)** permissions and policy evaluation.
-- It does not own authentication credential validation; that belongs in the sibling `../authentication/` directory.
-- Detailed Group grant-evaluation and additional-permission decisions that
-  remain unsettled belong in `../../open-questions.md`.
+- This directory owns user stories for Web UI workflows that invoke the Server's restricted pre-operational Init and Restore contracts.
+- It does not own lifecycle, persistence, request-processing, or security design; those rules remain in the parent Server design documents and the canonical documentation they reference.
+- No child directory currently defines a narrower documentation boundary; add one only when its workflow or policy differs from this guide.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server authorization.
-- `authorization-design.md`: Canonical implementation design for Server authorization.
+- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server user stories.
+- `init-user-story.md`: Web UI first-launch Init sequence, user responsibilities, visible transitions, and interrupted-workflow behavior.
+- `restore-user-story.md`: Web UI Restore sequence, user responsibilities, visible transitions, and interrupted-workflow behavior.
 
 ## Usage Guidance
 
@@ -24,9 +24,9 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Keep authorization design aligned with `../../security-model.md` and record only settled commitments in `../../spec.md`.
-- Keep credential validation in `../authentication/` and service-specific **[Operation](../../glossary.md#applications-and-interfaces)** behavior in `../../service-modules/`.
-- Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
+- Update the parent Init, Restore, or lifecycle design when Server contract behavior changes; update a user story here for the resulting user-visible sequence and responsibilities.
+- Update affected `Related Documents` links in the same change whenever a document is added, moved, renamed, replaced, or retired.
+- Make minimal, targeted edits and preserve each user story's workflow-oriented structure unless the task requires a broader revision.
 
 ## Standards and Conventions
 
@@ -40,8 +40,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
-- Preserve the Server's final, default-deny, per-**[Operation](../../glossary.md#applications-and-interfaces)** authorization boundary; do not grant broad provider-integration access.
-- Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
+- Keep user-visible workflow narratives in this directory and Server implementation contracts in the parent design documents.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
 - Include only valid, repository-relative links to existing canonical documents.

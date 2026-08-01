@@ -12,7 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
   Server's **[Application Database](../../glossary.md#applications-and-interfaces)**
   backend contract.
 - It does not own canonical product, security, or technical commitments; those
-  remain in `../../core-statements.md`, `../../security-model.md`, and
+  remain in `../../spec.md`, `../../security-model.md`, and
   `../../open-questions.md`.
 - The `sqlite/` child directory owns SQLite-backend-specific documentation;
   future backend directories own their respective implementation detail.
@@ -22,7 +22,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Application Database.
-- `application-database-design.md`: Shared Application Database backend-contract and backup-recovery design.
+- `application-database-design.md`: Shared Application Database backend contract and backup-and-Restore design.
 - `sqlite/`: Documentation boundary for the MVP SQLite Application Database backend.
 
 ## Usage Guidance
@@ -34,7 +34,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Keep shared backend-contract design in this folder and place database-specific
   implementation detail in the applicable child directory.
-- Update `../../core-statements.md` for settled commitments and
+- Update `../../spec.md` for settled commitments and
   `../../open-questions.md` for unresolved choices instead of treating local
   design documentation as their replacement.
 - Make minimal, targeted changes and update this inventory when assets are

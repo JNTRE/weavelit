@@ -1,9 +1,9 @@
 # Weavelit Server Source Agent Guide
 
 This directory implements the Ubuntu-packaged Weavelit Server: its executable,
-host-local Admin CLI, compiled-in modules, Web UI source, tests, and Debian
-packaging. It is the trusted application boundary that owns the HTTPS API,
-policy enforcement, provider integrations, and provider credentials.
+compiled-in modules, Web UI source, tests, and Debian packaging. It is the
+trusted application boundary that owns the HTTPS API, policy enforcement,
+provider integrations, and provider credentials.
 
 ## Purpose and Scope
 
@@ -22,7 +22,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `Cargo.lock`: Resolved Rust dependencies for reproducible Server workspace builds.
 - `Cargo.toml`: Rust workspace manifest for Server package crates.
 - `containers/`: Development and production Containerfiles for the Server.
-- `crates/`: Rust crate locations for the Server, Admin CLI, Application Database backend, and compiled-in modules.
+- `crates/`: Rust crate locations for the Server, Application Database backend, and compiled-in modules.
 - `Makefile`: Standard local and CI entry point for Server Rust quality gates.
 - `packaging/`: Release packaging assets for the Server package; `packaging/deb/` owns Debian-specific files.
 - `rust-toolchain.toml`: Pinned Rust toolchain and required quality-gate components.
@@ -50,7 +50,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep the Server, Admin CLI, Application Database backend, and compiled-in Client, MFA, Log, and Service Modules under `crates/`.
+- Keep the Server, Application Database backend, and compiled-in Client, MFA, Log, and Service Modules under `crates/`.
 - Keep Web UI source under `web-ui/`; do not create a separately released Web UI application.
 - Keep Server release packaging under `packaging/` and Server-focused integration or end-to-end tests under `tests/`.
 - Preserve the canonical boundaries in `../docs/`; link to or update those documents instead of duplicating their decisions here.

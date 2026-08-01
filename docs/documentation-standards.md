@@ -24,14 +24,22 @@ affected consequences and links in the same change.
 Use these ownership boundaries:
 
 - `vision.md` owns the high-level product purpose and system relationships.
-- `core-statements.md` owns cross-cutting settled product and technical truths.
-- `security-model.md` owns cross-cutting security requirements and constraints.
+- `spec.md` owns cross-cutting settled product and technical requirements.
+- `security-model.md` owns protected-asset classifications, trust assumptions,
+  cross-cutting security invariants, and approved security profiles.
 - `glossary.md` owns canonical terminology and definitions.
 - `open-questions.md` owns unresolved product and architecture decisions.
 - Component and module design documents own implementation-specific contracts,
   invariants, lifecycle behavior, failure behavior, and technical choices.
-- Planning documents own delivery outcomes and work organization, not the
-  product or technical decisions on which those outcomes depend.
+- GitHub Issues own issue titles, bodies, outcomes, acceptance criteria, type,
+  state, labels, assignees, priority, relationships, milestone assignments, and
+  GitHub Project fields. Repository planning documents may index open issues but
+  do not duplicate their bodies or planning metadata.
+- GitHub Milestones own milestone titles, summaries, delivery outcomes, state,
+  dates, progress, and assigned issues. Repository planning documents may index
+  those milestones but do not duplicate their goals or completion state.
+- Other planning documents own their defined work-organization records, not the
+  product or technical decisions on which those records depend.
 - Architecture decision records own the rationale and consequences of a
   consequential decision when preserving that history remains useful after the
   current design has incorporated the result.
@@ -94,17 +102,21 @@ Design documents describe the intended implementation contract, not a tour of
 source files or a chronological implementation journal. Use code identifiers
 when they are part of a stable contract or make the boundary materially clearer.
 
-### Planning And Milestone Documents
+### Planning Documents And GitHub Work Items
 
-Planning documents define observable delivery outcomes, sequencing, and work
-organization. They may summarize a canonical requirement when needed to make a
-completion outcome independently checkable, but the summary must link to its
-authority and must not change or extend that requirement.
+Repository planning documents define their stated work-organization records and
+navigation. The open-issue index may repeat each open GitHub Issue's linked
+title, short summary, and Related Epic and Milestone values for discovery, but
+must not reproduce its body, acceptance criteria, type, state, labels,
+assignees, priority, other relationships, or GitHub Project fields. The
+milestone index may repeat each GitHub Milestone's title and a short summary for
+discovery, but must not reproduce milestone goals, completion state, dates,
+progress, or issue assignments. GitHub remains authoritative for both indexes.
 
-A milestone goal describes a capability, limit, protection, safe rejection, or
-verification result. It does not decompose the outcome into an exhaustive list
-of implementation tasks. Completion requires both the behavior and the evidence
-required by the Testing and Validation Policy.
+A GitHub Milestone goal describes a capability, limit, protection, safe
+rejection, or verification result. It does not decompose the outcome into an
+exhaustive list of implementation tasks. Completion requires both the behavior
+and the evidence required by the Testing and Validation Policy.
 
 ### Open Questions
 
@@ -222,7 +234,7 @@ maintenance process.
 ## Related Documents
 
 - [Docs Agent Guide](AGENTS.md)
-- [Core Statements](core-statements.md)
+- [Technical Specification](spec.md)
 - [Glossary](glossary.md)
 - [Open Questions](open-questions.md)
 - [Testing and Validation Policy](testing.md)

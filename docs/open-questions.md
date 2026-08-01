@@ -2,8 +2,9 @@
 
 This document records architecture and product decisions that remain open after
 the current Vision decisions. It describes the complete intended application,
-not a release roadmap. Resolved decisions belong in the Vision, Core Statements,
-Glossary, or an architecture decision record rather than remaining here.
+not a release roadmap. Resolved decisions belong in the Vision, Technical
+Specification, Glossary, or an architecture decision record rather than
+remaining here.
 
 ## Identity and Credentials
 
@@ -12,7 +13,7 @@ Glossary, or an architecture decision record rather than remaining here.
 Which additional compiled-in **[MFA Modules](glossary.md#applications-and-interfaces)**
 will Weavelit support after TOTP, and how can a Human User enroll, replace, or
 retire multiple MFA methods without weakening an MFA requirement or creating an
-account-recovery gap?
+unintended access-loss path?
 
 ### 2. Weavelit CLI login and credential storage
 
@@ -29,8 +30,10 @@ represented, and how does `logout` remove local credentials?
 **[Automation Identities](glossary.md#identities-and-access)**. How are their
 credentials generated, displayed once, stored by a scheduler or trigger,
 rotated, expired, revoked, and recovered? What default and maximum validity
-periods apply, and how is **[Responsible Owner](glossary.md#identities-and-access)**
-transfer or suspension handled?
+periods apply? What confirmation, notification, and audit behavior applies when
+an Administrator reassigns the
+**[Responsible Owner](glossary.md#identities-and-access)** of an
+owner-status-disabled Automation Identity?
 
 ## Automation and Accountability
 
@@ -53,46 +56,67 @@ access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 Administration Permission? Which group-grant changes require additional
 confirmation or reauthentication?
 
-### 6. Client Module admin and user planes
+### 6. Client Module plane and Pre-Operational Surface schema
 
-How are **admin plane** and **user plane** defined as sections of a
-**[Client Module](glossary.md#applications-and-interfaces)**'s API and command
-structure? What naming, route and command organization, authorization
-requirements, and access classes apply to each section? How does a Client Module
-declare that it exposes one or both sections, including the
-**[Web UI](glossary.md#applications-and-interfaces)** with user-plane and
-authorized admin-plane functions and the
-**[Weavelit CLI](glossary.md#applications-and-interfaces)** with user-plane
-operational functions only? How does this application-interface terminology
-remain distinct from the host-local
-**[Admin CLI](glossary.md#applications-and-interfaces)** and from separate
-network-plane architecture?
+The restricted **[Init](glossary.md#states-and-requests)** and
+**[Restore](glossary.md#states-and-requests)** contracts are exposed through
+each **[Client Module](glossary.md#applications-and-interfaces)**'s
+**[Pre-Operational Surface](glossary.md#applications-and-interfaces)** when it
+declares the corresponding capabilities and the Server is uninitialized. The
+Pre-Operational Surface is distinct from the normal authenticated
+**[User Plane](glossary.md#applications-and-interfaces)** and
+**[Administration Plane](glossary.md#applications-and-interfaces)**. What route
+and command organization maps normal functions to their declared plane and
+access class and lifecycle functions to their declared capability? What
+declaration schema composes the planes with the Pre-Operational Surface? How
+does that schema represent the
+**[Web UI](glossary.md#applications-and-interfaces)** with Init and Restore
+capabilities on its Pre-Operational Surface plus User Plane and Administration
+Plane functions, and the
+**[Weavelit CLI](glossary.md#applications-and-interfaces)** with User Plane and
+Administration Plane functions? How does the resulting route and command
+terminology remain distinct from host-level deployment administration and
+separate network-plane architecture?
 
 ## API, Security, and Operations
 
 ### 7. HTTPS edge and public API protection
 
-Where does TLS terminate, how are certificates renewed, which ports and source
-networks are allowed, and what request-size, rate-limit, CORS, and browser-CSRF
-controls apply?
+Where does TLS terminate, how are certificates renewed, and which ports and
+source networks are allowed? What concrete request-size, request-rate,
+cryptographic-work, decompression, parsing, execution-time, and concurrency
+limits satisfy the security requirements for the unauthenticated
+**[Init](glossary.md#states-and-requests)** and
+**[Restore](glossary.md#states-and-requests)** surfaces? What CORS and
+browser-CSRF controls apply to those surfaces and the authenticated API?
 
 ### 8. API contract and compatibility policy
 
 API routes are versioned under `/api/v1/`. What is the wire format and
 compatibility policy for
-**[Operational Requests](glossary.md#states-and-requests)**, results, errors,
-pagination, and idempotency keys? What server and Weavelit CLI versions are
+**[Operational Requests](glossary.md#states-and-requests)**, the restricted
+**[Init](glossary.md#states-and-requests)** and
+**[Restore](glossary.md#states-and-requests)** contracts, results, errors,
+pagination, and idempotency keys? What Server and Weavelit CLI versions are
 supported together?
 
 ### 9. Application Database and log backup, retention, and recovery
 
 The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
-SQLite and is selected during Init; Weavelit does not support in-place database
-migration. What compatibility window and artifact-retention policy applies to
-versioned Application Database backups? How are the separate System Log and
-Audit Log databases and remote Log Module destinations backed up, protected,
-restored, and migrated? What configuration bounds and execution behavior apply
-to their independent retention and purge policies?
+SQLite and is selected through the shared pre-operational contract before
+either **[Init](glossary.md#states-and-requests)** or
+**[Restore](glossary.md#states-and-requests)**; Weavelit does not support
+in-place database migration. What versioned backup format, cryptographic
+envelope, recovery-key format, compatibility window, and artifact-retention
+policy apply? How do upload retries, protected encrypted staging and cleanup,
+interrupted Restore, and crash reconciliation work? What delivery and
+deduplication semantics apply when Init or Restore retries its required durable
+System Log completion result after application-state commit but before sealing?
+Which additional fields, if any, identify the backup format without exposing
+backup contents? How are the
+separate System Log and Audit Log databases and remote Log Module destinations
+backed up, protected, restored, and migrated? What configuration bounds and
+execution behavior apply to their independent retention and purge policies?
 
 ### 10. Secrets and provider credential management
 
@@ -118,12 +142,13 @@ on Apple Silicon (`arm64`)?
 
 For the post-MVP OCI-compliant production Server image, how does the build and
 verification workflow prove that the image contains the same versioned,
-prebuilt Server release output used to assemble the `.deb` package? What host
-administration boundary applies to Admin CLI functions other than its defined
-non-interactive Init bootstrap mode, and how are those actions authorized and
-audited? What persistent-volume and backup model, TLS termination, secret
-injection mechanism, supported orchestrators, image provenance, and upgrade
-and rollback policy apply?
+prebuilt Server release output used to assemble the `.deb` package? How are the
+Server-local Application Database deployment record, locator, and typed secret
+connection values persisted and protected across container replacement while
+the Server retains exclusive control of their local storage paths? What
+persistent-volume and backup model, TLS termination, secret injection mechanism,
+supported orchestrators, image provenance, and upgrade and rollback policy
+apply?
 
 ### 12. Zendesk reference integration
 
@@ -144,18 +169,16 @@ meet, and which visual foundations remain local to Weavelit?
 
 ### 14. Server release-version source
 
-The **[Weavelit Server](glossary.md#applications-and-interfaces)** Rust
-workspace manifest currently defines one shared `$X.Y.Z$` version for the
-Server and **[Admin CLI](glossary.md#applications-and-interfaces)**. When
-release automation and package workflows are introduced, can they reliably
-derive and validate every Server release artifact's version from that manifest,
-including its release tag and platform package metadata? Revisit whether the
-workspace manifest remains the appropriate single source of truth after that
-validation.
+The **[Weavelit Server](glossary.md#applications-and-interfaces)** crate
+manifest currently defines the Server version. When release automation and
+package workflows are introduced, can they reliably derive and validate every
+Server release artifact's version from that manifest, including its release tag
+and platform package metadata? Revisit whether that manifest remains the
+appropriate single source of truth after that validation.
 
 ## Related Documents
 
 - [Vision](vision.md)
-- [Core Statements](core-statements.md)
+- [Technical Specification](spec.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)

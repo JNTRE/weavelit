@@ -2,8 +2,8 @@
 
 This directory is reserved for the Debian package assets that install the
 Weavelit Server on Ubuntu 26.04 LTS `amd64`. The resulting versioned package
-includes the Server, Web UI assets, and Admin CLI without requiring Rust,
-source code, or development tooling on the host.
+includes the Server and Web UI assets without requiring Rust, source code, or
+development tooling on the host.
 
 ## Purpose and Scope
 
@@ -24,7 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../../docs/plan/milestones/milestone-8.md` and the relevant Server requirements before changing Debian package behavior.
+- Read the authoritative [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8) and the relevant Server requirements before changing Debian package behavior.
 - Keep package installation, service definition, non-secret configuration, persistent-state, and log-location behavior here.
 - Verify release artifacts in a clean, production-like Ubuntu environment when this packaging workflow is introduced.
 

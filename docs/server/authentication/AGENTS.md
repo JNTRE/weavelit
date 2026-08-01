@@ -23,7 +23,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Keep authentication design aligned with `../../security-model.md` and record only settled commitments in `../../core-statements.md`.
+- Keep authentication design aligned with `../../security-model.md` and record only settled commitments in `../../spec.md`.
 - Keep authorization evaluation in `../authorization/` and use `../../glossary.md` for canonical terminology.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

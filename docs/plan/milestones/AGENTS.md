@@ -1,37 +1,26 @@
-# Roadmap Milestones Agent Guide
+# Milestone Index Agent Guide
 
-This directory holds the individual delivery-outcome records. Each milestone
-is a checkable set of capabilities and protective boundaries needed to close a
-delivery stage with confidence.
+This directory provides repository navigation to Weavelit's authoritative
+GitHub Milestones without maintaining a second milestone record.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns the independently maintained milestone goal documents.
-- Each milestone describes the complete outcomes required to finish its phase;
-  it does not own canonical product, security, or technical decisions.
+- GitHub Milestones own milestone titles, summaries, goals, state, dates,
+  progress, and assigned issues.
+- This directory owns only the local milestone navigation index and its brief
+  summaries.
+- It does not own milestone outcomes or canonical product, security, or
+  technical decisions.
 - Canonical documents in `docs/` own settled decisions and definitions.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local workflow, inventory, and maintenance rules for milestone documents.
-- `milestone-1.md`: Core Server application delivery outcomes.
-- `milestone-2.md`: TOTP MFA Module delivery outcomes.
-- `milestone-3.md`: Web UI Client Module delivery outcomes.
-- `milestone-4.md`: Zendesk Service Module delivery outcomes.
-- `milestone-5.md`: Web UI delivery outcomes.
-- `milestone-6.md`: Weavelit CLI Client Module delivery outcomes.
-- `milestone-7.md`: Weavelit CLI delivery outcomes.
-- `milestone-8.md`: MVP deployment packaging and verification outcomes.
-- `milestone-9.md`: TechnitiumDNS Service Module delivery outcomes.
-- `milestone-10.md`: User-associated Service Connection support outcomes.
-- `milestone-11.md`: Automation Identity support outcomes.
-- `milestone-12.md`: External Authentication support outcomes.
-- `milestone-13.md`: Passkey MFA Module delivery outcomes.
-- `milestone-14.md`: Server OCI image support outcomes.
+- `AGENTS.md`: Local workflow, inventory, and maintenance rules for milestone navigation.
+- `milestones.md`: Navigation to the authoritative GitHub Milestones with brief summaries.
 
 ## Usage Guidance
 
@@ -40,15 +29,16 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
   and the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Keep changes focused on the affected milestone. When a milestone is added,
-  removed, moved, or renamed, update the applicable parent asset inventories in
-  the same change.
-- Record every desired completion outcome, including capabilities, limits,
-  protections, and safe failure or rejection behavior; do not replace those
-  outcomes with an exhaustive implementation-task list.
-- When a goal requires a settled product, security, or technical decision,
-  update the canonical document or architecture decision record and keep the
-  milestone aligned with that decision.
+- Create, update, close, and assign work to milestones in GitHub first.
+- Refresh `milestones.md` when an authoritative GitHub Milestone is added,
+  removed, renamed, or receives a materially changed summary.
+- Keep each local summary brief and navigational. Do not copy milestone goals,
+  state, dates, progress, or assigned issues into the repository.
+- Preserve the non-live `Example Milestone` section separately from
+  `Milestones`.
+- When a milestone requires a settled product, security, or technical
+  decision, update the canonical document or architecture decision record and
+  keep the GitHub Milestone aligned with that decision.
 
 ## Standards and Conventions
 
@@ -61,12 +51,12 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the required heading order and keep this guide under 100 lines.
-- Name milestone documents `milestone-<number>.md` and title them
-  `# Milestone <number>: <title>`.
-- Keep each milestone's `## Goals` section after its title and its
-  `## Related Documents` section at the end of the file.
-- Keep goals as unchecked Markdown checklist items until their outcome is
-  complete and verified.
+- Keep `milestones.md` as a navigation index, not a second milestone tracker.
+- Give each listed milestone a level-three title, a separate
+  `Open GitHub Milestone <number>` link, and a brief summary.
+- Link every listed milestone to its authoritative GitHub Milestone.
+- If the index and GitHub differ, treat GitHub as authoritative and refresh the
+  index.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.

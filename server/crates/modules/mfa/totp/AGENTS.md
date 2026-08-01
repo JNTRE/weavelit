@@ -39,5 +39,5 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Use maintained TOTP libraries; do not implement the TOTP standard from scratch.
-- Keep protected factor data out of logs, returned errors, and Admin CLI output.
+- Keep protected factor data out of logs and returned errors.
 - Preserve Server responsibility for MFA policy and account sessions rather than duplicating it here.

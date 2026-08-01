@@ -2,9 +2,10 @@
 
 This directory is reserved for the TypeScript and React source of the Web UI
 that is bundled into the Weavelit Server package. It is the browser application
-for authenticated self-service and administration workflows, while the Web UI
-Client Module owns its Server connection surface and final authorization stays
-with the Server.
+for restricted Init and Restore and authenticated self-service and
+administration workflows, while the Web UI Client Module owns its Server
+connection surface and final lifecycle and authorization enforcement stays with
+the Server.
 
 ## Purpose and Scope
 
@@ -26,7 +27,9 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Read `../../docs/clients/web-ui/` for Web UI behavior and `../../docs/client-modules/web-ui/` for its Server connection boundary before changing a workflow.
-- Keep presentation and client-side usability behavior here; rely on the Server for identity derivation and authorization decisions.
+- Keep presentation and client-side usability behavior here; rely on the Server
+  for lifecycle, Init and Restore availability, identity derivation, and
+  authorization decisions.
 - Add focused end-to-end or smoke tests for user workflows and likely release failures, following `../../docs/testing.md`.
 
 ## Standards and Conventions

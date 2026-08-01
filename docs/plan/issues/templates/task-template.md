@@ -30,7 +30,7 @@ component labels, Priority, milestone, Project status, and parent epic.
 
 ## References
 
-- [Link canonical documents, milestone outcomes, or related issues, or write `None`.]
+- [Link canonical documents, authoritative GitHub Milestones, or related issues, or write `None`.]
 
 ## Related Documents
 

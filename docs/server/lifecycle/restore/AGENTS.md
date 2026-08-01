@@ -1,43 +1,34 @@
-# SQLite Application Database Agent Guide
+# Server Restore Agent Guide
 
-This folder documents the MVP SQLite implementation of the Weavelit Server's
-internal Application Database backend. It isolates SQLite-specific behavior
-from the shared backend contract and from Server business logic.
+This folder documents the Server-owned implementation boundary for **[Restore](../../../glossary.md#states-and-requests)**. It applies the shared lifecycle contract to backup and recovery-key validation, restored-state transformation, atomic persistence, System Log completion, and finalization.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns SQLite-specific implementation-design documentation for
-  the **[Application Database](../../../glossary.md#applications-and-interfaces)**
-  backend.
-- It does not own the shared Application Database backend contract, Server
-  business logic, Log Module storage, or canonical product and security
-  commitments.
-- Future child paths own narrower SQLite design boundaries only when their
-  guidance differs from this directory's rules.
+- This directory owns the Server Restore contract and implementation design.
+- Shared startup classification, database selection, workflow arbitration, and sealing remain in `../lifecycle-design.md`.
+- User-visible Restore workflow behavior remains in `../../user-stories/restore-user-story.md`.
+- No child directory currently defines a narrower documentation boundary.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the SQLite Application Database backend.
-- `sqlite-application-database-design.md`: SQLite driver, migration, transaction, connection-health, error, and test design.
+- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server Restore design.
+- `restore-design.md`: Restore contract, backup and recovery-key validation, restored-state transformation, atomic persistence, System Log completion, and error-boundary design.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`,
-  `../../AGENTS.md`, `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then `../../../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Keep SQLite-specific driver, schema migration, transaction, connection-health,
-  and error behavior in this folder.
-- Update shared backend-contract documentation in `../` and canonical decisions
-  in `../../../spec.md` or `../../../open-questions.md` rather than
-  duplicating them here.
-- Make minimal, targeted changes and update this inventory when assets are
-  added, removed, renamed, or moved.
+- Update `restore-design.md` for Server-owned Restore behavior.
+- Update `../lifecycle-design.md` when a rule is shared with Init.
+- Update the Restore user story when a contract change affects the user-visible workflow.
+- Make minimal, targeted changes to the document that owns the changed behavior.
+- Preserve existing document structure and filenames unless the task requires reorganization.
 
 ## Standards and Conventions
 
@@ -49,16 +40,16 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Preserve the required heading order and keep this guide under 100 lines.
-- Use exact canonical names from `../../../glossary.md`; on first substantive
-  use in a section, format a canonical term as a bold link to its glossary
-  category.
-- Keep SQLite-specific documentation consistent with the shared Application
-  Database backend contract; do not present SQLite behavior as a rule for every
-  backend.
+- Preserve the required heading order.
+- Keep this guide under 100 lines.
+- Use exact canonical names from `../../../glossary.md`.
+- On first substantive use in a section, format a canonical term as a bold link to its glossary category.
+- Keep shared lifecycle rules in `../lifecycle-design.md`.
+- Keep Init-specific behavior in `../init/`.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
 - Include only valid, repository-relative links to existing canonical documents.
 - Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
-- Remove stale links and add canonical links so the section reflects current source-of-truth references.
+- Remove stale links from `Related Documents`.
+- Add canonical links required to reflect current source-of-truth references.

@@ -1,6 +1,5 @@
 [workspace]
 resolver = "2"
 members = [
-	"crates/weavelit-admin-cli",
 	"crates/weavelit-server",
 ]

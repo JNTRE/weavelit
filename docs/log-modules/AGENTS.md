@@ -7,7 +7,8 @@ This folder documents server-side **[Log Modules](../glossary.md#applications-an
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns Log Module design, including log storage, delivery, retention, backup, restore, and migration boundaries.
-- It does not own Server application-state storage; its design remains in `../open-questions.md` until a dedicated documentation boundary is warranted.
+- Log Modules receive records only after Server Audit or Observability completes the applicable pre-redaction boundary; they do not own sanitization of source records.
+- It does not own the Server's **[Application Database](../glossary.md#applications-and-interfaces)** design; that belongs in `../server/database/`.
 - It does not own Audit Log accountability or System Log operational-diagnosis semantics; those belong in `../server/audit/` and `../server/observability/`.
 
 ## Asset Inventory
@@ -23,7 +24,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Keep Log Module design aligned with the canonical logging policy in `../core-statements.md` and `../security-model.md`.
+- Keep Log Module design aligned with the canonical logging policy in `../spec.md` and `../security-model.md`.
 - Record unresolved destination backup, restore, migration, retention-bound, purge-execution, and remote-credential choices in `../open-questions.md`.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 

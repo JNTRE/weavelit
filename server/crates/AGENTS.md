@@ -1,9 +1,9 @@
 # Server Crates Agent Guide
 
 This directory is the Rust source boundary for the Weavelit Server package. It
-groups the Server and Admin CLI executables with the internal Application
-Database backend and the compiled-in Client, MFA, Log, and Service Module
-crates that are released together with the Server.
+groups the Server executable with the internal Application Database backend and
+the compiled-in Client, MFA, Log, and Service Module crates that are released
+together with the Server.
 
 ## Purpose and Scope
 
@@ -20,7 +20,6 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and Rust crate-boundary rules.
 - `database/`: Internal Application Database backend crates; `database/sqlite/` owns the MVP backend implementation.
 - `modules/`: Compiled-in Client, MFA, Log, and Service Module crate boundaries.
-- `weavelit-admin-cli/`: Host-local Admin CLI crate.
 - `weavelit-server/`: Weavelit Server executable crate.
 
 ## Usage Guidance

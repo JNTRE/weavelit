@@ -1,25 +1,29 @@
-# Issue Planning Agent Guide
+# Issue Index Agent Guide
 
-This directory holds the high-level view of open Weavelit GitHub issues and
-their GitHub Project planning metadata. It provides a reviewable snapshot of
-planned work without replacing GitHub as the live source of truth.
+This directory provides repository navigation to open Weavelit GitHub Issues
+without maintaining a second issue or planning-metadata record.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns the maintained overview of open issues in [JNTRE/weavelit](https://github.com/JNTRE/weavelit/issues).
-- It does not own live issue state, relationships, milestones, or project fields; GitHub owns those records.
-- `issues.md` defines the standard issue-summary format and current open-issue snapshot.
-- The Markdown templates define the required body structure for agent-created issues; GitHub remains the source of truth for each issue's native type and planning metadata.
+- GitHub Issues own issue titles, bodies, outcomes, acceptance criteria, type,
+  state, labels, assignees, priority, relationships, milestone assignments, and
+  GitHub Project fields.
+- This directory owns the local open-issue navigation index and the Markdown
+  templates used to create issues.
+- `issues.md` lists open issues with linked titles, brief summaries, and
+  optional Related Epic and Milestone context only.
+- The Markdown templates define the required initial body structure for
+  agent-created issues; the created GitHub Issue becomes authoritative.
 - The `templates/` child directory owns the template-specific creation workflow; read `templates/AGENTS.md` before changing a template.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local workflow, inventory, and issue-summary maintenance rules.
-- `issues.md`: High-level open-issue overview, planning metadata, and demonstration entry.
+- `AGENTS.md`: Local workflow, inventory, and issue-index maintenance rules.
+- `issues.md`: Navigation to authoritative open GitHub Issues with brief summaries.
 - `templates/`: Markdown body templates for agent-created issues; follow `templates/AGENTS.md` before editing this boundary.
 
 ## Usage Guidance
@@ -33,9 +37,12 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Set the native issue type with `gh issue create --type`; then assign the
   component label, `Priority`, GitHub Milestone, Project status, and applicable
   issue relationships defined in `../project/project-standards.md`.
-- Refresh issue records from the repository issue tracker, GitHub Milestones, and the Weavelit GitHub Project in the same update.
-- Include each open repository issue exactly once and summarize its stated outcome or decision without replacing its acceptance criteria.
-- Treat demonstration entries as documentation examples only; do not create a GitHub issue without explicit approval.
+- Refresh `issues.md` from the repository issue tracker. Add newly opened
+  issues, remove closed issues, and update changed titles, summaries, Related
+  Epic values, and Milestone values.
+- Include each open repository issue exactly once and summarize its stated
+  outcome or decision without copying its body or acceptance criteria.
+- Preserve the non-live `Example Issue` section separately from `Open Issues`.
 
 ## Standards and Conventions
 
@@ -48,10 +55,16 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep the required heading order and keep this guide under 100 lines.
-- Preserve the standard record fields in `issues.md`; write `Not assigned` when GitHub has no value rather than inferring one.
+- Give each listed issue a level-three heading in the form `#<number> <title>`,
+  a separate `Open GitHub Issue #<number>` link, and a bold `Summary:`
+  paragraph.
+- When applicable, use a `Group | Field | Value` table containing only
+  `Related | Related epic | <value>` and `Related | Milestone | <value>` rows;
+  omit any row whose value is absent.
+- Do not copy type, state, labels, assignees, priority, other relationships, or
+  GitHub Project fields into `issues.md`.
 - Do not use GitHub Issue Forms; this repository creates issues through the Markdown templates in `templates/`.
 - Order an epic before its child issues, then order siblings by issue number.
-- Record activity dates as `YYYY-MM-DD`.
 - Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
 - Every production document must include a `## Related Documents` section at the end of the document.
 - `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.

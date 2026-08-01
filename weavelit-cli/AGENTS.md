@@ -1,9 +1,10 @@
 # Weavelit CLI Source Agent Guide
 
 This directory implements the separately packaged Weavelit CLI for users'
-local macOS systems. It is a peer client of the Weavelit Server and may request
-only permitted Operations through the versioned HTTPS API; it never owns
-provider credentials, provider integrations, or Server administration.
+local macOS systems. It is a peer client of the Weavelit Server and implements
+commands and workflows for the User Plane and Administration Plane declared by
+the Weavelit CLI Client Module. It never owns provider credentials, provider
+integrations, Server authorization policy, or Server administration behavior.
 
 ## Purpose and Scope
 
@@ -11,7 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns Weavelit CLI source, tests, and macOS release packaging.
 - It does not own the server-side Weavelit CLI Client Module; that belongs in `../server/crates/modules/client/weavelit-cli/`.
-- It does not own provider integration, provider credentials, or administrative functions; those remain Weavelit Server responsibilities.
+- It does not own provider integration, provider credentials, Server authorization decisions, or the behavior of Server-owned administration contracts.
 
 ## Asset Inventory
 
@@ -43,5 +44,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep Weavelit CLI application source under `src/`, its focused tests under `tests/`, and macOS `arm64` release packaging under `packaging/macos/`.
-- Do not add provider credentials, provider-integration logic, or administrative functions to this application.
+- Implement commands and workflows only for planes declared by the Weavelit CLI Client Module, and submit every application function through that module's versioned API surface.
+- Do not add provider credentials, provider-integration logic, or Server authorization policy to this application.
 - Preserve the versioned HTTPS API boundary and canonical requirements in `../docs/`; link to or update those documents instead of duplicating their decisions here.

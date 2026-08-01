@@ -29,7 +29,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Read the canonical documentation in `../../../docs/containers/dev/` before changing
   the Containerfile and update it in the same change when its contract changes.
 - Do not replace the placeholder until the Server development configuration,
-  state path, bootstrap secret-file interface, and startup behavior are defined.
+  protected state path, deployment-record, database-locator, and secret-reference
+  mounts, and restricted pre-operational startup behavior are defined.
 - Validate an implemented image using `make check` within the mounted source
   tree and preserve its documented Docker and OCI-compatible validation.
 

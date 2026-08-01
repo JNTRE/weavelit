@@ -7,23 +7,24 @@ This folder documents the implementation-design boundaries of the **[Weavelit Se
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
 - This directory owns shared **[Weavelit Server](../glossary.md#applications-and-interfaces)** implementation-design documentation and routing to server-boundary documentation.
-- It does not own product commitments, security requirements, or unresolved decisions; those remain in `../core-statements.md`, `../security-model.md`, and `../open-questions.md`.
-- The `api/`, `authentication/`, `authorization/`, `automation-identities/`, `audit/`, `database/`, and `observability/` child directories own detailed documentation for their respective Server boundaries.
+- It does not own product commitments, security requirements, or unresolved decisions; those remain in `../spec.md`, `../security-model.md`, and `../open-questions.md`.
+- The `api/`, `authentication/`, `authorization/`, `automation-identities/`, `audit/`, `database/`, `lifecycle/`, `observability/`, and `user-stories/` child directories own detailed documentation for their respective Server boundaries and user-visible lifecycle workflows.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Weavelit Server.
-- `api/`: Documentation for the Server's authenticated HTTPS application interface.
+- `api/`: Documentation for the Server's normal authenticated HTTPS application interface and shared API contract; restricted pre-operational lifecycle and workflow design remain in their named Server documents.
 - `authentication/`: Documentation for the Server's human authentication and Automation Identity credential-validation design.
 - `authorization/`: Documentation for the Server's permission and policy-evaluation design.
 - `automation-identities/`: Documentation for **[Automation Identity](../glossary.md#identities-and-access)** lifecycle, ownership, and accountability design.
 - `audit/`: Documentation for the Server's accountability and Audit Log design.
 - `database/`: Documentation for Application Database backend boundaries and their implementation design.
-- `init-design.md`: Server-owned Init crate, adapter, bootstrap, secret-file, and error-boundary design.
+- `lifecycle/`: Shared pre-operational lifecycle design, with focused child boundaries for the Server-owned Init and Restore workflows.
 - `observability/`: Documentation for Server System Log design and future operational diagnosis.
 - `server-architecture-design.md`: Shared Server workspace, crate-composition, and lifecycle design rules.
+- `user-stories/`: User-visible Web UI Init and Restore workflow narratives; Server contract and persistence design remain in the parent documents.
 
 ## Usage Guidance
 
@@ -33,8 +34,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before creating or updating a production document, read the
   [Documentation Standards](../documentation-standards.md) and apply its
   authority, document-type, lifecycle, structure, and writing rules.
-- Keep shared Server design documentation directly in this folder; place boundary-specific detail in its appropriate child directory.
-- Update `../core-statements.md` for settled commitments and `../open-questions.md` for unresolved choices instead of treating local design documentation as their replacement.
+- Keep broad shared Server design documentation directly in this folder; place pre-operational lifecycle design, boundary-specific detail, and user-visible lifecycle narratives in their appropriate child directories.
+- Update `../spec.md` for settled commitments and `../open-questions.md` for unresolved choices instead of treating local design documentation as their replacement.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 
 ## Standards and Conventions

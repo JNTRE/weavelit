@@ -1,14 +1,15 @@
 # Server Audit Agent Guide
 
-This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** **[Audit Log](../../glossary.md#applications-and-interfaces)** design for consequential **[Operations](../../glossary.md#applications-and-interfaces)**. It preserves accountability for the authenticated principal and, for automations, the **[Responsible Owner](../../glossary.md#identities-and-access)** without treating Audit Logs as operational observability data.
+This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** **[Audit Log](../../glossary.md#applications-and-interfaces)** design for consequential authenticated application actions, including **[Operations](../../glossary.md#applications-and-interfaces)**. It preserves accountability for the authenticated principal and, for automations, the **[Responsible Owner](../../glossary.md#identities-and-access)** without treating Audit Logs as operational observability data.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Audit Log design for **[Operation](../../glossary.md#applications-and-interfaces)** accountability, including the authenticated principal, result, and correlation identifier.
+- This directory owns Audit Log construction and pre-redaction design for authenticated application accountability, including the authenticated principal, action or **[Operation](../../glossary.md#applications-and-interfaces)**, target, result, and correlation identifier, before records reach a Log Module.
+- It does not own Init or Restore lifecycle-result logging; that belongs in the sibling `../observability/` directory.
 - It does not own operational diagnosis, metrics, or tracing; those belong in the sibling `../observability/` directory.
-- Audit retention, redaction, and backup decisions that remain unsettled belong in `../../open-questions.md`.
+- Audit destination retention and backup decisions that remain unsettled belong in `../../open-questions.md`; required pre-redaction follows `../../security-model.md`.
 
 ## Asset Inventory
 
@@ -22,7 +23,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Keep audit design aligned with `../../core-statements.md` and `../../security-model.md`; record unresolved retention and backup choices in `../../open-questions.md`.
+- Keep audit design aligned with `../../spec.md` and `../../security-model.md`; record unresolved retention and backup choices in `../../open-questions.md`.
 - Keep operational diagnosis in `../observability/` and Audit Log storage and delivery design in `../../log-modules/`.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 
