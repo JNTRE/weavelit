@@ -273,8 +273,11 @@ authorization.
 
 A Service Connection determines the external identity that performs an
 approved Operation; it MUST NOT grant caller access. Before selecting a
-compatible Service Connection, the Server MUST separately evaluate the caller's
-Group grants and the requested Operation.
+compatible Service Connection, the Server MUST authorize the requested Operation
+according to the authenticated principal type. For a Human User, it MUST
+evaluate the applicable effective Group grants. For an Automation Identity, it
+MUST evaluate the explicitly assigned named Operation scopes. Service Connection
+selection MUST NOT expand either authorization result.
 
 ## Logging And Accountability
 
