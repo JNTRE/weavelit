@@ -22,19 +22,6 @@ storage-specific behavior to lifecycle callers.
 | --- | --- | --- |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
-### #31 Implement database state inspection and deployment binding
-
-[Open GitHub Issue #31](https://github.com/JNTRE/weavelit/issues/31).
-
-**Summary:** Implement the SQLite read-side contract for safe durable-state
-classification and deployment-identifier mismatch rejection without workflow
-mutation.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
 ### #32 Implement atomic workflow checkpoint operations
 
 [Open GitHub Issue #32](https://github.com/JNTRE/weavelit/issues/32).
