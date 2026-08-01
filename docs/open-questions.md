@@ -56,20 +56,23 @@ access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 Administration Permission? Which group-grant changes require additional
 confirmation or reauthentication?
 
-### 6. Client Module plane and capability schema
+### 6. Client Module plane and Pre-Operational Surface schema
 
 The restricted **[Init](glossary.md#states-and-requests)** and
 **[Restore](glossary.md#states-and-requests)** contracts are exposed through
-**[Client Modules](glossary.md#applications-and-interfaces)** that declare the
-corresponding pre-operational capabilities while the Server is uninitialized.
-Those capabilities are distinct from the normal authenticated
+each **[Client Module](glossary.md#applications-and-interfaces)**'s
+**[Pre-Operational Surface](glossary.md#applications-and-interfaces)** when it
+declares the corresponding capabilities and the Server is uninitialized. The
+Pre-Operational Surface is distinct from the normal authenticated
 **[User Plane](glossary.md#applications-and-interfaces)** and
 **[Administration Plane](glossary.md#applications-and-interfaces)**. What route
-and command organization maps functions to their declared plane and access
-class, and what declaration schema composes the planes with pre-operational
-capabilities? How does that schema represent the
+and command organization maps normal functions to their declared plane and
+access class and lifecycle functions to their declared capability? What
+declaration schema composes the planes with the Pre-Operational Surface? How
+does that schema represent the
 **[Web UI](glossary.md#applications-and-interfaces)** with Init and Restore
-capabilities plus User Plane and Administration Plane functions, and the
+capabilities on its Pre-Operational Surface plus User Plane and Administration
+Plane functions, and the
 **[Weavelit CLI](glossary.md#applications-and-interfaces)** with User Plane and
 Administration Plane functions? How does the resulting route and command
 terminology remain distinct from host-level deployment administration and

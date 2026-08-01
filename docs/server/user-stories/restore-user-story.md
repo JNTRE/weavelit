@@ -30,8 +30,9 @@ same Server-owned contracts.
    creating an account, session, or alternate host-authentication step.
 
 The deployer is responsible for limiting network access to the unauthenticated
-pre-operational surfaces. The Web UI does not imply that the private recovery
-key is proof of host authority or a normal application credential.
+**[Pre-Operational Surfaces](../../glossary.md#applications-and-interfaces)**.
+The Web UI does not imply that the private recovery key is proof of host
+authority or a normal application credential.
 
 ## Select The Application Database
 

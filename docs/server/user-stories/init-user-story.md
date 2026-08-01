@@ -29,8 +29,8 @@ present a different interaction while invoking the same Server-owned contracts.
    creating an account or application session.
 
 The deployer is responsible for limiting network access to the unauthenticated
-pre-operational surfaces. The Web UI does not ask for or imply separate proof
-of host control.
+**[Pre-Operational Surfaces](../../glossary.md#applications-and-interfaces)**.
+The Web UI does not ask for or imply separate proof of host control.
 
 ## Select The Application Database
 
@@ -129,8 +129,9 @@ redisplays that private key.
 7. The Server durably records the successful Init result through the committed
    System Log assignment, then irreversibly seals the deployment record
    `Initialized`.
-8. Only after the seal is durable does the Server remove the Init surface and
-   enable normal authenticated operation. No process restart is required.
+8. Only after the seal is durable does the Server remove the Pre-Operational
+   Surface and enable normal authenticated operation. No process restart is
+   required.
 
 If validation fails before the database commit, the Web UI keeps the person in
 setup, presents an actionable redacted error, and allows correction without

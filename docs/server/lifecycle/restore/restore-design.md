@@ -31,12 +31,15 @@ database, or any ineligible lifecycle combination is rejected before sensitive
 input processing. Runtime route removal is an additional control rather than
 the Restore operation's authority.
 
-A Restore-capable Client Module owns request decoding, bounded transfer, and
-client-specific presentation of normalized status and errors. It passes the
-encrypted artifact and private recovery key only to the Restore contract and
-does not decrypt, log, retain, or interpret either. The Web UI Client Module is
-Restore-capable. Another Client Module may expose Restore only by declaring that
-capability and using the same Server-owned operations.
+A Restore-capable **[Client Module](../../../glossary.md#applications-and-interfaces)**
+exposes its Server-owned operations through its
+**[Pre-Operational Surface](../../../glossary.md#applications-and-interfaces)**
+and owns request decoding, bounded transfer, and client-specific presentation
+of normalized status and errors. It passes the encrypted artifact and private
+recovery key only to the Restore contract and does not decrypt, log, retain, or
+interpret either. The Web UI Client Module is Restore-capable. Another Client
+Module may expose Restore only by declaring that capability and using the same
+Server-owned operations.
 
 ## Eligibility And Workflow Choice
 

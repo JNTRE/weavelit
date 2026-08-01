@@ -40,14 +40,15 @@ lifecycle gate and Client Module route removal are additional controls, not
 the Init operation's authority.
 
 An Init-capable **[Client Module](../../../glossary.md#applications-and-interfaces)**
-may translate its connection surface into these operations while the Server is
-uninitialized. It owns request decoding, client-specific interaction, and
-presentation of normalized results. It may also expose shared lifecycle status
-and database selection through the lifecycle contract, but it has no direct
-Application Database, driver, locator-file, secret-file, or lifecycle-state
-access. The Web UI Client Module is Init-capable. Another Client Module may
-expose Init only by declaring that capability and using the same Server-owned
-operations.
+may translate requests from its
+**[Pre-Operational Surface](../../../glossary.md#applications-and-interfaces)**
+into these operations while the Server is uninitialized. It owns request
+decoding, client-specific interaction, and presentation of normalized results.
+It may also expose shared lifecycle status and database selection through the
+lifecycle contract, but it has no direct Application Database, driver,
+locator-file, secret-file, or lifecycle-state access. The Web UI Client Module
+is Init-capable. Another Client Module may expose Init only by declaring that
+capability and using the same Server-owned operations.
 
 The runtime uses the lifecycle classification before dispatching any client
 request. It exposes Init operations only while the lifecycle authority reports

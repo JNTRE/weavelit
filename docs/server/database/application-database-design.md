@@ -125,11 +125,13 @@ pre-redacted records from the Server; they never read or modify Application
 Database state. The Application Database never acts as a Log Module destination,
 fallback, or queue.
 
-Application Database selection and configuration occur through the shared
-pre-operational Client Module surface. Init then selects and configures initial
-Log Modules; Restore imports their application-owned configuration from the
-validated backup. Selecting the same underlying technology for both does not
-reuse an Application Database backend or its resources.
+Application Database selection and configuration occur through a Client
+Module's
+**[Pre-Operational Surface](../../glossary.md#applications-and-interfaces)**
+backed by the shared lifecycle contract. Init then selects and configures
+initial Log Modules; Restore imports their application-owned configuration from
+the validated backup. Selecting the same underlying technology for both does
+not reuse an Application Database backend or its resources.
 
 ## Backup And Restore
 

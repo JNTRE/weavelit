@@ -79,8 +79,9 @@ platform is macOS 26 and later on Apple Silicon (`arm64`).
 **Web UI** - The browser-based management client included with the
 **[Weavelit Server](#applications-and-interfaces)**. It consumes the API surface
 exposed by the Web UI **[Client Module](#applications-and-interfaces)**. While
-the Server is uninitialized, it presents that module's Init-capable and
-Restore-capable pre-operational capabilities. During normal operation, a
+the Server is uninitialized, it presents that module's
+**[Pre-Operational Surface](#applications-and-interfaces)**, which declares both
+Init and Restore capabilities. During normal operation, a
 **[Human User](#identities-and-access)** whose
 **[Group](#identities-and-access)** grants access to the Web UI Client Module can
 use its **[User Plane](#applications-and-interfaces)** functions and view their
@@ -97,11 +98,20 @@ Server remains the final authentication and authorization authority. A Client
 Module compiles and registers only its declared planes; an undeclared plane and
 its routes, handlers, and client-facing contracts are absent. Its corresponding
 client implements user experience only for those declared planes. A Client
-Module may separately declare an Init-capable pre-operational capability, a
-Restore-capable pre-operational capability, or both. While the Server is
-uninitialized, each capability exposes only its corresponding restricted
-pre-operational contract; neither capability remains available after the
-deployment is initialized.
+Module may separately declare a
+**[Pre-Operational Surface](#applications-and-interfaces)** with an Init
+capability, a Restore capability, or both. Its corresponding client implements
+pre-operational workflows only for the capabilities that surface declares.
+
+**Pre-Operational Surface** - The restricted, unauthenticated portion of a
+**[Client Module](#applications-and-interfaces)** connection surface available
+only while the Server is uninitialized. It exposes only the Server-owned
+**[Init](#states-and-requests)** and **[Restore](#states-and-requests)** contracts
+corresponding to capabilities declared by that Client Module. Trusted lifecycle
+state determines its availability rather than normal principal authorization.
+It remains distinct from the **[User Plane](#applications-and-interfaces)** and
+**[Administration Plane](#applications-and-interfaces)**, and it is unavailable
+after the deployment is initialized.
 
 **User Plane** - The normal authenticated portion of a
 **[Client Module](#applications-and-interfaces)** API surface that exposes

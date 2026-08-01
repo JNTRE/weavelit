@@ -9,9 +9,9 @@ migration implementation.
 
 During **[Init](../glossary.md#states-and-requests)**, the person completing the
 workflow uses an Init-capable
-**[Client Module](../glossary.md#applications-and-interfaces)** administration
-surface to select, configure, and activate one or more Log Modules before
-assigning destinations for the two log types.
+**[Pre-Operational Surface](../glossary.md#applications-and-interfaces)**
+provided by a Client Module to select, configure, and activate one or more Log
+Modules before assigning destinations for the two log types.
 
 The **[Application Database](../glossary.md#applications-and-interfaces)** is
 selected and configured by the shared lifecycle contract before Init accepts

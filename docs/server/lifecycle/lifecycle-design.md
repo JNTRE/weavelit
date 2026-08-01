@@ -111,10 +111,11 @@ does not enable login, administration, or normal client functions.
 ## Application Database Selection
 
 The lifecycle crate presents the runtime-supplied backend catalog and each
-backend's typed, non-secret connection fields through Client Modules that
-declare an applicable pre-operational capability. A client selects a backend
-and submits connection settings and any typed secret-file references. It never
-selects the locator path or supplies locator contents.
+backend's typed, non-secret connection fields through a Client Module's
+**[Pre-Operational Surface](../../glossary.md#applications-and-interfaces)**
+that declares an applicable capability. A client selects a backend and submits
+connection settings and any typed secret-file references. It never selects the
+locator path or supplies locator contents.
 
 Selection validates the common request structure, asks the selected backend to
 validate its settings, safely resolves only the references required to connect,

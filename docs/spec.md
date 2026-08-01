@@ -112,13 +112,15 @@ application assets and supporting client-side navigation. The Weavelit CLI MUST
 use the API surface exposed by the Weavelit CLI Client Module and MUST NOT use
 non-API Web UI routes.
 
-Before Init or Restore completes, the same listener MUST expose only restricted
-pre-operational contracts through Client Modules that explicitly declare the
-corresponding capability. Pre-operational capabilities MUST remain distinct
-from the User Plane and Administration Plane, and normal application functions
-MUST remain unavailable in this state. Network reachability MUST be limited
-through TLS, firewall, and other deployment network controls. During normal
-operation, client authentication is additionally REQUIRED. While the Server is
+Before Init or Restore completes, the same listener MUST expose only applicable
+**[Pre-Operational Surfaces](glossary.md#applications-and-interfaces)** provided
+by Client Modules. Each Pre-Operational Surface MUST expose only the restricted
+Init and Restore contracts corresponding to capabilities explicitly declared by
+its Client Module. Pre-Operational Surfaces MUST remain distinct from the User
+Plane and Administration Plane, and normal application functions MUST remain
+unavailable in this state. Network reachability MUST be limited through TLS,
+firewall, and other deployment network controls. During normal operation,
+client authentication is additionally REQUIRED. While the Server is
 uninitialized, the deployer is responsible for restricting network access to
 the unauthenticated Init and Restore capabilities.
 
@@ -339,8 +341,9 @@ compiled into the Server package and MUST NOT be runtime-installable plugins.
 Before Init or Restore completes, the Server MUST operate in a restricted,
 uninitialized mode. Init and Restore MUST be mutually exclusive paths to an
 initialized state and MUST NOT require an existing Administrator. The Server
-MUST expose each path only through Client Modules that explicitly declare the
-matching pre-operational capability.
+MUST expose each path only through a
+**[Pre-Operational Surface](glossary.md#applications-and-interfaces)** whose
+Client Module explicitly declares the matching capability.
 
 The normal Server runtime MUST compose `weavelit-server-lifecycle`,
 `weavelit-server-init`, and `weavelit-server-restore`. The lifecycle crate MUST
@@ -354,22 +357,23 @@ MUST independently reject invocation after the deployment is initialized.
 
 ### Shared Database Selection
 
-Before either workflow changes application state, a Client Module with the
-applicable pre-operational capability MUST use the shared pre-operational Server
-contract to select and configure the Application Database. The Server MUST
-validate the selection and MUST persist in protected Server-local configuration
-only the backend identifier, connection settings, and secret references needed
-to reopen the selected database. It MUST then open the Application Database
-without requiring a restart. All other application-owned configuration MUST be
-stored in the Application Database.
+Before either workflow changes application state, a Client Module's
+**[Pre-Operational Surface](glossary.md#applications-and-interfaces)** with the
+applicable capability MUST use the shared pre-operational Server contract to
+select and configure the Application Database. The Server MUST validate the
+selection and MUST persist in protected Server-local configuration only the
+backend identifier, connection settings, and secret references needed to reopen
+the selected database. It MUST then open the Application Database without
+requiring a restart. All other application-owned configuration MUST be stored
+in the Application Database.
 
 Application Database selection and Init or Restore MUST occur through a Client
-Module that declares the applicable pre-operational capability. Package
-installation, service configuration, and future container adapters MUST supply
-only the host and process settings needed to start the Server in restricted
-uninitialized mode. They MUST NOT select the Application Database or create a
-second application-configuration surface. Init MUST create, or Restore MUST
-import, application configuration; authenticated
+Module's Pre-Operational Surface that declares the applicable capability.
+Package installation, service configuration, and future container adapters MUST
+supply only the host and process settings needed to start the Server in
+restricted uninitialized mode. They MUST NOT select the Application Database or
+create a second application-configuration surface. Init MUST create, or Restore
+MUST import, application configuration; authenticated
 **[Administration Plane](glossary.md#applications-and-interfaces)** functions
 MUST own subsequent mutable application settings.
 
