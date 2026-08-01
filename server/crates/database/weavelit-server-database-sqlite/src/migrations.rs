@@ -71,8 +71,9 @@ fn apply_migrations(
             Vec::new()
         };
 
+        validate_schema(&transaction, &migrations[..applied.len()])?;
+
         let Some(next_migration) = migrations.get(applied.len()) else {
-            validate_schema(&transaction, migrations)?;
             transaction
                 .commit()
                 .map_err(|error| map_sqlite_error(error, ErrorContext::Migration))?;
@@ -271,6 +272,39 @@ mod tests {
         assert_eq!(error, DatabaseError::IntegrityFailure);
         assert!(table_exists_for_test(&connection, LEDGER_TABLE));
         assert!(!table_exists_for_test(&connection, "rollback_probe"));
+        let ledger_count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_migration_ledger",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ledger_count, 1);
+    }
+
+    #[test]
+    fn tampered_applied_prefix_is_rejected_before_pending_migration() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS[0].sql).unwrap();
+        let checksum = checksum(MIGRATIONS[0].sql.as_bytes());
+        connection
+            .execute(
+                "INSERT INTO weavelit_migration_ledger \
+                 (sequence_number, identifier, checksum) VALUES (1, ?1, ?2)",
+                params![MIGRATIONS[0].identifier, checksum.as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute_batch("DROP TRIGGER weavelit_migration_ledger_reject_update;")
+            .unwrap();
+
+        let error = apply_migrations(&mut connection, MIGRATIONS).unwrap_err();
+
+        assert_eq!(error, DatabaseError::IntegrityFailure);
+        assert!(!table_exists_for_test(
+            &connection,
+            "weavelit_lifecycle_state"
+        ));
         let ledger_count: i64 = connection
             .query_row(
                 "SELECT count(*) FROM weavelit_migration_ledger",
