@@ -22,19 +22,6 @@ storage-specific behavior to lifecycle callers.
 | --- | --- | --- |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
-### #30 Implement SQLite migrations and lifecycle schema
-
-[Open GitHub Issue #30](https://github.com/JNTRE/weavelit/issues/30).
-
-**Summary:** Provide an integrity-checked, forward-only SQLite migration
-system and the minimal durable lifecycle schema required for state inspection
-and checkpoint operations.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#27 Establish Application Database and SQLite foundation](https://github.com/JNTRE/weavelit/issues/27) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
 ### #31 Implement database state inspection and deployment binding
 
 [Open GitHub Issue #31](https://github.com/JNTRE/weavelit/issues/31).
