@@ -102,6 +102,18 @@ backend catalog and uses the lifecycle result to choose which routes may exist.
 The lifecycle crate does not create new application state, interpret backup
 contents, handle a private recovery key, or implement client presentation.
 
+The initial delivered lifecycle contract depends only on
+`weavelit-server-database`. It reuses that crate's deployment identifier and
+Application Database trait while defining lifecycle record and locator values,
+canonical backend and field identifiers, bounded scalar connection values,
+trusted secret classifications, capability classifications, and payload-free
+errors. `BackendCatalog` validates runtime registrations and submitted fields
+before invoking an `ApplicationDatabaseFactory`. The factory receives a trusted
+Server-derived local context separately from canonically ordered validated
+settings and returns only the backend-neutral Application Database contract.
+This initial boundary contains no persistence, serialization, cryptography,
+SQLite implementation, Client Module, or runtime-composition dependency.
+
 `weavelit-server-init` owns only the new-state workflow. It uses the lifecycle
 crate to select and reopen the Application Database and to validate and advance
 trusted lifecycle state. It owns initialization requests, first-user and

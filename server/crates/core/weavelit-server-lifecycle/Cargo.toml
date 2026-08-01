@@ -1,0 +1,11 @@
+[package]
+name = "weavelit-server-lifecycle"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+weavelit-server-database = { path = "../../database/weavelit-server-database" }

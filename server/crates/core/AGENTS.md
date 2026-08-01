@@ -19,6 +19,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and Server core crate-boundary rules.
 - `weavelit-server/`: Weavelit Server executable crate.
+- `weavelit-server-lifecycle/`: Backend-neutral lifecycle domain, validation, and runtime-supplied Application Database catalog contract.
 
 ## Usage Guidance
 

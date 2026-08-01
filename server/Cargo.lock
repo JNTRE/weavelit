@@ -249,6 +249,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "weavelit-server-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "weavelit-server-database",
+]
+
+[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

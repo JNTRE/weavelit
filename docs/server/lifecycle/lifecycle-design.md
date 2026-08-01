@@ -31,6 +31,39 @@ Modules, generate or accept private recovery keys, interpret backup contents,
 or implement client presentation. Those responsibilities remain in their
 workflow and Client Module boundaries.
 
+The initial `weavelit-server-lifecycle` contract is implemented without
+persistence or cryptography. It defines the three canonical lifecycle states,
+the nonzero 16-byte locator generation, version 1 deployment-record and locator
+domain values, and the later startup capability classifications. It reuses the
+Application Database contract's 16-byte deployment identifier rather than
+defining another deployment identity.
+
+The runtime builds `BackendCatalog` from compiled-in backend registrations. A
+registration declares one lowercase kebab-case backend identifier, at most 64
+lowercase kebab-case connection fields, each field's required scalar kind,
+required or optional status, and trusted secret classification, plus an
+`ApplicationDatabaseFactory`. Field identifiers containing a local path,
+directory, or file-reference concept are invalid. Catalog construction rejects
+empty, invalid, duplicate, or oversized registrations.
+
+A submitted connection field contains its identifier, scalar value, and claimed
+secret classification. Common validation rejects an unknown or duplicate
+field, a missing required field, the wrong scalar kind, a classification that
+does not match the trusted declaration, more than 64 fields, or a string or byte
+value over 16 KiB before invoking a backend factory. Validated settings are
+sorted by identifier, remain bound to the backend declaration that validated
+them, and carry the declaration's classification. String, signed 64-bit
+integer, boolean, and byte values are the only supported kinds. The
+caller-selected input has no path or file-reference kind.
+
+The factory receives local filesystem context only through
+`TrustedBackendContext`, supplied by trusted Server policy, and receives client
+values only through `ValidatedConnectionSettings`. It maps implementation
+failures to payload-free lifecycle categories and returns a boxed
+`ApplicationDatabase`. Public errors and diagnostic formatting contain no
+identifier text, connection value, local path, raw backend failure, or factory
+implementation detail.
+
 ## Deployment Record And Database Locator
 
 The accepted [Lifecycle Anchor Protection And Serialization Profile](lifecycle-anchor-profile-decision.md)
