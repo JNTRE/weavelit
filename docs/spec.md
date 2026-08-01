@@ -125,8 +125,8 @@ uninitialized, the deployer is responsible for restricting network access to
 the unauthenticated Init and Restore capabilities.
 
 Each client MUST communicate through the surface provided by its corresponding
-Client Module. Client Modules MUST translate accepted client requests into the
-same Server-owned Operation contracts. Client-side checks and agent skills MAY
+Client Module. Client Modules MUST translate each accepted client request into
+its owning Server contract. Client-side checks and agent skills MAY
 improve usability, but the Server MUST remain the final authentication,
 validation, and authorization authority.
 
