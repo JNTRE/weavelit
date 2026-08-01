@@ -31,8 +31,10 @@ When implemented, the production image must:
   **[Application Database](../../glossary.md#applications-and-interfaces)** or
   create an alternative Init or Restore path;
 - run the Server as a dedicated non-root service user, persist its protected
-  deployment record and Application Database locator across container
-  replacement, and make mounted secret files readable only by that user;
+  deployment record, Application Database locator, encrypted database
+  connection values, and Server-managed database files across container
+  replacement; host-supplied TLS or process-secret mounts must be readable only
+  by that user and must not become database file-reference inputs;
 - exclude Rust, Cargo, source code, test tooling, and build dependencies;
 - document and test host administration, persistent state and backups, TLS
   termination, non-secret configuration, secret injection, provenance, upgrade,

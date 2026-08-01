@@ -144,10 +144,11 @@ For the post-MVP OCI-compliant production Server image, how does the build and
 verification workflow prove that the image contains the same versioned,
 prebuilt Server release output used to assemble the `.deb` package? How are the
 Server-local Application Database deployment record, locator, and typed secret
-references persisted and protected across container replacement? What
-persistent-volume and backup model, TLS termination, secret injection
-mechanism, supported orchestrators, image provenance, and upgrade and rollback
-policy apply?
+connection values persisted and protected across container replacement while
+the Server retains exclusive control of their local storage paths? What
+persistent-volume and backup model, TLS termination, secret injection mechanism,
+supported orchestrators, image provenance, and upgrade and rollback policy
+apply?
 
 ### 12. Zendesk reference integration
 

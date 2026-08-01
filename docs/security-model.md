@@ -148,6 +148,14 @@ ordinary backup artifact. Possession of that private key authorizes decryption
 of its compatible backup only; it is not an application identity, proof of host
 authority, or authorization for another function.
 
+During pre-operational Application Database selection, a client may submit
+backend-declared connection values but must not submit or influence a filesystem
+path or file reference. The Server must derive every local path, persist secret
+connection values in encrypted form within protected Server-owned configuration,
+and decrypt them only when required to open the selected database. A
+client-supplied value must never cause the Server to read an unrelated local
+file as connection material.
+
 ## Backup Input Security Profile
 
 The Server must treat every submitted backup as untrusted even when the supplied

@@ -39,16 +39,21 @@ authority or a normal application credential.
 1. The Web UI requests the compiled-in
    **[Application Database](../../glossary.md#applications-and-interfaces)**
    backend catalog from the shared lifecycle contract and presents each
-   backend's typed configuration fields. The MVP offers SQLite.
+   backend's typed connection fields. The MVP offers SQLite.
 2. The person selects a backend, completes its fields, and submits the
-   selection. Secret connection material is represented only by supported
-   secret-file references.
+   selection. For an external backend, these fields may include endpoint,
+   identity, and secret connection values. The Web UI submits secret values
+   only over HTTPS and never asks for a Server filesystem path or file
+   reference. A local backend, including SQLite, exposes no database location
+   or filename control.
 3. The Server validates the request, opens the destination, and confirms that
    it is empty, compatible, and eligible for the replacement deployment before
    accepting a backup or private recovery key.
 4. On success, the Server writes its protected database locator and binds it to
-   the replacement deployment identifier. The same running process continues
-   Restore without a restart.
+   the replacement deployment identifier. The Server derives and manages every
+   local path and file, and it encrypts any secret connection values required to
+   reopen the selected database. The same running process continues Restore
+   without a restart.
 
 Before a Restore checkpoint exists, the person may return to this step and
 replace the selection with another eligible database. The Server validates the

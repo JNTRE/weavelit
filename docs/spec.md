@@ -360,12 +360,19 @@ MUST independently reject invocation after the deployment is initialized.
 Before either workflow changes application state, a Client Module's
 **[Pre-Operational Surface](glossary.md#applications-and-interfaces)** with the
 applicable capability MUST use the shared pre-operational Server contract to
-select and configure the Application Database. The Server MUST validate the
-selection and MUST persist in protected Server-local configuration only the
-backend identifier, connection settings, and secret references needed to reopen
-the selected database. It MUST then open the Application Database without
-requiring a restart. All other application-owned configuration MUST be stored
-in the Application Database.
+select and configure the Application Database. The client MAY submit only the
+selected backend and its declared typed connection values; it MUST NOT submit or
+influence a filesystem path for the database, locator, credential storage, or
+another Server-managed artifact. The Server MUST derive every local path and
+MUST exclusively create, place, protect, replace, and remove every local file
+required by the selected backend. The Server MUST validate the selection and
+MUST persist in protected Server-local configuration only the backend
+identifier, non-secret connection settings, and encrypted secret connection
+values needed to reopen the selected database. Secret connection values MUST
+terminate in Server-owned protected credential handling and MUST NOT be
+persisted as caller-supplied references or plaintext configuration. The Server
+MUST then open the Application Database without requiring a restart. All other
+application-owned configuration MUST be stored in the Application Database.
 
 Application Database selection and Init or Restore MUST occur through a Client
 Module's Pre-Operational Surface that declares the applicable capability.

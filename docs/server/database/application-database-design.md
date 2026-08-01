@@ -23,8 +23,12 @@ available compiled-in backends during the shared pre-operational workflow,
 validates and persists the selected backend's minimum connection configuration
 in a protected Server-local locator, constructs that backend, and calls it
 through the shared contract. Each backend validates its own connection and
-storage settings. A future backend independently selects its own connection and
-concurrency model behind that same contract.
+storage settings. Backend declarations expose only typed connection values that
+a client may supply; they never expose local filesystem paths or file
+references. The Server derives every local path and owns creation, placement,
+protection, replacement, and removal of backend files. A future backend
+independently selects its own connection and concurrency model behind that same
+contract.
 
 ## Initial Contract
 
@@ -89,11 +93,12 @@ Server.
 The Server-local deployment record contains a unique deployment identifier and
 the lifecycle state `Uninitialized`, `InitializationPending`, or `Initialized`.
 The separate locator repeats that identifier, identifies the compiled-in
-backend, and contains only the typed non-secret connection settings and typed
-secret-file references needed to reopen the Application Database. Both remain
-outside the Application Database and are persisted atomically by the Server.
-Application-owned operational state and the matching deployment identifier are
-persisted through the database contract.
+backend, and contains only the typed non-secret connection settings and
+Server-encrypted secret connection values needed to reopen the Application
+Database. Both remain outside the Application Database and are persisted
+atomically by the Server. The locator never contains plaintext secrets or a
+caller-supplied path or file reference. Application-owned operational state and
+the matching deployment identifier are persisted through the database contract.
 
 The shared lifecycle contract selects the Application Database through a
 **[Client Module](../../glossary.md#applications-and-interfaces)** that declares

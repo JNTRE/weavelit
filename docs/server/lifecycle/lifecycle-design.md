@@ -41,18 +41,21 @@ deployment record fails closed.
 
 The deployment record is a versioned, restrictive, non-symlink Server-local
 file. The separate locator contains the same deployment identifier, selected
-backend identifier, typed non-secret connection settings, and typed secret-file
-references required to reopen the selected database. The lifecycle crate writes
-and synchronizes each file through a unique temporary file and atomic
-replacement. Neither file accepts inline secrets, environment interpolation,
-or a caller-selected path.
+backend identifier, typed non-secret connection settings, and any secret
+connection values encrypted with Server-local at-rest key material. The
+lifecycle crate writes and synchronizes each file through a unique temporary
+file and atomic replacement. Neither file accepts plaintext secrets,
+environment interpolation, a caller-selected path, or a caller-supplied file
+reference.
 
-The lifecycle crate accepts a referenced secret file only when the opened
-object is a bounded regular non-symlink file without group or world access. It
-verifies the opened object before reading UTF-8 content, trims at most one final
-newline, and never logs the secret, its contents, or its path. Package and
-deployment policy determine the permitted owner, and the Server process must be
-able to read the file.
+The lifecycle crate derives every local path from trusted Server configuration
+and code-defined backend policy. For a filesystem-backed database, the client
+schema contains no location field; the lifecycle crate supplies the derived
+location to the backend, and the Server and backend exclusively create and
+manage the database and its related files. Secret connection values are
+accepted only through declared typed fields over HTTPS, encrypted before
+persistence, decrypted only when opening the selected database, and never
+returned or logged.
 
 The deployment record has only these states:
 
@@ -111,18 +114,19 @@ does not enable login, administration, or normal client functions.
 ## Application Database Selection
 
 The lifecycle crate presents the runtime-supplied backend catalog and each
-backend's typed, non-secret connection fields through a Client Module's
+backend's typed connection fields through a Client Module's
 **[Pre-Operational Surface](../../glossary.md#applications-and-interfaces)**
 that declares an applicable capability. A client selects a backend and submits
-connection settings and any typed secret-file references. It never selects the
-locator path or supplies locator contents.
+only the values required by those fields. No backend schema exposes a local
+filesystem path or file-reference field, and the client never selects the
+database, deployment-record, locator, or credential-storage location.
 
 Selection validates the common request structure, asks the selected backend to
-validate its settings, safely resolves only the references required to connect,
-opens the target, and inspects its trusted state. An initialized, pending,
-unavailable, mismatched, or integrity-failing target is not eligible. This
-preflight occurs before Init accepts an Administrator password or Log Module
-credential and before Restore accepts a backup or private recovery key.
+validate its settings, protects secret connection values, opens the target, and
+inspects its trusted state. An initialized, pending, unavailable, mismatched, or
+integrity-failing target is not eligible. This preflight occurs before Init
+accepts an Administrator password or Log Module credential and before Restore
+accepts a backup or private recovery key.
 
 After successful preflight, the lifecycle crate writes the protected locator
 and opens the selected database without a process restart. The client may
@@ -175,7 +179,6 @@ Lifecycle failures use the Server's centralized typed error presentation.
 Client Modules receive actionable, redacted, machine-readable categories such
 as `already_initialized`, `preoperational_unavailable`,
 `configuration_invalid`, `deployment_state_invalid`,
-`secret_reference_unsafe`, `secret_reference_unavailable`,
 `storage_unavailable`, and `storage_integrity_failure`. Raw Rust, dependency,
 SQL, filesystem, secret-path, and operating-system details never reach clients
 or logs.
@@ -184,11 +187,13 @@ or logs.
 
 `weavelit-server-lifecycle` has direct tests for every startup classification,
 versioned record and locator parsing, restrictive and atomic local writes,
-secret-reference safety, deployment-identifier matching, backend selection and
-replacement, mutation serialization, workflow exclusivity, every cross-store
-crash point, seal reconciliation, direct invocation after sealing, rejection
-before secret or backup reading, redaction, and fail-closed missing, malformed,
-mismatched, unavailable, and integrity-failing state.
+rejection of client-supplied paths and file references, Server-derived backend
+paths, encrypted connection-secret persistence and restart reopening,
+deployment-identifier matching, backend selection and replacement, mutation
+serialization, workflow exclusivity, every cross-store crash point, seal
+reconciliation, direct invocation after sealing, rejection before secret or
+backup reading, redaction, and fail-closed missing, malformed, mismatched,
+unavailable, and integrity-failing state.
 
 Application Database integration tests verify workflow checkpoint
 discrimination, atomic one-time state replacement, and deployment-identifier

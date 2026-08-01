@@ -37,17 +37,21 @@ The Web UI does not ask for or imply separate proof of host control.
 1. The Web UI requests the compiled-in backend catalog from the shared
    lifecycle contract for the
    **[Application Database](../../glossary.md#applications-and-interfaces)**
-   and presents each backend's typed configuration fields. The MVP offers
-   SQLite.
+   and presents each backend's typed connection fields. The MVP offers SQLite.
 2. The person selects a backend, completes its fields, and submits the
-   selection. Secret connection material is represented only by supported
-   secret-file references.
+   selection. For an external backend, these fields may include endpoint,
+   identity, and secret connection values. The Web UI submits secret values
+   only over HTTPS and never asks for a Server filesystem path or file
+   reference. A local backend, including SQLite, exposes no database location
+   or filename control.
 3. The Server validates the request, opens the destination, and confirms that
    it is eligible for this deployment before collecting an Administrator
    password, Log Module credentials, or other application secrets.
 4. On success, the lifecycle contract writes the protected database locator and
-   binds it to the deployment identifier. The same running process continues
-   setup without a restart.
+   binds it to the deployment identifier. The Server derives and manages every
+   local path and file, and it encrypts any secret connection values required to
+   reopen the selected database. The same running process continues setup
+   without a restart.
 
 Before recovery-key preparation, the person may return to this step and replace
 the selection with another eligible database. The Server validates the

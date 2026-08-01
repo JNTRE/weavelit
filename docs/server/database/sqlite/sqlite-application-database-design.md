@@ -68,6 +68,12 @@ serializes access to it. The MVP does not use a connection pool. This is a
 SQLite-specific choice, not a constraint on a future Application Database
 backend.
 
+The lifecycle crate supplies a code-defined database location under the
+protected Server state directory. The SQLite backend schema exposes no path or
+filename field to a client. The Server and SQLite backend exclusively create,
+place, reopen, and manage the database file and its journal or write-ahead-log
+sidecar files.
+
 The backend enables foreign-key enforcement, write-ahead logging, and a bounded
 busy timeout. It applies and validates migrations before it is ready. A real,
 lightweight database query verifies connection health.

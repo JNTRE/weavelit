@@ -46,9 +46,9 @@ into these operations while the Server is uninitialized. It owns request
 decoding, client-specific interaction, and presentation of normalized results.
 It may also expose shared lifecycle status and database selection through the
 lifecycle contract, but it has no direct Application Database, driver,
-locator-file, secret-file, or lifecycle-state access. The Web UI Client Module
-is Init-capable. Another Client Module may expose Init only by declaring that
-capability and using the same Server-owned operations.
+locator-file, database-file, credential-storage, or lifecycle-state access. The
+Web UI Client Module is Init-capable. Another Client Module may expose Init only
+by declaring that capability and using the same Server-owned operations.
 
 The runtime uses the lifecycle classification before dispatching any client
 request. It exposes Init operations only while the lifecycle authority reports
@@ -94,12 +94,10 @@ validation may improve usability but is never authoritative; the Init crate
 validates every value, never returns it, and persists it only in its intended
 protected representation, such as a password verifier or encrypted credential.
 
-The Init crate accepts a referenced secret file only when the opened object is
-a bounded regular non-symlink file with no group or world access. It verifies
-the opened object before reading UTF-8 content, trims at most one final newline,
-and never logs the secret, its contents, or its path. The Server process must be
-able to read the file; package and deployment policy determine its permitted
-owner.
+Database connection secrets are submitted only through backend-declared typed
+fields and terminate in the shared lifecycle contract's protected credential
+handling. Init and its Client Modules never accept a database, locator, or
+credential-storage path or file reference from a client.
 
 ## Recovery-Key Delivery And Finalization
 

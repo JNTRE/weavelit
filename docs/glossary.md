@@ -20,14 +20,16 @@ module. Application Database persistence uses an internal backend contract;
 each supported backend is a dedicated Rust crate. The Server core owns backend
 composition, validation and persistence of the pre-operational selection, and
 lifecycle behavior. Each backend validates its own connection and storage
-settings. The Server retains the minimum protected Server-local configuration
-required to reopen the selected Application Database. A separate protected
-Server-local deployment record, the database locator, and pending or initialized
-database state carry one matching deployment identifier so completed Init or
-Restore cannot be reopened by losing or replacing only one component;
-application-owned configuration remains in the database. Backends are compiled
-into the Server package and are not runtime-installable plugins. The MVP backend
-is SQLite.
+settings. A client supplies only backend-declared connection values and never
+selects a local path or file reference. The Server derives and manages every
+local artifact path and retains the minimum protected Server-local
+configuration, including encrypted secret connection values when required, to
+reopen the selected Application Database. A separate protected Server-local
+deployment record, the database locator, and pending or initialized database
+state carry one matching deployment identifier so completed Init or Restore
+cannot be reopened by losing or replacing only one component; application-owned
+configuration remains in the database. Backends are compiled into the Server
+package and are not runtime-installable plugins. The MVP backend is SQLite.
 Application Database state and a Log Module destination never share
 Weavelit-owned persistence logic or implementation crates, files, schemas,
 connections, configuration, resources, lifecycle, or backup and retention

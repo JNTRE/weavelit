@@ -39,7 +39,7 @@ Each change must include the tests appropriate to its risk and boundary:
 | Database, filesystem, configuration, serialization, or process behavior | Integration tests using isolated temporary resources and real adapters. |
 | Versioned API, **[Client Module](glossary.md#applications-and-interfaces)**, or **[Service Module](glossary.md#applications-and-interfaces)** contract | Contract tests for accepted requests and stable success and error responses. |
 | Authentication, authorization, secret handling, audit logging, MFA, or destructive operations | Tests for every allowed and denied path, plus tests that sensitive values are absent from returned errors and logs. |
-| Server-owned lifecycle and pre-operational database-selection contract | Direct tests for every startup classification, deployment-record creation and irreversible sealing, deployment-identifier matching, database selection and locator persistence, secret-reference rejection, workflow exclusivity, mutation serialization, every cross-store crash point, direct invocation after sealing, and fail-closed missing, malformed, mismatched, unavailable, or integrity-failing deployment state; contract and process tests for route gating, completion-log reconciliation before sealing, seal reconciliation, and transitions to normal operation. |
+| Server-owned lifecycle and pre-operational database-selection contract | Direct tests for every startup classification, deployment-record creation and irreversible sealing, deployment-identifier matching, database selection and locator persistence, rejection of client-supplied paths and file references, Server-derived local paths, encrypted secret connection persistence and restart reopening, workflow exclusivity, mutation serialization, every cross-store crash point, direct invocation after sealing, and fail-closed missing, malformed, mismatched, unavailable, or integrity-failing deployment state; contract and process tests for route gating, completion-log reconciliation before sealing, seal reconciliation, and transitions to normal operation. |
 | Server-owned **[Init](glossary.md#states-and-requests)** use case and Init-capable **[Pre-Operational Surface](glossary.md#applications-and-interfaces)** | Direct workflow tests for normalized request validation, validation before later secret submission, recovery-key generation, one-time delivery, proof and reset, Init-checkpoint handling, atomic fresh-state creation, durable Init-result System Log recording, post-commit reconciliation, retry, concurrency, redaction, and rejection before secret reading or side effects; contract and process tests for lifecycle composition and the transition to normal operation. |
 | Server-owned **[Restore](glossary.md#states-and-requests)** use case and Restore-capable Pre-Operational Surface | Direct workflow tests for every artifact and resource bound, malformed, unauthentic, integrity-failing, incompatible, and semantically invalid backups, wrong recovery keys, checkpoint handling, session invalidation, recovery-public-key preservation, protected-secret re-encryption, private-key and plaintext non-persistence, atomic rollback, retry and reset, durable Restore-result System Log recording, every Restore-specific crash point, concurrency with Init and Restore, redaction, and rejection before key or artifact processing; contract, process, and Web UI end-to-end tests for transfer, lifecycle gating, post-commit reconciliation, and normal sign-in after Restore. |
 | Provider integration | Tests against controlled fakes or recorded fixtures for request construction, error mapping, retry, rate-limit, and duplicate-protection behavior. Live-provider checks are separately controlled smoke tests, never the default test suite. |
@@ -96,12 +96,12 @@ that the security and failure behavior above was exercised.
 Before a release or deployment, CI builds the exact release artifact from a
 clean checkout and verifies it in a production-like environment. For the
 **[Weavelit Server](glossary.md#applications-and-interfaces)**, this includes
-installation or image startup, configuration and secret-file handling, Init or
-an equivalent controlled fixture, an authenticated request, an authorization
-denial, durable state across a restart, and clean shutdown. The separately
-packaged **[Weavelit CLI](glossary.md#applications-and-interfaces)** must be
-tested on its supported macOS `arm64` platform against the versioned Server
-interface.
+installation or image startup, configuration and protected credential handling,
+Init or an equivalent controlled fixture, an authenticated request, an
+authorization denial, durable state across a restart, and clean shutdown. The
+separately packaged **[Weavelit CLI](glossary.md#applications-and-interfaces)**
+must be tested on its supported macOS `arm64` platform against the versioned
+Server interface.
 
 Release evidence records the artifact version and digest, toolchain version,
 validation command results, test-suite results, and the deployment smoke-test

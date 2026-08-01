@@ -12,8 +12,8 @@ behavior.
 
 The development image is reserved for Milestone 1. Its Containerfile remains a
 non-runnable placeholder until the Server defines its development
-configuration, protected persistent-state location, database-locator and
-secret-reference mounts, and startup behavior.
+configuration, protected persistent-state location, database-locator
+persistence, and startup behavior.
 
 The placeholder's `org.opencontainers.image.description` label points to this
 document.
@@ -30,9 +30,10 @@ When implemented, the development image must:
   through environment variables;
 - persist the Server-owned deployment record and
   **[Application Database](../../glossary.md#applications-and-interfaces)**
-  locator together in explicitly managed state, mount any referenced secrets as
-  local files, and never include secrets in the build context, image layers, or
-  environment variables;
+  locator, encrypted database connection values, and Server-managed database
+  files together in explicitly managed state without exposing a client-selected
+  storage path, and never include plaintext secrets in the build context, image
+  layers, or environment variables;
 - start an unconfigured Server in restricted pre-operational mode, leave
   Application Database selection to the shared lifecycle contract, and leave
   fresh or restored application state to a
