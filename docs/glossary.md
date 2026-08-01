@@ -39,10 +39,15 @@ as `rusqlite`, without sharing persistence behavior.
 **Log Module** - A reusable server-side Rust library that receives pre-redacted
 structured **[System Logs](#applications-and-interfaces)**,
 **[Audit Logs](#applications-and-interfaces)**, or both and persists or delivers
-them to a configured destination. Log Modules are available to
-**[Administrators](#identities-and-access)**, disabled by default except for
-modules activated during Init or imported by Restore, and configured only
-through an **[Administration Plane](#applications-and-interfaces)**.
+them to a configured destination. Log Modules are disabled by default. During
+**[Init](#states-and-requests)**, the person completing the workflow selects,
+configures, and activates initial Log Modules through an Init-capable
+**[Pre-Operational Surface](#applications-and-interfaces)**. During
+**[Restore](#states-and-requests)**, the Server imports their configuration,
+enabled state, assignments, and protected credentials. During normal operation,
+Log Modules are available to **[Administrators](#identities-and-access)** and
+configured only through an
+**[Administration Plane](#applications-and-interfaces)**.
 
 **MFA Module** - A compiled-in server-side Rust library that implements one
 specific **[Multifactor Authentication (MFA)](#identities-and-access)** method,
