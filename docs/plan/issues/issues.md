@@ -23,20 +23,6 @@ startup without exposing normal operation.
 | --- | --- | --- |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
-### #37 Persist protected deployment records and database locators
-
-[Open GitHub Issue #37](https://github.com/JNTRE/weavelit/issues/37).
-
-**Summary:** Persist and reopen the protected deployment record, Application
-Database locator, and Server-local at-rest key material so lifecycle identity
-and selected-backend configuration survive restart with deterministic
-fail-closed behavior.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#34 Establish trusted pre-operational lifecycle foundation](https://github.com/JNTRE/weavelit/issues/34) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
 ### #38 Implement Application Database selection and restart reopening
 
 [Open GitHub Issue #38](https://github.com/JNTRE/weavelit/issues/38).
