@@ -219,6 +219,32 @@ package. Internal workspace members are not exceptions.
   locked workspace tests, and locked release builds. The locked feature graph
   and transitive resolution were reviewed for excluded capabilities.
 
+#### `sha2`
+
+- **Source and version:** crates.io `=0.11.0`.
+- **Owner and behavior:** `weavelit-server-database-sqlite` uses SHA-256 to bind
+  each immutable embedded migration file to its migration-ledger entry. The
+  standard library and existing approved dependencies do not provide SHA-256.
+- **Features:** default features are disabled and no optional features are
+  enabled. Allocation, object-identifier, and zeroization features are absent;
+  the locked graph contains only the digest primitives and CPU-feature support
+  required by SHA-256.
+- **Maintenance and license:** `sha2` 0.11.0 supports Rust 1.85 and later, and
+  its RustCrypto upstream remained active at the August 1, 2026 review. The
+  crate uses the MIT or Apache-2.0 license.
+- **Advisory review:** the August 1, 2026 GitHub Advisory Database review found
+  no advisory matching `sha2` 0.11.0.
+- **Safe failure:** the backend hashes exact embedded migration bytes, stores
+  the 32-byte digest without logging it, validates every applied ledger entry
+  before pending work, and returns only `IntegrityFailure` when migration
+  identity, sequence, or checksum cannot be trusted.
+- **Validation:** checksum known-vector and registry tests plus seven real-file
+  migration tests cover ordered bootstrap, idempotent reopen, unknown, missing,
+  reordered, and mismatched history, missing-ledger refusal, schema constraints,
+  and transaction rollback. `make -C server check` passes formatting, Clippy
+  with warnings denied, all 27 locked workspace tests, and locked release builds.
+  The lockfile and feature graph were reviewed for excluded optional features.
+
 ### Planned Production Dependency Candidates
 
 No production dependency candidates are currently selected.

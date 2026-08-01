@@ -4,5 +4,6 @@
 
 mod connection;
 mod error;
+mod migrations;
 
 pub use connection::SqliteDatabase;

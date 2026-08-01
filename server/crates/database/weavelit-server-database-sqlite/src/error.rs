@@ -5,6 +5,7 @@ pub(super) enum ErrorContext {
     Open,
     Configure,
     Health,
+    Migration,
 }
 
 pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseError {
@@ -13,7 +14,9 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
         Error::SqliteFailure(failure, _) => map_error_code(failure.code),
         _ => match context {
             ErrorContext::Open => DatabaseError::ConfigurationInvalid,
-            ErrorContext::Configure | ErrorContext::Health => DatabaseError::IntegrityFailure,
+            ErrorContext::Configure | ErrorContext::Health | ErrorContext::Migration => {
+                DatabaseError::IntegrityFailure
+            }
         },
     }
 }

@@ -57,6 +57,28 @@ its ledger entry run in one SQLite transaction. An unknown, missing, or
 checksum-mismatched applied migration is an integrity or compatibility failure:
 the backend changes nothing and refuses to report readiness.
 
+The initial registry contains `0001_create_migration_ledger.sql` and
+`0002_create_lifecycle_state.sql`. Each entry has a one-based sequence, the
+filename without `.sql` as its identifier, and SQL embedded through
+`include_str!`. `sha2 = "=0.11.0"` computes a 32-byte SHA-256 digest directly
+over the exact embedded UTF-8 file bytes with default features disabled. The
+ledger stores the digest as a 32-byte BLOB and rejects updates or deletes.
+
+Migration application repeats one `BEGIN IMMEDIATE` transaction at a time. The
+transaction validates that ledger rows form the exact contiguous prefix of the
+embedded registry, then applies at most the next SQL migration and inserts its
+ledger row before commit. The bootstrap transaction creates the ledger and
+records itself atomically. An absent ledger is eligible only when no
+Application Database-owned table exists; otherwise startup fails with
+`IntegrityFailure` rather than recreating history.
+
+The lifecycle schema uses one singleton row. No row represents uninitialized
+state. A row always contains a 16-byte deployment identifier and represents
+either pending state with an `init` or `restore` discriminator and at most 4 KiB
+of opaque checkpoint metadata, or initialized state with no pending workflow or
+checkpoint metadata. This schema does not expose production state operations;
+inspection and mutation remain owned by their later contract work.
+
 Each shared Application Database contract write is one SQLite transaction unless
 the contract explicitly defines a broader atomic workflow. A failed migration
 or write rolls back completely.

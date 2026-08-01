@@ -4,6 +4,7 @@ use rusqlite::{Connection, OpenFlags};
 use weavelit_server_database::DatabaseError;
 
 use crate::error::{ErrorContext, map_sqlite_error};
+use crate::migrations::apply_pending;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const BUSY_TIMEOUT_MILLISECONDS: i64 = 5_000;
@@ -21,8 +22,9 @@ impl SqliteDatabase {
             .map_err(|error| map_sqlite_error(error, ErrorContext::Open))?;
 
         configure_connection(&connection)?;
-        let database = Self { connection };
+        let mut database = Self { connection };
         database.verify_health()?;
+        apply_pending(&mut database.connection)?;
 
         Ok(database)
     }
