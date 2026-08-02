@@ -22,11 +22,12 @@ RUN apt-get update \
 
 COPY server/rust-toolchain.toml /tmp/rust-toolchain.toml
 
-RUN set -euxo pipefail; \
+RUN set -eux; \
 	rust_channel="$(awk -F '"' '/^channel[[:space:]]*=/{print $2; exit}' /tmp/rust-toolchain.toml)"; \
-	curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "${rust_channel}"; \
-	rustup component add clippy rustfmt --toolchain "${rust_channel}"; \
-	rm -f /tmp/rust-toolchain.toml
+	curl --proto '=https' --tlsv1.2 -sSf -o /tmp/rustup-init.sh https://sh.rustup.rs; \
+	sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "${rust_channel}"; \
+	rm -f /tmp/rustup-init.sh /tmp/rust-toolchain.toml; \
+	rustup component add clippy rustfmt --toolchain "${rust_channel}"
 
 RUN groupadd --gid 10001 weavelit \
 	&& useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash weavelit \
