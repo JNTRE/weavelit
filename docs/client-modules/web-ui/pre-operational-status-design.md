@@ -71,6 +71,14 @@ diagnostic information.
 | Request read exceeds 5 seconds | `408 Request Timeout`, `{"error":"request_timeout"}` |
 | Total request processing exceeds 10 seconds | `504 Gateway Timeout`, `{"error":"gateway_timeout"}` |
 
+Rate admission consumes one per-source quota slot for every completed HTTP
+request head that receives an HTTP response, including accepted heads and
+completed heads classified as `400`, `405`, `414`, or `431`. A head is complete
+only after the listener observes its terminating `\r\n\r\n`. When the source quota
+is exhausted, `429` takes precedence over any other fixed HTTP response that a
+completed head would otherwise receive. TLS handshake failures, capacity
+rejections, incomplete EOF, and request-read timeouts do not consume quota.
+
 Responses use connection-close framing without a `Content-Length` header and omit
 the optional HTTP reason phrase. This preserves the documented status codes,
 JSON bodies, media type, and `Allow: GET` behavior while keeping every response

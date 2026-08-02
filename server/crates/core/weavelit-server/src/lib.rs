@@ -673,26 +673,19 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let request = match read_http_request_with_timeout(stream, request_read_timeout).await {
-        Ok(request) => request,
-        Err(RequestReadError::TimedOut) => return request_timeout_response(),
-        Err(RequestReadError::TargetTooLong) => {
-            return json_fixed_response(StatusCode::URI_TOO_LONG, "{\"error\":\"uri_too_long\"}");
+        RequestHeadRead::Completed(request) => {
+            if !rate_limiter.allows(source, Instant::now()) {
+                return rate_limited_response();
+            }
+            *request
         }
-        Err(RequestReadError::MethodNotAllowed) => return method_not_allowed_response(),
-        Err(RequestReadError::HeadersTooLarge) => {
-            return json_fixed_response(
-                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                "{\"error\":\"request_header_fields_too_large\"}",
-            );
-        }
-        Err(RequestReadError::Invalid) => {
-            return json_fixed_response(StatusCode::BAD_REQUEST, "{\"error\":\"bad_request\"}");
-        }
+        RequestHeadRead::Incomplete(error) => return response_for_request_read_error(error),
     };
 
-    if !rate_limiter.allows(source, Instant::now()) {
-        return rate_limited_response();
-    }
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => return response_for_request_read_error(error),
+    };
 
     let response = router
         .oneshot(request)
@@ -708,6 +701,11 @@ enum RequestReadError {
     MethodNotAllowed,
     HeadersTooLarge,
     Invalid,
+}
+
+enum RequestHeadRead {
+    Completed(Box<Result<Request, RequestReadError>>),
+    Incomplete(RequestReadError),
 }
 
 #[derive(Clone, Copy)]
@@ -727,7 +725,7 @@ enum RequestLineState {
 }
 
 impl RequestLineState {
-    fn observe(&mut self, byte: u8, bytes: &[u8]) -> Result<(), RequestReadError> {
+    fn observe(&mut self, byte: u8, bytes: &[u8]) -> bool {
         match self {
             Self::Method if byte == b' ' => *self = Self::Target(0),
             Self::Method if byte == b'\r' => *self = Self::Invalid,
@@ -735,9 +733,6 @@ impl RequestLineState {
             Self::Target(_) if byte == b'\r' => *self = Self::Invalid,
             Self::Target(length) => {
                 *length += 1;
-                if *length > MAX_REQUEST_TARGET_BYTES {
-                    return Err(RequestReadError::TargetTooLong);
-                }
             }
             Self::Version if byte == b'\r' => *self = Self::VersionEnding,
             Self::Version => {}
@@ -747,11 +742,14 @@ impl RequestLineState {
             Self::VersionEnding => *self = Self::Invalid,
             Self::Headers(_) | Self::Invalid | Self::Method => {}
         }
-        Ok(())
+        matches!(self, Self::Target(length) if *length > MAX_REQUEST_TARGET_BYTES)
     }
 
     fn limit_error(&self, bytes: &[u8]) -> RequestReadError {
         match self {
+            Self::Target(length) if *length > MAX_REQUEST_TARGET_BYTES => {
+                RequestReadError::TargetTooLong
+            }
             Self::Method | Self::Target(_) if request_line_has_non_get_method(bytes) => {
                 RequestReadError::MethodNotAllowed
             }
@@ -811,40 +809,74 @@ fn request_line_has_non_get_method(bytes: &[u8]) -> bool {
 async fn read_http_request_with_timeout<S>(
     stream: &mut S,
     request_read_timeout: Duration,
-) -> Result<Request, RequestReadError>
+) -> RequestHeadRead
 where
     S: AsyncRead + Unpin,
 {
-    match timeout(request_read_timeout, read_http_request(stream)).await {
+    match timeout(request_read_timeout, read_http_request_outcome(stream)).await {
         Ok(result) => result,
-        Err(_) => Err(RequestReadError::TimedOut),
+        Err(_) => RequestHeadRead::Incomplete(RequestReadError::TimedOut),
     }
 }
 
+#[cfg(test)]
 async fn read_http_request<S>(stream: &mut S) -> Result<Request, RequestReadError>
+where
+    S: AsyncRead + Unpin,
+{
+    match read_http_request_outcome(stream).await {
+        RequestHeadRead::Completed(result) => *result,
+        RequestHeadRead::Incomplete(error) => Err(error),
+    }
+}
+
+async fn read_http_request_outcome<S>(stream: &mut S) -> RequestHeadRead
 where
     S: AsyncRead + Unpin,
 {
     let mut bytes = Vec::with_capacity(MAX_REQUEST_HEAD_BYTES);
     let mut request_line = RequestLineState::Method;
+    let mut target_too_long = false;
     loop {
         let byte = match stream.read_u8().await {
             Ok(byte) => byte,
             Err(error) if error.kind() == ErrorKind::UnexpectedEof => {
-                return Err(RequestReadError::Invalid);
+                return RequestHeadRead::Incomplete(RequestReadError::Invalid);
             }
-            Err(_) => return Err(RequestReadError::Invalid),
+            Err(_) => return RequestHeadRead::Incomplete(RequestReadError::Invalid),
         };
         if byte == b'\n' && bytes.last().is_none_or(|previous| *previous != b'\r') {
-            return Err(RequestReadError::Invalid);
+            return RequestHeadRead::Incomplete(RequestReadError::Invalid);
         }
         bytes.push(byte);
-        request_line.observe(byte, &bytes)?;
+        target_too_long |= request_line.observe(byte, &bytes);
         if bytes.len() > MAX_REQUEST_HEAD_BYTES {
-            return Err(request_line.limit_error(&bytes));
+            return RequestHeadRead::Incomplete(request_line.limit_error(&bytes));
         }
         if bytes.ends_with(b"\r\n\r\n") {
-            return parse_http_request(&bytes, request_line.completed_classification());
+            let request = if target_too_long {
+                Err(RequestReadError::TargetTooLong)
+            } else {
+                parse_http_request(&bytes, request_line.completed_classification())
+            };
+            return RequestHeadRead::Completed(Box::new(request));
+        }
+    }
+}
+
+fn response_for_request_read_error(error: RequestReadError) -> FixedResponse {
+    match error {
+        RequestReadError::TimedOut => request_timeout_response(),
+        RequestReadError::TargetTooLong => {
+            json_fixed_response(StatusCode::URI_TOO_LONG, "{\"error\":\"uri_too_long\"}")
+        }
+        RequestReadError::MethodNotAllowed => method_not_allowed_response(),
+        RequestReadError::HeadersTooLarge => json_fixed_response(
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            "{\"error\":\"request_header_fields_too_large\"}",
+        ),
+        RequestReadError::Invalid => {
+            json_fixed_response(StatusCode::BAD_REQUEST, "{\"error\":\"bad_request\"}")
         }
     }
 }
@@ -1556,6 +1588,45 @@ mod tests {
         response
     }
 
+    async fn direct_tls_response_after_eof(
+        router: Router,
+        server_config: Arc<ServerConfig>,
+        client_config: Arc<ClientConfig>,
+        rate_limiter: Arc<RateLimiter>,
+        request: &[u8],
+        request_read_timeout: Duration,
+        processing_timeout: Duration,
+    ) -> Vec<u8> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, source) = listener.accept().await.unwrap();
+            serve_normal_connection_with_timeouts(
+                stream,
+                source.ip(),
+                TlsAcceptor::from(server_config),
+                router,
+                rate_limiter,
+                ConnectionTimeouts {
+                    handshake: TLS_HANDSHAKE_TIMEOUT,
+                    request_read: request_read_timeout,
+                    processing: processing_timeout,
+                },
+            )
+            .await;
+        });
+        let mut client = tls_client(address, client_config).await;
+        client.write_all(request).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("direct TLS response must complete with close_notify");
+        server.await.unwrap();
+        response
+    }
+
     async fn direct_tls_rejection_response(
         server_config: Arc<ServerConfig>,
         client_config: Arc<ClientConfig>,
@@ -2105,6 +2176,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_tls_rate_limit_admits_completed_request_heads_before_fixed_responses() {
+        let (server_config, client_config) = tls_configs();
+        let oversized_target = format!(
+            "GET /{} HTTP/1.1\r\n\r\n",
+            "a".repeat(super::MAX_REQUEST_TARGET_BYTES)
+        );
+        let oversized_headers = format!(
+            "GET /api/v1/status HTTP/1.1\r\nX-Pad: {}\r\n\r\n",
+            "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
+        );
+
+        for (name, request, fixed_status, fixed_body, allow_get) in [
+            (
+                "valid POST",
+                "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                405,
+                "{\"error\":\"method_not_allowed\"}",
+                true,
+            ),
+            (
+                "malformed head",
+                "GET /api/v1/status HTTP/1.1\r\nnot-a-header\r\n\r\n".to_owned(),
+                400,
+                "{\"error\":\"bad_request\"}",
+                false,
+            ),
+            (
+                "oversized target",
+                oversized_target,
+                414,
+                "{\"error\":\"uri_too_long\"}",
+                false,
+            ),
+            (
+                "oversized headers",
+                oversized_headers,
+                431,
+                "{\"error\":\"request_header_fields_too_large\"}",
+                false,
+            ),
+            (
+                "valid GET",
+                "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                200,
+                "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
+                false,
+            ),
+        ] {
+            let rate_limiter = Arc::new(RateLimiter::new());
+            for _ in 0..5 {
+                let response = direct_tls_response_with_rate_limiter(
+                    restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                    Arc::clone(&server_config),
+                    Arc::clone(&client_config),
+                    Arc::clone(&rate_limiter),
+                    request.as_bytes(),
+                    REQUEST_READ_TIMEOUT,
+                    REQUEST_PROCESSING_TIMEOUT,
+                )
+                .await;
+                assert_fixed_tls_response(&response, fixed_status, fixed_body, allow_get);
+            }
+
+            let response = direct_tls_response_with_rate_limiter(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                rate_limiter,
+                request.as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_fixed_tls_response(&response, 429, "{\"error\":\"rate_limited\"}", false);
+            assert!(response.len() <= 128, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rate_limit_excludes_incomplete_heads_and_read_timeouts() {
+        let (server_config, client_config) = tls_configs();
+
+        for (name, request, request_read_timeout, eof, status, body) in [
+            (
+                "read timeout",
+                b"".as_slice(),
+                Duration::ZERO,
+                false,
+                408,
+                "{\"error\":\"request_timeout\"}",
+            ),
+            (
+                "incomplete EOF",
+                b"GET /api/v1/status HTTP/1.1\r\n".as_slice(),
+                REQUEST_READ_TIMEOUT,
+                true,
+                400,
+                "{\"error\":\"bad_request\"}",
+            ),
+        ] {
+            let rate_limiter = Arc::new(RateLimiter::new());
+            let response = if eof {
+                direct_tls_response_after_eof(
+                    restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                    Arc::clone(&server_config),
+                    Arc::clone(&client_config),
+                    Arc::clone(&rate_limiter),
+                    request,
+                    request_read_timeout,
+                    REQUEST_PROCESSING_TIMEOUT,
+                )
+                .await
+            } else {
+                direct_tls_response_with_rate_limiter(
+                    restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                    Arc::clone(&server_config),
+                    Arc::clone(&client_config),
+                    Arc::clone(&rate_limiter),
+                    request,
+                    request_read_timeout,
+                    REQUEST_PROCESSING_TIMEOUT,
+                )
+                .await
+            };
+            assert_fixed_tls_response(&response, status, body, false);
+
+            for _ in 0..5 {
+                let response = direct_tls_response_with_rate_limiter(
+                    restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                    Arc::clone(&server_config),
+                    Arc::clone(&client_config),
+                    Arc::clone(&rate_limiter),
+                    b"GET /api/v1/status HTTP/1.1\r\n\r\n",
+                    REQUEST_READ_TIMEOUT,
+                    REQUEST_PROCESSING_TIMEOUT,
+                )
+                .await;
+                assert!(response.starts_with(b"HTTP/1.1 200 \r\n"), "{name}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn direct_tls_maps_read_and_processing_timeouts_to_fixed_responses() {
         let (server_config, client_config) = tls_configs();
         let read_timeout = direct_tls_response(
@@ -2353,7 +2567,7 @@ mod tests {
         let _ = client.write_all(b"").await;
         assert!(matches!(
             read.await.unwrap(),
-            Err(super::RequestReadError::TimedOut)
+            super::RequestHeadRead::Incomplete(super::RequestReadError::TimedOut)
         ));
 
         let response = processing_response(Duration::ZERO, pending::<FixedResponse>()).await;
