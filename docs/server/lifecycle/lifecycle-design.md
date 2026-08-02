@@ -155,6 +155,10 @@ Version 1 permits only these code-owned entries beneath the state root:
 | `application.sqlite3-journal` | SQLite rollback or crash-recovery journal. |
 | `application.sqlite3-wal` | SQLite write-ahead log. |
 | `application.sqlite3-shm` | SQLite WAL shared-memory index. |
+| `log.sqlite3` | SQLite Log Module destination. |
+| `log.sqlite3-journal` | SQLite Log Module rollback or crash-recovery journal. |
+| `log.sqlite3-wal` | SQLite Log Module write-ahead log. |
+| `log.sqlite3-shm` | SQLite Log Module WAL shared-memory index. |
 
 `<generation>` is exactly 22 canonical unpadded URL-safe Base64 characters
 decoding to a nonzero 16-byte value. Lifecycle writes may also leave one of
@@ -174,7 +178,11 @@ lifecycle crate removes recognized lifecycle temporary files and unreferenced
 locator generations and synchronizes the directory before exposing a route. An
 unsafe recognized entry or cleanup failure fails closed. The lifecycle crate
 never removes SQLite's `-journal`, `-wal`, or `-shm` files; the SQLite backend
-owns their validation and recovery.
+owns Application Database sidecar validation and recovery, and the SQLite Log
+Module owns the corresponding log-destination behavior. It distinguishes the
+two artifact sets and removes only an Application Database artifact from an
+interrupted initial database selection; it never automatically removes a
+recognized Log Module artifact.
 
 Future Server releases and compiled-in backends may expand this closed
 code-owned inventory. A binary that does not recognize a newer entry fails

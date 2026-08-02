@@ -51,6 +51,12 @@ deployment binding, schema and migration ledger, connection, transactions,
 health checks, locking behavior, and redacted error mapping. No client contract
 accepts a path, filename, URI, or connection string for this destination.
 
+The runtime constructs one validated SQLite registration in its compiled-in Log
+Module catalog after lifecycle startup classification and retains that catalog
+for the process lifetime. Catalog construction does not invoke the destination
+factory. Until a later Server-owned configuration and assignment flow selects
+the module, startup neither opens nor delivers to the destination.
+
 The destination stores System and Audit records separately within its own
 database. It must not depend on or reuse an Application Database crate, file,
 schema, connection, configuration, or resource. It may use the same

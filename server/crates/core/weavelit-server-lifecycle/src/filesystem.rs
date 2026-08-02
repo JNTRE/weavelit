@@ -22,11 +22,17 @@ use crate::{
 const ROOT_MODE: RawMode = 0o700;
 const FILE_MODE: RawMode = 0o600;
 const MAX_ROOT_ENTRIES: usize = 256;
-const SQLITE_FILES: &[&str] = &[
+const APPLICATION_DATABASE_SQLITE_FILES: &[&str] = &[
     "application.sqlite3",
     "application.sqlite3-journal",
     "application.sqlite3-wal",
     "application.sqlite3-shm",
+];
+const LOG_DATABASE_SQLITE_FILES: &[&str] = &[
+    "log.sqlite3",
+    "log.sqlite3-journal",
+    "log.sqlite3-wal",
+    "log.sqlite3-shm",
 ];
 
 #[derive(Debug)]
@@ -35,7 +41,8 @@ pub(crate) struct Inventory {
     pub(crate) has_record: bool,
     pub(crate) locator_files: Vec<(LocatorGeneration, String)>,
     pub(crate) temporary_files: Vec<String>,
-    pub(crate) has_database_artifact: bool,
+    pub(crate) has_application_database_artifact: bool,
+    pub(crate) has_log_database_artifact: bool,
 }
 
 pub(crate) struct StateRoot {
@@ -115,14 +122,20 @@ impl StateRoot {
             has_record: false,
             locator_files: Vec::new(),
             temporary_files: Vec::new(),
-            has_database_artifact: false,
+            has_application_database_artifact: false,
+            has_log_database_artifact: false,
         };
         for name in names {
             match name.as_str() {
                 LOCK_FILE_NAME => {}
                 KEY_FILE_NAME => inventory.has_key = true,
                 RECORD_FILE_NAME => inventory.has_record = true,
-                name if SQLITE_FILES.contains(&name) => inventory.has_database_artifact = true,
+                name if APPLICATION_DATABASE_SQLITE_FILES.contains(&name) => {
+                    inventory.has_application_database_artifact = true;
+                }
+                name if LOG_DATABASE_SQLITE_FILES.contains(&name) => {
+                    inventory.has_log_database_artifact = true;
+                }
                 _ => {
                     if let Some(generation) = parse_locator_file_name(&name)? {
                         inventory.locator_files.push((generation, name));
@@ -178,7 +191,7 @@ impl StateRoot {
     /// Removes all known SQLite sidecar files, ignoring absent files.
     pub(crate) fn cleanup_database_artifacts(&self) -> Result<(), LifecycleError> {
         let mut removed_any = false;
-        for name in SQLITE_FILES {
+        for name in APPLICATION_DATABASE_SQLITE_FILES {
             match fs::unlinkat(&self.directory, *name, AtFlags::empty()) {
                 Ok(()) => removed_any = true,
                 Err(Errno::NOENT) => {}

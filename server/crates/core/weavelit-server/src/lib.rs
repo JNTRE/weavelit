@@ -46,6 +46,7 @@ use weavelit_server_lifecycle::{
     LifecycleClassification, LifecycleError, LifecycleStore, TrustedBackendContext,
     ValidatedConnectionSettings, WorkflowKind,
 };
+use weavelit_server_log::LogModuleCatalog;
 
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
 const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
@@ -401,6 +402,12 @@ pub fn sqlite_catalog() -> BackendCatalog {
     .expect("compiled-in SQLite catalog must be valid")
 }
 
+/// Builds the compiled-in SQLite Log Module catalog.
+pub fn sqlite_log_catalog() -> LogModuleCatalog {
+    LogModuleCatalog::new(vec![weavelit_module_log_sqlite::registration()])
+        .expect("compiled-in SQLite Log Module catalog must be valid")
+}
+
 // ---------------------------------------------------------------------------
 // Startup classification outcome
 // ---------------------------------------------------------------------------
@@ -419,6 +426,7 @@ pub enum StartupOutcome {
 /// Restricted startup state, including the process-lifetime state-root lock.
 pub struct RestrictedStartup {
     outcome: StartupOutcome,
+    log_catalog: LogModuleCatalog,
     _store: LifecycleStore,
 }
 
@@ -426,6 +434,11 @@ impl RestrictedStartup {
     /// Returns the lifecycle outcome used to select restricted routes.
     pub fn outcome(&self) -> StartupOutcome {
         self.outcome
+    }
+
+    /// Returns the compiled-in Log Module catalog retained for process lifetime.
+    pub const fn log_catalog(&self) -> &LogModuleCatalog {
+        &self.log_catalog
     }
 }
 
@@ -1165,6 +1178,7 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
     };
     Ok(RestrictedStartup {
         outcome,
+        log_catalog: sqlite_log_catalog(),
         _store: store,
     })
 }

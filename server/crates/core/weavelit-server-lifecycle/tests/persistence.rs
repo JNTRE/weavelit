@@ -177,6 +177,42 @@ fn database_without_locator_and_locator_without_record_fail_closed() {
 }
 
 #[test]
+fn log_database_artifacts_are_recognized_separately_and_preserved() {
+    for name in [
+        "log.sqlite3",
+        "log.sqlite3-journal",
+        "log.sqlite3-wal",
+        "log.sqlite3-shm",
+    ] {
+        let (_directory, path) = state_root();
+        let store = LifecycleStore::open_or_create(&path).unwrap();
+        drop(store);
+        let artifact = path.join(name);
+        fs::write(&artifact, b"log artifact").unwrap();
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let reopened = LifecycleStore::open_or_create(&path).unwrap();
+        assert_eq!(reopened.load_state(), AnchorLoadState::Retained);
+        drop(reopened);
+        assert!(artifact.exists(), "lifecycle must not remove {name}");
+    }
+}
+
+#[test]
+fn log_database_artifact_without_anchors_fails_closed_without_cleanup() {
+    let (_directory, path) = state_root();
+    let artifact = path.join("log.sqlite3");
+    fs::write(&artifact, b"log artifact").unwrap();
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
+
+    expect_open_error(&path, LifecycleError::IntegrityFailure);
+    assert!(
+        artifact.exists(),
+        "lifecycle must not remove a log artifact"
+    );
+}
+
+#[test]
 fn symlinked_root_and_wrong_root_mode_are_rejected() {
     let (directory, canonical) = state_root();
     let link = directory.path().with_extension("link");

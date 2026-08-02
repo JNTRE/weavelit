@@ -50,13 +50,17 @@ impl LifecycleStore {
         let inventory = root.inventory()?;
         match (inventory.has_key, inventory.has_record) {
             (false, false)
-                if inventory.locator_files.is_empty() && !inventory.has_database_artifact =>
+                if inventory.locator_files.is_empty()
+                    && !inventory.has_application_database_artifact
+                    && !inventory.has_log_database_artifact =>
             {
                 cleanup(&root, &inventory.temporary_files)?;
                 Self::create(root, AnchorLoadState::FirstStartCreated, None)
             }
             (false, false)
-                if inventory.locator_files.is_empty() && inventory.has_database_artifact =>
+                if inventory.locator_files.is_empty()
+                    && inventory.has_application_database_artifact
+                    && !inventory.has_log_database_artifact =>
             {
                 // Orphan from an interrupted initial selection: remove artifact and retry fresh.
                 cleanup(&root, &inventory.temporary_files)?;
@@ -64,7 +68,9 @@ impl LifecycleStore {
                 Self::create(root, AnchorLoadState::FirstStartCreated, None)
             }
             (true, false)
-                if inventory.locator_files.is_empty() && !inventory.has_database_artifact =>
+                if inventory.locator_files.is_empty()
+                    && !inventory.has_application_database_artifact
+                    && !inventory.has_log_database_artifact =>
             {
                 let key = parse_key(&root.read(KEY_FILE_NAME, KEY_FILE_LIMIT)?)?;
                 cleanup(&root, &inventory.temporary_files)?;
@@ -347,7 +353,7 @@ impl LifecycleStore {
         let key = parse_key(&root.read(KEY_FILE_NAME, KEY_FILE_LIMIT)?)?;
         let record = decrypt_record(&key, &root.read(RECORD_FILE_NAME, RECORD_ENVELOPE_LIMIT)?)?;
         let active_generation = record.locator_generation();
-        if active_generation.is_none() && inventory.has_database_artifact {
+        if active_generation.is_none() && inventory.has_application_database_artifact {
             return Err(LifecycleError::IntegrityFailure);
         }
 

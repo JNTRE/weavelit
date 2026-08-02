@@ -1147,8 +1147,10 @@ dependencies = [
  "tokio-rustls",
  "tower",
  "weavelit-module-client-webui",
+ "weavelit-module-log-sqlite",
  "weavelit-server-database-sqlite",
  "weavelit-server-lifecycle",
+ "weavelit-server-log",
 ]
 
 [[package]]

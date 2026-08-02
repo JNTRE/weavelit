@@ -375,6 +375,37 @@ fn restart_without_selection_is_stable() {
 }
 
 #[test]
+fn startup_exposes_sqlite_log_module_without_opening_or_delivering_to_it() {
+    let (_dir, path) = state_root();
+    let startup = classify_restricted_startup(&path).unwrap();
+    let declarations = startup.log_catalog().declarations().collect::<Vec<_>>();
+
+    assert_eq!(declarations.len(), 1);
+    assert_eq!(declarations[0].identifier().as_str(), "sqlite");
+    assert!(
+        declarations[0]
+            .capabilities()
+            .supports(weavelit_server_log::LogRecordType::System)
+    );
+    assert!(
+        declarations[0]
+            .capabilities()
+            .supports(weavelit_server_log::LogRecordType::Audit)
+    );
+    for name in [
+        "log.sqlite3",
+        "log.sqlite3-journal",
+        "log.sqlite3-wal",
+        "log.sqlite3-shm",
+    ] {
+        assert!(
+            !path.join(name).exists(),
+            "unconfigured startup must not create {name}"
+        );
+    }
+}
+
+#[test]
 fn restart_with_selected_database_classifies_as_uninitialized_with_database() {
     let (_dir, path) = state_root();
     {
