@@ -7,6 +7,7 @@ use std::{
 
 use rustix::{
     fs::{self, AtFlags, Dir, FileType, Mode, OFlags, RawMode, RenameFlags},
+    io::Errno,
     process,
 };
 
@@ -172,6 +173,22 @@ impl StateRoot {
         fs::unlinkat(&self.directory, name, AtFlags::empty())
             .map_err(|_| LifecycleError::Persistence)?;
         self.sync_directory()
+    }
+
+    /// Removes all known SQLite sidecar files, ignoring absent files.
+    pub(crate) fn cleanup_database_artifacts(&self) -> Result<(), LifecycleError> {
+        let mut removed_any = false;
+        for name in SQLITE_FILES {
+            match fs::unlinkat(&self.directory, *name, AtFlags::empty()) {
+                Ok(()) => removed_any = true,
+                Err(Errno::NOENT) => {}
+                Err(_) => return Err(LifecycleError::Persistence),
+            }
+        }
+        if removed_any {
+            self.sync_directory()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn sync_directory(&self) -> Result<(), LifecycleError> {

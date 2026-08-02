@@ -55,6 +55,14 @@ impl LifecycleStore {
                 cleanup(&root, &inventory.temporary_files)?;
                 Self::create(root, AnchorLoadState::FirstStartCreated, None)
             }
+            (false, false)
+                if inventory.locator_files.is_empty() && inventory.has_database_artifact =>
+            {
+                // Orphan from an interrupted initial selection: remove artifact and retry fresh.
+                cleanup(&root, &inventory.temporary_files)?;
+                root.cleanup_database_artifacts()?;
+                Self::create(root, AnchorLoadState::FirstStartCreated, None)
+            }
             (true, false)
                 if inventory.locator_files.is_empty() && !inventory.has_database_artifact =>
             {

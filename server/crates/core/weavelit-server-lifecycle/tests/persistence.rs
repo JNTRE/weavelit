@@ -227,3 +227,26 @@ fn state_root_entry_count_is_bounded_before_loading() {
     assert_eq!(fs::read_dir(&path).unwrap().count(), 257);
     expect_open_error(&path, LifecycleError::IntegrityFailure);
 }
+
+#[test]
+fn orphaned_database_artifact_from_interrupted_initial_selection_is_recovered() {
+    let (_directory, path) = state_root();
+
+    // Simulate an interrupted initial selection: database artifact placed before
+    // any key/record/locator files were committed.
+    let artifact_path = path.join("application.sqlite3");
+    {
+        let _ = fs::File::create(&artifact_path).unwrap();
+        fs::set_permissions(&artifact_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+
+    assert_eq!(store.load_state(), AnchorLoadState::FirstStartCreated);
+    assert_eq!(store.record().state(), LifecycleState::Uninitialized);
+    assert!(store.locator().is_none());
+    assert!(
+        !artifact_path.exists(),
+        "orphaned artifact must be removed before creating a new identity"
+    );
+}
