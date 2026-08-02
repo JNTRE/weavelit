@@ -75,7 +75,7 @@ fn key_only_interruption_resumes_with_a_fresh_deployment_identity() {
 fn process_lifetime_lock_rejects_a_second_store() {
     let (_directory, path) = state_root();
     let _store = LifecycleStore::open_or_create(&path).unwrap();
-    expect_open_error(&path, LifecycleError::DependencyUnavailable);
+    expect_open_error(&path, LifecycleError::LockContended);
 }
 
 #[test]

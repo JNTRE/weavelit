@@ -138,7 +138,7 @@ pub fn read_state_root() -> Result<PathBuf, StartupError> {
 fn map_open_error(error: LifecycleError) -> StartupError {
     match error {
         LifecycleError::ConfigurationInvalid => StartupError::StateRootPathInvalid,
-        LifecycleError::DependencyUnavailable => StartupError::StateRootInUse,
+        LifecycleError::LockContended => StartupError::StateRootInUse,
         LifecycleError::Persistence => StartupError::StorageOperationFailed,
         LifecycleError::IntegrityFailure => StartupError::AnchorSetInvalid,
         LifecycleError::UnsupportedVersion => StartupError::AnchorVersionUnsupported,

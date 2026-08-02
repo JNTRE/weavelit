@@ -129,6 +129,8 @@ pub enum LifecycleError {
     ConfigurationInvalid,
     /// A required storage or backend dependency was unavailable.
     DependencyUnavailable,
+    /// The state root is already held by another instance.
+    LockContended,
     /// Persisted state or its integrity could not be trusted.
     IntegrityFailure,
     /// Durable state belonged to another deployment.
@@ -145,6 +147,7 @@ impl fmt::Display for LifecycleError {
             Self::Persistence => "lifecycle persistence failed",
             Self::ConfigurationInvalid => "lifecycle configuration is invalid",
             Self::DependencyUnavailable => "lifecycle dependency is unavailable",
+            Self::LockContended => "lifecycle state root is locked by another instance",
             Self::IntegrityFailure => "lifecycle integrity validation failed",
             Self::DeploymentMismatch => "lifecycle deployment does not match",
             Self::InvalidState => "lifecycle state is invalid",

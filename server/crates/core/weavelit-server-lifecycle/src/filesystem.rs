@@ -242,8 +242,7 @@ fn open_lock(directory: &File) -> Result<File, LifecycleError> {
     .map_err(|_| LifecycleError::ConfigurationInvalid)?;
     validate_file(&descriptor)?;
     let lock = File::from(descriptor);
-    lock.try_lock()
-        .map_err(|_| LifecycleError::DependencyUnavailable)?;
+    lock.try_lock().map_err(|_| LifecycleError::LockContended)?;
     Ok(lock)
 }
 
