@@ -39,8 +39,22 @@ fn has_request_body(headers: &HeaderMap) -> bool {
     headers
         .get_all(CONTENT_LENGTH)
         .iter()
-        .any(|value| value.as_bytes() != b"0")
+        .any(|value| parse_content_length(value) != Some(0))
         || headers.contains_key(TRANSFER_ENCODING)
+}
+
+fn parse_content_length(value: &axum::http::HeaderValue) -> Option<u64> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    bytes.iter().try_fold(0_u64, |length, byte| {
+        let digit = match byte {
+            b'0'..=b'9' => u64::from(*byte - b'0'),
+            _ => return None,
+        };
+        length.checked_mul(10)?.checked_add(digit)
+    })
 }
 
 fn accepts_json(headers: &HeaderMap) -> bool {
@@ -172,20 +186,34 @@ mod tests {
 
     #[tokio::test]
     async fn status_translation_rejects_conflicting_content_length_fields() {
-        let single_zero = status_response(
+        for content_length in ["0", "00"] {
+            let response = status_response(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .header("content-length", content_length)
+                    .body(Body::empty())
+                    .unwrap(),
+                false,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response_body(response).await,
+                "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+            );
+        }
+
+        let duplicate_zero = status_response(
             Request::builder()
                 .uri("/api/v1/status")
                 .header("content-length", "0")
+                .header("content-length", "00")
                 .body(Body::empty())
                 .unwrap(),
             false,
         )
         .await;
-        assert_eq!(single_zero.status(), StatusCode::OK);
-        assert_eq!(
-            response_body(single_zero).await,
-            "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
-        );
+        assert_eq!(duplicate_zero.status(), StatusCode::OK);
 
         let conflicting = status_response(
             Request::builder()
@@ -200,6 +228,35 @@ mod tests {
         assert_eq!(conflicting.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response_body(conflicting).await,
+            "{\"error\":\"bad_request\"}"
+        );
+
+        for content_length in ["1", "01", "00x"] {
+            let response = status_response(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .header("content-length", content_length)
+                    .body(Body::empty())
+                    .unwrap(),
+                false,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(response_body(response).await, "{\"error\":\"bad_request\"}");
+        }
+
+        let transfer_encoding = status_response(
+            Request::builder()
+                .uri("/api/v1/status")
+                .header("transfer-encoding", "chunked")
+                .body(Body::empty())
+                .unwrap(),
+            false,
+        )
+        .await;
+        assert_eq!(transfer_encoding.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_body(transfer_encoding).await,
             "{\"error\":\"bad_request\"}"
         );
     }

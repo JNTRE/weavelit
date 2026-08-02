@@ -692,6 +692,32 @@ enum RequestReadError {
     Invalid,
 }
 
+enum RequestLineState {
+    Method,
+    Target(usize),
+    Complete,
+}
+
+impl RequestLineState {
+    fn observe(&mut self, byte: u8) -> Result<(), RequestReadError> {
+        match self {
+            Self::Method if byte == b' ' => *self = Self::Target(0),
+            Self::Method if matches!(byte, b'\r' | b'\n') => *self = Self::Complete,
+            Self::Target(length) if byte == b' ' || matches!(byte, b'\r' | b'\n') => {
+                *self = Self::Complete;
+            }
+            Self::Target(length) => {
+                *length += 1;
+                if *length > MAX_REQUEST_TARGET_BYTES {
+                    return Err(RequestReadError::TargetTooLong);
+                }
+            }
+            Self::Complete | Self::Method => {}
+        }
+        Ok(())
+    }
+}
+
 async fn read_http_request_with_timeout<S>(
     stream: &mut S,
     request_read_timeout: Duration,
@@ -710,6 +736,7 @@ where
     S: AsyncRead + Unpin,
 {
     let mut bytes = Vec::with_capacity(MAX_REQUEST_HEAD_BYTES);
+    let mut request_line = RequestLineState::Method;
     loop {
         let byte = match stream.read_u8().await {
             Ok(byte) => byte,
@@ -718,10 +745,11 @@ where
             }
             Err(_) => return Err(RequestReadError::Invalid),
         };
-        bytes.push(byte);
-        if bytes.len() > MAX_REQUEST_HEAD_BYTES {
+        request_line.observe(byte)?;
+        if bytes.len() == MAX_REQUEST_HEAD_BYTES {
             return Err(RequestReadError::HeadersTooLarge);
         }
+        bytes.push(byte);
         if bytes.ends_with(b"\r\n\r\n") {
             return parse_http_request(&bytes);
         }
@@ -1290,16 +1318,14 @@ mod tests {
 
     #[tokio::test]
     async fn direct_tls_rejects_parser_contract_violations() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
         let (server_config, client_config) = tls_configs();
-        let server = tokio::spawn(serve_restricted_https_listener(
-            listener,
-            server_config,
-            StartupOutcome::UninitializedWithoutDatabase,
-        ));
 
         for (request, status, body) in [
+            (
+                format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(11 * 1024)),
+                b"HTTP/1.1 414 URI Too Long\r\n".as_slice(),
+                b"{\"error\":\"uri_too_long\"}".as_slice(),
+            ),
             (
                 format!(
                     "GET https://{}/api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n",
@@ -1323,13 +1349,51 @@ mod tests {
                 b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
+            (
+                "GET /api/v1/status HTTP/1.1\r\nContent-Length: 00\r\n\r\n".to_owned(),
+                b"HTTP/1.1 200 OK\r\n".as_slice(),
+                b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+                    .as_slice(),
+            ),
+            (
+                "GET /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 00\r\n\r\n".to_owned(),
+                b"HTTP/1.1 200 OK\r\n".as_slice(),
+                b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+                    .as_slice(),
+            ),
+            (
+                "GET /api/v1/status HTTP/1.1\r\nContent-Length: 1\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+            (
+                "GET /api/v1/status HTTP/1.1\r\nContent-Length: 00x\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+            (
+                "GET /api/v1/status HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
         ] {
-            let mut client = tls_client(address, Arc::clone(&client_config)).await;
-            client.write_all(request.as_bytes()).await.unwrap();
-            let mut response = Vec::new();
-            let _ = client.read_to_end(&mut response).await;
-            assert!(response.starts_with(status));
-            assert!(response.ends_with(body));
+            let response = direct_tls_response(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                request.as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert!(
+                response.starts_with(status),
+                "request {request:?} produced response {response:?}"
+            );
+            assert!(
+                response.ends_with(body),
+                "request {request:?} produced response {response:?}"
+            );
         }
 
         let exact_target = format!(
@@ -1337,25 +1401,29 @@ mod tests {
             "a".repeat(super::MAX_REQUEST_TARGET_BYTES - "https:///api/v1/status".len()),
         );
         assert_eq!(exact_target.len(), super::MAX_REQUEST_TARGET_BYTES);
-        let mut client = tls_client(address, Arc::clone(&client_config)).await;
-        client
-            .write_all(format!("GET {exact_target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
-            .await
-            .unwrap();
-        let mut response = Vec::new();
-        let _ = client.read_to_end(&mut response).await;
+        let exact_target_request =
+            format!("GET {exact_target} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let response = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            exact_target_request.as_bytes(),
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
 
-        let mut client = tls_client(address, client_config).await;
-        client
-            .write_all(b"GET /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
-            .await
-            .unwrap();
-        let mut response = Vec::new();
-        let _ = client.read_to_end(&mut response).await;
+        let response = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            server_config,
+            client_config,
+            b"GET /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
-
-        server.abort();
     }
 
     #[tokio::test]
