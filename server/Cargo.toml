@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
 	"crates/core/weavelit-server",
+	"crates/core/weavelit-server-log",
 	"crates/core/weavelit-server-lifecycle",
 	"crates/database/weavelit-server-database",
 	"crates/database/weavelit-server-database-sqlite",

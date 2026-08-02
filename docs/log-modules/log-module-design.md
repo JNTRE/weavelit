@@ -16,6 +16,15 @@ time, result, and correlation identifier. It contains no SQLite, filesystem,
 Application Database, client-wire serialization, query, retention, backup,
 recovery, purge, or remote-credential behavior.
 
+Its compiled-in catalog validates each registration before invoking its factory
+with trusted Server context. A configured destination accepts only a complete
+immutable `CompleteLogRecord`; no public delivery operation accepts a raw
+source payload or a caller-created record identifier. The destination must
+acknowledge the same identifier and type synchronously after durable commit or
+an exact prior-record match. A capability mismatch, malformed registration,
+unavailable destination, or conflicting replay returns a stable payload-free
+error.
+
 Server Audit constructs and pre-redacts Audit records; Server Observability
 constructs and pre-redacts System records, including Init and Restore completion
 results. A Log Module accepts only these complete typed records. It may validate
