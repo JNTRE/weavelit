@@ -44,10 +44,9 @@ When implemented, the development image must:
 
 ## Validation
 
-The implemented image must be built and exercised with both a Docker command
-and at least one OCI-compatible alternative such as Podman or Buildah. Its
-validation must run `make check` inside the container and confirm that source,
-state, and secret mounts follow this design.
+The implemented image must be built and exercised with Docker commands for
+Milestone 1 local validation. Its validation must run `make check` inside the
+container and confirm that source, state, and secret mounts follow this design.
 
 ## Related Documents
 
