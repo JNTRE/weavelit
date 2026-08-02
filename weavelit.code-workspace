@@ -1,0 +1,34 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "chat.tools.terminal.autoApprove": {
+      "git remote": true,
+      "gh": true,
+      "git ls-remote": true,
+      "git add": true,
+      "git commit": true,
+      "printf": true,
+      "git fetch": true,
+      "git rev-list": true,
+      "git merge": true,
+      "git push": true,
+      "git switch": true,
+      "print": true,
+      "exit": true,
+      "test": true,
+      "git check-ignore": true,
+      "awk": true,
+      "git rev-parse": true,
+      "true": true,
+      "git ls-tree": true,
+      "git config": true,
+      "git pull": true,
+      "paste": true,
+      "continue": true
+    }
+  }
+}

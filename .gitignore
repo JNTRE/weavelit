@@ -1,5 +1,4 @@
 .DS_Store
-weavelit.code-workspace
 /target/
 /server/target/
 *.rs.bk

@@ -1,7 +1,7 @@
 # Development Containerfile Agent Guide
 
 This directory owns the development Containerfile for the Weavelit Server.
-Its future image will provide an OCI-compatible Rust development environment
+The implemented image provides an OCI-compatible Rust development environment
 without defining the Server's production deployment artifact.
 
 ## Purpose and Scope
@@ -18,7 +18,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and development Containerfile rules.
-- `Containerfile`: Placeholder for the Milestone 1 development OCI image.
+- `Containerfile`: Implemented Ubuntu 26.04 LTS development image for the Weavelit Server.
 
 ## Usage Guidance
 
@@ -28,11 +28,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
   and the repository-root `AGENTS.md`.
 - Read the canonical documentation in `../../../docs/containers/dev/` before changing
   the Containerfile and update it in the same change when its contract changes.
-- Do not replace the placeholder until the Server development configuration,
-  protected state path, deployment-record, database-locator, and secret-reference
-  mounts, and restricted pre-operational startup behavior are defined.
-- Validate an implemented image using `make check` within the mounted source
-  tree and preserve its documented Docker and OCI-compatible validation.
+- Validate changes using `make check` within the mounted source tree and preserve
+  its documented Docker and OCI-compatible validation.
 
 ## Standards and Conventions
 
