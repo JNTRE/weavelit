@@ -309,6 +309,40 @@ package. Internal workspace members are not exceptions.
   `zeroize` capabilities; `make -C server check` passes all 78 tests and the
   locked release build.
 
+#### `rustls`
+
+- **Source and version:** crates.io `=0.23.43`.
+- **Owner and behavior:** `weavelit-server` uses Rustls to construct the direct
+  TLS configuration from trusted host PEM material for the Milestone 1 HTTPS
+  listener. The Rust standard library and approved workspace dependencies do
+  not parse PEM material, validate certificate and private-key compatibility,
+  or provide a TLS server configuration.
+- **Features:** default features are disabled; only `aws_lc_rs`, `std`, and
+  `tls12` are enabled. `aws_lc_rs` selects the maintained AWS-LC cryptographic
+  provider; `std` supplies the host process integration required by the runtime;
+  and `tls12` permits the required TLS 1.2 and TLS 1.3 configuration. Logging,
+  post-quantum preference, compression, `ring`, FIPS, custom-provider, and
+  additional I/O capabilities are excluded. The runtime uses Rustls'
+  maintained `rustls-pki-types` API for bounded PEM sections and does not depend
+  on the archived `rustls-pemfile` crate.
+- **Maintenance, license, and advisories:** version 0.23.43 was released July
+  29, 2026, supports Rust 1.71 and later, and uses Apache-2.0, ISC, or MIT
+  licensing. The Rustls upstream published that release during the August 2,
+  2026 review. OSV queries on August 2, 2026 returned no advisory for Rustls
+  0.23.43 or its resolved AWS-LC provider `aws-lc-rs` 1.17.3. The review
+  rejected `rustls-pemfile` because OSV reports RUSTSEC-2025-0134: its upstream
+  is archived and unmaintained.
+- **Safe failure and validation:** the runtime accepts only one numeric
+  nonzero listener address, bounds each PEM file before parsing, rejects unsafe
+  filesystem entries and unsupported PEM sections, verifies the certificate and
+  private key through the selected provider, and maps every material failure to
+  a fixed payload-free configuration result. It neither binds a socket nor
+  exposes a listener in this validation boundary. Focused tests cover valid,
+  invalid-address, missing, unreadable, symbolic-link, malformed, mismatched,
+  and process-level pre-lifecycle failures. `cargo test --locked -p
+  weavelit-server --test startup` passes all 12 tests; the locked feature graph
+  contains only the selected Rustls provider capabilities.
+
 #### `getrandom`
 
 - **Source and version:** crates.io `=0.4.3`.

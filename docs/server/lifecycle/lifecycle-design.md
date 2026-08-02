@@ -420,6 +420,26 @@ and read the configured material under the filesystem protections required by
 the [Security Model](../../security-model.md#https-listener-and-pre-operational-surface-security-profile)
 before it binds.
 
+The runtime reads only these non-empty host environment variables:
+
+| Variable | Accepted value |
+| --- | --- |
+| `WEAVELIT_HTTPS_LISTENER_ADDRESS` | One numeric IPv4 or IPv6 socket address with a nonzero port. |
+| `WEAVELIT_TLS_CERTIFICATE_PATH` | An absolute path with no `.` or `..` component to a PEM certificate chain. |
+| `WEAVELIT_TLS_PRIVATE_KEY_PATH` | An absolute path with no `.` or `..` component to one PEM private key. |
+
+The runtime rejects a relative path, a `.` or `..` component, a symbolic-link
+component, a non-regular file, a hard-linked file, a group- or world-writable
+file, empty or oversized material, and an unreadable file. A private key must
+also have no permissions for other users; host administration remains
+responsible for ensuring any group granted key access is narrowly scoped to TLS
+material. Certificate files contain only certificate PEM sections, private-key
+files contain exactly one supported private-key PEM section, and the runtime
+uses its direct TLS provider to verify the leaf certificate and private key form
+a usable pair. The validation boundary reads at most 1 MiB from either file and
+does not bind, reserve, or probe a socket; a later listener-composition boundary
+treats a bind failure as fail-closed.
+
 An absent, malformed, unreadable, unsafe, or mismatched certificate or private
 key, or an invalid or unavailable listener address or port, fails startup
 closed. The runtime then exposes no route, cleartext HTTP fallback, alternative
@@ -522,7 +542,7 @@ typed error presentation. The allowed pairs are:
 
 | Category | Reasons |
 | --- | --- |
-| `configuration_invalid` | `state_root_not_configured`, `state_root_path_invalid` |
+| `configuration_invalid` | `listener_not_configured`, `listener_address_invalid`, `tls_certificate_not_configured`, `tls_private_key_not_configured`, `tls_material_invalid`, `state_root_not_configured`, `state_root_path_invalid` |
 | `preoperational_unavailable` | `state_root_in_use` |
 | `storage_unavailable` | `storage_operation_failed`, `database_unavailable` |
 | `storage_integrity_failure` | `anchor_set_invalid`, `anchor_version_unsupported`, `anchor_binding_invalid`, `database_integrity_failure` |

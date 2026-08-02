@@ -1,6 +1,13 @@
-use weavelit_server::{StartupError, classify_restricted_startup, read_state_root};
+use weavelit_server::{
+    StartupError, classify_restricted_startup, read_state_root, read_trusted_https_listener,
+};
 
 fn main() {
+    if let Err(error) = read_trusted_https_listener() {
+        present_error(error);
+        std::process::exit(1);
+    }
+
     let state_root = match read_state_root() {
         Ok(path) => path,
         Err(error) => {

@@ -12,8 +12,10 @@ name = "weavelit-server"
 path = "src/main.rs"
 
 [dependencies]
+rustls = { version = "=0.23.43", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 weavelit-server-database-sqlite = { path = "../../database/weavelit-server-database-sqlite" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
 
 [dev-dependencies]
+rcgen = "=0.14.8"
 tempfile = "=3.27.0"
