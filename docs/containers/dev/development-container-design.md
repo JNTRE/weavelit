@@ -15,6 +15,8 @@ The development image must:
 - target Ubuntu 26.04 LTS (`linux/amd64` and `linux/arm64`) and use a pinned multi-arch manifest digest;
 - install the Rust version and quality-gate components declared by
   `server/rust-toolchain.toml`;
+- provide `git` and the GitHub CLI (`gh`) for repository workflows; GitHub
+  authentication must be supplied at runtime and never embedded in the image;
 - run as a non-root development user;
 - use a mounted Server source tree and run `make check` for the complete Rust
   quality-gate suite;
