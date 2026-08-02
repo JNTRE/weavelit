@@ -39,9 +39,10 @@ The development image must:
 The repository-level `.devcontainer/devcontainer.json` must reference this
 Containerfile, mount the source tree at `/workspace`, declare a named Docker
 volume for the state root path exposed through `WEAVELIT_STATE_ROOT`, and
-require `rust-lang.rust-analyzer` as the minimum VS Code extension. It must
-keep the `weavelit` UID and GID at `10001` so the mode-0700 state-root volume
-initialized for that account remains accessible.
+require `rust-lang.rust-analyzer` as the minimum VS Code extension. Its
+state-root volume initialization must use the host UID and GID on Linux, where
+Dev Containers synchronizes the `weavelit` account to keep bind mounts writable;
+on non-Linux hosts it must retain the image account ownership of `10001:10001`.
 
 ## Validation
 

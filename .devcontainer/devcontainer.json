@@ -7,14 +7,13 @@
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
   "remoteUser": "weavelit",
-  "updateRemoteUserUID": false,
   "containerEnv": {
     "WEAVELIT_STATE_ROOT": "/var/lib/weavelit/state-root"
   },
   "mounts": [
     "source=weavelit-server-state-root,target=/var/lib/weavelit/state-root,type=volume"
   ],
-  "initializeCommand": "docker volume create weavelit-server-state-root >/dev/null && docker run --rm -v weavelit-server-state-root:/state ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb sh -c \"chown 10001:10001 /state && chmod 700 /state\"",
+  "initializeCommand": "owner=10001:10001; if [ \"$(uname)\" = Linux ]; then owner=$(id -u):$(id -g); fi; docker volume create weavelit-server-state-root >/dev/null && docker run --rm -v weavelit-server-state-root:/state ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb sh -c \"chown $owner /state && chmod 700 /state\"",
   "customizations": {
     "vscode": {
       "extensions": [
