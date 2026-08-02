@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     env, fmt, fs,
     io::{ErrorKind, Read},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -541,6 +541,10 @@ async fn serve_restricted_https_listener(
             .accept()
             .await
             .map_err(|_| StartupError::HttpsListenerUnavailable)?;
+        if !is_trusted_loopback_peer(source.ip()) {
+            drop(stream);
+            continue;
+        }
         if let Ok(connection_permit) = Arc::clone(&slots.normal).try_acquire_owned() {
             let tls_acceptor = tls_acceptor.clone();
             let router = router.clone();
@@ -564,6 +568,10 @@ async fn serve_restricted_https_listener(
             drop(rejection_permit);
         });
     }
+}
+
+fn is_trusted_loopback_peer(peer: IpAddr) -> bool {
+    peer == IpAddr::V4(Ipv4Addr::LOCALHOST) || peer == IpAddr::V6(Ipv6Addr::LOCALHOST)
 }
 
 async fn serve_normal_connection(
@@ -1046,7 +1054,7 @@ mod tests {
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener, TcpStream},
+        net::{TcpListener, TcpSocket, TcpStream},
     };
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
@@ -1288,6 +1296,54 @@ mod tests {
         let mut response = Vec::new();
         let _ = released.read_to_end(&mut response).await;
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn direct_tls_admits_only_exact_loopback_peers() {
+        let (server_config, client_config) = tls_configs();
+
+        for listener_address in ["127.0.0.1:0", "[::1]:0"] {
+            let listener = TcpListener::bind(listener_address).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(serve_restricted_https_listener(
+                listener,
+                Arc::clone(&server_config),
+                StartupOutcome::UninitializedWithoutDatabase,
+            ));
+
+            let mut client = tls_client(address, Arc::clone(&client_config)).await;
+            client
+                .write_all(b"GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            let _ = client.read_to_end(&mut response).await;
+            assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+
+            server.abort();
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve_restricted_https_listener(
+            listener,
+            server_config,
+            StartupOutcome::UninitializedWithoutDatabase,
+        ));
+        let socket = TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.2:0".parse().unwrap()).unwrap();
+        let stream = socket.connect(address).await.unwrap();
+        let rejection = tokio::time::timeout(
+            Duration::from_secs(1),
+            TlsConnector::from(client_config).connect(
+                ServerName::try_from("localhost").unwrap().to_owned(),
+                stream,
+            ),
+        )
+        .await;
+        assert!(matches!(rejection, Ok(Err(_))));
 
         server.abort();
     }

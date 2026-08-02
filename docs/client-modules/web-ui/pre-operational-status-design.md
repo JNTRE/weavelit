@@ -92,6 +92,10 @@ allowlist configuration channel. The response sends no CORS headers, supports no
 credentials or cookies, provides no browser cross-origin interaction, and has no
 CSRF flow.
 
+The direct TLS listener must reject every TCP peer whose source address is not
+exactly `127.0.0.1` or `::1` at transport admission, before capacity allocation,
+TLS handshake, request parsing, or rate limiting.
+
 ## Compatibility
 
 The success and error media types, field meanings, and fixed error codes are
