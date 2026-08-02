@@ -504,10 +504,10 @@ typed error presentation. The allowed pairs are:
 
 | Category | Reasons |
 | --- | --- |
-| `configuration_invalid` | `state_root_not_configured`, `state_root_path_invalid`, `service_identity_invalid`, `state_root_ownership_invalid`, `state_root_permissions_invalid`, `filesystem_unsupported` |
+| `configuration_invalid` | `state_root_not_configured`, `state_root_path_invalid` |
 | `preoperational_unavailable` | `state_root_in_use` |
 | `storage_unavailable` | `storage_operation_failed`, `database_unavailable` |
-| `storage_integrity_failure` | `state_root_inventory_invalid`, `state_root_entry_unsafe`, `anchor_set_invalid`, `anchor_format_invalid`, `anchor_version_unsupported`, `anchor_authentication_failed`, `anchor_binding_invalid`, `database_integrity_failure` |
+| `storage_integrity_failure` | `anchor_set_invalid`, `anchor_version_unsupported`, `anchor_binding_invalid`, `database_integrity_failure` |
 | `deployment_state_invalid` | `state_combination_invalid` |
 
 For example, a missing environment variable produces exactly:
