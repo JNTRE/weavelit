@@ -618,6 +618,9 @@ where
     let request = match read_http_request_with_timeout(stream, request_read_timeout).await {
         Ok(request) => request,
         Err(RequestReadError::TimedOut) => return request_timeout_response(),
+        Err(RequestReadError::TargetTooLong) => {
+            return json_fixed_response(StatusCode::URI_TOO_LONG, "{\"error\":\"uri_too_long\"}");
+        }
         Err(RequestReadError::HeadersTooLarge) => {
             return json_fixed_response(
                 StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
@@ -628,10 +631,6 @@ where
             return json_fixed_response(StatusCode::BAD_REQUEST, "{\"error\":\"bad_request\"}");
         }
     };
-
-    if let Some(response) = request_limit_response(&request) {
-        return response;
-    }
 
     if !rate_limiter.allows(source, Instant::now()) {
         return rate_limited_response();
@@ -647,6 +646,7 @@ where
 #[derive(Debug)]
 enum RequestReadError {
     TimedOut,
+    TargetTooLong,
     HeadersTooLarge,
     Invalid,
 }
@@ -700,6 +700,9 @@ fn parse_http_request(bytes: &[u8]) -> Result<Request, RequestReadError> {
     };
     let method = parsed.method.ok_or(RequestReadError::Invalid)?;
     let target = parsed.path.ok_or(RequestReadError::Invalid)?;
+    if target.len() > MAX_REQUEST_TARGET_BYTES {
+        return Err(RequestReadError::TargetTooLong);
+    }
     let uri = target.parse().map_err(|_| RequestReadError::Invalid)?;
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| RequestReadError::Invalid)?;
     let mut headers = HeaderMap::new();
@@ -833,11 +836,6 @@ async fn not_found() -> Response {
     json_response(StatusCode::NOT_FOUND, "not_found")
 }
 
-fn request_target_bytes(uri: &axum::http::Uri) -> usize {
-    uri.path_and_query()
-        .map_or(0, |target| target.as_str().len())
-}
-
 fn raw_header_section_bytes(bytes: &[u8]) -> Result<usize, RequestReadError> {
     let request_line_end = bytes
         .windows(2)
@@ -851,11 +849,6 @@ fn raw_header_section_bytes(bytes: &[u8]) -> Result<usize, RequestReadError> {
     section_end
         .checked_sub(request_line_end)
         .ok_or(RequestReadError::Invalid)
-}
-
-fn request_limit_response(request: &Request) -> Option<FixedResponse> {
-    (request_target_bytes(request.uri()) > MAX_REQUEST_TARGET_BYTES)
-        .then(|| json_fixed_response(StatusCode::URI_TOO_LONG, "{\"error\":\"uri_too_long\"}"))
 }
 
 fn json_response(status: StatusCode, error: &'static str) -> Response {
@@ -993,10 +986,9 @@ mod tests {
         ConnectionSlots, ConnectionTimeouts, FixedResponse, REQUEST_PROCESSING_TIMEOUT,
         REQUEST_READ_TIMEOUT, RateLimiter, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
         gateway_timeout_response, parse_http_request, processing_response,
-        raw_header_section_bytes, read_http_request_with_timeout, request_limit_response,
-        request_target_bytes, request_timeout_response, restricted_routes,
-        serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
-        serve_restricted_https_listener,
+        raw_header_section_bytes, read_http_request_with_timeout, request_timeout_response,
+        restricted_routes, serve_normal_connection_with_timeouts,
+        serve_rejection_connection_with_timeouts, serve_restricted_https_listener,
     };
 
     async fn response_body(response: axum::response::Response) -> String {
@@ -1085,14 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn request_bounds_apply_before_route_dispatch_and_preserve_raw_header_bytes() {
-        let target = "/api/v1/status?".to_owned() + &"a".repeat(2 * 1024);
-        let request = Request::get(target).body(Body::empty()).unwrap();
-        assert!(request_target_bytes(request.uri()) > 2 * 1024);
-        let response = request_limit_response(&request).unwrap();
-        assert_eq!(response.status, StatusCode::URI_TOO_LONG);
-        assert_eq!(response.body, "{\"error\":\"uri_too_long\"}");
-
+    fn request_header_bound_preserves_raw_header_bytes() {
         let bytes = format!(
             "GET / HTTP/1.1\r\nX-Bound: {}value\r\n\r\n",
             " ".repeat(8 * 1024)
@@ -1275,7 +1260,10 @@ mod tests {
 
         for (request, status, body) in [
             (
-                format!("GET /missing?{} HTTP/1.1\r\nHost: localhost\r\n\r\n", "a".repeat(2 * 1024)),
+                format!(
+                    "GET https://{}/api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                    "a".repeat(super::MAX_REQUEST_TARGET_BYTES),
+                ),
                 b"HTTP/1.1 414 URI Too Long\r\n".as_slice(),
                 b"{\"error\":\"uri_too_long\"}".as_slice(),
             ),
@@ -1289,6 +1277,11 @@ mod tests {
                 b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
+            (
+                "GET /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
         ] {
             let mut client = tls_client(address, Arc::clone(&client_config)).await;
             client.write_all(request.as_bytes()).await.unwrap();
@@ -1297,6 +1290,29 @@ mod tests {
             assert!(response.starts_with(status));
             assert!(response.ends_with(body));
         }
+
+        let exact_target = format!(
+            "https://{}/api/v1/status",
+            "a".repeat(super::MAX_REQUEST_TARGET_BYTES - "https:///api/v1/status".len()),
+        );
+        assert_eq!(exact_target.len(), super::MAX_REQUEST_TARGET_BYTES);
+        let mut client = tls_client(address, Arc::clone(&client_config)).await;
+        client
+            .write_all(format!("GET {exact_target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let _ = client.read_to_end(&mut response).await;
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+
+        let mut client = tls_client(address, client_config).await;
+        client
+            .write_all(b"GET /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let _ = client.read_to_end(&mut response).await;
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
 
         server.abort();
     }

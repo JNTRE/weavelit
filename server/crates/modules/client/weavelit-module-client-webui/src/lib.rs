@@ -37,8 +37,9 @@ async fn status_response(request: Request, database_selected: bool) -> Response 
 
 fn has_request_body(headers: &HeaderMap) -> bool {
     headers
-        .get(CONTENT_LENGTH)
-        .is_some_and(|value| value.as_bytes() != b"0")
+        .get_all(CONTENT_LENGTH)
+        .iter()
+        .any(|value| value.as_bytes() != b"0")
         || headers.contains_key(TRANSFER_ENCODING)
 }
 
@@ -165,6 +166,40 @@ mod tests {
         assert_eq!(duplicate_accept.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response_body(duplicate_accept).await,
+            "{\"error\":\"bad_request\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_translation_rejects_conflicting_content_length_fields() {
+        let single_zero = status_response(
+            Request::builder()
+                .uri("/api/v1/status")
+                .header("content-length", "0")
+                .body(Body::empty())
+                .unwrap(),
+            false,
+        )
+        .await;
+        assert_eq!(single_zero.status(), StatusCode::OK);
+        assert_eq!(
+            response_body(single_zero).await,
+            "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+        );
+
+        let conflicting = status_response(
+            Request::builder()
+                .uri("/api/v1/status")
+                .header("content-length", "0")
+                .header("content-length", "1")
+                .body(Body::empty())
+                .unwrap(),
+            false,
+        )
+        .await;
+        assert_eq!(conflicting.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_body(conflicting).await,
             "{\"error\":\"bad_request\"}"
         );
     }
