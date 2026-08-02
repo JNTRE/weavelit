@@ -84,6 +84,12 @@ weavelit-server-init
 weavelit-server-restore
 ```
 
+The shared Log Module contract is `weavelit-server-log`. It owns the Server
+core's typed record and dispatch boundary, not log-record construction or a
+destination implementation. `weavelit-module-log-sqlite` and a future
+`weavelit-module-log-mysql` may implement that contract while retaining their
+own persistence and delivery behavior.
+
 `weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
 shared by **[Init](../glossary.md#states-and-requests)** and
 **[Restore](../glossary.md#states-and-requests)**. The two workflow crates own
