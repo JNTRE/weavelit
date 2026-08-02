@@ -793,10 +793,10 @@ where
             return Err(RequestReadError::Invalid);
         }
         request_line.observe(byte)?;
-        if bytes.len() == MAX_REQUEST_HEAD_BYTES {
+        bytes.push(byte);
+        if bytes.len() > MAX_REQUEST_HEAD_BYTES {
             return Err(request_line.limit_error(&bytes));
         }
-        bytes.push(byte);
         if bytes.ends_with(b"\r\n\r\n") {
             return parse_http_request(&bytes);
         }
@@ -1610,6 +1610,16 @@ mod tests {
                 b"HTTP/1.1 405 \r\n".as_slice(),
                 b"{\"error\":\"method_not_allowed\"}".as_slice(),
                 true,
+            ),
+            (
+                "malformed method framing after a valid token",
+                format!(
+                    "{}\t /api/v1/status HTTP/1.1\r\n\r\n",
+                    "P".repeat(super::MAX_REQUEST_HEAD_BYTES)
+                ),
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+                false,
             ),
             (
                 "HTTP version",
