@@ -20,7 +20,7 @@ document.
 
 When implemented, the development image must:
 
-- target Ubuntu 26.04 LTS `amd64` and use a pinned base-image digest;
+- target Ubuntu 26.04 LTS (`linux/amd64` and `linux/arm64`) and use a pinned multi-arch manifest digest;
 - install the Rust version and quality-gate components declared by
   `server/rust-toolchain.toml`;
 - run as a non-root development user;
@@ -46,6 +46,11 @@ The repository-level `.devcontainer/devcontainer.json` must reference this
 Containerfile, mount the source tree at `/workspace`, declare a named Docker
 volume for the state root path exposed through `WEAVELIT_STATE_ROOT`, and
 require `rust-lang.rust-analyzer` as the minimum VS Code extension.
+
+When using VS Code workspaces with this development container, contributors
+must open the repository folder itself or the repository-local
+`weavelit.code-workspace` file so the container mounts this repository rather
+than a parent directory.
 
 ## Validation
 

@@ -17,7 +17,8 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "rust-lang.rust-analyzer"
+        "rust-lang.rust-analyzer",
+        "ms-vscode-remote.remote-containers"
       ]
     }
   }

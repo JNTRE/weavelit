@@ -28,6 +28,7 @@ Apply instructions in this order:
 - `.gitignore`: Git ignore rules for local macOS, build, backup, and workspace artifacts.
 - `.devcontainer/`: VS Code Dev Containers configuration for local development workflows.
 - `.vscode/`: Shared VS Code workspace settings.
+- `weavelit.code-workspace`: Repository-local VS Code workspace file for opening this repository without mounting its parent directory into the development container.
 - `CONTRIBUTING.md`: Branch, pull-request, branch-name, and Conventional Commit requirements.
 - `README.md`: Repository identification and high-level implementation layout.
 - `docs/`: Canonical product, security, terminology, and unresolved-decision documentation; follow `docs/AGENTS.md` for changes within it.
