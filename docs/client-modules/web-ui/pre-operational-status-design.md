@@ -71,6 +71,11 @@ diagnostic information.
 | Request read exceeds 5 seconds | `408 Request Timeout`, `{"error":"request_timeout"}` |
 | Total request processing exceeds 10 seconds | `504 Gateway Timeout`, `{"error":"gateway_timeout"}` |
 
+Responses use connection-close framing without a `Content-Length` header and omit
+the optional HTTP reason phrase. This preserves the documented status codes,
+JSON bodies, media type, and `Allow: GET` behavior while keeping every response
+within the 128-byte limit.
+
 The route accepts zero request-body bytes and does not buffer a request body,
 decompress data, perform cryptographic work, start cancellation-sensitive
 background work, or mutate state. The listener jointly permits at most 16 live

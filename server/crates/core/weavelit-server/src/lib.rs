@@ -844,17 +844,14 @@ async fn write_fixed_response<S>(stream: &mut S, response: FixedResponse) -> std
 where
     S: AsyncWrite + Unpin,
 {
-    let reason = response.status.canonical_reason().unwrap_or("Unknown");
     let allow = if response.allow_get {
         "Allow: GET\r\n"
     } else {
         ""
     };
     let wire = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{}",
+        "HTTP/1.1 {} \r\nContent-Type: application/json; charset=utf-8\r\n{}\r\n{}",
         response.status.as_u16(),
-        reason,
-        response.body.len(),
         allow,
         response.body,
     );
@@ -1234,6 +1231,27 @@ mod tests {
         request_read_timeout: Duration,
         processing_timeout: Duration,
     ) -> Vec<u8> {
+        direct_tls_response_with_rate_limiter(
+            router,
+            server_config,
+            client_config,
+            Arc::new(RateLimiter::new()),
+            request,
+            request_read_timeout,
+            processing_timeout,
+        )
+        .await
+    }
+
+    async fn direct_tls_response_with_rate_limiter(
+        router: Router,
+        server_config: Arc<ServerConfig>,
+        client_config: Arc<ClientConfig>,
+        rate_limiter: Arc<RateLimiter>,
+        request: &[u8],
+        request_read_timeout: Duration,
+        processing_timeout: Duration,
+    ) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1243,7 +1261,7 @@ mod tests {
                 source.ip(),
                 TlsAcceptor::from(server_config),
                 router,
-                Arc::new(RateLimiter::new()),
+                rate_limiter,
                 ConnectionTimeouts {
                     handshake: TLS_HANDSHAKE_TIMEOUT,
                     request_read: request_read_timeout,
@@ -1256,6 +1274,29 @@ mod tests {
         if !request.is_empty() {
             client.write_all(request).await.unwrap();
         }
+        let mut response = Vec::new();
+        let _ = client.read_to_end(&mut response).await;
+        server.await.unwrap();
+        response
+    }
+
+    async fn direct_tls_rejection_response(
+        server_config: Arc<ServerConfig>,
+        client_config: Arc<ClientConfig>,
+    ) -> Vec<u8> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            serve_rejection_connection_with_timeouts(
+                stream,
+                TlsAcceptor::from(server_config),
+                TLS_HANDSHAKE_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+        });
+        let mut client = tls_client(address, client_config).await;
         let mut response = Vec::new();
         let _ = client.read_to_end(&mut response).await;
         server.await.unwrap();
@@ -1283,7 +1324,7 @@ mod tests {
         let _ = overflow.read_to_end(&mut response).await;
         assert_eq!(
             response,
-            b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 31\r\nConnection: close\r\n\r\n{\"error\":\"service_unavailable\"}"
+            b"HTTP/1.1 503 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n{\"error\":\"service_unavailable\"}"
         );
 
         let busy_rejection = TcpStream::connect(address).await.unwrap();
@@ -1304,7 +1345,7 @@ mod tests {
             .unwrap();
         let mut response = Vec::new();
         let _ = released.read_to_end(&mut response).await;
-        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(response.starts_with(b"HTTP/1.1 200 \r\n"));
 
         server.abort();
     }
@@ -1329,7 +1370,7 @@ mod tests {
                 .unwrap();
             let mut response = Vec::new();
             let _ = client.read_to_end(&mut response).await;
-            assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+            assert!(response.starts_with(b"HTTP/1.1 200 \r\n"));
 
             server.abort();
         }
@@ -1388,7 +1429,7 @@ mod tests {
         for (request, status, body) in [
             (
                 format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(11 * 1024)),
-                b"HTTP/1.1 414 URI Too Long\r\n".as_slice(),
+                b"HTTP/1.1 414 \r\n".as_slice(),
                 b"{\"error\":\"uri_too_long\"}".as_slice(),
             ),
             (
@@ -1396,49 +1437,49 @@ mod tests {
                     "GET https://{}/api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n",
                     "a".repeat(super::MAX_REQUEST_TARGET_BYTES),
                 ),
-                b"HTTP/1.1 414 URI Too Long\r\n".as_slice(),
+                b"HTTP/1.1 414 \r\n".as_slice(),
                 b"{\"error\":\"uri_too_long\"}".as_slice(),
             ),
             (
                 format!("GET /api/v1/status HTTP/1.1\r\nX-Bound: {}value\r\n\r\n", " ".repeat(8 * 1024)),
-                b"HTTP/1.1 431 Request Header Fields Too Large\r\n".as_slice(),
+                b"HTTP/1.1 431 \r\n".as_slice(),
                 b"{\"error\":\"request_header_fields_too_large\"}".as_slice(),
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nAccept: application/json\r\nAccept: text/html\r\n\r\n".to_owned(),
-                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n".to_owned(),
-                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nContent-Length: 00\r\n\r\n".to_owned(),
-                b"HTTP/1.1 200 OK\r\n".as_slice(),
+                b"HTTP/1.1 200 \r\n".as_slice(),
                 b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
                     .as_slice(),
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 00\r\n\r\n".to_owned(),
-                b"HTTP/1.1 200 OK\r\n".as_slice(),
+                b"HTTP/1.1 200 \r\n".as_slice(),
                 b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
                     .as_slice(),
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nContent-Length: 1\r\n\r\n".to_owned(),
-                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nContent-Length: 00x\r\n\r\n".to_owned(),
-                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".to_owned(),
-                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
         ] {
@@ -1477,7 +1518,7 @@ mod tests {
             REQUEST_PROCESSING_TIMEOUT,
         )
         .await;
-        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(response.starts_with(b"HTTP/1.1 200 \r\n"));
 
         let response = direct_tls_response(
             restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
@@ -1488,7 +1529,7 @@ mod tests {
             REQUEST_PROCESSING_TIMEOUT,
         )
         .await;
-        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(response.starts_with(b"HTTP/1.1 200 \r\n"));
     }
 
     #[tokio::test]
@@ -1510,7 +1551,7 @@ mod tests {
                 .unwrap();
             let mut response = Vec::new();
             let _ = client.read_to_end(&mut response).await;
-            assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+            assert!(response.starts_with(b"HTTP/1.1 200 \r\n"));
         }
 
         let mut client = tls_client(address, client_config).await;
@@ -1520,7 +1561,7 @@ mod tests {
             .unwrap();
         let mut response = Vec::new();
         let _ = client.read_to_end(&mut response).await;
-        assert!(response.starts_with(b"HTTP/1.1 429 Too Many Requests\r\n"));
+        assert!(response.starts_with(b"HTTP/1.1 429 \r\n"));
         assert!(response.ends_with(b"{\"error\":\"rate_limited\"}"));
 
         server.abort();
@@ -1538,7 +1579,7 @@ mod tests {
             REQUEST_PROCESSING_TIMEOUT,
         )
         .await;
-        assert!(read_timeout.starts_with(b"HTTP/1.1 408 Request Timeout\r\n"));
+        assert!(read_timeout.starts_with(b"HTTP/1.1 408 \r\n"));
         assert!(read_timeout.ends_with(b"{\"error\":\"request_timeout\"}"));
 
         let processing_timeout = direct_tls_response(
@@ -1553,8 +1594,205 @@ mod tests {
             Duration::ZERO,
         )
         .await;
-        assert!(processing_timeout.starts_with(b"HTTP/1.1 504 Gateway Timeout\r\n"));
+        assert!(processing_timeout.starts_with(b"HTTP/1.1 504 \r\n"));
         assert!(processing_timeout.ends_with(b"{\"error\":\"gateway_timeout\"}"));
+    }
+
+    #[tokio::test]
+    async fn direct_tls_fixed_responses_fit_the_wire_limit() {
+        let (server_config, client_config) = tls_configs();
+        let rate_limiter = Arc::new(RateLimiter::new());
+        let source = "127.0.0.1".parse().unwrap();
+        let now = std::time::Instant::now();
+        for _ in 0..5 {
+            assert!(rate_limiter.allows(source, now));
+        }
+
+        let mut maximum_response_bytes = 0;
+        for (
+            name,
+            router,
+            request,
+            request_read_timeout,
+            processing_timeout,
+            rate_limiter,
+            status,
+            body,
+            allows_get,
+            rejection,
+        ) in [
+            (
+                "uninitialized without database",
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                200,
+                "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
+                false,
+                false,
+            ),
+            (
+                "uninitialized with database",
+                restricted_routes(StartupOutcome::UninitializedWithDatabase),
+                "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                200,
+                "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}",
+                false,
+                false,
+            ),
+            (
+                "bad request",
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                "GET /api/v1/status HTTP/1.1\r\nAccept: text/html\r\n\r\n".to_owned(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                400,
+                "{\"error\":\"bad_request\"}",
+                false,
+                false,
+            ),
+            (
+                "method not allowed",
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                405,
+                "{\"error\":\"method_not_allowed\"}",
+                true,
+                false,
+            ),
+            (
+                "not found",
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                "GET /absent HTTP/1.1\r\n\r\n".to_owned(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                404,
+                "{\"error\":\"not_found\"}",
+                false,
+                false,
+            ),
+            (
+                "target too long",
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(11 * 1024)),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                414,
+                "{\"error\":\"uri_too_long\"}",
+                false,
+                false,
+            ),
+            (
+                "headers too large",
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                format!(
+                    "GET /api/v1/status HTTP/1.1\r\nX-Bound: {}value\r\n\r\n",
+                    " ".repeat(8 * 1024)
+                ),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                431,
+                "{\"error\":\"request_header_fields_too_large\"}",
+                false,
+                false,
+            ),
+            (
+                "rate limited",
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::clone(&rate_limiter),
+                429,
+                "{\"error\":\"rate_limited\"}",
+                false,
+                false,
+            ),
+            (
+                "request timeout",
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                String::new(),
+                Duration::ZERO,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                408,
+                "{\"error\":\"request_timeout\"}",
+                false,
+                false,
+            ),
+            (
+                "processing timeout",
+                Router::new().route(
+                    "/slow",
+                    any(|| async { std::future::pending::<Response>().await }),
+                ),
+                "GET /slow HTTP/1.1\r\n\r\n".to_owned(),
+                REQUEST_READ_TIMEOUT,
+                Duration::ZERO,
+                Arc::new(RateLimiter::new()),
+                504,
+                "{\"error\":\"gateway_timeout\"}",
+                false,
+                false,
+            ),
+            (
+                "service unavailable",
+                Router::new(),
+                String::new(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+                Arc::new(RateLimiter::new()),
+                503,
+                "{\"error\":\"service_unavailable\"}",
+                false,
+                true,
+            ),
+        ] {
+            let response = if rejection {
+                direct_tls_rejection_response(
+                    Arc::clone(&server_config),
+                    Arc::clone(&client_config),
+                )
+                .await
+            } else {
+                direct_tls_response_with_rate_limiter(
+                    router,
+                    Arc::clone(&server_config),
+                    Arc::clone(&client_config),
+                    rate_limiter,
+                    request.as_bytes(),
+                    request_read_timeout,
+                    processing_timeout,
+                )
+                .await
+            };
+            maximum_response_bytes = maximum_response_bytes.max(response.len());
+            let response = std::str::from_utf8(&response).unwrap();
+            assert!(
+                response.len() <= 128,
+                "{name} response exceeds 128 bytes: {response:?}"
+            );
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status} \r\n")),
+                "{name}"
+            );
+            assert!(response.contains("Content-Type: application/json; charset=utf-8\r\n"));
+            assert_eq!(response.contains("Allow: GET\r\n"), allows_get, "{name}");
+            assert!(response.ends_with(body), "{name}: {response:?}");
+        }
+        assert_eq!(maximum_response_bytes, 119);
     }
 
     #[test]
