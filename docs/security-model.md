@@ -39,14 +39,37 @@ application security after a person with sufficient host authority can replace
 the Server binary, read protected Server state, or destroy all deployment
 anchors.
 
-TLS-protected HTTPS is an application invariant; the deployment operator
+TLS-protected HTTPS is an application invariant. The deployment operator
 supplies and protects the TLS material and controls network exposure, host
 access, filesystem protections, and custody of secrets retained outside
-Weavelit. A
-person with sufficient host authority can replace the Server binary or destroy
-all persistent deployment anchors. Weavelit cannot distinguish complete
-destruction of those anchors from a new installation; preventing and detecting
-that action belongs to deployment access control and monitoring.
+Weavelit. A person with sufficient host authority can replace the Server binary
+or destroy all persistent deployment anchors. Weavelit cannot distinguish
+complete destruction of those anchors from a new installation; preventing and
+detecting that action belongs to deployment access control and monitoring.
+
+## HTTPS Listener And Pre-Operational Surface Security Profile
+
+The direct TLS termination and listener requirements are defined by the
+[Technical Specification](spec.md#https-listener-and-pre-operational-exposure).
+The host must supply PEM certificate and private-key files that are regular,
+non-symlink files protected by restrictive filesystem permissions. The private
+key must be readable only by the Server process's effective user or a narrowly
+scoped group granted solely to read TLS material, and neither file may be
+modifiable by identities that do not administer TLS material. The Server must
+validate that the certificate and private key form a usable pair before it
+binds its listener and must not expose a route or diagnostic listener when this
+validation fails.
+
+The host must define the source networks permitted to reach each unauthenticated
+**[Pre-Operational Surface](glossary.md#applications-and-interfaces)** and
+enforce that policy through the trusted listener or deployment network controls.
+Each such surface must reject input before resource exhaustion by enforcing
+configured bounds for request size, request rate, concurrent work, parsing,
+decompression, cryptographic work, and execution time. A browser-accessible
+route must allow only explicitly intended origins, limit CORS to those origins,
+and apply CSRF protection appropriate to its authentication and request model.
+These controls must not depend on client-side enforcement or on an API wire
+format.
 
 ## Protected Assets
 

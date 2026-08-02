@@ -80,16 +80,6 @@ separate network-plane architecture?
 
 ## API, Security, and Operations
 
-### 7. HTTPS edge and public API protection
-
-Where does TLS terminate, how are certificates renewed, and which ports and
-source networks are allowed? What concrete request-size, request-rate,
-cryptographic-work, decompression, parsing, execution-time, and concurrency
-limits satisfy the security requirements for the unauthenticated
-**[Init](glossary.md#states-and-requests)** and
-**[Restore](glossary.md#states-and-requests)** surfaces? What CORS and
-browser-CSRF controls apply to those surfaces and the authenticated API?
-
 ### 8. API contract and compatibility policy
 
 API routes are versioned under `/api/v1/`. What is the wire format and

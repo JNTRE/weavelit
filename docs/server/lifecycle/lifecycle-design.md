@@ -410,6 +410,24 @@ start the Server, including its HTTPS listener, TLS material, and protected
 Server state directory. The lifecycle crate classifies every startup before the
 runtime exposes an application route:
 
+### Trusted HTTPS Listener Configuration
+
+Trusted host configuration supplies exactly one listener address and port plus
+the filesystem paths to its PEM certificate and matching private key. Neither a
+client request nor application configuration may create, alter, or select this
+listener or TLS material. The runtime must validate the listener configuration
+and read the configured material under the filesystem protections required by
+the [Security Model](../../security-model.md#https-listener-and-pre-operational-surface-security-profile)
+before it binds.
+
+An absent, malformed, unreadable, unsafe, or mismatched certificate or private
+key, or an invalid or unavailable listener address or port, fails startup
+closed. The runtime then exposes no route, cleartext HTTP fallback, alternative
+listener, Init or Restore recovery surface, application-configuration surface,
+or unauthenticated administrative surface. Certificate issuance and renewal
+remain host responsibilities; the runtime validates the material supplied at
+each startup rather than issuing, renewing, or replacing it.
+
 | Deployment record | Locator and database state | Server behavior |
 | --- | --- | --- |
 | Absent | Locator absent | Create an `Uninitialized` record, then expose restricted pre-operational status without a database selection. |
