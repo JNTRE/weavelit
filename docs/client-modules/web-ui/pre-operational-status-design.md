@@ -61,8 +61,8 @@ diagnostic information.
 
 | Condition | Response |
 | --- | --- |
-| Method other than `GET` | `405 Method Not Allowed`, `Allow: GET`, `{"error":"method_not_allowed"}` |
-| Request body, malformed framing, target, or header, or unsupported `Accept` | `400 Bad Request`, `{"error":"bad_request"}` |
+| Method other than `GET`, including an oversized syntactically valid non-`GET` method token | `405 Method Not Allowed`, `Allow: GET`, `{"error":"method_not_allowed"}` |
+| Request body, malformed framing, target, or header, an oversized or malformed HTTP version, or unsupported `Accept` | `400 Bad Request`, `{"error":"bad_request"}` |
 | Request target over 2 KiB | `414 URI Too Long`, `{"error":"uri_too_long"}` |
 | Request headers over 8 KiB | `431 Request Header Fields Too Large`, `{"error":"request_header_fields_too_large"}` |
 | Per-source rate exceeded | `429 Too Many Requests`, `{"error":"rate_limited"}` |

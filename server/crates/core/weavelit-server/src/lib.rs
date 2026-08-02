@@ -679,6 +679,7 @@ where
         Err(RequestReadError::TargetTooLong) => {
             return json_fixed_response(StatusCode::URI_TOO_LONG, "{\"error\":\"uri_too_long\"}");
         }
+        Err(RequestReadError::MethodNotAllowed) => return method_not_allowed_response(),
         Err(RequestReadError::HeadersTooLarge) => {
             return json_fixed_response(
                 StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
@@ -705,6 +706,7 @@ where
 enum RequestReadError {
     TimedOut,
     TargetTooLong,
+    MethodNotAllowed,
     HeadersTooLarge,
     Invalid,
 }
@@ -712,27 +714,52 @@ enum RequestReadError {
 enum RequestLineState {
     Method,
     Target(usize),
-    Complete,
+    Version,
+    VersionEnding,
+    Headers,
+    Invalid,
 }
 
 impl RequestLineState {
     fn observe(&mut self, byte: u8) -> Result<(), RequestReadError> {
         match self {
             Self::Method if byte == b' ' => *self = Self::Target(0),
-            Self::Method if matches!(byte, b'\r' | b'\n') => *self = Self::Complete,
-            Self::Target(length) if byte == b' ' || matches!(byte, b'\r' | b'\n') => {
-                *self = Self::Complete;
-            }
+            Self::Method if byte == b'\r' => *self = Self::Invalid,
+            Self::Target(_) if byte == b' ' => *self = Self::Version,
+            Self::Target(_) if byte == b'\r' => *self = Self::Invalid,
             Self::Target(length) => {
                 *length += 1;
                 if *length > MAX_REQUEST_TARGET_BYTES {
                     return Err(RequestReadError::TargetTooLong);
                 }
             }
-            Self::Complete | Self::Method => {}
+            Self::Version if byte == b'\r' => *self = Self::VersionEnding,
+            Self::Version => {}
+            Self::VersionEnding if byte == b'\n' => *self = Self::Headers,
+            Self::VersionEnding => *self = Self::Invalid,
+            Self::Headers | Self::Invalid | Self::Method => {}
         }
         Ok(())
     }
+
+    fn limit_error(&self, bytes: &[u8]) -> RequestReadError {
+        match self {
+            Self::Method | Self::Target(_) if request_line_has_non_get_method(bytes) => {
+                RequestReadError::MethodNotAllowed
+            }
+            Self::Method
+            | Self::Target(_)
+            | Self::Version
+            | Self::VersionEnding
+            | Self::Invalid => RequestReadError::Invalid,
+            Self::Headers => RequestReadError::HeadersTooLarge,
+        }
+    }
+}
+
+fn request_line_has_non_get_method(bytes: &[u8]) -> bool {
+    let method = bytes.split(|byte| *byte == b' ').next().unwrap_or(bytes);
+    method != b"GET" && Method::from_bytes(method).is_ok()
 }
 
 async fn read_http_request_with_timeout<S>(
@@ -767,7 +794,7 @@ where
         }
         request_line.observe(byte)?;
         if bytes.len() == MAX_REQUEST_HEAD_BYTES {
-            return Err(RequestReadError::HeadersTooLarge);
+            return Err(request_line.limit_error(&bytes));
         }
         bytes.push(byte);
         if bytes.ends_with(b"\r\n\r\n") {
@@ -881,6 +908,14 @@ fn service_unavailable_response() -> FixedResponse {
         StatusCode::SERVICE_UNAVAILABLE,
         "{\"error\":\"service_unavailable\"}",
     )
+}
+
+fn method_not_allowed_response() -> FixedResponse {
+    FixedResponse {
+        status: StatusCode::METHOD_NOT_ALLOWED,
+        body: "{\"error\":\"method_not_allowed\"}",
+        allow_get: true,
+    }
 }
 
 fn request_timeout_response() -> FixedResponse {
@@ -1559,6 +1594,53 @@ mod tests {
         )
         .await;
         assert!(response.starts_with(b"HTTP/1.1 200 \r\n"));
+    }
+
+    #[tokio::test]
+    async fn direct_tls_classifies_oversized_request_line_portions() {
+        let (server_config, client_config) = tls_configs();
+
+        for (name, request, status, body, allows_get) in [
+            (
+                "non-GET method",
+                format!(
+                    "{} /api/v1/status HTTP/1.1\r\n\r\n",
+                    "P".repeat(super::MAX_REQUEST_HEAD_BYTES + 1)
+                ),
+                b"HTTP/1.1 405 \r\n".as_slice(),
+                b"{\"error\":\"method_not_allowed\"}".as_slice(),
+                true,
+            ),
+            (
+                "HTTP version",
+                format!(
+                    "GET /api/v1/status HTTP/{}\r\n\r\n",
+                    "1".repeat(super::MAX_REQUEST_HEAD_BYTES)
+                ),
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+                false,
+            ),
+        ] {
+            let response = direct_tls_response(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                request.as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert!(response.starts_with(status), "{name}: {response:?}");
+            assert_eq!(
+                response
+                    .windows(b"Allow: GET\r\n".len())
+                    .any(|window| window == b"Allow: GET\r\n"),
+                allows_get,
+                "{name}: {response:?}"
+            );
+            assert!(response.ends_with(body), "{name}: {response:?}");
+        }
     }
 
     #[tokio::test]
