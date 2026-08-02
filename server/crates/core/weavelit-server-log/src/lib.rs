@@ -2,7 +2,11 @@
 
 //! Typed Server-owned dispatch contract for complete, pre-redacted log records.
 
-use std::{error::Error as StdError, fmt};
+use std::{
+    error::Error as StdError,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 const MAX_LOG_MODULES: usize = 64;
 const MAX_IDENTIFIER_LENGTH: usize = 64;
@@ -61,6 +65,13 @@ pub struct RecordId([u8; RECORD_ID_LENGTH]);
 impl fmt::Debug for RecordId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("RecordId(REDACTED)")
+    }
+}
+
+impl RecordId {
+    /// Returns the stable opaque bytes issued by the Server for persistence matching.
+    pub const fn as_bytes(&self) -> &[u8; RECORD_ID_LENGTH] {
+        &self.0
     }
 }
 
@@ -127,6 +138,13 @@ impl fmt::Debug for CorrelationId {
     }
 }
 
+impl CorrelationId {
+    /// Returns the pre-classified correlation identifier for persistence.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Server-owned result classification included with every complete record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogResult {
@@ -167,6 +185,18 @@ impl fmt::Debug for SystemLogBody {
     }
 }
 
+impl SystemLogBody {
+    /// Returns the pre-redacted operational classification.
+    pub fn classification(&self) -> &str {
+        &self.classification
+    }
+
+    /// Returns the pre-redacted operational detail.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
 /// Typed pre-redacted Audit Log body owned by Audit.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuditLogBody {
@@ -203,6 +233,28 @@ impl AuditLogBody {
 impl fmt::Debug for AuditLogBody {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuditLogBody(REDACTED)")
+    }
+}
+
+impl AuditLogBody {
+    /// Returns the pre-redacted accountable principal.
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
+
+    /// Returns the pre-redacted accountable action.
+    pub fn action(&self) -> &str {
+        &self.action
+    }
+
+    /// Returns the pre-redacted accountable target.
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Returns the pre-redacted accountability detail.
+    pub fn detail(&self) -> &str {
+        &self.detail
     }
 }
 
@@ -276,11 +328,123 @@ impl CompleteLogRecord {
             Self::Audit { .. } => LogRecordType::Audit,
         }
     }
+
+    /// Returns a complete read-only typed view for durable destination persistence.
+    pub const fn persistence_view(&self) -> LogRecordPersistenceView<'_> {
+        match self {
+            Self::System {
+                record_id,
+                event_time,
+                result,
+                correlation_id,
+                body,
+            } => LogRecordPersistenceView::System(SystemLogPersistenceView {
+                record_id,
+                event_time: *event_time,
+                result: *result,
+                correlation_id,
+                body,
+            }),
+            Self::Audit {
+                record_id,
+                event_time,
+                result,
+                correlation_id,
+                body,
+            } => LogRecordPersistenceView::Audit(AuditLogPersistenceView {
+                record_id,
+                event_time: *event_time,
+                result: *result,
+                correlation_id,
+                body,
+            }),
+        }
+    }
 }
 
 impl fmt::Debug for CompleteLogRecord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CompleteLogRecord(REDACTED)")
+    }
+}
+
+/// Read-only typed persistence projection of a complete immutable record.
+pub enum LogRecordPersistenceView<'a> {
+    /// A System Log record constructed by Observability.
+    System(SystemLogPersistenceView<'a>),
+    /// An Audit Log record constructed by Audit.
+    Audit(AuditLogPersistenceView<'a>),
+}
+
+/// Read-only persistence projection of a complete System Log record.
+pub struct SystemLogPersistenceView<'a> {
+    record_id: &'a RecordId,
+    event_time: EventTime,
+    result: LogResult,
+    correlation_id: &'a CorrelationId,
+    body: &'a SystemLogBody,
+}
+
+impl SystemLogPersistenceView<'_> {
+    /// Returns the opaque Server-issued identifier.
+    pub const fn record_id(&self) -> &RecordId {
+        self.record_id
+    }
+
+    /// Returns the immutable event time.
+    pub const fn event_time(&self) -> EventTime {
+        self.event_time
+    }
+
+    /// Returns the immutable result classification.
+    pub const fn result(&self) -> LogResult {
+        self.result
+    }
+
+    /// Returns the immutable correlation identifier.
+    pub const fn correlation_id(&self) -> &CorrelationId {
+        self.correlation_id
+    }
+
+    /// Returns the complete pre-redacted System Log body.
+    pub const fn body(&self) -> &SystemLogBody {
+        self.body
+    }
+}
+
+/// Read-only persistence projection of a complete Audit Log record.
+pub struct AuditLogPersistenceView<'a> {
+    record_id: &'a RecordId,
+    event_time: EventTime,
+    result: LogResult,
+    correlation_id: &'a CorrelationId,
+    body: &'a AuditLogBody,
+}
+
+impl AuditLogPersistenceView<'_> {
+    /// Returns the opaque Server-issued identifier.
+    pub const fn record_id(&self) -> &RecordId {
+        self.record_id
+    }
+
+    /// Returns the immutable event time.
+    pub const fn event_time(&self) -> EventTime {
+        self.event_time
+    }
+
+    /// Returns the immutable result classification.
+    pub const fn result(&self) -> LogResult {
+        self.result
+    }
+
+    /// Returns the immutable correlation identifier.
+    pub const fn correlation_id(&self) -> &CorrelationId {
+        self.correlation_id
+    }
+
+    /// Returns the complete pre-redacted Audit Log body.
+    pub const fn body(&self) -> &AuditLogBody {
+        self.body
     }
 }
 
@@ -312,19 +476,27 @@ impl fmt::Debug for LogModuleIdentifier {
 
 /// Trusted context supplied by Server runtime composition to a module factory.
 pub struct TrustedLogModuleContext {
-    _private: (),
+    local_root: PathBuf,
+    deployment_identity: [u8; RECORD_ID_LENGTH],
 }
 
 impl TrustedLogModuleContext {
-    /// Creates the Server-owned runtime context.
-    pub const fn new() -> Self {
-        Self { _private: () }
+    /// Creates the Server-owned runtime context with deployment-bound local inputs.
+    pub fn new(local_root: PathBuf, deployment_identity: [u8; RECORD_ID_LENGTH]) -> Self {
+        Self {
+            local_root,
+            deployment_identity,
+        }
     }
-}
 
-impl Default for TrustedLogModuleContext {
-    fn default() -> Self {
-        Self::new()
+    /// Returns the Server-supplied local root without deriving a destination path.
+    pub fn local_root(&self) -> &Path {
+        &self.local_root
+    }
+
+    /// Returns the Server-supplied deployment identity for destination binding.
+    pub const fn deployment_identity(&self) -> &[u8; RECORD_ID_LENGTH] {
+        &self.deployment_identity
     }
 }
 
@@ -692,13 +864,66 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum PersistedRecord {
+        System {
+            record_id: [u8; RECORD_ID_LENGTH],
+            event_time: u64,
+            result: LogResult,
+            correlation_id: Box<str>,
+            classification: Box<str>,
+            detail: Box<str>,
+        },
+        Audit {
+            record_id: [u8; RECORD_ID_LENGTH],
+            event_time: u64,
+            result: LogResult,
+            correlation_id: Box<str>,
+            principal: Box<str>,
+            action: Box<str>,
+            target: Box<str>,
+            detail: Box<str>,
+        },
+    }
+
+    impl PersistedRecord {
+        fn record_id(&self) -> &[u8; RECORD_ID_LENGTH] {
+            match self {
+                Self::System { record_id, .. } | Self::Audit { record_id, .. } => record_id,
+            }
+        }
+
+        fn from_record(record: &CompleteLogRecord) -> Self {
+            match record.persistence_view() {
+                LogRecordPersistenceView::System(record) => Self::System {
+                    record_id: *record.record_id().as_bytes(),
+                    event_time: record.event_time().unix_milliseconds(),
+                    result: record.result(),
+                    correlation_id: record.correlation_id().as_str().into(),
+                    classification: record.body().classification().into(),
+                    detail: record.body().detail().into(),
+                },
+                LogRecordPersistenceView::Audit(record) => Self::Audit {
+                    record_id: *record.record_id().as_bytes(),
+                    event_time: record.event_time().unix_milliseconds(),
+                    result: record.result(),
+                    correlation_id: record.correlation_id().as_str().into(),
+                    principal: record.body().principal().into(),
+                    action: record.body().action().into(),
+                    target: record.body().target().into(),
+                    detail: record.body().detail().into(),
+                },
+            }
+        }
+    }
+
     #[derive(Clone)]
     struct ReplayDestination {
-        records: Arc<Mutex<Vec<CompleteLogRecord>>>,
+        records: Arc<Mutex<Vec<PersistedRecord>>>,
     }
 
     impl ReplayDestination {
-        fn new(records: Arc<Mutex<Vec<CompleteLogRecord>>>) -> Self {
+        fn new(records: Arc<Mutex<Vec<PersistedRecord>>>) -> Self {
             Self { records }
         }
     }
@@ -712,22 +937,23 @@ mod tests {
                 .records
                 .lock()
                 .expect("test record lock must not poison");
+            let persisted_record = PersistedRecord::from_record(record);
             if let Some(existing) = records
                 .iter()
-                .find(|existing| existing.record_id() == record.record_id())
+                .find(|existing| existing.record_id() == persisted_record.record_id())
             {
-                if existing != record {
+                if existing != &persisted_record {
                     return Err(LogDestinationError::IntegrityFailure);
                 }
                 return Ok(DurableAcknowledgement::for_record(record));
             }
-            records.push(record.clone());
+            records.push(persisted_record);
             Ok(DurableAcknowledgement::for_record(record))
         }
     }
 
     struct ReplayFactory {
-        records: Arc<Mutex<Vec<CompleteLogRecord>>>,
+        records: Arc<Mutex<Vec<PersistedRecord>>>,
     }
 
     impl LogDestinationFactory for ReplayFactory {
@@ -737,6 +963,34 @@ mod tests {
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             Ok(Box::new(ReplayDestination::new(Arc::clone(&self.records))))
         }
+    }
+
+    type ObservedFactoryContext = (PathBuf, [u8; RECORD_ID_LENGTH]);
+
+    struct ContextForwardingFactory {
+        observed_context: Arc<Mutex<Option<ObservedFactoryContext>>>,
+    }
+
+    impl LogDestinationFactory for ContextForwardingFactory {
+        fn create(
+            &self,
+            context: &TrustedLogModuleContext,
+        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+            *self
+                .observed_context
+                .lock()
+                .expect("test context lock must not poison") = Some((
+                context.local_root().to_path_buf(),
+                *context.deployment_identity(),
+            ));
+            Ok(Box::new(ReplayDestination::new(Arc::new(Mutex::new(
+                Vec::new(),
+            )))))
+        }
+    }
+
+    fn trusted_context() -> TrustedLogModuleContext {
+        TrustedLogModuleContext::new(PathBuf::from("/srv/weavelit"), [9; RECORD_ID_LENGTH])
     }
 
     fn system_record(record_id: RecordId, detail: &str) -> CompleteLogRecord {
@@ -762,7 +1016,7 @@ mod tests {
 
     fn catalog(
         capabilities: LogCapabilities,
-        records: Arc<Mutex<Vec<CompleteLogRecord>>>,
+        records: Arc<Mutex<Vec<PersistedRecord>>>,
     ) -> LogModuleCatalog {
         LogModuleCatalog::new(vec![LogModuleRegistration::new(
             "sqlite",
@@ -776,7 +1030,7 @@ mod tests {
     fn catalog_rejects_duplicate_module_registration() {
         let capabilities = LogCapabilities::new(vec![LogRecordType::System])
             .expect("valid capability declaration");
-        let records = Arc::new(Mutex::new(Vec::new()));
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
         let registrations = vec![
             LogModuleRegistration::new(
                 "sqlite",
@@ -796,7 +1050,7 @@ mod tests {
 
     #[test]
     fn configured_destination_dispatches_and_forwards_durable_acknowledgement() {
-        let records = Arc::new(Mutex::new(Vec::new()));
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
         let catalog = catalog(
             LogCapabilities::new(vec![LogRecordType::System, LogRecordType::Audit])
                 .expect("valid capability declaration"),
@@ -804,7 +1058,7 @@ mod tests {
         );
         let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
         let destination = catalog
-            .create_destination(&identifier, &TrustedLogModuleContext::new())
+            .create_destination(&identifier, &trusted_context())
             .expect("registered destination is configured");
         let issuer = TrustedRecordIssuer::new();
         let record = system_record(
@@ -820,13 +1074,13 @@ mod tests {
                 .lock()
                 .expect("test record lock must not poison")
                 .as_slice(),
-            &[record]
+            &[PersistedRecord::from_record(&record)]
         );
     }
 
     #[test]
     fn configured_destination_rejects_unsupported_record_type_before_delivery() {
-        let records = Arc::new(Mutex::new(Vec::new()));
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
         let catalog = catalog(
             LogCapabilities::new(vec![LogRecordType::System])
                 .expect("valid capability declaration"),
@@ -834,7 +1088,7 @@ mod tests {
         );
         let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
         let destination = catalog
-            .create_destination(&identifier, &TrustedLogModuleContext::new())
+            .create_destination(&identifier, &trusted_context())
             .expect("registered destination is configured");
         let issuer = TrustedRecordIssuer::new();
         let record = audit_record(
@@ -857,7 +1111,7 @@ mod tests {
 
     #[test]
     fn exact_replay_is_acknowledged_without_a_second_persisted_record() {
-        let records = Arc::new(Mutex::new(Vec::new()));
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
         let catalog = catalog(
             LogCapabilities::new(vec![LogRecordType::System])
                 .expect("valid capability declaration"),
@@ -865,7 +1119,7 @@ mod tests {
         );
         let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
         let destination = catalog
-            .create_destination(&identifier, &TrustedLogModuleContext::new())
+            .create_destination(&identifier, &trusted_context())
             .expect("registered destination is configured");
         let issuer = TrustedRecordIssuer::new();
         let record = system_record(
@@ -888,7 +1142,7 @@ mod tests {
 
     #[test]
     fn changed_replay_for_the_same_identifier_is_an_integrity_failure() {
-        let records = Arc::new(Mutex::new(Vec::new()));
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
         let catalog = catalog(
             LogCapabilities::new(vec![LogRecordType::System])
                 .expect("valid capability declaration"),
@@ -896,7 +1150,7 @@ mod tests {
         );
         let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
         let destination = catalog
-            .create_destination(&identifier, &TrustedLogModuleContext::new())
+            .create_destination(&identifier, &trusted_context())
             .expect("registered destination is configured");
         let issuer = TrustedRecordIssuer::new();
         let record_id = issuer
@@ -916,7 +1170,7 @@ mod tests {
 
     #[test]
     fn changed_record_type_for_the_same_identifier_is_an_integrity_failure() {
-        let records = Arc::new(Mutex::new(Vec::new()));
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
         let catalog = catalog(
             LogCapabilities::new(vec![LogRecordType::System, LogRecordType::Audit])
                 .expect("valid capability declaration"),
@@ -924,7 +1178,7 @@ mod tests {
         );
         let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
         let destination = catalog
-            .create_destination(&identifier, &TrustedLogModuleContext::new())
+            .create_destination(&identifier, &trusted_context())
             .expect("registered destination is configured");
         let issuer = TrustedRecordIssuer::new();
         let record_id = issuer
@@ -960,5 +1214,33 @@ mod tests {
             assert!(!debug.contains(secret));
             assert!(!record_debug.contains(secret));
         }
+    }
+
+    #[test]
+    fn catalog_forwards_server_supplied_local_root_and_deployment_identity() {
+        let observed_context = Arc::new(Mutex::new(None));
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Box::new(ContextForwardingFactory {
+                observed_context: Arc::clone(&observed_context),
+            }),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let context =
+            TrustedLogModuleContext::new(PathBuf::from("/var/lib/weavelit"), [8; RECORD_ID_LENGTH]);
+
+        let _destination = catalog
+            .create_destination(&identifier, &context)
+            .expect("registered destination is configured");
+
+        assert_eq!(
+            *observed_context
+                .lock()
+                .expect("test context lock must not poison"),
+            Some((PathBuf::from("/var/lib/weavelit"), [8; RECORD_ID_LENGTH]))
+        );
     }
 }
