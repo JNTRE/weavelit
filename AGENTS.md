@@ -26,6 +26,8 @@ Apply instructions in this order:
 - `.github/`: GitHub-specific repository metadata, including the Copilot compatibility shim.
 - `.github/copilot-instructions.md`: Compatibility shim that defers to this guide.
 - `.gitignore`: Git ignore rules for local macOS, build, backup, and workspace artifacts.
+- `.dockerignore`: Docker build-context exclusions for the dev container image build.
+- `.devcontainer/`: VS Code Dev Containers configuration for local development workflows.
 - `.vscode/`: Shared VS Code workspace settings.
 - `CONTRIBUTING.md`: Branch, pull-request, branch-name, and Conventional Commit requirements.
 - `README.md`: Repository identification and high-level implementation layout.

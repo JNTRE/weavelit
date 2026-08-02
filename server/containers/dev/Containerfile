@@ -1,4 +1,38 @@
-FROM scratch
+FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
 
-LABEL org.opencontainers.image.title="Weavelit development image placeholder"
-LABEL org.opencontainers.image.description="Not a usable development image; see docs/containers/dev/development-container-design.md."
+LABEL org.opencontainers.image.title="Weavelit Server development image"
+LABEL org.opencontainers.image.description="OCI-compatible development image for building and validating the Weavelit Server."
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH=/home/weavelit/.cargo/bin:${PATH}
+
+RUN apt-get update \
+	&& apt-get install --yes --no-install-recommends \
+		ca-certificates \
+		curl \
+		gh \
+		git \
+		make \
+		build-essential \
+		pkg-config \
+		libssl-dev \
+		libsqlite3-dev \
+	&& rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 10001 weavelit \
+	&& useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash weavelit
+
+COPY --chown=weavelit:weavelit server/rust-toolchain.toml /tmp/rust-toolchain.toml
+
+USER weavelit
+
+RUN set -eux; \
+	rust_channel="$(awk -F '"' '/^channel[[:space:]]*=/{print $2; exit}' /tmp/rust-toolchain.toml)"; \
+	curl --proto '=https' --tlsv1.2 -sSf -o /tmp/rustup-init.sh https://sh.rustup.rs; \
+	sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "${rust_channel}"; \
+	rm -f /tmp/rustup-init.sh /tmp/rust-toolchain.toml; \
+	rustup component add clippy rustfmt --toolchain "${rust_channel}"
+
+WORKDIR /workspace/server
+
+CMD ["make", "check"]

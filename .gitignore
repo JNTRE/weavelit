@@ -4,3 +4,4 @@ weavelit.code-workspace
 /server/target/
 *.rs.bk
 *.pdb
+.github/agents/

@@ -8,21 +8,15 @@ without requiring Rust on the host. Docker is a supported local client for this
 image contract; the image and runtime contract must not depend on Docker-only
 behavior.
 
-## Current Boundary
+## Image Contract
 
-The development image is reserved for Milestone 1. Its Containerfile remains a
-non-runnable placeholder until the Server defines its development
-configuration, protected persistent-state location, database-locator
-persistence, and startup behavior.
+The development image must:
 
-The placeholder's `org.opencontainers.image.description` label points to this
-document.
-
-When implemented, the development image must:
-
-- target Ubuntu 26.04 LTS `amd64` and use a pinned base-image digest;
+- target Ubuntu 26.04 LTS (`linux/amd64` and `linux/arm64`) and use a pinned multi-arch manifest digest;
 - install the Rust version and quality-gate components declared by
   `server/rust-toolchain.toml`;
+- provide `git` and the GitHub CLI (`gh`) for repository workflows; GitHub
+  authentication must be supplied at runtime and never embedded in the image;
 - run as a non-root development user;
 - use a mounted Server source tree and run `make check` for the complete Rust
   quality-gate suite;
@@ -42,12 +36,21 @@ When implemented, the development image must:
 - use explicitly managed volumes for future persistent Server state and any
   optional build-cache data.
 
+The repository-level `.devcontainer/devcontainer.json` must reference this
+Containerfile, mount the source tree at `/workspace`, declare a named Docker
+volume for the state root path exposed through `WEAVELIT_STATE_ROOT`, and
+require `rust-lang.rust-analyzer` as the minimum VS Code extension. Its
+state-root volume initialization must use the host UID and GID on Linux, where
+Dev Containers synchronizes the `weavelit` account to keep bind mounts writable;
+on non-Linux hosts it must retain the image account ownership of `10001:10001`.
+
 ## Validation
 
-The implemented image must be built and exercised with both a Docker command
-and at least one OCI-compatible alternative such as Podman or Buildah. Its
-validation must run `make check` inside the container and confirm that source,
-state, and secret mounts follow this design.
+The implemented image must be built and exercised with Docker commands for
+Milestone 1 local validation. Its validation must run `make check` inside the
+container and confirm that source, state, and secret mounts follow this design.
+Validation must also confirm that the named state-root volume persists across
+container stop, rebuild, and restart boundaries.
 
 ## Related Documents
 

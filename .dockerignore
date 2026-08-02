@@ -1,0 +1,3 @@
+# Deny everything by default; re-include only what the Containerfile requires.
+*
+!server/rust-toolchain.toml
