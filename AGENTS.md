@@ -26,6 +26,7 @@ Apply instructions in this order:
 - `.github/`: GitHub-specific repository metadata, including the Copilot compatibility shim.
 - `.github/copilot-instructions.md`: Compatibility shim that defers to this guide.
 - `.gitignore`: Git ignore rules for local macOS, build, backup, and workspace artifacts.
+- `.dockerignore`: Docker build-context exclusions for the dev container image build.
 - `.devcontainer/`: VS Code Dev Containers configuration for local development workflows.
 - `.vscode/`: Shared VS Code workspace settings.
 - `weavelit.code-workspace`: Repository-local VS Code workspace file for opening this repository without mounting its parent directory into the development container.

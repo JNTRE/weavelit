@@ -1,0 +1,10 @@
+.git
+.gitignore
+.DS_Store
+docs/
+weavelit-cli/
+server/target/
+server/packaging/
+**/target/
+**/*.rs.bk
+**/*.pdb
