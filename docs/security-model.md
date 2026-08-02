@@ -124,6 +124,67 @@ protects reversibly encrypted application values. The recovery public key
 protects backup artifacts, and the corresponding private key is accepted only
 to decrypt a compatible backup.
 
+The approved Server-local at-rest profile uses one cryptographically random
+256-bit key per deployment and XChaCha20-Poly1305 authenticated encryption. Each
+encryption must use a fresh cryptographically random 192-bit nonce, retain the
+complete 128-bit authentication tag, and bind the product, format version, and
+protected artifact kind as associated data. Authentication must succeed before
+protected plaintext is parsed or used. The Server must map malformed envelopes,
+wrong keys, and authentication failures to the same redacted integrity result.
+
+The Server must run as a non-root operating-system identity. The supported
+Debian package must create a locked, non-login `weavelit` system user and primary
+group with no supplementary group by default. Runtime enforcement remains
+identity-neutral so a dedicated non-root development or container user may own
+its state. A later package requirement may grant one narrowly scoped group for
+a separately protected host resource, but that group must not receive access to
+Server state.
+
+The host must provision the directory named by `WEAVELIT_STATE_ROOT` as a
+normalized absolute path whose components are existing non-symlink directories.
+The final root must be owned by the Server process's effective user with exactly
+mode `0700`. Every managed child must be a regular non-symlink file owned by the
+same user, have exactly mode `0600`, and have one hard link. The Server must set
+an owner-only umask before creation, operate relative to one validated root
+directory handle, and hold an exclusive process-lifetime lock. Package,
+service-manager, development, and container configuration may select the state
+root but must not supply the key, child filenames, or individual artifact paths.
+
+The root uses a closed code-owned filename inventory. Unknown names, unsafe
+entries, or a filesystem that cannot provide required atomic replacement,
+durable file and directory synchronization, and advisory locking must fail
+closed without a reduced-security mode. A future release may deliberately add
+code-owned names; older binaries must reject rather than ignore them.
+
+Milestone 1 does not rotate this key in place and has no external monotonic
+anchor. A missing, malformed, corrupted, or wrong key must fail startup closed
+when another deployment anchor exists and must never trigger key regeneration.
+The profile must detect tampering, interrupted or mixed anchor replacement, and
+independent anchor replay. It does not guarantee detection when sufficient host
+authority coherently replaces the complete key, deployment record, and database
+locator set with an older valid set.
+
+A valid key with no other deployment or database artifact is the only resumable
+incomplete bootstrap state. Owned key and decrypted plaintext buffers must be
+zeroized on normal and error exits where the maintained facilities can control
+their storage, without claiming protection against unavoidable copies, swap,
+process-memory inspection, or host compromise.
+
+The lifecycle anchor store implements this profile with maintained
+XChaCha20-Poly1305, operating-system randomness, strict typed JSON, canonical
+Base64url, zeroizing key and plaintext buffers, and safe directory-relative
+Unix operations. It authenticates before parsing, never opens the Application
+Database while loading anchors, and maps malformed, wrong-key, tampered,
+unsupported, unsafe, partial, or unavailable state to payload-free lifecycle
+categories.
+
+Lifecycle diagnostics must contain only an approved fixed category and reason
+code. They must not include dynamic identifiers, backend or field names,
+cryptographic values, plaintext or ciphertext, file facts, paths, sizes, raw
+dependency or operating-system errors, or another rejected value. An untrusted
+startup state must exit before binding HTTPS rather than expose a diagnostic or
+fallback recovery service.
+
 Sensitive authentication material submitted through a
 **[Service Connection](glossary.md#applications-and-interfaces)** type's
 declared setup workflow must terminate in Server-owned credential handling. The
@@ -226,6 +287,7 @@ requests.
 
 - [Technical Specification](spec.md)
 - [Glossary](glossary.md)
+- [Lifecycle Anchor Protection And Serialization Profile](server/lifecycle/lifecycle-anchor-profile-decision.md)
 - [Authentication Design](server/authentication/authentication-design.md)
 - [Authorization Design](server/authorization/authorization-design.md)
 - [Automation Identity Design](server/automation-identities/automation-identity-design.md)

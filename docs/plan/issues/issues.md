@@ -9,7 +9,19 @@ may be included for context. If this index differs from GitHub, GitHub controls.
 
 ## Open Issues
 
-There are currently no open issues.
+### #34 Establish trusted pre-operational lifecycle foundation
+
+[Open GitHub Issue #34](https://github.com/JNTRE/weavelit/issues/34).
+
+**Summary:** Establish the trusted Server-owned pre-operational lifecycle
+authority so one deployment can persist and validate its identity and
+Application Database selection, reopen safely after restart, classify startup
+state, serialize Init and Restore checkpoint ownership, and compose restricted
+startup without exposing normal operation.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
 ## Example Issue
 

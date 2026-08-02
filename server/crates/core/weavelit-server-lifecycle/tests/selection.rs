@@ -1,0 +1,690 @@
+use std::{
+    fs,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+use weavelit_server_database::{
+    CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
+};
+use weavelit_server_database_sqlite::SqliteDatabase;
+use weavelit_server_lifecycle::{
+    ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
+    BackendOpenError, BackendRegistration, ConnectionFieldDeclaration, ConnectionFieldIdentifier,
+    ConnectionFieldInput, ConnectionFieldRequirement, ConnectionValidationError, ConnectionValue,
+    ConnectionValueKind, FieldDeclarationError, LifecycleError, LifecycleStore,
+    SecretClassification, SelectionError, TrustedBackendContext, ValidatedConnectionSettings,
+    WorkflowCheckpoint, WorkflowKind,
+};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const SQLITE_BACKEND: &str = "sqlite";
+
+fn state_root() -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let canonical = directory.path().canonicalize().unwrap();
+    (directory, canonical)
+}
+
+fn expect_selection_error(
+    result: Result<Box<dyn ApplicationDatabase>, SelectionError>,
+) -> SelectionError {
+    match result {
+        Ok(_) => panic!("selection unexpectedly succeeded"),
+        Err(e) => e,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Real SQLite factory and helpers
+// ---------------------------------------------------------------------------
+
+struct SqliteFactory;
+
+impl ApplicationDatabaseFactory for SqliteFactory {
+    fn open(
+        &self,
+        context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+    ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+        SqliteDatabase::open(context.application_database_path())
+            .map(|db| Box::new(db) as Box<dyn ApplicationDatabase>)
+            .map_err(|_| LifecycleError::DependencyUnavailable)
+    }
+}
+
+fn sqlite_catalog() -> BackendCatalog {
+    BackendCatalog::new(vec![BackendRegistration::new(
+        SQLITE_BACKEND,
+        vec![],
+        Box::new(SqliteFactory),
+    )])
+    .unwrap()
+}
+
+fn sqlite_context(root: &Path) -> TrustedBackendContext {
+    TrustedBackendContext::new(root.join("application.sqlite3"))
+}
+
+fn sqlite_backend() -> BackendIdentifier {
+    BackendIdentifier::new(SQLITE_BACKEND).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Fake factory helpers
+// ---------------------------------------------------------------------------
+
+struct FakeDatabase {
+    inspection: DatabaseInspection,
+}
+
+impl ApplicationDatabase for FakeDatabase {
+    fn inspect(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, DatabaseError> {
+        Ok(self.inspection.clone())
+    }
+
+    fn create_checkpoint(&mut self, _checkpoint: &WorkflowCheckpoint) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    fn reconcile_checkpoint(
+        &mut self,
+        _expected_checkpoint: &WorkflowCheckpoint,
+    ) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    fn discard_checkpoint(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+        _expected_workflow: WorkflowKind,
+    ) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+}
+
+struct FakeFactory {
+    result: Result<DatabaseInspection, LifecycleError>,
+}
+
+impl ApplicationDatabaseFactory for FakeFactory {
+    fn open(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+    ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+        match &self.result {
+            Ok(inspection) => Ok(Box::new(FakeDatabase {
+                inspection: inspection.clone(),
+            })),
+            Err(e) => Err(*e),
+        }
+    }
+}
+
+fn fake_catalog(inspection: Result<DatabaseInspection, LifecycleError>) -> BackendCatalog {
+    BackendCatalog::new(vec![BackendRegistration::new(
+        "fake-backend",
+        vec![],
+        Box::new(FakeFactory { result: inspection }),
+    )])
+    .unwrap()
+}
+
+fn fake_backend() -> BackendIdentifier {
+    BackendIdentifier::new("fake-backend").unwrap()
+}
+
+fn fake_context() -> TrustedBackendContext {
+    TrustedBackendContext::new(PathBuf::from("/fake/path/application.sqlite3"))
+}
+
+fn fake_checkpoint(deployment_identifier: DeploymentIdentifier) -> WorkflowCheckpoint {
+    WorkflowCheckpoint::new(
+        deployment_identifier,
+        WorkflowKind::Init,
+        CheckpointMetadata::from_bytes(b"meta".as_slice()).unwrap(),
+    )
+}
+
+// Controllable fake factory for replacement-scenario tests.
+struct ControllableFactory {
+    result: Arc<Mutex<Result<DatabaseInspection, LifecycleError>>>,
+}
+
+impl ApplicationDatabaseFactory for ControllableFactory {
+    fn open(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+    ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+        let guard = self.result.lock().unwrap();
+        match guard.clone() {
+            Ok(inspection) => Ok(Box::new(FakeDatabase { inspection })),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+fn controllable_catalog(
+    result: Arc<Mutex<Result<DatabaseInspection, LifecycleError>>>,
+) -> BackendCatalog {
+    BackendCatalog::new(vec![BackendRegistration::new(
+        "fake-backend",
+        vec![],
+        Box::new(ControllableFactory { result }),
+    )])
+    .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Tests: connection-field validation rejections
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unknown_backend_is_rejected_before_locator_mutation() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = fake_catalog(Ok(DatabaseInspection::Uninitialized));
+    let unknown = BackendIdentifier::new("unknown-backend").unwrap();
+
+    let error =
+        expect_selection_error(store.select_database(&catalog, &fake_context(), &unknown, vec![]));
+
+    assert_eq!(
+        error,
+        SelectionError::Open(BackendOpenError::ConnectionInvalid(
+            ConnectionValidationError::UnknownBackend
+        ))
+    );
+    assert!(store.locator().is_none());
+}
+
+#[test]
+fn missing_required_field_rejected_before_locator_mutation() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = BackendCatalog::new(vec![BackendRegistration::new(
+        "requires-field",
+        vec![
+            ConnectionFieldDeclaration::new(
+                "token",
+                ConnectionValueKind::String,
+                ConnectionFieldRequirement::Required,
+                SecretClassification::Secret,
+            )
+            .unwrap(),
+        ],
+        Box::new(FakeFactory {
+            result: Ok(DatabaseInspection::Uninitialized),
+        }),
+    )])
+    .unwrap();
+    let backend = BackendIdentifier::new("requires-field").unwrap();
+
+    let error =
+        expect_selection_error(store.select_database(&catalog, &fake_context(), &backend, vec![]));
+
+    assert_eq!(
+        error,
+        SelectionError::Open(BackendOpenError::ConnectionInvalid(
+            ConnectionValidationError::MissingRequiredField
+        ))
+    );
+    assert!(store.locator().is_none());
+}
+
+#[test]
+fn duplicate_field_rejected_before_locator_mutation() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = BackendCatalog::new(vec![BackendRegistration::new(
+        "backend-with-field",
+        vec![
+            ConnectionFieldDeclaration::new(
+                "count",
+                ConnectionValueKind::Integer,
+                ConnectionFieldRequirement::Optional,
+                SecretClassification::NonSecret,
+            )
+            .unwrap(),
+        ],
+        Box::new(FakeFactory {
+            result: Ok(DatabaseInspection::Uninitialized),
+        }),
+    )])
+    .unwrap();
+    let backend = BackendIdentifier::new("backend-with-field").unwrap();
+    let count_id = ConnectionFieldIdentifier::new("count").unwrap();
+
+    let error = expect_selection_error(store.select_database(
+        &catalog,
+        &fake_context(),
+        &backend,
+        vec![
+            ConnectionFieldInput::new(
+                count_id.clone(),
+                SecretClassification::NonSecret,
+                ConnectionValue::integer(1),
+            ),
+            ConnectionFieldInput::new(
+                count_id,
+                SecretClassification::NonSecret,
+                ConnectionValue::integer(2),
+            ),
+        ],
+    ));
+
+    assert_eq!(
+        error,
+        SelectionError::Open(BackendOpenError::ConnectionInvalid(
+            ConnectionValidationError::DuplicateField
+        ))
+    );
+    assert!(store.locator().is_none());
+}
+
+#[test]
+fn wrong_value_kind_rejected_before_locator_mutation() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = BackendCatalog::new(vec![BackendRegistration::new(
+        "backend-with-field",
+        vec![
+            ConnectionFieldDeclaration::new(
+                "count",
+                ConnectionValueKind::Integer,
+                ConnectionFieldRequirement::Optional,
+                SecretClassification::NonSecret,
+            )
+            .unwrap(),
+        ],
+        Box::new(FakeFactory {
+            result: Ok(DatabaseInspection::Uninitialized),
+        }),
+    )])
+    .unwrap();
+    let backend = BackendIdentifier::new("backend-with-field").unwrap();
+    let count_id = ConnectionFieldIdentifier::new("count").unwrap();
+
+    let error = expect_selection_error(store.select_database(
+        &catalog,
+        &fake_context(),
+        &backend,
+        vec![ConnectionFieldInput::new(
+            count_id,
+            SecretClassification::NonSecret,
+            ConnectionValue::string("not-an-integer"),
+        )],
+    ));
+
+    assert_eq!(
+        error,
+        SelectionError::Open(BackendOpenError::ConnectionInvalid(
+            ConnectionValidationError::WrongValueKind
+        ))
+    );
+}
+
+#[test]
+fn path_and_file_reference_field_declarations_are_forbidden() {
+    for identifier in [
+        "path",
+        "database-path",
+        "credential-file",
+        "config-filename",
+        "storage-directory",
+        "cache-dir",
+    ] {
+        assert_eq!(
+            ConnectionFieldDeclaration::new(
+                identifier,
+                ConnectionValueKind::String,
+                ConnectionFieldRequirement::Optional,
+                SecretClassification::NonSecret,
+            )
+            .unwrap_err(),
+            FieldDeclarationError::LocalReferenceForbidden,
+            "identifier '{identifier}' must be rejected"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: candidate eligibility rejections
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pending_candidate_database_is_rejected() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let checkpoint = fake_checkpoint(store.record().deployment_identifier());
+    let catalog = fake_catalog(Ok(DatabaseInspection::Pending(checkpoint)));
+
+    let error = expect_selection_error(store.select_database(
+        &catalog,
+        &fake_context(),
+        &fake_backend(),
+        vec![],
+    ));
+
+    assert_eq!(error, SelectionError::CandidateIneligible);
+    assert!(store.locator().is_none());
+}
+
+#[test]
+fn initialized_candidate_database_is_rejected() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let deployment_identifier = store.record().deployment_identifier();
+    let catalog = fake_catalog(Ok(DatabaseInspection::Initialized {
+        deployment_identifier,
+    }));
+
+    let error = expect_selection_error(store.select_database(
+        &catalog,
+        &fake_context(),
+        &fake_backend(),
+        vec![],
+    ));
+
+    assert_eq!(error, SelectionError::CandidateIneligible);
+    assert!(store.locator().is_none());
+}
+
+#[test]
+fn factory_failure_is_rejected_before_locator_mutation() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = fake_catalog(Err(LifecycleError::DependencyUnavailable));
+
+    let error = expect_selection_error(store.select_database(
+        &catalog,
+        &fake_context(),
+        &fake_backend(),
+        vec![],
+    ));
+
+    assert_eq!(
+        error,
+        SelectionError::Open(BackendOpenError::Factory(
+            LifecycleError::DependencyUnavailable
+        ))
+    );
+    assert!(store.locator().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Tests: successful initial selection with real SQLite
+// ---------------------------------------------------------------------------
+
+#[test]
+fn initial_selection_persists_locator_and_returns_database() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+
+    store
+        .select_database(
+            &sqlite_catalog(),
+            &sqlite_context(&path),
+            &sqlite_backend(),
+            vec![],
+        )
+        .expect("initial selection must succeed");
+
+    assert!(store.locator().is_some());
+    assert_eq!(
+        store.locator().unwrap().backend_identifier().as_str(),
+        SQLITE_BACKEND
+    );
+    assert!(path.join("application.sqlite3").exists());
+}
+
+#[test]
+fn selected_locator_survives_restart() {
+    let (_dir, path) = state_root();
+    {
+        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        store
+            .select_database(
+                &sqlite_catalog(),
+                &sqlite_context(&path),
+                &sqlite_backend(),
+                vec![],
+            )
+            .unwrap();
+    }
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    assert!(store.locator().is_some(), "locator must survive restart");
+    assert_eq!(
+        store.locator().unwrap().backend_identifier().as_str(),
+        SQLITE_BACKEND
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests: SQLite path isolation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sqlite_database_path_is_derived_from_state_root_not_client() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+
+    store
+        .select_database(
+            &sqlite_catalog(),
+            &sqlite_context(&path),
+            &sqlite_backend(),
+            vec![],
+        )
+        .unwrap();
+
+    let db_path = path.join("application.sqlite3");
+    assert!(db_path.exists());
+    assert_eq!(fs::metadata(&db_path).unwrap().mode() & 0o777, 0o600);
+    assert!(
+        store.locator().unwrap().settings().is_empty(),
+        "SQLite locator must have no persisted client fields"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests: replacement
+// ---------------------------------------------------------------------------
+
+#[test]
+fn replacement_allowed_when_current_database_is_uninitialized() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = sqlite_catalog();
+    let context = sqlite_context(&path);
+
+    store
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .unwrap();
+    let first_generation = store.locator().unwrap().generation();
+
+    store
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .unwrap();
+
+    assert_ne!(store.locator().unwrap().generation(), first_generation);
+}
+
+#[test]
+fn replacement_rejected_when_current_database_has_checkpoint() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = sqlite_catalog();
+    let context = sqlite_context(&path);
+
+    let mut db = store
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .unwrap();
+
+    let checkpoint = fake_checkpoint(store.record().deployment_identifier());
+    db.create_checkpoint(&checkpoint).unwrap();
+    drop(db);
+
+    let error = expect_selection_error(store.select_database(
+        &catalog,
+        &context,
+        &sqlite_backend(),
+        vec![],
+    ));
+
+    assert_eq!(error, SelectionError::ReplacementIneligible);
+    assert!(
+        store.locator().is_some(),
+        "original locator must be preserved"
+    );
+}
+
+#[test]
+fn replacement_rejected_after_initialized_state() {
+    let (_dir, path) = state_root();
+    let result = Arc::new(Mutex::new(Ok(DatabaseInspection::Uninitialized)));
+    let catalog = controllable_catalog(Arc::clone(&result));
+
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    store
+        .select_database(&catalog, &fake_context(), &fake_backend(), vec![])
+        .unwrap();
+
+    let deployment_identifier = store.record().deployment_identifier();
+    *result.lock().unwrap() = Ok(DatabaseInspection::Initialized {
+        deployment_identifier,
+    });
+
+    let error = expect_selection_error(store.select_database(
+        &catalog,
+        &fake_context(),
+        &fake_backend(),
+        vec![],
+    ));
+
+    assert_eq!(error, SelectionError::ReplacementIneligible);
+}
+
+// ---------------------------------------------------------------------------
+// Tests: restart reopening
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reopen_selected_database_returns_correct_backend_after_restart() {
+    let (_dir, path) = state_root();
+    {
+        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        store
+            .select_database(
+                &sqlite_catalog(),
+                &sqlite_context(&path),
+                &sqlite_backend(),
+                vec![],
+            )
+            .unwrap();
+    }
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    let mut db = store
+        .reopen_selected_database(&sqlite_catalog(), &sqlite_context(&path))
+        .expect("reopening must succeed");
+
+    assert_eq!(
+        db.inspect(store.record().deployment_identifier()).unwrap(),
+        DatabaseInspection::Uninitialized
+    );
+}
+
+#[test]
+fn reopen_without_locator_fails_closed() {
+    let (_dir, path) = state_root();
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+
+    let error = match store.reopen_selected_database(&sqlite_catalog(), &sqlite_context(&path)) {
+        Ok(_) => panic!("reopen must fail without locator"),
+        Err(e) => e,
+    };
+    assert_eq!(error, LifecycleError::InvalidState);
+}
+
+// ---------------------------------------------------------------------------
+// Tests: crash-point safety
+// ---------------------------------------------------------------------------
+
+#[test]
+fn orphan_locator_from_crash_before_record_commit_is_cleaned_up() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    store
+        .select_database(
+            &sqlite_catalog(),
+            &sqlite_context(&path),
+            &sqlite_backend(),
+            vec![],
+        )
+        .unwrap();
+    let committed_generation = store.locator().unwrap().generation();
+    drop(store);
+
+    // Write an orphan locator file simulating a crash after write but before record commit.
+    let orphan_bytes = [0xAB_u8; 16];
+    let orphan_name = format!(
+        "database-locator-{}.json",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            orphan_bytes
+        )
+    );
+    fs::write(path.join(&orphan_name), b"orphan-placeholder").unwrap();
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    assert_eq!(store.locator().unwrap().generation(), committed_generation);
+    assert!(
+        !path.join(&orphan_name).exists(),
+        "orphan must be cleaned up"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests: redaction
+// ---------------------------------------------------------------------------
+
+#[test]
+fn selection_errors_do_not_expose_sensitive_values() {
+    let sensitive_path = "/private/secrets/application.sqlite3";
+    let sensitive_cred = "secret-credential-value";
+
+    let errors: &[SelectionError] = &[
+        SelectionError::Open(BackendOpenError::ConnectionInvalid(
+            ConnectionValidationError::UnknownBackend,
+        )),
+        SelectionError::NotAllowed,
+        SelectionError::CandidateIneligible,
+        SelectionError::ReplacementIneligible,
+        SelectionError::Lifecycle(LifecycleError::DependencyUnavailable),
+        SelectionError::Lifecycle(LifecycleError::IntegrityFailure),
+        SelectionError::Lifecycle(LifecycleError::DeploymentMismatch),
+    ];
+    for error in errors {
+        let output = format!("{error:?} {error}");
+        assert!(
+            !output.contains(sensitive_path),
+            "error must not expose path: {output}"
+        );
+        assert!(
+            !output.contains(sensitive_cred),
+            "error must not expose credential: {output}"
+        );
+    }
+}

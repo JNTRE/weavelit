@@ -102,6 +102,18 @@ backend catalog and uses the lifecycle result to choose which routes may exist.
 The lifecycle crate does not create new application state, interpret backup
 contents, handle a private recovery key, or implement client presentation.
 
+The initial delivered lifecycle contract depends only on
+`weavelit-server-database`. It reuses that crate's deployment identifier and
+Application Database trait while defining lifecycle record and locator values,
+canonical backend and field identifiers, bounded scalar connection values,
+trusted secret classifications, capability classifications, and payload-free
+errors. `BackendCatalog` validates runtime registrations and submitted fields
+before invoking an `ApplicationDatabaseFactory`. The factory receives a trusted
+Server-derived local context separately from canonically ordered validated
+settings and returns only the backend-neutral Application Database contract.
+This initial boundary contains no persistence, serialization, cryptography,
+SQLite implementation, Client Module, or runtime-composition dependency.
+
 `weavelit-server-init` owns only the new-state workflow. It uses the lifecycle
 crate to select and reopen the Application Database and to validate and advance
 trusted lifecycle state. It owns initialization requests, first-user and
@@ -245,9 +257,173 @@ package. Internal workspace members are not exceptions.
   with warnings denied, all 27 locked workspace tests, and locked release builds.
   The lockfile and feature graph were reviewed for excluded optional features.
 
-### Planned Production Dependency Candidates
+#### `base64`
 
-No production dependency candidates are currently selected.
+- **Source and version:** crates.io `=0.23.0`.
+- **Owner and behavior:** `weavelit-server-lifecycle` uses canonical unpadded
+  URL-safe Base64 for keys, nonces, deployment identifiers, locator generations,
+  ciphertext, and byte-valued settings in the version 1 JSON formats and
+  code-owned locator filenames. The standard library and approved dependencies
+  do not provide Base64 encoding or canonical decoding.
+- **Features:** default features are disabled and only `alloc` is enabled. The
+  `std` and `simd-unsafe` features are excluded; lifecycle format handling does
+  not require architecture-specific unsafe SIMD acceleration.
+- **Maintenance, license, and advisories:** version 0.23.0 supports Rust 1.71
+  and later and uses the MIT or Apache-2.0 license. The unarchived upstream was
+  active at the August 1, 2026 review, and the GitHub Advisory Database review
+  found no advisory matching version 0.23.0.
+- **Safe failure and validation:** decoding uses only the URL-safe
+  no-padding engine, enforces exact decoded lengths and bounds, rejects invalid
+  trailing bits and non-canonical text by re-encoding, and never include rejected
+  text in errors. Known-answer, invalid alphabet, padding, trailing-bit,
+  wrong-length, filename grammar, and redaction tests pass. The locked graph
+  excludes `std` and `simd-unsafe`; `make -C server check` passes all 78 tests
+  and the locked release build.
+
+#### `chacha20poly1305`
+
+- **Source and version:** crates.io `=0.11.0`.
+- **Owner and behavior:** `weavelit-server-lifecycle` uses the RustCrypto
+  `XChaCha20Poly1305` implementation to encrypt and authenticate complete
+  deployment-record and database-locator payloads for Milestone 1. The Rust
+  standard library and approved workspace dependencies do not provide an AEAD
+  implementation.
+- **Features:** default features are disabled; only `alloc` and `zeroize` are
+  enabled. The crate's `getrandom`, reduced-round, `arrayvec`, `bytes`, and
+  `rand_core` features are excluded because the lifecycle crate obtains
+  fallible operating-system randomness through its direct `getrandom`
+  dependency. The selected construction uses a 256-bit key, random 192-bit
+  nonce, complete 128-bit tag, and format-defined associated data.
+- **Maintenance, license, and advisories:** version 0.11.0 supports Rust 1.85
+  and later and uses the MIT or Apache-2.0 license. The unarchived RustCrypto
+  AEADs upstream was active at the August 1, 2026 review. The implementation has
+  an independent NCC Group audit with no significant findings, and the GitHub
+  Advisory Database review found no advisory matching version 0.11.0 or its
+  `aead` 0.6.1 abstraction.
+- **Safe failure and validation:** authentication completes before
+  payload parsing, authentication errors expose no plaintext and collapse to
+  one redacted integrity result, tags are never truncated, and nonce generation
+  has no weak fallback. The exact published known-answer vector and wrong-key,
+  wrong-nonce, wrong-associated-data, tampering, truncation, restart, and
+  sensitive-output tests pass. The locked graph contains only `alloc` and
+  `zeroize` capabilities; `make -C server check` passes all 78 tests and the
+  locked release build.
+
+#### `getrandom`
+
+- **Source and version:** crates.io `=0.4.3`.
+- **Owner and behavior:** `weavelit-server-lifecycle` obtains operating-system
+  randomness for the deployment key, deployment identifier, locator generation,
+  temporary-file uniqueness, and AEAD nonces. The Rust standard library and
+  approved dependencies do not expose the required fallible operating-system
+  random-byte interface.
+- **Features:** default features are disabled and no optional features are
+  enabled. The `std`, `sys_rng`, and `wasm_js` features are excluded; Milestone
+  1 uses the supported Ubuntu operating-system source and does not add a user-
+  supplied random-number generator or browser target.
+- **Maintenance, license, and advisories:** version 0.4.3 supports Rust 1.85 and
+  later and uses the MIT or Apache-2.0 license. The unarchived `getrandom`
+  upstream was active at the August 1, 2026 review, and the GitHub Advisory
+  Database review found no advisory matching version 0.4.3.
+- **Safe failure and validation:** any operating-system randomness
+  failure stops key, identifier, nonce, or temporary-file creation without a
+  deterministic or lower-quality fallback. Focused failure injection proves the
+  payload-free unavailable category and no fallback; first-start, restart,
+  locator replacement, and temporary-file tests exercise nonzero random values.
+  The locked graph excludes optional features; `make -C server check` passes all
+  78 tests and the locked release build.
+
+#### `rustix`
+
+- **Source and version:** crates.io `=1.1.4`.
+- **Owner and behavior:** `weavelit-server-lifecycle` uses safe Unix APIs to
+  inspect the effective identity, set the owner-only umask, traverse the
+  absolute state-root path component by component without following symbolic
+  links, inspect ownership, mode, type, and hard-link count, and perform
+  directory-relative creation, replacement, removal, and synchronization. The
+  standard library does not expose the complete race-resistant relative Unix
+  filesystem API without platform constants or unsafe calls. The Rust standard
+  library separately supplies the process-lifetime file lock.
+- **Features:** default features are disabled; only `std`, `fs`, and `process`
+  are enabled. Networking, mount, asynchronous I/O, memory-management, terminal,
+  thread, timing, latest-Linux opt-in, and explicit libc-backend features are
+  excluded.
+- **Maintenance, license, and advisories:** version 1.1.4 supports Rust 1.63 and
+  later and uses Apache-2.0 with LLVM exception, Apache-2.0, or MIT licensing.
+  The unarchived Bytecode Alliance upstream was active at the August 1, 2026
+  review, and the GitHub Advisory Database review found no advisory matching
+  version 1.1.4.
+- **Safe failure and validation:** no operation follows a state-root or
+  child symlink or falls back from a failed ownership, mode, type, link-count,
+  atomic-replacement, or synchronization check. Isolated real-filesystem tests
+  cover final and intermediate symlinks, exact root and file modes, regular-file
+  and hard-link checks, closed inventory and cardinality, process locking,
+  write/sync/rename/directory-sync failures, cleanup, and redacted mapping. The
+  locked graph enables only `std`, `fs`, and `process`; `make -C server check`
+  passes all 78 tests and the locked release build.
+
+#### `zeroize`
+
+- **Source and version:** crates.io `=1.9.0`.
+- **Owner and behavior:** `weavelit-server-lifecycle` uses `Zeroizing` and the
+  `Zeroize` trait for application-owned at-rest key and decrypted anchor buffers.
+  The standard library does not guarantee that clearing sensitive memory will
+  survive compiler optimization.
+- **Features:** default features are disabled and only `alloc` is enabled. The
+  derive, Serde, SIMD, architecture-specific, and `std` features are excluded.
+- **Maintenance, license, and advisories:** version 1.9.0 supports Rust 1.85 and
+  later and uses the MIT or Apache-2.0 license. The unarchived RustCrypto
+  utilities upstream was active at the August 1, 2026 review, and the GitHub
+  Advisory Database review found no advisory matching version 1.9.0.
+- **Safe failure and validation:** sensitive owned buffers are
+  zeroized on normal and error exits without claiming protection against
+  unavoidable copies, process memory inspection, swapping, or host compromise.
+  The key wrapper and every decrypted plaintext allocation use `Zeroizing`;
+  successful, wrong-key, tampered, malformed, and restart paths exercise their
+  drop behavior. The locked graph enables only `alloc`; `make -C server check`
+  passes all 78 tests and the locked release build.
+
+#### `serde`
+
+- **Source and version:** crates.io `=1.0.229`.
+- **Owner and behavior:** `weavelit-server-lifecycle` derives the bounded
+  versioned key-file, envelope, deployment-record, and database-locator data
+  models used by the strict JSON parser. The standard library does not provide
+  structured serialization or deserialization.
+- **Features:** default features are disabled; only `derive` and `std` are
+  enabled. Reference-counted-value and unstable features are excluded.
+- **Maintenance, license, and advisories:** version 1.0.229 supports Rust 1.56
+  and later and uses the MIT or Apache-2.0 license. The unarchived Serde
+  upstream was active at the August 1, 2026 review, and the GitHub Advisory
+  Database review found no advisory matching version 1.0.229.
+- **Safe failure and validation:** every anchor model denies unknown
+  fields and validates lengths, versions, enum values, and binary encodings before
+  domain construction. Duplicate, unknown, missing, reordered, invalid enum,
+  wrong-length, oversized, and malformed model tests pass. The locked graph
+  enables only `derive` and `std`; `make -C server check` passes all 78 tests and
+  the locked release build.
+
+#### `serde_json`
+
+- **Source and version:** crates.io `=1.0.151`.
+- **Owner and behavior:** `weavelit-server-lifecycle` parses and emits the
+  bounded, versioned UTF-8 JSON anchor formats through typed Serde models. The
+  standard library does not provide a JSON parser, and ad hoc string parsing is
+  prohibited for the security-sensitive formats.
+- **Features:** default features are disabled and only `std` is enabled.
+  Arbitrary-precision numbers, float round-trip, order preservation, raw values,
+  and unbounded-depth parsing are excluded.
+- **Maintenance, license, and advisories:** version 1.0.151 supports Rust 1.71
+  and later and uses the MIT or Apache-2.0 license. The unarchived Serde JSON
+  upstream was active at the August 1, 2026 review, and the GitHub Advisory
+  Database review found no advisory matching version 1.0.151.
+- **Safe failure and validation:** file-size bounds apply before parse;
+  authenticated plaintext is parsed with bounded typed structures; trailing
+  content, duplicate or unknown fields, unsupported versions, and malformed
+  input fail closed without raw parser output. The exact deterministic writer
+  vector and whitespace, ordering, trailing-content, invalid UTF-8, size,
+  malformed-input, and redaction tests pass. The locked graph enables only
+  `std`; `make -C server check` passes all 78 tests and the locked release build.
 
 The workspace manifest owns an approved shared dependency's identity, version,
 source, and any workspace-wide security baseline. A single-consumer dependency
@@ -285,6 +461,7 @@ impact, and validation performed.
 - [Security Model](../security-model.md)
 - [Glossary](../glossary.md)
 - [Server Lifecycle Design](lifecycle/lifecycle-design.md)
+- [Lifecycle Anchor Protection And Serialization Profile](lifecycle/lifecycle-anchor-profile-decision.md)
 - [Server Init Design](lifecycle/init/init-design.md)
 - [Server Restore Design](lifecycle/restore/restore-design.md)
 - [Application Database Design](database/application-database-design.md)

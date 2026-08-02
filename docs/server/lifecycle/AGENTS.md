@@ -17,6 +17,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server lifecycle design.
+- `lifecycle-anchor-profile-decision.md`: Accepted architecture decision for trusted state-root configuration, anchor serialization and protection, at-rest key custody, and replay limits.
 - `lifecycle-design.md`: Shared pre-operational startup classification, deployment-record and database-locator persistence, database selection, workflow arbitration, concurrency, and sealing design.
 - `init/`: Server-owned fresh-state Init contract and implementation design.
 - `restore/`: Server-owned Restore contract and implementation design.
