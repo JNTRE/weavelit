@@ -5,3 +5,4 @@ weavelit.code-workspace
 *.rs.bk
 *.pdb
 .github/agents/
+.github/skills/

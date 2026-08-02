@@ -165,6 +165,29 @@ module. Application Database persistence remains separate from every
 when their implementations use the same technology. They may use the same
 approved workspace dependency without sharing persistence behavior.
 
+## HTTPS Runtime Composition
+
+The `weavelit-server` runtime owns the sole direct-TLS listener, lifecycle
+gating, and route composition. Its Milestone 1 status surface uses Axum routing
+over Hyper and Tokio with Rustls. Rustls uses the approved AWS-LC cryptographic
+provider and permits TLS 1.2 and TLS 1.3. The runtime does not create a second
+listener or a cleartext fallback.
+
+The compiled-in `weavelit-module-client-webui` crate owns translation of the
+Web UI pre-operational status request and response contract. The runtime mounts
+that route only when the Server-owned lifecycle gate permits it and retains
+ownership of direct TLS, listener composition, raw request parsing, resource
+limits, and lifecycle classification. The module cannot independently compose a
+route or listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
+defines its public contract and resource limits.
+
+The implementation selects minimal features and exact crates.io versions for
+Axum, Hyper, Tokio, and their required adapters under the dependency policy
+below. Each selected package must be maintained and advisory-reviewed before it
+is added. A package upgrade is a deliberate dependency change that repeats the
+version, change, advisory, and validation review; no future version is approved
+by this architecture decision.
+
 ## Rust Workspace Dependency Policy
 
 `server/Cargo.toml` is the Server Rust workspace manifest and the authority for
@@ -309,6 +332,64 @@ package. Internal workspace members are not exceptions.
   `zeroize` capabilities; `make -C server check` passes all 78 tests and the
   locked release build.
 
+#### `rustls`
+
+- **Source and version:** crates.io `=0.23.43`.
+- **Owner and behavior:** `weavelit-server` uses Rustls to construct the direct
+  TLS configuration from trusted host PEM material for the Milestone 1 HTTPS
+  listener. The Rust standard library and approved workspace dependencies do
+  not parse PEM material, validate certificate and private-key compatibility,
+  or provide a TLS server configuration.
+- **Features:** default features are disabled; only `aws_lc_rs`, `std`, and
+  `tls12` are enabled. `aws_lc_rs` selects the maintained AWS-LC cryptographic
+  provider; `std` supplies the host process integration required by the runtime;
+  and `tls12` permits the required TLS 1.2 and TLS 1.3 configuration. Logging,
+  post-quantum preference, compression, `ring`, FIPS, custom-provider, and
+  additional I/O capabilities are excluded. The runtime uses Rustls'
+  maintained `rustls-pki-types` API for bounded PEM sections and does not depend
+  on the archived `rustls-pemfile` crate.
+- **Maintenance, license, and advisories:** version 0.23.43 was released July
+  29, 2026, supports Rust 1.71 and later, and uses Apache-2.0, ISC, or MIT
+  licensing. The Rustls upstream published that release during the August 2,
+  2026 review. OSV queries on August 2, 2026 returned no advisory for Rustls
+  0.23.43 or its resolved AWS-LC provider `aws-lc-rs` 1.17.3. The review
+  rejected `rustls-pemfile` because OSV reports RUSTSEC-2025-0134: its upstream
+  is archived and unmaintained.
+- **Safe failure and validation:** the runtime accepts only one numeric
+  nonzero listener address, bounds each PEM file before parsing, rejects unsafe
+  filesystem entries and unsupported PEM sections, verifies the certificate and
+  private key through the selected provider, and maps every material failure to
+  a fixed payload-free configuration result. It neither binds a socket nor
+  exposes a listener in this validation boundary. Focused tests cover valid,
+  invalid-address, missing, unreadable, symbolic-link, malformed, mismatched,
+  and process-level pre-lifecycle failures. `cargo test --locked -p
+  weavelit-server --test startup` passes all 12 tests; the locked feature graph
+  contains only the selected Rustls provider capabilities.
+
+#### HTTPS Runtime Composition
+
+The following crates.io packages are direct dependencies of `weavelit-server`
+for the Milestone 1 single direct-TLS listener. The Rust standard library and
+the approved Rustls dependency do not provide HTTP routing, bounded HTTP/1
+header parsing, response-body collection, or asynchronous socket and TLS-stream
+handling.
+
+| Package | Exact version and minimal features | Owner and purpose | Maintenance, license, and advisory evidence |
+| --- | --- | --- | --- |
+| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the fixed restricted route; `weavelit-module-client-webui` translates the status request and JSON response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
+| `http-body-util` | `=0.1.4`; defaults enabled | `weavelit-server`; collects the fixed, sub-128-byte Axum route response before direct TLS emission | Hyperium; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, without request-body buffering | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tokio` | `=1.53.1`; defaults disabled; `io-util`, `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, TLS-stream I/O, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tokio-rustls` | `=0.26.4`; defaults disabled | `weavelit-server`; asynchronous stream adapter for the already-approved Rustls configuration | Rustls; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tower` | `=0.5.3`; defaults disabled; `util` | `weavelit-server`; invokes the fixed Axum route service after bounded request-head validation | Tower; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+
+These packages do not enable HTTP/2, compression, CORS, cookie, form, JSON,
+query, tracing, client, proxy, or alternate TLS-provider features. The locked
+resolution records only crates.io sources and exact checksums. Contract tests
+cover both status projections, lifecycle route removal, fixed rejection bodies,
+and bind-failure redaction; the full locked workspace gate remains required for
+every dependency-resolution change.
+
 #### `getrandom`
 
 - **Source and version:** crates.io `=0.4.3`.
@@ -340,10 +421,12 @@ package. Internal workspace members are not exceptions.
   inspect the effective identity, set the owner-only umask, traverse the
   absolute state-root path component by component without following symbolic
   links, inspect ownership, mode, type, and hard-link count, and perform
-  directory-relative creation, replacement, removal, and synchronization. The
-  standard library does not expose the complete race-resistant relative Unix
-  filesystem API without platform constants or unsafe calls. The Rust standard
-  library separately supplies the process-lifetime file lock.
+  directory-relative creation, replacement, removal, and synchronization.
+  `weavelit-server` uses the same descriptor-relative no-follow primitives to
+  open and validate configured TLS material. The standard library does not
+  expose the complete race-resistant relative Unix filesystem API without
+  platform constants or unsafe calls. The Rust standard library separately
+  supplies the process-lifetime file lock.
 - **Features:** default features are disabled; only `std`, `fs`, and `process`
   are enabled. Networking, mount, asynchronous I/O, memory-management, terminal,
   thread, timing, latest-Linux opt-in, and explicit libc-backend features are

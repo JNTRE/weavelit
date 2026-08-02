@@ -115,20 +115,52 @@ non-API Web UI routes.
 Before Init or Restore completes, the same listener MUST expose only applicable
 **[Pre-Operational Surfaces](glossary.md#applications-and-interfaces)** provided
 by Client Modules. Each Pre-Operational Surface MUST expose only the restricted
-Init and Restore contracts corresponding to capabilities explicitly declared by
-its Client Module. Pre-Operational Surfaces MUST remain distinct from the User
-Plane and Administration Plane, and normal application functions MUST remain
-unavailable in this state. Network reachability MUST be limited through TLS,
-firewall, and other deployment network controls. During normal operation,
-client authentication is additionally REQUIRED. While the Server is
-uninitialized, the deployer is responsible for restricting network access to
-the unauthenticated Init and Restore capabilities.
+status, Init, and Restore contracts corresponding to capabilities explicitly
+declared by its Client Module. Pre-Operational Surfaces MUST remain distinct
+from the User Plane and Administration Plane, and normal application functions
+MUST remain unavailable in this state. Milestone 1 declares only the Web UI
+Client Module's status capability; its exact contract is defined by the
+[Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
+Network reachability MUST be limited through TLS, firewall, and other deployment
+network controls. During normal operation, client authentication is additionally
+REQUIRED. While the Server is uninitialized, the deployer is responsible for
+restricting network access to unauthenticated pre-operational capabilities.
 
 Each client MUST communicate through the surface provided by its corresponding
 Client Module. Client Modules MUST translate each accepted client request into
 its owning Server contract. Client-side checks and agent skills MAY
 improve usability, but the Server MUST remain the final authentication,
 validation, and authorization authority.
+
+## HTTPS Listener And Pre-Operational Exposure
+
+The **[Weavelit Server](glossary.md#applications-and-interfaces)** MUST
+terminate TLS directly. It MUST bind only one TLS-only HTTPS listener at
+the address and port explicitly supplied through trusted host configuration.
+It MUST NOT provide a cleartext HTTP listener, redirect, fallback, or an
+alternative TLS-termination mode. The trusted host configuration MUST provide
+the filesystem paths to the PEM-encoded certificate and matching private key.
+The host is responsible for certificate issuance and renewal; on every startup,
+the Server MUST validate the configured listener and TLS material and fail
+closed when either is missing, invalid, unreadable, mismatched, or otherwise
+unusable.
+
+The Server MUST expose **[Init](glossary.md#states-and-requests)** and
+**[Restore](glossary.md#states-and-requests)** only through the declared
+**[Pre-Operational Surface](glossary.md#applications-and-interfaces)** on that
+listener. Trusted host configuration and deployment network controls MUST NOT
+create another Init, Restore, application-configuration, or unauthenticated
+administrative path.
+
+Every Pre-Operational Surface MUST have an explicit source-network exposure
+control and enforced bounds for request size, request rate, concurrent work,
+parsing, decompression, cryptographic work, and execution time. Browser-
+accessible routes MUST additionally apply explicit origin controls, restricted
+cross-origin resource sharing (CORS), and cross-site request forgery (CSRF)
+protections appropriate to their browser interaction. The
+[Security Model](security-model.md) defines the corresponding security
+profile; these requirements do not select an API wire format or compatibility
+policy.
 
 ## Operation Processing Contract
 
@@ -307,8 +339,8 @@ be active for either log type.
 
 Administrators MUST be able to view System Logs and Audit Logs through a
 read-only Web UI logging area and configure Log Modules through an
-**[Administration Plane](glossary.md#applications-and-interfaces)**. Future
-Client Modules MAY provide equivalent Administration Plane functions.
+**[Administration Plane](glossary.md#applications-and-interfaces)**. Client
+Modules MAY provide equivalent Administration Plane functions.
 
 ## Application Data And Persistence
 
@@ -329,10 +361,10 @@ connection and storage settings. Server core MUST own composition of available
 backends, validation and persistence of the backend selected through the shared
 pre-operational contract, and lifecycle behavior.
 
-The MVP Application Database backend MUST be SQLite. The MVP default Log Module
-MUST also use SQLite and MUST store System Logs and Audit Logs in a database
-separate from the Application Database. Selecting SQLite for both MUST create
-separate implementations and resources.
+The Application Database backend MUST be SQLite. The default Log Module MUST
+also use SQLite and MUST store System Logs and Audit Logs in a database separate
+from the Application Database. Selecting SQLite for both MUST create separate
+implementations and resources.
 
 The Application Database is not a module. It MUST NOT be enabled, disabled, or
 changed after deployment initialization. Weavelit MUST NOT support in-place
@@ -379,8 +411,8 @@ application-owned configuration MUST be stored in the Application Database.
 
 Application Database selection and Init or Restore MUST occur through a Client
 Module's Pre-Operational Surface that declares the applicable capability.
-Package installation, service configuration, and future container adapters MUST
-supply only the host and process settings needed to start the Server in
+Package installation, service configuration, and container adapters MUST supply
+only the host and process settings needed to start the Server in
 restricted uninitialized mode. They MUST NOT select the Application Database or
 create a second application-configuration surface. Init MUST create, or Restore
 MUST import, application configuration; authenticated
@@ -484,8 +516,8 @@ every request and reject Administration Plane requests without that permission.
 ### Weavelit CLI
 
 The Weavelit CLI MUST be a peer client application installed on a user's local
-machine. Its first supported platform MUST be macOS 26 and later on Apple
-Silicon (`arm64`). During normal operation, the Weavelit CLI Client Module MUST
+machine. It MUST support macOS 26 or newer on Apple Silicon (`arm64`). During
+normal operation, the Weavelit CLI Client Module MUST
 expose both a **[User Plane](glossary.md#applications-and-interfaces)** and an
 **[Administration Plane](glossary.md#applications-and-interfaces)**, and the CLI
 MUST implement commands and workflows for both. The CLI MUST translate
@@ -505,25 +537,20 @@ client interfaces.
 ## Distribution And Deployment
 
 The Server MUST be packaged as a `.deb` application for a controlled Ubuntu
-26.04 LTS `amd64` host, where it runs as a gateway service. The `.deb` package
-MUST be the MVP production distribution and deployment format.
+26.04 LTS `amd64` host, where it runs as a gateway service.
 
-## Future Capabilities
+## Additional Delivery And Extension Requirements
 
-The requirements in this section are approved product direction but are not
-claims of current availability.
-
-After the MVP, the Server MUST provide a supported OCI-compliant production
-image containing the same versioned, prebuilt Server release output used to
-assemble the `.deb` package. The image MUST be a sibling delivery wrapper rather
-than a separate Server build, and it MUST NOT compile the application when the
-container starts.
+The Server MUST provide a supported OCI-compliant production image containing
+the same versioned, prebuilt Server release output used to assemble the `.deb`
+package. The image MUST be a sibling delivery wrapper rather than a separate
+Server build, and it MUST NOT compile the application when the container starts.
 
 Weavelit MUST offer MCP adapters through separate Client Modules that use the
 same supported Operation contracts as other clients.
 
-After the MVP, Administrators MUST be able to configure System Log and Audit Log
-retention and purging independently for each Log Module.
+Administrators MUST be able to configure System Log and Audit Log retention and
+purging independently for each Log Module.
 
 Weavelit MAY grow through deliberate, maintained integrations that satisfy the
 acceptance requirements in this specification and provide appropriate

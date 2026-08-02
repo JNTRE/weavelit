@@ -39,14 +39,44 @@ application security after a person with sufficient host authority can replace
 the Server binary, read protected Server state, or destroy all deployment
 anchors.
 
-TLS-protected HTTPS is an application invariant; the deployment operator
+TLS-protected HTTPS is an application invariant. The deployment operator
 supplies and protects the TLS material and controls network exposure, host
 access, filesystem protections, and custody of secrets retained outside
-Weavelit. A
-person with sufficient host authority can replace the Server binary or destroy
-all persistent deployment anchors. Weavelit cannot distinguish complete
-destruction of those anchors from a new installation; preventing and detecting
-that action belongs to deployment access control and monitoring.
+Weavelit. A person with sufficient host authority can replace the Server binary
+or destroy all persistent deployment anchors. Weavelit cannot distinguish
+complete destruction of those anchors from a new installation; preventing and
+detecting that action belongs to deployment access control and monitoring.
+
+## HTTPS Listener And Pre-Operational Surface Security Profile
+
+The direct TLS termination and listener requirements are defined by the
+[Technical Specification](spec.md#https-listener-and-pre-operational-exposure).
+The host must supply PEM certificate and private-key files that are regular,
+non-symlink files protected by restrictive filesystem permissions. The private
+key must be readable only by the Server process's effective user or a narrowly
+scoped group granted solely to read TLS material, and neither file may be
+modifiable by identities that do not administer TLS material. The Server must
+validate that the certificate and private key form a usable pair before it
+binds its listener and must not expose a route or diagnostic listener when this
+validation fails.
+
+The Milestone 1 unauthenticated **[Pre-Operational Surface](glossary.md#applications-and-interfaces)**
+is reachable only from IPv4 and IPv6 loopback through the deployment network
+boundary; the Server has no allowlist configuration channel. Its status route
+enforces the request, connection, handler, handshake, rate, timeout, response,
+and parsing bounds defined in the [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
+It accepts no request body, performs no decompression or cryptographic work, and
+does not mutate state. It sends no CORS headers, supports no credentials or
+cookies, and has no CSRF flow. The runtime rejects a configured non-loopback
+listener address and binds one direct TLS listener only after validated TLS
+material and trusted lifecycle classification; it does not create a cleartext
+HTTP fallback or an alternate listener. A route-composition, TLS-listener, or
+bind failure emits only the fixed `preoperational_unavailable` /
+`https_listener_unavailable` startup classification and exits before route
+exposure. A later browser-accessible or unauthenticated surface must select
+explicit source networks, origin controls, restricted cross-origin resource
+sharing (CORS), and cross-site request forgery (CSRF) protection appropriate to
+its request model. These controls must not depend on client-side enforcement.
 
 ## Protected Assets
 

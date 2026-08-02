@@ -410,6 +410,45 @@ start the Server, including its HTTPS listener, TLS material, and protected
 Server state directory. The lifecycle crate classifies every startup before the
 runtime exposes an application route:
 
+### Trusted HTTPS Listener Configuration
+
+Trusted host configuration supplies exactly one listener address and port plus
+the filesystem paths to its PEM certificate and matching private key. Neither a
+client request nor application configuration may create, alter, or select this
+listener or TLS material. The runtime must validate the listener configuration
+and read the configured material under the filesystem protections required by
+the [Security Model](../../security-model.md#https-listener-and-pre-operational-surface-security-profile)
+before it binds.
+
+The runtime reads only these non-empty host environment variables:
+
+| Variable | Accepted value |
+| --- | --- |
+| `WEAVELIT_HTTPS_LISTENER_ADDRESS` | One numeric IPv4 or IPv6 socket address with a nonzero port. |
+| `WEAVELIT_TLS_CERTIFICATE_PATH` | An absolute path with no `.` or `..` component to a PEM certificate chain. |
+| `WEAVELIT_TLS_PRIVATE_KEY_PATH` | An absolute path with no `.` or `..` component to one PEM private key. |
+
+The runtime rejects a relative path, a `.` or `..` component in the raw host
+configuration before path normalization, a symbolic-link component, a
+non-regular file, a hard-linked file, a group- or world-writable file, empty or
+oversized material, and an unreadable file. A private key must also have no
+permissions for other users; host administration remains
+responsible for ensuring any group granted key access is narrowly scoped to TLS
+material. Certificate files contain only certificate PEM sections, private-key
+files contain exactly one supported private-key PEM section, and the runtime
+uses its direct TLS provider to verify the leaf certificate and private key form
+a usable pair. The validation boundary reads at most 1 MiB from either file and
+does not bind, reserve, or probe a socket; a later listener-composition boundary
+treats a bind failure as fail-closed.
+
+An absent, malformed, unreadable, unsafe, or mismatched certificate or private
+key, or an invalid or unavailable listener address or port, fails startup
+closed. The runtime then exposes no route, cleartext HTTP fallback, alternative
+listener, Init or Restore recovery surface, application-configuration surface,
+or unauthenticated administrative surface. Certificate issuance and renewal
+remain host responsibilities; the runtime validates the material supplied at
+each startup rather than issuing, renewing, or replacing it.
+
 | Deployment record | Locator and database state | Server behavior |
 | --- | --- | --- |
 | Absent | Locator absent | Create an `Uninitialized` record, then expose restricted pre-operational status without a database selection. |
@@ -430,6 +469,16 @@ configured database never causes the Server to expose a pre-operational
 workflow as fallback recovery. An `InitializationPending` deployment is
 non-operational and exposes only the workflow identified by its checkpoint. It
 does not enable login, administration, or normal client functions.
+
+The Milestone 1 runtime maps the two uninitialized rows to the Web UI Client
+Module's status-only Pre-Operational Surface. It removes that status route from
+every pending, sealed, normal, and failed-startup classification. Pending Init
+and Restore classifications retain the sole direct TLS listener but register no
+functional route; every valid unmatched request receives the Client Module's
+fixed JSON `404` result. The
+[Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
+defines its public contract; this lifecycle boundary remains the authority for
+whether the route exists.
 
 ## Application Database Selection
 
@@ -504,8 +553,8 @@ typed error presentation. The allowed pairs are:
 
 | Category | Reasons |
 | --- | --- |
-| `configuration_invalid` | `state_root_not_configured`, `state_root_path_invalid` |
-| `preoperational_unavailable` | `state_root_in_use` |
+| `configuration_invalid` | `listener_not_configured`, `listener_address_invalid`, `tls_certificate_not_configured`, `tls_private_key_not_configured`, `tls_material_invalid`, `state_root_not_configured`, `state_root_path_invalid` |
+| `preoperational_unavailable` | `state_root_in_use`, `https_listener_unavailable` |
 | `storage_unavailable` | `storage_operation_failed`, `database_unavailable` |
 | `storage_integrity_failure` | `anchor_set_invalid`, `anchor_version_unsupported`, `anchor_binding_invalid`, `database_integrity_failure` |
 | `deployment_state_invalid` | `state_combination_invalid` |
@@ -523,6 +572,15 @@ file presence, filenames, byte counts, filesystem paths, raw Rust or dependency
 errors, SQL, or operating-system details. `already_initialized` remains a
 normal stable application category after trusted state has been opened; it is
 not an anchor-startup failure.
+
+The runtime composes routes and binds its sole direct TLS listener only after
+trusted TLS configuration validation and lifecycle classification. A router,
+TLS-listener, or bind setup failure exits with status `1` and exactly this
+standard-error pair before a route is exposed:
+
+```json
+{"category":"preoperational_unavailable","reason":"https_listener_unavailable"}
+```
 
 ## Version 1 Known-Answer Vector
 
