@@ -8,17 +8,9 @@ without requiring Rust on the host. Docker is a supported local client for this
 image contract; the image and runtime contract must not depend on Docker-only
 behavior.
 
-## Current Boundary
+## Image Contract
 
-The development image is reserved for Milestone 1. Its Containerfile remains a
-non-runnable placeholder until the Server defines its development
-configuration, protected persistent-state location, database-locator
-persistence, and startup behavior.
-
-The placeholder's `org.opencontainers.image.description` label points to this
-document.
-
-When implemented, the development image must:
+The development image must:
 
 - target Ubuntu 26.04 LTS (`linux/amd64` and `linux/arm64`) and use a pinned multi-arch manifest digest;
 - install the Rust version and quality-gate components declared by
