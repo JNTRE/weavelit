@@ -367,16 +367,18 @@ package. Internal workspace members are not exceptions.
 
 The following crates.io packages are direct dependencies of `weavelit-server`
 for the Milestone 1 single direct-TLS listener. The Rust standard library and
-the approved Rustls dependency do not provide HTTP routing, HTTP/1 server
-dispatch, Tokio I/O adaptation, or asynchronous socket and TLS-stream handling.
+the approved Rustls dependency do not provide HTTP routing, bounded HTTP/1
+header parsing, response-body collection, or asynchronous socket and TLS-stream
+handling.
 
 | Package | Exact version and minimal features | Owner and purpose | Maintenance, license, and advisory evidence |
 | --- | --- | --- | --- |
 | `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server`; fixed restricted-route composition and JSON responses | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
-| `hyper` | `=1.11.0`; defaults disabled; `http1`, `server` | `weavelit-server`; HTTP/1 parsing and serving over accepted TLS streams | Hyperium Hyper; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
-| `hyper-util` | `=0.1.20`; defaults disabled; `http1`, `server`, `service`, `tokio` | `weavelit-server`; Tokio I/O and Axum-to-Hyper service adaptation | Hyperium Hyper-util; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
-| `tokio` | `=1.53.1`; defaults disabled; `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `http-body-util` | `=0.1.4`; defaults enabled | `weavelit-server`; collects the fixed, sub-128-byte Axum route response before direct TLS emission | Hyperium; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, without request-body buffering | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tokio` | `=1.53.1`; defaults disabled; `io-util`, `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, TLS-stream I/O, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio-rustls` | `=0.26.4`; defaults disabled | `weavelit-server`; asynchronous stream adapter for the already-approved Rustls configuration | Rustls; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tower` | `=0.5.3`; defaults disabled; `util` | `weavelit-server`; invokes the fixed Axum route service after bounded request-head validation | Tower; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 
 These packages do not enable HTTP/2, compression, CORS, cookie, form, JSON,
 query, tracing, client, proxy, or alternate TLS-provider features. The locked

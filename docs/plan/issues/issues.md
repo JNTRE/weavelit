@@ -55,7 +55,7 @@ restricted HTTPS listener while preserving the versioned API namespace.
 | Group | Field | Value |
 | --- | --- | --- |
 | Related | Related epic | [#47 Establish HTTPS listener and Client Module API foundation](https://github.com/JNTRE/weavelit/issues/47) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
+| Related | Milestone | [Milestone 3: Client Module - Web UI](https://github.com/JNTRE/weavelit/milestone/3) |
 
 ### #48 Compose Log Module contract and MVP SQLite Log Module
 

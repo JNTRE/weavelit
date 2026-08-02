@@ -66,16 +66,23 @@ diagnostic information.
 | Request target over 2 KiB | `414 URI Too Long`, `{"error":"uri_too_long"}` |
 | Request headers over 8 KiB | `431 Request Header Fields Too Large`, `{"error":"request_header_fields_too_large"}` |
 | Per-source rate exceeded | `429 Too Many Requests`, `{"error":"rate_limited"}` |
-| Connection or handler capacity exhausted | `503 Service Unavailable`, `{"error":"service_unavailable"}` |
+| Normal connection or handler capacity exhausted while the rejection lane is free | `503 Service Unavailable`, `{"error":"service_unavailable"}` |
+| Normal connection or handler capacity exhausted while the rejection lane is occupied | Transport-level rejection with no HTTP response |
 | Request read exceeds 5 seconds | `408 Request Timeout`, `{"error":"request_timeout"}` |
 | Total request processing exceeds 10 seconds | `504 Gateway Timeout`, `{"error":"gateway_timeout"}` |
 
 The route accepts zero request-body bytes and does not buffer a request body,
 decompress data, perform cryptographic work, start cancellation-sensitive
-background work, or mutate state. The listener permits at most 16 live
-connections, 16 concurrent handlers, and 16 concurrent TLS handshakes. Each
-source may make 20 route requests per minute with a burst of 5. Every response
-is fixed and no larger than 128 bytes.
+background work, or mutate state. The listener jointly permits at most 16 live
+TLS connections or handshakes: at most 15 slots admit normal application
+service work or handlers, and one separate slot is reserved for an overflow
+connection. The overflow connection may complete direct TLS and emit only the
+fixed `503` response above; it never dispatches an application route or state
+work. Further overflow is transport-rejected without an HTTP response. The
+request-read and total-processing bounds also apply to the rejection path, and
+every slot releases deterministically when its connection ends. Each source may
+make 20 route requests per minute with a burst of 5. Every response is fixed
+and no larger than 128 bytes.
 
 ## Network And Browser Exposure
 
