@@ -42,11 +42,18 @@ When implemented, the development image must:
 - use explicitly managed volumes for future persistent Server state and any
   optional build-cache data.
 
+The repository-level `.devcontainer/devcontainer.json` must reference this
+Containerfile, mount the source tree at `/workspace`, declare a named Docker
+volume for the state root path exposed through `WEAVELIT_STATE_ROOT`, and
+require `rust-lang.rust-analyzer` as the minimum VS Code extension.
+
 ## Validation
 
 The implemented image must be built and exercised with Docker commands for
 Milestone 1 local validation. Its validation must run `make check` inside the
 container and confirm that source, state, and secret mounts follow this design.
+Validation must also confirm that the named state-root volume persists across
+container stop, rebuild, and restart boundaries.
 
 ## Related Documents
 
