@@ -82,6 +82,58 @@ fn valid_trusted_https_listener_configuration_is_accepted() {
 }
 
 #[test]
+fn valid_certificate_chain_and_private_key_are_accepted() {
+    let (_directory, certificate_path, private_key_path) = tls_material();
+    let certificate = fs::read(&certificate_path).unwrap();
+    fs::write(
+        &certificate_path,
+        [certificate.as_slice(), &certificate].concat(),
+    )
+    .unwrap();
+
+    validate_trusted_https_listener("127.0.0.1:8443", &certificate_path, &private_key_path)
+        .expect("a certificate chain and one private key must be accepted");
+}
+
+#[test]
+fn certificate_pem_with_prefix_or_suffix_plaintext_is_rejected() {
+    for (prefix, suffix) in [("prefix\n", ""), ("", "\nsuffix\n")] {
+        let (_directory, certificate_path, private_key_path) = tls_material();
+        let certificate = fs::read(&certificate_path).unwrap();
+        fs::write(
+            &certificate_path,
+            [prefix.as_bytes(), certificate.as_slice(), suffix.as_bytes()].concat(),
+        )
+        .unwrap();
+
+        assert_tls_validation_error(validate_trusted_https_listener(
+            "127.0.0.1:8443",
+            &certificate_path,
+            &private_key_path,
+        ));
+    }
+}
+
+#[test]
+fn private_key_pem_with_prefix_or_suffix_plaintext_is_rejected() {
+    for (prefix, suffix) in [("prefix\n", ""), ("", "\nsuffix\n")] {
+        let (_directory, certificate_path, private_key_path) = tls_material();
+        let private_key = fs::read(&private_key_path).unwrap();
+        fs::write(
+            &private_key_path,
+            [prefix.as_bytes(), private_key.as_slice(), suffix.as_bytes()].concat(),
+        )
+        .unwrap();
+
+        assert_tls_validation_error(validate_trusted_https_listener(
+            "127.0.0.1:8443",
+            &certificate_path,
+            &private_key_path,
+        ));
+    }
+}
+
+#[test]
 fn invalid_listener_address_is_rejected() {
     let (_directory, certificate_path, private_key_path) = tls_material();
     let error = match validate_trusted_https_listener(

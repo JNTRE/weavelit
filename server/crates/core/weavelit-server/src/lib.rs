@@ -293,6 +293,7 @@ fn open_tls_material(path: &Path, private_key: bool) -> Result<(fs::File, u64), 
 }
 
 fn parse_certificates(bytes: &[u8]) -> Result<Vec<CertificateDer<'static>>, StartupError> {
+    validate_pem_envelope(bytes, &[b"CERTIFICATE"])?;
     let mut certificates = Vec::new();
     for section in <(SectionKind, Vec<u8>)>::pem_slice_iter(bytes) {
         let (kind, der) = section.map_err(|_| StartupError::TlsMaterialInvalid)?;
@@ -308,6 +309,10 @@ fn parse_certificates(bytes: &[u8]) -> Result<Vec<CertificateDer<'static>>, Star
 }
 
 fn parse_private_key(bytes: &[u8]) -> Result<PrivateKeyDer<'static>, StartupError> {
+    validate_pem_envelope(
+        bytes,
+        &[b"RSA PRIVATE KEY", b"PRIVATE KEY", b"EC PRIVATE KEY"],
+    )?;
     let mut private_key = None;
     for section in <(SectionKind, Vec<u8>)>::pem_slice_iter(bytes) {
         let (kind, der) = section.map_err(|_| StartupError::TlsMaterialInvalid)?;
@@ -322,6 +327,42 @@ fn parse_private_key(bytes: &[u8]) -> Result<PrivateKeyDer<'static>, StartupErro
         }
     }
     private_key.ok_or(StartupError::TlsMaterialInvalid)
+}
+
+fn validate_pem_envelope(bytes: &[u8], allowed_labels: &[&[u8]]) -> Result<(), StartupError> {
+    let mut expected_end_label = None;
+    for line in bytes.split(|byte| matches!(*byte, b'\r' | b'\n')) {
+        if let Some(label) = expected_end_label {
+            if pem_end_label(line) == Some(label) {
+                expected_end_label = None;
+            }
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let label = pem_begin_label(line).ok_or(StartupError::TlsMaterialInvalid)?;
+        expected_end_label = allowed_labels
+            .iter()
+            .copied()
+            .find(|allowed_label| *allowed_label == label)
+            .ok_or(StartupError::TlsMaterialInvalid)?
+            .into();
+    }
+    if expected_end_label.is_some() {
+        return Err(StartupError::TlsMaterialInvalid);
+    }
+    Ok(())
+}
+
+fn pem_begin_label(line: &[u8]) -> Option<&[u8]> {
+    line.strip_prefix(b"-----BEGIN ")?
+        .strip_suffix(b"-----")
+        .filter(|label| !label.is_empty())
+}
+
+fn pem_end_label(line: &[u8]) -> Option<&[u8]> {
+    line.strip_prefix(b"-----END ")?.strip_suffix(b"-----")
 }
 
 // ---------------------------------------------------------------------------
