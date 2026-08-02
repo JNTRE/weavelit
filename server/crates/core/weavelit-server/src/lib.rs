@@ -762,6 +762,9 @@ where
             }
             Err(_) => return Err(RequestReadError::Invalid),
         };
+        if byte == b'\n' && bytes.last().is_none_or(|previous| *previous != b'\r') {
+            return Err(RequestReadError::Invalid);
+        }
         request_line.observe(byte)?;
         if bytes.len() == MAX_REQUEST_HEAD_BYTES {
             return Err(RequestReadError::HeadersTooLarge);
@@ -1530,6 +1533,32 @@ mod tests {
         )
         .await;
         assert!(response.starts_with(b"HTTP/1.1 200 \r\n"));
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rejects_lf_only_request_heads_before_read_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (server_config, client_config) = tls_configs();
+        let server = tokio::spawn(serve_restricted_https_listener(
+            listener,
+            server_config,
+            StartupOutcome::UninitializedWithoutDatabase,
+        ));
+
+        let mut client = tls_client(address, client_config).await;
+        client
+            .write_all(b"GET /api/v1/status HTTP/1.1\nHost: localhost\n\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+            .await
+            .expect("LF-only request head must not wait for the read timeout");
+        assert!(response.starts_with(b"HTTP/1.1 400 \r\n"));
+        assert!(response.ends_with(b"{\"error\":\"bad_request\"}"));
+
+        server.abort();
     }
 
     #[tokio::test]
