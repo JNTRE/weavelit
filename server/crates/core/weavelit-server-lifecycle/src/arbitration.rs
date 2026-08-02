@@ -148,7 +148,10 @@ impl WorkflowArbiter {
     ) -> Result<(), WorkflowError> {
         let mut store = self.store.lock().expect("lifecycle mutex is not poisoned");
 
-        if store.record().state() != LifecycleState::InitializationPending {
+        // Allow retry from Uninitialized: record was reset but checkpoint discard failed.
+        let record_already_reset = store.record().state() == LifecycleState::Uninitialized;
+        if !record_already_reset && store.record().state() != LifecycleState::InitializationPending
+        {
             return Err(WorkflowError::NotAllowed);
         }
         let locator = store.locator().ok_or(WorkflowError::DatabaseNotSelected)?;
@@ -163,21 +166,23 @@ impl WorkflowArbiter {
             DatabaseInspection::Pending(checkpoint) => {
                 validate_checkpoint_match(&store, &checkpoint, kind, metadata)?;
 
-                // Record-first: reset to Uninitialized.
-                let generation = store
-                    .locator()
-                    .map(DatabaseLocator::generation)
-                    .ok_or(WorkflowError::DatabaseNotSelected)?;
-                let uninitialized_record = DeploymentRecord::new(
-                    store.record().deployment_identifier(),
-                    LifecycleState::Uninitialized,
-                    Some(generation),
-                )
-                .map_err(|_| WorkflowError::Lifecycle(LifecycleError::InvalidState))?;
-                let permit = RecordPersistencePermit;
-                store
-                    .replace_record(&permit, uninitialized_record)
-                    .map_err(WorkflowError::Lifecycle)?;
+                if !record_already_reset {
+                    // Record-first: reset to Uninitialized.
+                    let generation = store
+                        .locator()
+                        .map(DatabaseLocator::generation)
+                        .ok_or(WorkflowError::DatabaseNotSelected)?;
+                    let uninitialized_record = DeploymentRecord::new(
+                        store.record().deployment_identifier(),
+                        LifecycleState::Uninitialized,
+                        Some(generation),
+                    )
+                    .map_err(|_| WorkflowError::Lifecycle(LifecycleError::InvalidState))?;
+                    let permit = RecordPersistencePermit;
+                    store
+                        .replace_record(&permit, uninitialized_record)
+                        .map_err(WorkflowError::Lifecycle)?;
+                }
 
                 // Checkpoint-second: discard the matching checkpoint.
                 db.discard_checkpoint(store.record().deployment_identifier(), kind)
@@ -185,7 +190,13 @@ impl WorkflowArbiter {
 
                 Ok(())
             }
-            DatabaseInspection::Uninitialized => Err(WorkflowError::StateMismatch),
+            DatabaseInspection::Uninitialized => {
+                if record_already_reset {
+                    Err(WorkflowError::NotAllowed)
+                } else {
+                    Err(WorkflowError::StateMismatch)
+                }
+            }
             DatabaseInspection::Initialized { .. } => Err(WorkflowError::AlreadyInitialized),
         }
     }

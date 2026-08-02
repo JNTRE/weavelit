@@ -586,6 +586,49 @@ fn begin_rejected_when_checkpoint_already_exists_for_same_workflow() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn reset_retries_from_uninitialized_when_checkpoint_discard_was_interrupted() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = sqlite_catalog();
+    let context = sqlite_context(&path);
+    store
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .unwrap();
+    let dep_id = store.record().deployment_identifier();
+
+    // Insert checkpoint directly to simulate partial reset: record was written to
+    // Uninitialized but discard_checkpoint had not yet succeeded.
+    let mut db = store.reopen_selected_database(&catalog, &context).unwrap();
+    db.create_checkpoint(&WorkflowCheckpoint::new(
+        dep_id,
+        WorkflowKind::Init,
+        init_metadata(),
+    ))
+    .unwrap();
+    drop(db);
+
+    let arbiter = WorkflowArbiter::new(store);
+    assert_eq!(arbiter.record_state(), LifecycleState::Uninitialized);
+
+    arbiter
+        .reset_workflow(&catalog, &context, WorkflowKind::Init, &init_metadata())
+        .expect("reset must succeed from partial-reset Uninitialized+checkpoint state");
+
+    assert_eq!(arbiter.record_state(), LifecycleState::Uninitialized);
+    drop(arbiter);
+
+    // Checkpoint must have been discarded.
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    let mut db = store
+        .reopen_selected_database(&sqlite_catalog(), &sqlite_context(&path))
+        .unwrap();
+    assert_eq!(
+        db.inspect(store.record().deployment_identifier()).unwrap(),
+        DatabaseInspection::Uninitialized
+    );
+}
+
+#[test]
 fn workflow_errors_do_not_expose_sensitive_values() {
     let sensitive_path = "/private/secrets/application.sqlite3";
     let sensitive_meta = "secret-metadata-value";
