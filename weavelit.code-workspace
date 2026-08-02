@@ -7,7 +7,6 @@
   "settings": {
     "chat.tools.terminal.autoApprove": {
       "git remote": true,
-      "gh": true,
       "git ls-remote": true,
       "git add": true,
       "git commit": true,

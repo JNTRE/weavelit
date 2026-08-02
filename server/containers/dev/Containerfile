@@ -4,9 +4,7 @@ LABEL org.opencontainers.image.title="Weavelit Server development image"
 LABEL org.opencontainers.image.description="OCI-compatible development image for building and validating the Weavelit Server."
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV RUSTUP_HOME=/usr/local/rustup
-ENV CARGO_HOME=/usr/local/cargo
-ENV PATH=/usr/local/cargo/bin:${PATH}
+ENV PATH=/home/weavelit/.cargo/bin:${PATH}
 
 RUN apt-get update \
 	&& apt-get install --yes --no-install-recommends \
@@ -20,7 +18,12 @@ RUN apt-get update \
 		libsqlite3-dev \
 	&& rm -rf /var/lib/apt/lists/*
 
+RUN groupadd --gid 10001 weavelit \
+	&& useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash weavelit
+
 COPY server/rust-toolchain.toml /tmp/rust-toolchain.toml
+
+USER weavelit
 
 RUN set -eux; \
 	rust_channel="$(awk -F '"' '/^channel[[:space:]]*=/{print $2; exit}' /tmp/rust-toolchain.toml)"; \
@@ -29,11 +32,6 @@ RUN set -eux; \
 	rm -f /tmp/rustup-init.sh /tmp/rust-toolchain.toml; \
 	rustup component add clippy rustfmt --toolchain "${rust_channel}"
 
-RUN groupadd --gid 10001 weavelit \
-	&& useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash weavelit \
-	&& chown -R weavelit:weavelit /usr/local/rustup /usr/local/cargo
-
-USER weavelit
 WORKDIR /workspace/server
 
 CMD ["make", "check"]
