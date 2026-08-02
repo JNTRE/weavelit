@@ -74,7 +74,8 @@ diagnostic information.
 Responses use connection-close framing without a `Content-Length` header and omit
 the optional HTTP reason phrase. This preserves the documented status codes,
 JSON bodies, media type, and `Allow: GET` behavior while keeping every response
-within the 128-byte limit.
+within the 128-byte limit. The direct TLS listener sends `close_notify` after
+each fixed response; the response write and TLS close use a bounded timeout.
 
 The route accepts zero request-body bytes and does not buffer a request body,
 decompress data, perform cryptographic work, start cancellation-sensitive

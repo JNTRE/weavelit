@@ -858,7 +858,8 @@ where
         allow,
         response.body,
     );
-    stream.write_all(wire.as_bytes()).await
+    stream.write_all(wire.as_bytes()).await?;
+    stream.shutdown().await
 }
 
 async fn processing_response<F>(processing_timeout: Duration, processing: F) -> FixedResponse
@@ -1278,7 +1279,10 @@ mod tests {
             client.write_all(request).await.unwrap();
         }
         let mut response = Vec::new();
-        let _ = client.read_to_end(&mut response).await;
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("direct TLS response must complete with close_notify");
         server.await.unwrap();
         response
     }
@@ -1301,9 +1305,31 @@ mod tests {
         });
         let mut client = tls_client(address, client_config).await;
         let mut response = Vec::new();
-        let _ = client.read_to_end(&mut response).await;
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("direct TLS rejection response must complete with close_notify");
         server.await.unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn direct_tls_responses_complete_with_close_notify() {
+        let (server_config, client_config) = tls_configs();
+
+        let normal = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /api/v1/status HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert!(normal.starts_with(b"HTTP/1.1 200 \r\n"));
+
+        let rejection = direct_tls_rejection_response(server_config, client_config).await;
+        assert!(rejection.starts_with(b"HTTP/1.1 503 \r\n"));
     }
 
     #[tokio::test]
