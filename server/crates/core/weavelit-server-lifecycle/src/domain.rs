@@ -1,6 +1,7 @@
-use std::{fmt, hash::Hash};
+use std::{fmt, hash::Hash, mem};
 
 use weavelit_server_database::{DeploymentIdentifier, WorkflowKind};
+use zeroize::Zeroize;
 
 use crate::{DomainError, IdentifierError};
 
@@ -236,6 +237,26 @@ impl fmt::Debug for ConnectionValue {
             .debug_struct("ConnectionValue")
             .field("kind", &self.kind())
             .finish_non_exhaustive()
+    }
+}
+
+impl Zeroize for ConnectionValue {
+    fn zeroize(&mut self) {
+        match self {
+            Self::String(value) => {
+                let mut s: String = mem::replace(value, "".into()).into();
+                s.zeroize();
+            }
+            Self::Bytes(value) => value.zeroize(),
+            Self::Integer(value) => value.zeroize(),
+            Self::Boolean(value) => *value = false,
+        }
+    }
+}
+
+impl Drop for ConnectionValue {
+    fn drop(&mut self) {
+        self.zeroize();
     }
 }
 

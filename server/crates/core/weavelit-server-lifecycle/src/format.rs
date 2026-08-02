@@ -6,7 +6,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     BackendIdentifier, ConnectionFieldIdentifier, ConnectionValue, DatabaseLocator,
@@ -151,20 +151,26 @@ pub(crate) fn temporary_file_name(final_name: &str) -> Result<String, LifecycleE
 }
 
 pub(crate) fn serialize_key(key: &AnchorKey) -> Result<Vec<u8>, LifecycleError> {
-    serialize_canonical(&KeyFileV1 {
+    let mut file = KeyFileV1 {
         format_version: LIFECYCLE_FORMAT_VERSION,
         key_algorithm: ALGORITHM.to_owned(),
         key: encode(key.as_bytes()),
-    })
+    };
+    let result = serialize_canonical(&file);
+    file.key.zeroize();
+    result
 }
 
 pub(crate) fn parse_key(bytes: &[u8]) -> Result<AnchorKey, LifecycleError> {
-    let value: KeyFileV1 = parse_canonical(bytes, KEY_FILE_LIMIT)?;
+    let mut value: KeyFileV1 = parse_canonical(bytes, KEY_FILE_LIMIT)?;
     validate_version(value.format_version)?;
     if value.key_algorithm != ALGORITHM {
+        value.key.zeroize();
         return Err(LifecycleError::UnsupportedVersion);
     }
-    AnchorKey::from_bytes(decode_array(&value.key)?)
+    let result = AnchorKey::from_bytes(decode_array(&value.key)?);
+    value.key.zeroize();
+    result
 }
 
 pub(crate) fn encrypt_record(
