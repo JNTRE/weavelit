@@ -64,6 +64,23 @@ This MVP defines one local SQLite destination rather than Server-issued
 multiple destination instances. Destination backup, recovery, retention, purge,
 and automatic cleanup of valid preflight artifacts remain outside this design.
 
+The SQLite destination derives its fixed `log.sqlite3` filename only from the
+trusted local root supplied to its factory; it does not inspect an environment
+variable or accept a client path. It opens the destination without following a
+database-file symlink, uses SQLite write-ahead logging with full synchronous
+commit behavior, and serializes its owned connection. Transient SQLite sidecars
+remain part of this destination's owned resource set when SQLite creates them.
+It stores the complete fields of System and Audit records in separate typed
+tables rather than exposing a serialized record blob.
+
+The destination binds a newly created database to the supplied deployment
+identity and rejects a later mismatched identity. Its ordered, checksummed
+migration ledger and expected schema must match exactly before it applies the
+next local migration. A missing, unknown, reordered, changed, or schema-mutated
+applied migration fails closed. Opening, health, lock, and delivery failures
+map only to the shared payload-free destination errors; they do not disclose
+paths, SQL, record contents, or secrets.
+
 ## Init And Restore Configuration
 
 During **[Init](../glossary.md#states-and-requests)**, the person completing the

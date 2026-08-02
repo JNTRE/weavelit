@@ -1123,6 +1123,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "weavelit-module-log-sqlite"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "sha2",
+ "tempfile",
+ "weavelit-server-log",
+]
+
+[[package]]
 name = "weavelit-server"
 version = "0.1.0"
 dependencies = [

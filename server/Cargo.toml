@@ -7,6 +7,7 @@ members = [
 	"crates/database/weavelit-server-database",
 	"crates/database/weavelit-server-database-sqlite",
 	"crates/modules/client/weavelit-module-client-webui",
+	"crates/modules/log/weavelit-module-log-sqlite",
 ]
 
 [workspace.dependencies]
