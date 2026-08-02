@@ -9,8 +9,22 @@ use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
+use axum::{
+    Router,
+    body::Body,
+    extract::Request,
+    http::{
+        HeaderMap, Method, StatusCode,
+        header::{ACCEPT, ALLOW, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
+    },
+    response::Response,
+    routing::any,
+};
+use hyper::server::conn::http1;
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use rustls::{
     ServerConfig,
     crypto::aws_lc_rs,
@@ -19,6 +33,8 @@ use rustls::{
         pem::{PemObject, SectionKind},
     },
 };
+use tokio::{net::TcpListener, sync::Semaphore, time::timeout};
+use tokio_rustls::TlsAcceptor;
 use weavelit_server_database_sqlite::SqliteDatabase;
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendRegistration,
@@ -32,6 +48,11 @@ const TLS_CERTIFICATE_PATH_ENV: &str = "WEAVELIT_TLS_CERTIFICATE_PATH";
 const TLS_PRIVATE_KEY_PATH_ENV: &str = "WEAVELIT_TLS_PRIVATE_KEY_PATH";
 const APPLICATION_DATABASE_FILE: &str = "application.sqlite3";
 const MAX_TLS_MATERIAL_BYTES: u64 = 1024 * 1024;
+const MAX_CONNECTIONS: usize = 16;
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_REQUEST_TARGET_BYTES: usize = 2 * 1024;
+const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 
 // ---------------------------------------------------------------------------
 // Trusted HTTPS listener configuration
@@ -82,7 +103,7 @@ pub fn validate_trusted_https_listener(
     let address = address
         .parse::<SocketAddr>()
         .map_err(|_| StartupError::ListenerAddressInvalid)?;
-    if address.port() == 0 {
+    if address.port() == 0 || !address.ip().is_loopback() {
         return Err(StartupError::ListenerAddressInvalid);
     }
 
@@ -269,6 +290,8 @@ pub enum StartupError {
     TlsPrivateKeyNotConfigured,
     /// TLS material is unsafe, unreadable, malformed, or incompatible.
     TlsMaterialInvalid,
+    /// The configured HTTPS listener cannot be composed or bound.
+    HttpsListenerUnavailable,
     /// The WEAVELIT_STATE_ROOT environment variable is not set.
     StateRootNotConfigured,
     /// The configured state root path is invalid.
@@ -304,6 +327,9 @@ impl StartupError {
                 ("configuration_invalid", "tls_private_key_not_configured")
             }
             Self::TlsMaterialInvalid => ("configuration_invalid", "tls_material_invalid"),
+            Self::HttpsListenerUnavailable => {
+                ("preoperational_unavailable", "https_listener_unavailable")
+            }
             Self::StateRootNotConfigured => ("configuration_invalid", "state_root_not_configured"),
             Self::StateRootPathInvalid => ("configuration_invalid", "state_root_path_invalid"),
             Self::StateRootInUse => ("preoperational_unavailable", "state_root_in_use"),
@@ -322,6 +348,149 @@ impl StartupError {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Restricted HTTPS listener and route composition
+// ---------------------------------------------------------------------------
+
+/// Binds and serves the sole direct-TLS pre-operational listener.
+pub async fn run_restricted_https_listener(
+    listener: TrustedHttpsListener,
+    outcome: StartupOutcome,
+) -> Result<(), StartupError> {
+    let tcp_listener = TcpListener::bind(listener.address())
+        .await
+        .map_err(|_| StartupError::HttpsListenerUnavailable)?;
+    let router = restricted_routes(outcome);
+    let tls_acceptor = TlsAcceptor::from(listener.tls_config());
+    let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+
+    loop {
+        let (stream, _) = tcp_listener
+            .accept()
+            .await
+            .map_err(|_| StartupError::HttpsListenerUnavailable)?;
+        let Ok(connection_permit) = Arc::clone(&connections).try_acquire_owned() else {
+            drop(stream);
+            continue;
+        };
+        let tls_acceptor = tls_acceptor.clone();
+        let router = router.clone();
+
+        tokio::spawn(async move {
+            let Ok(Ok(tls_stream)) =
+                timeout(TLS_HANDSHAKE_TIMEOUT, tls_acceptor.accept(stream)).await
+            else {
+                return;
+            };
+
+            let mut builder = http1::Builder::new();
+            builder.keep_alive(false);
+            builder.max_headers(64);
+            builder.max_buf_size(MAX_REQUEST_HEADER_BYTES + MAX_REQUEST_TARGET_BYTES);
+            let service = TowerToHyperService::new(router.into_service());
+            let connection = builder.serve_connection(TokioIo::new(tls_stream), service);
+            let _ = timeout(REQUEST_PROCESSING_TIMEOUT, connection).await;
+            drop(connection_permit);
+        });
+    }
+}
+
+fn restricted_routes(outcome: StartupOutcome) -> Router {
+    let router = Router::new().fallback(not_found);
+    match outcome {
+        StartupOutcome::UninitializedWithoutDatabase => router.route(
+            "/api/v1/status",
+            any(|request| status_response(request, false)),
+        ),
+        StartupOutcome::UninitializedWithDatabase => router.route(
+            "/api/v1/status",
+            any(|request| status_response(request, true)),
+        ),
+        StartupOutcome::InitializationPending(_) => router,
+    }
+}
+
+async fn status_response(request: Request, database_selected: bool) -> Response {
+    let (parts, _body) = request.into_parts();
+    if request_target_bytes(&parts.uri) > MAX_REQUEST_TARGET_BYTES {
+        return json_response(StatusCode::URI_TOO_LONG, "uri_too_long");
+    }
+    if request_header_bytes(&parts.headers) > MAX_REQUEST_HEADER_BYTES {
+        return json_response(
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            "request_header_fields_too_large",
+        );
+    }
+    if parts.method != Method::GET {
+        return json_response_with_allow(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
+    }
+    if has_request_body(&parts.headers) || !accepts_json(&parts.headers) {
+        return json_response(StatusCode::BAD_REQUEST, "bad_request");
+    }
+
+    let body = if database_selected {
+        "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}"
+    } else {
+        "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+    };
+    json_response_body(StatusCode::OK, body)
+}
+
+async fn not_found() -> Response {
+    json_response(StatusCode::NOT_FOUND, "not_found")
+}
+
+fn request_target_bytes(uri: &axum::http::Uri) -> usize {
+    uri.path_and_query()
+        .map_or(0, |target| target.as_str().len())
+}
+
+fn request_header_bytes(headers: &HeaderMap) -> usize {
+    headers
+        .iter()
+        .map(|(name, value)| name.as_str().len() + value.as_bytes().len() + 4)
+        .sum()
+}
+
+fn has_request_body(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_LENGTH)
+        .is_some_and(|value| value.as_bytes() != b"0")
+        || headers.contains_key(TRANSFER_ENCODING)
+}
+
+fn accepts_json(headers: &HeaderMap) -> bool {
+    headers
+        .get(ACCEPT)
+        .is_none_or(|value| value.as_bytes() == b"application/json")
+}
+
+fn json_response(status: StatusCode, error: &'static str) -> Response {
+    let body = match error {
+        "bad_request" => "{\"error\":\"bad_request\"}",
+        "method_not_allowed" => "{\"error\":\"method_not_allowed\"}",
+        "not_found" => "{\"error\":\"not_found\"}",
+        "request_header_fields_too_large" => "{\"error\":\"request_header_fields_too_large\"}",
+        "uri_too_long" => "{\"error\":\"uri_too_long\"}",
+        _ => unreachable!("all pre-operational error responses use fixed codes"),
+    };
+    json_response_body(status, body)
+}
+
+fn json_response_with_allow(status: StatusCode, error: &'static str) -> Response {
+    let mut response = json_response(status, error);
+    response.headers_mut().insert(ALLOW, "GET".parse().unwrap());
+    response
+}
+
+fn json_response_body(status: StatusCode, body: &'static str) -> Response {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(body))
+        .expect("fixed pre-operational responses must be valid")
 }
 
 // ---------------------------------------------------------------------------
@@ -402,5 +571,123 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<StartupOutcome, 
         // Fail closed for states not yet handled by this milestone.
         LifecycleClassification::PostCommitReconciliationRequired
         | LifecycleClassification::Initialized => Err(StartupError::StateCombinationInvalid),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header::HeaderValue},
+    };
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use super::{
+        StartupOutcome, accepts_json, has_request_body, request_header_bytes, request_target_bytes,
+        restricted_routes,
+    };
+
+    async fn response_body(response: axum::response::Response) -> String {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn uninitialized_status_routes_report_database_selection() {
+        let without_database = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(without_database.status(), StatusCode::OK);
+        assert_eq!(
+            without_database.headers().get("content-type").unwrap(),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(
+            response_body(without_database).await,
+            "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+        );
+
+        let with_database = restricted_routes(StartupOutcome::UninitializedWithDatabase)
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(with_database.status(), StatusCode::OK);
+        assert_eq!(
+            response_body(with_database).await,
+            "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restricted_routes_reject_unsupported_requests_and_hide_unavailable_routes() {
+        let method = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(method.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(method.headers().get("allow").unwrap(), "GET");
+        assert_eq!(
+            response_body(method).await,
+            "{\"error\":\"method_not_allowed\"}"
+        );
+
+        let accept = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .header("accept", "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accept.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_body(accept).await, "{\"error\":\"bad_request\"}");
+
+        let missing = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+            .oneshot(Request::get("/absent").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            missing.headers().get("content-type").unwrap(),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(response_body(missing).await, "{\"error\":\"not_found\"}");
+
+        let pending = restricted_routes(StartupOutcome::InitializationPending(
+            weavelit_server_lifecycle::WorkflowKind::Init,
+        ))
+        .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+        assert_eq!(pending.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_body(pending).await, "{\"error\":\"not_found\"}");
+    }
+
+    #[test]
+    fn request_bounds_and_content_negotiation_are_strict() {
+        let target = "/api/v1/status?".to_owned() + &"a".repeat(2 * 1024);
+        assert!(request_target_bytes(&target.parse().unwrap()) > 2 * 1024);
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("accept", HeaderValue::from_static("application/json"));
+        assert!(accepts_json(&headers));
+        assert!(!has_request_body(&headers));
+        headers.insert("content-length", HeaderValue::from_static("1"));
+        assert!(has_request_body(&headers));
+        headers.insert(
+            "x-bound",
+            HeaderValue::from_str(&"a".repeat(8 * 1024)).unwrap(),
+        );
+        assert!(request_header_bytes(&headers) > 8 * 1024);
     }
 }

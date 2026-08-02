@@ -363,6 +363,28 @@ package. Internal workspace members are not exceptions.
   weavelit-server --test startup` passes all 12 tests; the locked feature graph
   contains only the selected Rustls provider capabilities.
 
+#### HTTPS Runtime Composition
+
+The following crates.io packages are direct dependencies of `weavelit-server`
+for the Milestone 1 single direct-TLS listener. The Rust standard library and
+the approved Rustls dependency do not provide HTTP routing, HTTP/1 server
+dispatch, Tokio I/O adaptation, or asynchronous socket and TLS-stream handling.
+
+| Package | Exact version and minimal features | Owner and purpose | Maintenance, license, and advisory evidence |
+| --- | --- | --- | --- |
+| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server`; fixed restricted-route composition and JSON responses | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
+| `hyper` | `=1.11.0`; defaults disabled; `http1`, `server` | `weavelit-server`; HTTP/1 parsing and serving over accepted TLS streams | Hyperium Hyper; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `hyper-util` | `=0.1.20`; defaults disabled; `http1`, `server`, `service`, `tokio` | `weavelit-server`; Tokio I/O and Axum-to-Hyper service adaptation | Hyperium Hyper-util; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tokio` | `=1.53.1`; defaults disabled; `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tokio-rustls` | `=0.26.4`; defaults disabled | `weavelit-server`; asynchronous stream adapter for the already-approved Rustls configuration | Rustls; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+
+These packages do not enable HTTP/2, compression, CORS, cookie, form, JSON,
+query, tracing, client, proxy, or alternate TLS-provider features. The locked
+resolution records only crates.io sources and exact checksums. Contract tests
+cover both status projections, lifecycle route removal, fixed rejection bodies,
+and bind-failure redaction; the full locked workspace gate remains required for
+every dependency-resolution change.
+
 #### `getrandom`
 
 - **Source and version:** crates.io `=0.4.3`.

@@ -1,5 +1,6 @@
 use std::{
     fs,
+    net::TcpListener,
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::Command,
@@ -158,6 +159,28 @@ fn invalid_tls_configuration_exits_before_lifecycle_state_is_created() {
     assert!(!Path::new(&state_root).exists());
 }
 
+#[test]
+fn occupied_listener_port_exits_with_the_preoperational_unavailable_pair() {
+    let (_state_directory, state_root) = state_root();
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = occupied.local_addr().unwrap().to_string();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address)
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", state_root)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stderr,
+        b"{\"category\":\"preoperational_unavailable\",\"reason\":\"https_listener_unavailable\"}\n"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tests: fresh startup and restart
 // ---------------------------------------------------------------------------
@@ -281,6 +304,7 @@ fn every_startup_error_has_well_formed_category_reason() {
         StartupError::TlsCertificateNotConfigured,
         StartupError::TlsPrivateKeyNotConfigured,
         StartupError::TlsMaterialInvalid,
+        StartupError::HttpsListenerUnavailable,
         StartupError::StateRootNotConfigured,
         StartupError::StateRootPathInvalid,
         StartupError::StateRootInUse,

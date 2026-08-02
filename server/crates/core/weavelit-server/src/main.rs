@@ -1,12 +1,16 @@
 use weavelit_server::{
     StartupError, classify_restricted_startup, read_state_root, read_trusted_https_listener,
+    run_restricted_https_listener,
 };
 
 fn main() {
-    if let Err(error) = read_trusted_https_listener() {
-        present_error(error);
-        std::process::exit(1);
-    }
+    let listener = match read_trusted_https_listener() {
+        Ok(listener) => listener,
+        Err(error) => {
+            present_error(error);
+            std::process::exit(1);
+        }
+    };
 
     let state_root = match read_state_root() {
         Ok(path) => path,
@@ -16,12 +20,28 @@ fn main() {
         }
     };
 
-    match classify_restricted_startup(&state_root) {
-        Ok(_outcome) => {}
+    let outcome = match classify_restricted_startup(&state_root) {
+        Ok(outcome) => outcome,
         Err(error) => {
             present_error(error);
             std::process::exit(1);
         }
+    };
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(_) => {
+            present_error(StartupError::HttpsListenerUnavailable);
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = runtime.block_on(run_restricted_https_listener(listener, outcome)) {
+        present_error(error);
+        std::process::exit(1);
     }
 }
 

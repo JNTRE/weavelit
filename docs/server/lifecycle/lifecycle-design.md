@@ -471,7 +471,10 @@ does not enable login, administration, or normal client functions.
 
 The Milestone 1 runtime maps the two uninitialized rows to the Web UI Client
 Module's status-only Pre-Operational Surface. It removes that status route from
-every pending, sealed, normal, and failed-startup classification. The
+every pending, sealed, normal, and failed-startup classification. Pending Init
+and Restore classifications retain the sole direct TLS listener but register no
+functional route; every valid unmatched request receives the Client Module's
+fixed JSON `404` result. The
 [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
 defines its public contract; this lifecycle boundary remains the authority for
 whether the route exists.
@@ -550,7 +553,7 @@ typed error presentation. The allowed pairs are:
 | Category | Reasons |
 | --- | --- |
 | `configuration_invalid` | `listener_not_configured`, `listener_address_invalid`, `tls_certificate_not_configured`, `tls_private_key_not_configured`, `tls_material_invalid`, `state_root_not_configured`, `state_root_path_invalid` |
-| `preoperational_unavailable` | `state_root_in_use` |
+| `preoperational_unavailable` | `state_root_in_use`, `https_listener_unavailable` |
 | `storage_unavailable` | `storage_operation_failed`, `database_unavailable` |
 | `storage_integrity_failure` | `anchor_set_invalid`, `anchor_version_unsupported`, `anchor_binding_invalid`, `database_integrity_failure` |
 | `deployment_state_invalid` | `state_combination_invalid` |
@@ -568,6 +571,15 @@ file presence, filenames, byte counts, filesystem paths, raw Rust or dependency
 errors, SQL, or operating-system details. `already_initialized` remains a
 normal stable application category after trusted state has been opened; it is
 not an anchor-startup failure.
+
+The runtime composes routes and binds its sole direct TLS listener only after
+trusted TLS configuration validation and lifecycle classification. A router,
+TLS-listener, or bind setup failure exits with status `1` and exactly this
+standard-error pair before a route is exposed:
+
+```json
+{"category":"preoperational_unavailable","reason":"https_listener_unavailable"}
+```
 
 ## Version 1 Known-Answer Vector
 

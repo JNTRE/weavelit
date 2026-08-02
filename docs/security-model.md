@@ -67,11 +67,16 @@ enforces the request, connection, handler, handshake, rate, timeout, response,
 and parsing bounds defined in the [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
 It accepts no request body, performs no decompression or cryptographic work, and
 does not mutate state. It sends no CORS headers, supports no credentials or
-cookies, and has no CSRF flow. A later browser-accessible or unauthenticated
-surface must select explicit source networks, origin controls, restricted
-cross-origin resource sharing (CORS), and cross-site request forgery (CSRF)
-protection appropriate to its request model. These controls must not depend on
-client-side enforcement.
+cookies, and has no CSRF flow. The runtime rejects a configured non-loopback
+listener address and binds one direct TLS listener only after validated TLS
+material and trusted lifecycle classification; it does not create a cleartext
+HTTP fallback or an alternate listener. A route-composition, TLS-listener, or
+bind failure emits only the fixed `preoperational_unavailable` /
+`https_listener_unavailable` startup classification and exits before route
+exposure. A later browser-accessible or unauthenticated surface must select
+explicit source networks, origin controls, restricted cross-origin resource
+sharing (CORS), and cross-site request forgery (CSRF) protection appropriate to
+its request model. These controls must not depend on client-side enforcement.
 
 ## Protected Assets
 

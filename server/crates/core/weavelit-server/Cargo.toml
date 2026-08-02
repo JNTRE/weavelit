@@ -12,10 +12,17 @@ name = "weavelit-server"
 path = "src/main.rs"
 
 [dependencies]
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+hyper = { version = "=1.11.0", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["http1", "server", "service", "tokio"] }
 rustls = { version = "=0.23.43", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { version = "=0.26.4", default-features = false }
 weavelit-server-database-sqlite = { path = "../../database/weavelit-server-database-sqlite" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
 
 [dev-dependencies]
+http-body-util = "=0.1.4"
 rcgen = "=0.14.8"
 tempfile = "=3.27.0"
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }
