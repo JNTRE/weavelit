@@ -61,7 +61,6 @@ const REQUEST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_REQUEST_TARGET_BYTES: usize = 2 * 1024;
 const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_HEAD_BYTES: usize = MAX_REQUEST_TARGET_BYTES + MAX_REQUEST_HEADER_BYTES + 128;
-const MAX_HEADERS: usize = 64;
 const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
 const RATE_LIMIT_BURST: u32 = 5;
 
@@ -713,8 +712,8 @@ enum RequestReadError {
 
 #[derive(Clone, Copy)]
 enum RequestLineClassification {
+    Get,
     MethodNotAllowed,
-    HeadersTooLarge,
     Invalid,
 }
 
@@ -764,10 +763,15 @@ impl RequestLineState {
             Self::Headers(RequestLineClassification::MethodNotAllowed) => {
                 RequestReadError::MethodNotAllowed
             }
-            Self::Headers(RequestLineClassification::HeadersTooLarge) => {
-                RequestReadError::HeadersTooLarge
-            }
+            Self::Headers(RequestLineClassification::Get) => RequestReadError::HeadersTooLarge,
             Self::Headers(RequestLineClassification::Invalid) => RequestReadError::Invalid,
+        }
+    }
+
+    fn completed_classification(&self) -> RequestLineClassification {
+        match self {
+            Self::Headers(classification) => *classification,
+            _ => RequestLineClassification::Invalid,
         }
     }
 }
@@ -793,7 +797,7 @@ fn classify_completed_request_line(bytes: &[u8]) -> RequestLineClassification {
         return RequestLineClassification::Invalid;
     }
     match Method::from_bytes(method) {
-        Ok(method) if method == Method::GET => RequestLineClassification::HeadersTooLarge,
+        Ok(method) if method == Method::GET => RequestLineClassification::Get,
         Ok(_) => RequestLineClassification::MethodNotAllowed,
         Err(_) => RequestLineClassification::Invalid,
     }
@@ -840,16 +844,20 @@ where
             return Err(request_line.limit_error(&bytes));
         }
         if bytes.ends_with(b"\r\n\r\n") {
-            return parse_http_request(&bytes);
+            return parse_http_request(&bytes, request_line.completed_classification());
         }
     }
 }
 
-fn parse_http_request(bytes: &[u8]) -> Result<Request, RequestReadError> {
-    if raw_header_section_bytes(bytes)? > MAX_REQUEST_HEADER_BYTES {
+fn parse_http_request(
+    bytes: &[u8],
+    request_line: RequestLineClassification,
+) -> Result<Request, RequestReadError> {
+    let raw_header_bytes = raw_header_section_bytes(bytes)?;
+    if raw_header_bytes > MAX_REQUEST_HEADER_BYTES {
         return Err(RequestReadError::HeadersTooLarge);
     }
-    let mut parsed_headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
+    let mut parsed_headers = vec![httparse::EMPTY_HEADER; raw_header_bytes / b"a:\r\n".len()];
     let mut parsed = httparse::Request::new(&mut parsed_headers);
     let httparse::Status::Complete(_) =
         parsed.parse(bytes).map_err(|_| RequestReadError::Invalid)?
@@ -869,6 +877,13 @@ fn parse_http_request(bytes: &[u8]) -> Result<Request, RequestReadError> {
             .map_err(|_| RequestReadError::Invalid)?;
         let value = HeaderValue::from_bytes(header.value).map_err(|_| RequestReadError::Invalid)?;
         headers.append(name, value);
+    }
+    match request_line {
+        RequestLineClassification::Get => {}
+        RequestLineClassification::MethodNotAllowed => {
+            return Err(RequestReadError::MethodNotAllowed);
+        }
+        RequestLineClassification::Invalid => return Err(RequestReadError::Invalid),
     }
     let mut request = Request::new(Body::empty());
     *request.method_mut() = method;
@@ -1150,14 +1165,48 @@ mod tests {
         ConnectionSlots, ConnectionTimeouts, FixedResponse, REQUEST_PROCESSING_TIMEOUT,
         REQUEST_READ_TIMEOUT, RateLimiter, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
         gateway_timeout_response, parse_http_request, processing_response,
-        raw_header_section_bytes, read_http_request_with_timeout, request_timeout_response,
-        restricted_routes, serve_normal_connection_with_timeouts,
+        raw_header_section_bytes, read_http_request, read_http_request_with_timeout,
+        request_timeout_response, restricted_routes, serve_normal_connection_with_timeouts,
         serve_rejection_connection_with_timeouts, serve_restricted_https_listener,
     };
 
     async fn response_body(response: axum::response::Response) -> String {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum RequestHeadResult {
+        Accepted,
+        Invalid,
+        MethodNotAllowed,
+        TargetTooLong,
+        HeadersTooLarge,
+    }
+
+    async fn read_request_head(bytes: &[u8]) -> RequestHeadResult {
+        let (mut client, mut server) = tokio::io::duplex(bytes.len().max(1));
+        client.write_all(bytes).await.unwrap();
+        client.shutdown().await.unwrap();
+        match read_http_request(&mut server).await {
+            Ok(_) => RequestHeadResult::Accepted,
+            Err(super::RequestReadError::Invalid) => RequestHeadResult::Invalid,
+            Err(super::RequestReadError::MethodNotAllowed) => RequestHeadResult::MethodNotAllowed,
+            Err(super::RequestReadError::TargetTooLong) => RequestHeadResult::TargetTooLong,
+            Err(super::RequestReadError::HeadersTooLarge) => RequestHeadResult::HeadersTooLarge,
+            Err(super::RequestReadError::TimedOut) => panic!("reader test must not time out"),
+        }
+    }
+
+    fn assert_fixed_tls_response(response: &[u8], status: u16, body: &str, allow_get: bool) {
+        let allow = if allow_get { "Allow: GET\r\n" } else { "" };
+        assert_eq!(
+            response,
+            format!(
+                "HTTP/1.1 {status} \r\nContent-Type: application/json; charset=utf-8\r\n{allow}\r\n{body}"
+            )
+            .as_bytes()
+        );
     }
 
     #[tokio::test]
@@ -1248,9 +1297,152 @@ mod tests {
         );
         assert!(raw_header_section_bytes(bytes.as_bytes()).unwrap() > 8 * 1024);
         assert!(matches!(
-            parse_http_request(bytes.as_bytes()),
+            parse_http_request(bytes.as_bytes(), super::RequestLineClassification::Get),
             Err(super::RequestReadError::HeadersTooLarge)
         ));
+    }
+
+    #[tokio::test]
+    async fn request_head_reader_classification_matrix_covers_transitions_and_bounds() {
+        let exact_target = format!("/{}", "a".repeat(super::MAX_REQUEST_TARGET_BYTES - 1));
+        let exact_headers = format!(
+            "GET /api/v1/status HTTP/1.1\r\nX-Pad: {}\r\n\r\n",
+            "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len())
+        );
+        let oversized_headers = format!(
+            "GET /api/v1/status HTTP/1.1\r\nX-Pad: {}\r\n\r\n",
+            "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
+        );
+        let many_headers = format!(
+            "GET /api/v1/status HTTP/1.1\r\n{}\r\n",
+            (0..65)
+                .map(|index| format!("X-{index}: a\r\n"))
+                .collect::<String>()
+        );
+        let valid_non_get_at_aggregate_limit = format!(
+            "{} /api/v1/status HTTP/1.1\r\nX-Pad: {}\r\n\r\n",
+            "P".repeat(super::MAX_REQUEST_TARGET_BYTES + 128),
+            "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len())
+        );
+        let malformed_line_at_aggregate_limit = format!(
+            "GET /api/v1/status HTTP/{}\r\nX-Pad: {}\r\n\r\n",
+            "1".repeat(super::MAX_REQUEST_TARGET_BYTES + 128),
+            "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len())
+        );
+
+        assert_eq!(
+            raw_header_section_bytes(exact_headers.as_bytes()).unwrap(),
+            super::MAX_REQUEST_HEADER_BYTES
+        );
+        assert_eq!(
+            raw_header_section_bytes(oversized_headers.as_bytes()).unwrap(),
+            super::MAX_REQUEST_HEADER_BYTES + 1
+        );
+        assert!(many_headers.len() < super::MAX_REQUEST_HEAD_BYTES);
+        assert!(valid_non_get_at_aggregate_limit.len() > super::MAX_REQUEST_HEAD_BYTES);
+        assert!(malformed_line_at_aggregate_limit.len() > super::MAX_REQUEST_HEAD_BYTES);
+
+        for (name, request, expected) in [
+            (
+                "method phase EOF",
+                "GET".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "target phase EOF",
+                "GET /".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "version phase EOF",
+                "GET / HTTP/1.1".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "version ending EOF",
+                "GET / HTTP/1.1\r".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "headers phase EOF",
+                "GET / HTTP/1.1\r\nX-Test: a\r\n".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "strict CRLF GET",
+                "GET /api/v1/status HTTP/1.1\r\nX-Test: a\r\n\r\n".to_owned(),
+                RequestHeadResult::Accepted,
+            ),
+            (
+                "LF-only framing",
+                "GET /api/v1/status HTTP/1.1\n\n".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "valid non-GET method",
+                "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                RequestHeadResult::MethodNotAllowed,
+            ),
+            (
+                "invalid method",
+                "GE(T /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "target exactly two KiB",
+                format!("GET {exact_target} HTTP/1.1\r\n\r\n"),
+                RequestHeadResult::Accepted,
+            ),
+            (
+                "target over two KiB before malformed content",
+                format!(
+                    "GET /{} HTTP/1.1\r\nmalformed\r\n\r\n",
+                    "a".repeat(super::MAX_REQUEST_TARGET_BYTES)
+                ),
+                RequestHeadResult::TargetTooLong,
+            ),
+            (
+                "malformed HTTP version",
+                "GET /api/v1/status HTTP/2\r\n\r\n".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "malformed header",
+                "GET /api/v1/status HTTP/1.1\r\nnot-a-header\r\n\r\n".to_owned(),
+                RequestHeadResult::Invalid,
+            ),
+            (
+                "headers exactly eight KiB",
+                exact_headers,
+                RequestHeadResult::Accepted,
+            ),
+            (
+                "headers over eight KiB",
+                oversized_headers,
+                RequestHeadResult::HeadersTooLarge,
+            ),
+            (
+                "more than sixty-four headers within the byte limit",
+                many_headers,
+                RequestHeadResult::Accepted,
+            ),
+            (
+                "valid non-GET method at aggregate limit",
+                valid_non_get_at_aggregate_limit,
+                RequestHeadResult::MethodNotAllowed,
+            ),
+            (
+                "malformed request line at aggregate limit",
+                malformed_line_at_aggregate_limit,
+                RequestHeadResult::Invalid,
+            ),
+        ] {
+            assert_eq!(
+                read_request_head(request.as_bytes()).await,
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1388,6 +1580,81 @@ mod tests {
             .expect("direct TLS rejection response must complete with close_notify");
         server.await.unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn direct_tls_request_head_matrix_preserves_public_contract() {
+        let (server_config, client_config) = tls_configs();
+        let many_headers = format!(
+            "GET /api/v1/status HTTP/1.1\r\n{}\r\n",
+            (0..65)
+                .map(|index| format!("X-{index}: a\r\n"))
+                .collect::<String>()
+        );
+        let oversized_headers = format!(
+            "GET /api/v1/status HTTP/1.1\r\nX-Pad: {}\r\n\r\n",
+            "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
+        );
+
+        for (name, request, status, body, allow_get) in [
+            (
+                "valid GET",
+                "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                200,
+                "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
+                false,
+            ),
+            (
+                "valid non-GET",
+                "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                405,
+                "{\"error\":\"method_not_allowed\"}",
+                true,
+            ),
+            (
+                "invalid method",
+                "GE(T /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
+                400,
+                "{\"error\":\"bad_request\"}",
+                false,
+            ),
+            (
+                "target over two KiB before malformed content",
+                format!(
+                    "GET /{} HTTP/1.1\r\nmalformed\r\n\r\n",
+                    "a".repeat(super::MAX_REQUEST_TARGET_BYTES)
+                ),
+                414,
+                "{\"error\":\"uri_too_long\"}",
+                false,
+            ),
+            (
+                "headers over eight KiB",
+                oversized_headers,
+                431,
+                "{\"error\":\"request_header_fields_too_large\"}",
+                false,
+            ),
+            (
+                "more than sixty-four headers",
+                many_headers,
+                200,
+                "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
+                false,
+            ),
+        ] {
+            let response = direct_tls_response(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                request.as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_fixed_tls_response(&response, status, body, allow_get);
+            assert!(response.len() <= 128, "{name}");
+        }
     }
 
     #[tokio::test]
@@ -1797,8 +2064,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
             .await
             .expect("LF-only request head must not wait for the read timeout");
-        assert!(response.starts_with(b"HTTP/1.1 400 \r\n"));
-        assert!(response.ends_with(b"{\"error\":\"bad_request\"}"));
+        assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", false);
 
         server.abort();
     }
