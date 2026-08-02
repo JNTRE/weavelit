@@ -58,21 +58,21 @@ confirmation or reauthentication?
 
 ### 6. Client Module plane and Pre-Operational Surface schema
 
+The Milestone 1 Web UI Client Module's transport-only status capability is
+settled in the [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
 The restricted **[Init](glossary.md#states-and-requests)** and
-**[Restore](glossary.md#states-and-requests)** contracts are exposed through
+**[Restore](glossary.md#states-and-requests)** contracts remain exposed through
 each **[Client Module](glossary.md#applications-and-interfaces)**'s
 **[Pre-Operational Surface](glossary.md#applications-and-interfaces)** when it
 declares the corresponding capabilities and the Server is uninitialized. The
 Pre-Operational Surface is distinct from the normal authenticated
 **[User Plane](glossary.md#applications-and-interfaces)** and
 **[Administration Plane](glossary.md#applications-and-interfaces)**. What route
-and command organization maps normal functions to their declared plane and
-access class and lifecycle functions to their declared capability? What
-declaration schema composes the planes with the Pre-Operational Surface? How
-does that schema represent the
-**[Web UI](glossary.md#applications-and-interfaces)** with Init and Restore
-capabilities on its Pre-Operational Surface plus User Plane and Administration
-Plane functions, and the
+and command organization maps later normal functions to their declared plane and
+access class and later lifecycle functions to their declared capability? What
+declaration schema composes those planes with the later lifecycle capabilities?
+How does that schema represent the Web UI with Init and Restore capabilities
+plus User Plane and Administration Plane functions, and the
 **[Weavelit CLI](glossary.md#applications-and-interfaces)** with User Plane and
 Administration Plane functions? How does the resulting route and command
 terminology remain distinct from host-level deployment administration and
@@ -82,13 +82,13 @@ separate network-plane architecture?
 
 ### 8. API contract and compatibility policy
 
-API routes are versioned under `/api/v1/`. What is the wire format and
-compatibility policy for
-**[Operational Requests](glossary.md#states-and-requests)**, the restricted
+The `/api/v1/status` contract and its additive-only compatibility policy are
+settled in the [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
+What wire format and compatibility policy apply to later
+**[Operational Requests](glossary.md#states-and-requests)**, restricted
 **[Init](glossary.md#states-and-requests)** and
 **[Restore](glossary.md#states-and-requests)** contracts, results, errors,
-pagination, and idempotency keys? What Server and Weavelit CLI versions are
-supported together?
+pagination, idempotency keys, and Server/Weavelit CLI version compatibility?
 
 ### 9. Application Database and log backup, retention, and recovery
 

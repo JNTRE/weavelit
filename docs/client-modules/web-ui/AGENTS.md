@@ -15,6 +15,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Web UI Client Module.
+- `pre-operational-status-design.md`: Versioned status-only pre-operational transport contract and Web UI Client Module boundary for Milestone 1.
 
 ## Usage Guidance
 

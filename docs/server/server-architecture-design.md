@@ -165,6 +165,26 @@ module. Application Database persistence remains separate from every
 when their implementations use the same technology. They may use the same
 approved workspace dependency without sharing persistence behavior.
 
+## HTTPS Runtime Composition
+
+The `weavelit-server` runtime owns the sole direct-TLS listener, lifecycle
+gating, and route composition. Its Milestone 1 status surface uses Axum routing
+over Hyper and Tokio with Rustls. Rustls uses the approved AWS-LC cryptographic
+provider and permits TLS 1.2 and TLS 1.3. The runtime does not create a second
+listener or a cleartext fallback.
+
+The Web UI Client Module remains compiled in but is transport-only for this
+surface. It cannot classify lifecycle state or independently compose a route or
+listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
+defines its public contract and resource limits.
+
+The implementation selects minimal features and exact crates.io versions for
+Axum, Hyper, Tokio, and their required adapters under the dependency policy
+below. Each selected package must be maintained and advisory-reviewed before it
+is added. A package upgrade is a deliberate dependency change that repeats the
+version, change, advisory, and validation review; no future version is approved
+by this architecture decision.
+
 ## Rust Workspace Dependency Policy
 
 `server/Cargo.toml` is the Server Rust workspace manifest and the authority for

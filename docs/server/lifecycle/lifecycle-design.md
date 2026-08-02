@@ -469,6 +469,13 @@ workflow as fallback recovery. An `InitializationPending` deployment is
 non-operational and exposes only the workflow identified by its checkpoint. It
 does not enable login, administration, or normal client functions.
 
+The Milestone 1 runtime maps the two uninitialized rows to the Web UI Client
+Module's status-only Pre-Operational Surface. It removes that status route from
+every pending, sealed, normal, and failed-startup classification. The
+[Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
+defines its public contract; this lifecycle boundary remains the authority for
+whether the route exists.
+
 ## Application Database Selection
 
 The lifecycle crate presents the runtime-supplied backend catalog and each

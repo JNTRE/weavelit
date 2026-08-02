@@ -60,16 +60,18 @@ validate that the certificate and private key form a usable pair before it
 binds its listener and must not expose a route or diagnostic listener when this
 validation fails.
 
-The host must define the source networks permitted to reach each unauthenticated
-**[Pre-Operational Surface](glossary.md#applications-and-interfaces)** and
-enforce that policy through the trusted listener or deployment network controls.
-Each such surface must reject input before resource exhaustion by enforcing
-configured bounds for request size, request rate, concurrent work, parsing,
-decompression, cryptographic work, and execution time. A browser-accessible
-route must allow only explicitly intended origins, limit CORS to those origins,
-and apply CSRF protection appropriate to its authentication and request model.
-These controls must not depend on client-side enforcement or on an API wire
-format.
+The Milestone 1 unauthenticated **[Pre-Operational Surface](glossary.md#applications-and-interfaces)**
+is reachable only from IPv4 and IPv6 loopback through the deployment network
+boundary; the Server has no allowlist configuration channel. Its status route
+enforces the request, connection, handler, handshake, rate, timeout, response,
+and parsing bounds defined in the [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
+It accepts no request body, performs no decompression or cryptographic work, and
+does not mutate state. It sends no CORS headers, supports no credentials or
+cookies, and has no CSRF flow. A later browser-accessible or unauthenticated
+surface must select explicit source networks, origin controls, restricted
+cross-origin resource sharing (CORS), and cross-site request forgery (CSRF)
+protection appropriate to its request model. These controls must not depend on
+client-side enforcement.
 
 ## Protected Assets
 

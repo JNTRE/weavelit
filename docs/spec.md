@@ -112,17 +112,20 @@ application assets and supporting client-side navigation. The Weavelit CLI MUST
 use the API surface exposed by the Weavelit CLI Client Module and MUST NOT use
 non-API Web UI routes.
 
+the unauthenticated Init and Restore capabilities.
 Before Init or Restore completes, the same listener MUST expose only applicable
 **[Pre-Operational Surfaces](glossary.md#applications-and-interfaces)** provided
 by Client Modules. Each Pre-Operational Surface MUST expose only the restricted
-Init and Restore contracts corresponding to capabilities explicitly declared by
-its Client Module. Pre-Operational Surfaces MUST remain distinct from the User
-Plane and Administration Plane, and normal application functions MUST remain
-unavailable in this state. Network reachability MUST be limited through TLS,
-firewall, and other deployment network controls. During normal operation,
-client authentication is additionally REQUIRED. While the Server is
-uninitialized, the deployer is responsible for restricting network access to
-the unauthenticated Init and Restore capabilities.
+status, Init, and Restore contracts corresponding to capabilities explicitly
+declared by its Client Module. Pre-Operational Surfaces MUST remain distinct
+from the User Plane and Administration Plane, and normal application functions
+MUST remain unavailable in this state. Milestone 1 declares only the Web UI
+Client Module's status capability; its exact contract is defined by the
+[Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
+Network reachability MUST be limited through TLS, firewall, and other deployment
+network controls. During normal operation, client authentication is additionally
+REQUIRED. While the Server is uninitialized, the deployer is responsible for
+restricting network access to unauthenticated pre-operational capabilities.
 
 Each client MUST communicate through the surface provided by its corresponding
 Client Module. Client Modules MUST translate each accepted client request into
