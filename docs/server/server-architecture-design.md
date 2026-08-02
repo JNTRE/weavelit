@@ -173,9 +173,12 @@ over Hyper and Tokio with Rustls. Rustls uses the approved AWS-LC cryptographic
 provider and permits TLS 1.2 and TLS 1.3. The runtime does not create a second
 listener or a cleartext fallback.
 
-The Web UI Client Module remains compiled in but is transport-only for this
-surface. It cannot classify lifecycle state or independently compose a route or
-listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
+The compiled-in `weavelit-module-client-webui` crate owns translation of the
+Web UI pre-operational status request and response contract. The runtime mounts
+that route only when the Server-owned lifecycle gate permits it and retains
+ownership of direct TLS, listener composition, raw request parsing, resource
+limits, and lifecycle classification. The module cannot independently compose a
+route or listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
 defines its public contract and resource limits.
 
 The implementation selects minimal features and exact crates.io versions for
@@ -373,7 +376,7 @@ handling.
 
 | Package | Exact version and minimal features | Owner and purpose | Maintenance, license, and advisory evidence |
 | --- | --- | --- | --- |
-| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server`; fixed restricted-route composition and JSON responses | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
+| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the fixed restricted route; `weavelit-module-client-webui` translates the status request and JSON response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
 | `http-body-util` | `=0.1.4`; defaults enabled | `weavelit-server`; collects the fixed, sub-128-byte Axum route response before direct TLS emission | Hyperium; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, without request-body buffering | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio` | `=1.53.1`; defaults disabled; `io-util`, `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, TLS-stream I/O, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
@@ -418,10 +421,12 @@ every dependency-resolution change.
   inspect the effective identity, set the owner-only umask, traverse the
   absolute state-root path component by component without following symbolic
   links, inspect ownership, mode, type, and hard-link count, and perform
-  directory-relative creation, replacement, removal, and synchronization. The
-  standard library does not expose the complete race-resistant relative Unix
-  filesystem API without platform constants or unsafe calls. The Rust standard
-  library separately supplies the process-lifetime file lock.
+  directory-relative creation, replacement, removal, and synchronization.
+  `weavelit-server` uses the same descriptor-relative no-follow primitives to
+  open and validate configured TLS material. The standard library does not
+  expose the complete race-resistant relative Unix filesystem API without
+  platform constants or unsafe calls. The Rust standard library separately
+  supplies the process-lifetime file lock.
 - **Features:** default features are disabled; only `std`, `fs`, and `process`
   are enabled. Networking, mount, asynchronous I/O, memory-management, terminal,
   thread, timing, latest-Linux opt-in, and explicit libc-backend features are

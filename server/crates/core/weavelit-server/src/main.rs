@@ -20,8 +20,8 @@ fn main() {
         }
     };
 
-    let outcome = match classify_restricted_startup(&state_root) {
-        Ok(outcome) => outcome,
+    let startup = match classify_restricted_startup(&state_root) {
+        Ok(startup) => startup,
         Err(error) => {
             present_error(error);
             std::process::exit(1);
@@ -39,7 +39,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(error) = runtime.block_on(run_restricted_https_listener(listener, outcome)) {
+    if let Err(error) = runtime.block_on(run_restricted_https_listener(listener, startup)) {
         present_error(error);
         std::process::exit(1);
     }

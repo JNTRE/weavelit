@@ -112,7 +112,6 @@ application assets and supporting client-side navigation. The Weavelit CLI MUST
 use the API surface exposed by the Weavelit CLI Client Module and MUST NOT use
 non-API Web UI routes.
 
-the unauthenticated Init and Restore capabilities.
 Before Init or Restore completes, the same listener MUST expose only applicable
 **[Pre-Operational Surfaces](glossary.md#applications-and-interfaces)** provided
 by Client Modules. Each Pre-Operational Surface MUST expose only the restricted

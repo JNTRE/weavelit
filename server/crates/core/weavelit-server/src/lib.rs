@@ -4,10 +4,9 @@
 
 use std::{
     collections::HashMap,
-    env, fs,
+    env, fmt, fs,
     io::{ErrorKind, Read},
     net::{IpAddr, SocketAddr},
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -19,12 +18,12 @@ use axum::{
     extract::Request,
     http::{
         HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
-        header::{ACCEPT, ALLOW, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
+        header::{ALLOW, CONTENT_TYPE},
     },
     response::Response,
-    routing::any,
 };
 use http_body_util::BodyExt;
+use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use rustls::{
     ServerConfig,
     crypto::aws_lc_rs,
@@ -65,6 +64,13 @@ const MAX_REQUEST_HEAD_BYTES: usize = MAX_REQUEST_TARGET_BYTES + MAX_REQUEST_HEA
 const MAX_HEADERS: usize = 64;
 const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
 const RATE_LIMIT_BURST: u32 = 5;
+
+#[derive(Clone, Copy)]
+struct ConnectionTimeouts {
+    handshake: Duration,
+    request_read: Duration,
+    processing: Duration,
+}
 
 struct ConnectionSlots {
     normal: Arc<Semaphore>,
@@ -227,24 +233,8 @@ fn read_required_path(
 }
 
 fn read_tls_material(path: &Path, private_key: bool) -> Result<Vec<u8>, StartupError> {
-    if !has_safe_absolute_path(path) {
-        return Err(StartupError::TlsMaterialInvalid);
-    }
-
-    let metadata = fs::symlink_metadata(path).map_err(|_| StartupError::TlsMaterialInvalid)?;
-    let mode = metadata.mode();
-    if !metadata.file_type().is_file()
-        || metadata.nlink() != 1
-        || mode & 0o022 != 0
-        || (private_key && mode & 0o007 != 0)
-        || metadata.len() == 0
-        || metadata.len() > MAX_TLS_MATERIAL_BYTES
-    {
-        return Err(StartupError::TlsMaterialInvalid);
-    }
-
-    let file = fs::File::open(path).map_err(|_| StartupError::TlsMaterialInvalid)?;
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let (file, length) = open_tls_material(path, private_key)?;
+    let mut bytes = Vec::with_capacity(length as usize);
     file.take(MAX_TLS_MATERIAL_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| StartupError::TlsMaterialInvalid)?;
@@ -254,28 +244,52 @@ fn read_tls_material(path: &Path, private_key: bool) -> Result<Vec<u8>, StartupE
     Ok(bytes)
 }
 
-fn has_safe_absolute_path(path: &Path) -> bool {
-    if !path.is_absolute() {
-        return false;
-    }
-
-    let mut current = PathBuf::from("/");
+fn open_tls_material(path: &Path, private_key: bool) -> Result<(fs::File, u64), StartupError> {
+    let mut names = Vec::new();
+    let mut saw_root = false;
     for component in path.components() {
         match component {
-            std::path::Component::RootDir => {}
-            std::path::Component::Normal(component) => {
-                current.push(component);
-                let Ok(metadata) = fs::symlink_metadata(&current) else {
-                    return false;
-                };
-                if metadata.file_type().is_symlink() {
-                    return false;
-                }
-            }
-            _ => return false,
+            std::path::Component::RootDir if !saw_root => saw_root = true,
+            std::path::Component::Normal(component) if saw_root => names.push(component),
+            _ => return Err(StartupError::TlsMaterialInvalid),
         }
     }
-    true
+    let name = names.pop().ok_or(StartupError::TlsMaterialInvalid)?;
+    let mut directory = rustix_fs::open(
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|_| StartupError::TlsMaterialInvalid)?;
+    for component in names {
+        directory = rustix_fs::openat(
+            &directory,
+            component,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| StartupError::TlsMaterialInvalid)?;
+    }
+    let descriptor = rustix_fs::openat(
+        &directory,
+        name,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|_| StartupError::TlsMaterialInvalid)?;
+    let metadata = rustix_fs::fstat(&descriptor).map_err(|_| StartupError::TlsMaterialInvalid)?;
+    let mode = metadata.st_mode;
+    let length = u64::try_from(metadata.st_size).map_err(|_| StartupError::TlsMaterialInvalid)?;
+    if !FileType::from_raw_mode(mode).is_file()
+        || metadata.st_nlink != 1
+        || mode & 0o022 != 0
+        || (private_key && mode & 0o007 != 0)
+        || length == 0
+        || length > MAX_TLS_MATERIAL_BYTES
+    {
+        return Err(StartupError::TlsMaterialInvalid);
+    }
+    Ok((fs::File::from(descriptor), length))
 }
 
 fn parse_certificates(bytes: &[u8]) -> Result<Vec<CertificateDer<'static>>, StartupError> {
@@ -351,6 +365,28 @@ pub enum StartupOutcome {
     UninitializedWithDatabase,
     /// Init checkpoint is pending; Server exposes only Init reconciliation.
     InitializationPending(WorkflowKind),
+}
+
+/// Restricted startup state, including the process-lifetime state-root lock.
+pub struct RestrictedStartup {
+    outcome: StartupOutcome,
+    _store: LifecycleStore,
+}
+
+impl RestrictedStartup {
+    /// Returns the lifecycle outcome used to select restricted routes.
+    pub fn outcome(&self) -> StartupOutcome {
+        self.outcome
+    }
+}
+
+impl fmt::Debug for RestrictedStartup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RestrictedStartup")
+            .field("outcome", &self.outcome)
+            .finish_non_exhaustive()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -437,12 +473,16 @@ impl StartupError {
 /// Binds and serves the sole direct-TLS pre-operational listener.
 pub async fn run_restricted_https_listener(
     listener: TrustedHttpsListener,
-    outcome: StartupOutcome,
+    startup: RestrictedStartup,
 ) -> Result<(), StartupError> {
     let tcp_listener = TcpListener::bind(listener.address())
         .await
         .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-    serve_restricted_https_listener(tcp_listener, listener.tls_config(), outcome).await
+    let result =
+        serve_restricted_https_listener(tcp_listener, listener.tls_config(), startup.outcome())
+            .await;
+    drop(startup);
+    result
 }
 
 async fn serve_restricted_https_listener(
@@ -492,30 +532,74 @@ async fn serve_normal_connection(
     router: Router,
     rate_limiter: Arc<RateLimiter>,
 ) {
-    let Ok(Ok(mut tls_stream)) = timeout(TLS_HANDSHAKE_TIMEOUT, tls_acceptor.accept(stream)).await
+    serve_normal_connection_with_timeouts(
+        stream,
+        source,
+        tls_acceptor,
+        router,
+        rate_limiter,
+        ConnectionTimeouts {
+            handshake: TLS_HANDSHAKE_TIMEOUT,
+            request_read: REQUEST_READ_TIMEOUT,
+            processing: REQUEST_PROCESSING_TIMEOUT,
+        },
+    )
+    .await;
+}
+
+async fn serve_normal_connection_with_timeouts(
+    stream: TcpStream,
+    source: IpAddr,
+    tls_acceptor: TlsAcceptor,
+    router: Router,
+    rate_limiter: Arc<RateLimiter>,
+    timeouts: ConnectionTimeouts,
+) {
+    let Ok(Ok(mut tls_stream)) = timeout(timeouts.handshake, tls_acceptor.accept(stream)).await
     else {
         return;
     };
 
     let response = processing_response(
-        REQUEST_PROCESSING_TIMEOUT,
-        process_restricted_request(&mut tls_stream, source, router, rate_limiter),
+        timeouts.processing,
+        process_restricted_request(
+            &mut tls_stream,
+            source,
+            router,
+            rate_limiter,
+            timeouts.request_read,
+        ),
     )
     .await;
     let _ = timeout(
-        REQUEST_PROCESSING_TIMEOUT,
+        timeouts.processing,
         write_fixed_response(&mut tls_stream, response),
     )
     .await;
 }
 
 async fn serve_rejection_connection(stream: TcpStream, tls_acceptor: TlsAcceptor) {
-    let Ok(Ok(mut tls_stream)) = timeout(TLS_HANDSHAKE_TIMEOUT, tls_acceptor.accept(stream)).await
+    serve_rejection_connection_with_timeouts(
+        stream,
+        tls_acceptor,
+        TLS_HANDSHAKE_TIMEOUT,
+        REQUEST_PROCESSING_TIMEOUT,
+    )
+    .await;
+}
+
+async fn serve_rejection_connection_with_timeouts(
+    stream: TcpStream,
+    tls_acceptor: TlsAcceptor,
+    handshake_timeout: Duration,
+    response_timeout: Duration,
+) {
+    let Ok(Ok(mut tls_stream)) = timeout(handshake_timeout, tls_acceptor.accept(stream)).await
     else {
         return;
     };
     let _ = timeout(
-        REQUEST_PROCESSING_TIMEOUT,
+        response_timeout,
         write_fixed_response(&mut tls_stream, service_unavailable_response()),
     )
     .await;
@@ -526,11 +610,12 @@ async fn process_restricted_request<S>(
     source: IpAddr,
     router: Router,
     rate_limiter: Arc<RateLimiter>,
+    request_read_timeout: Duration,
 ) -> FixedResponse
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let request = match read_http_request_with_timeout(stream, REQUEST_READ_TIMEOUT).await {
+    let request = match read_http_request_with_timeout(stream, request_read_timeout).await {
         Ok(request) => request,
         Err(RequestReadError::TimedOut) => return request_timeout_response(),
         Err(RequestReadError::HeadersTooLarge) => {
@@ -544,6 +629,10 @@ where
         }
     };
 
+    if let Some(response) = request_limit_response(&request) {
+        return response;
+    }
+
     if !rate_limiter.allows(source, Instant::now()) {
         return rate_limited_response();
     }
@@ -555,6 +644,7 @@ where
     fixed_response_from_axum(response).await
 }
 
+#[derive(Debug)]
 enum RequestReadError {
     TimedOut,
     HeadersTooLarge,
@@ -598,6 +688,9 @@ where
 }
 
 fn parse_http_request(bytes: &[u8]) -> Result<Request, RequestReadError> {
+    if raw_header_section_bytes(bytes)? > MAX_REQUEST_HEADER_BYTES {
+        return Err(RequestReadError::HeadersTooLarge);
+    }
     let mut parsed_headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut parsed = httparse::Request::new(&mut parsed_headers);
     let httparse::Status::Complete(_) =
@@ -615,9 +708,6 @@ fn parse_http_request(bytes: &[u8]) -> Result<Request, RequestReadError> {
             .map_err(|_| RequestReadError::Invalid)?;
         let value = HeaderValue::from_bytes(header.value).map_err(|_| RequestReadError::Invalid)?;
         headers.append(name, value);
-    }
-    if request_header_bytes(&headers) > MAX_REQUEST_HEADER_BYTES {
-        return Err(RequestReadError::HeadersTooLarge);
     }
     let mut request = Request::new(Body::empty());
     *request.method_mut() = method;
@@ -729,40 +819,14 @@ fn restricted_routes(outcome: StartupOutcome) -> Router {
     match outcome {
         StartupOutcome::UninitializedWithoutDatabase => router.route(
             "/api/v1/status",
-            any(|request| status_response(request, false)),
+            weavelit_module_client_webui::preoperational_status_route(false),
         ),
         StartupOutcome::UninitializedWithDatabase => router.route(
             "/api/v1/status",
-            any(|request| status_response(request, true)),
+            weavelit_module_client_webui::preoperational_status_route(true),
         ),
         StartupOutcome::InitializationPending(_) => router,
     }
-}
-
-async fn status_response(request: Request, database_selected: bool) -> Response {
-    let (parts, _body) = request.into_parts();
-    if request_target_bytes(&parts.uri) > MAX_REQUEST_TARGET_BYTES {
-        return json_response(StatusCode::URI_TOO_LONG, "uri_too_long");
-    }
-    if request_header_bytes(&parts.headers) > MAX_REQUEST_HEADER_BYTES {
-        return json_response(
-            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-            "request_header_fields_too_large",
-        );
-    }
-    if parts.method != Method::GET {
-        return json_response_with_allow(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
-    }
-    if has_request_body(&parts.headers) || !accepts_json(&parts.headers) {
-        return json_response(StatusCode::BAD_REQUEST, "bad_request");
-    }
-
-    let body = if database_selected {
-        "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}"
-    } else {
-        "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
-    };
-    json_response_body(StatusCode::OK, body)
 }
 
 async fn not_found() -> Response {
@@ -774,24 +838,24 @@ fn request_target_bytes(uri: &axum::http::Uri) -> usize {
         .map_or(0, |target| target.as_str().len())
 }
 
-fn request_header_bytes(headers: &HeaderMap) -> usize {
-    headers
-        .iter()
-        .map(|(name, value)| name.as_str().len() + value.as_bytes().len() + 4)
-        .sum()
+fn raw_header_section_bytes(bytes: &[u8]) -> Result<usize, RequestReadError> {
+    let request_line_end = bytes
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .ok_or(RequestReadError::Invalid)?
+        + 2;
+    let section_end = bytes
+        .len()
+        .checked_sub(2)
+        .ok_or(RequestReadError::Invalid)?;
+    section_end
+        .checked_sub(request_line_end)
+        .ok_or(RequestReadError::Invalid)
 }
 
-fn has_request_body(headers: &HeaderMap) -> bool {
-    headers
-        .get(CONTENT_LENGTH)
-        .is_some_and(|value| value.as_bytes() != b"0")
-        || headers.contains_key(TRANSFER_ENCODING)
-}
-
-fn accepts_json(headers: &HeaderMap) -> bool {
-    headers
-        .get(ACCEPT)
-        .is_none_or(|value| value.as_bytes() == b"application/json")
+fn request_limit_response(request: &Request) -> Option<FixedResponse> {
+    (request_target_bytes(request.uri()) > MAX_REQUEST_TARGET_BYTES)
+        .then(|| json_fixed_response(StatusCode::URI_TOO_LONG, "{\"error\":\"uri_too_long\"}"))
 }
 
 fn json_response(status: StatusCode, error: &'static str) -> Response {
@@ -804,12 +868,6 @@ fn json_response(status: StatusCode, error: &'static str) -> Response {
         _ => unreachable!("all pre-operational error responses use fixed codes"),
     };
     json_response_body(status, body)
-}
-
-fn json_response_with_allow(status: StatusCode, error: &'static str) -> Response {
-    let mut response = json_response(status, error);
-    response.headers_mut().insert(ALLOW, "GET".parse().unwrap());
-    response
 }
 
 fn json_response_body(status: StatusCode, body: &'static str) -> Response {
@@ -875,7 +933,7 @@ fn map_classification_error(error: LifecycleError) -> StartupError {
 /// Returns a `StartupOutcome` for every supported restricted state.
 /// Fails closed for `Initialized` and `PostCommitReconciliationRequired` states
 /// since normal operation and sealing are not yet implemented.
-pub fn classify_restricted_startup(state_root: &Path) -> Result<StartupOutcome, StartupError> {
+pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartup, StartupError> {
     let mut store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
 
     let catalog = sqlite_catalog();
@@ -885,20 +943,26 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<StartupOutcome, 
         .classify_startup(&catalog, &context)
         .map_err(map_classification_error)?;
 
-    match classification {
+    let outcome = match classification {
         LifecycleClassification::UninitializedWithoutDatabase => {
-            Ok(StartupOutcome::UninitializedWithoutDatabase)
+            StartupOutcome::UninitializedWithoutDatabase
         }
         LifecycleClassification::UninitializedWithDatabase => {
-            Ok(StartupOutcome::UninitializedWithDatabase)
+            StartupOutcome::UninitializedWithDatabase
         }
         LifecycleClassification::InitializationPending(kind) => {
-            Ok(StartupOutcome::InitializationPending(kind))
+            StartupOutcome::InitializationPending(kind)
         }
         // Fail closed for states not yet handled by this milestone.
         LifecycleClassification::PostCommitReconciliationRequired
-        | LifecycleClassification::Initialized => Err(StartupError::StateCombinationInvalid),
-    }
+        | LifecycleClassification::Initialized => {
+            return Err(StartupError::StateCombinationInvalid);
+        }
+    };
+    Ok(RestrictedStartup {
+        outcome,
+        _store: store,
+    })
 }
 
 #[cfg(test)]
@@ -906,8 +970,11 @@ mod tests {
     use std::{future::pending, sync::Arc, time::Duration};
 
     use axum::{
+        Router,
         body::Body,
-        http::{Request, StatusCode, header::HeaderValue},
+        http::{Request, StatusCode},
+        response::Response,
+        routing::any,
     };
     use http_body_util::BodyExt;
     use rustls::{
@@ -919,14 +986,17 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},
     };
-    use tokio_rustls::TlsConnector;
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
 
     use super::{
-        ConnectionSlots, FixedResponse, RateLimiter, StartupOutcome, accepts_json,
-        gateway_timeout_response, has_request_body, processing_response,
-        read_http_request_with_timeout, request_header_bytes, request_target_bytes,
-        request_timeout_response, restricted_routes, serve_restricted_https_listener,
+        ConnectionSlots, ConnectionTimeouts, FixedResponse, REQUEST_PROCESSING_TIMEOUT,
+        REQUEST_READ_TIMEOUT, RateLimiter, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
+        gateway_timeout_response, parse_http_request, processing_response,
+        raw_header_section_bytes, read_http_request_with_timeout, request_limit_response,
+        request_target_bytes, request_timeout_response, restricted_routes,
+        serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
+        serve_restricted_https_listener,
     };
 
     async fn response_body(response: axum::response::Response) -> String {
@@ -1015,21 +1085,23 @@ mod tests {
     }
 
     #[test]
-    fn request_bounds_and_content_negotiation_are_strict() {
+    fn request_bounds_apply_before_route_dispatch_and_preserve_raw_header_bytes() {
         let target = "/api/v1/status?".to_owned() + &"a".repeat(2 * 1024);
-        assert!(request_target_bytes(&target.parse().unwrap()) > 2 * 1024);
+        let request = Request::get(target).body(Body::empty()).unwrap();
+        assert!(request_target_bytes(request.uri()) > 2 * 1024);
+        let response = request_limit_response(&request).unwrap();
+        assert_eq!(response.status, StatusCode::URI_TOO_LONG);
+        assert_eq!(response.body, "{\"error\":\"uri_too_long\"}");
 
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("accept", HeaderValue::from_static("application/json"));
-        assert!(accepts_json(&headers));
-        assert!(!has_request_body(&headers));
-        headers.insert("content-length", HeaderValue::from_static("1"));
-        assert!(has_request_body(&headers));
-        headers.insert(
-            "x-bound",
-            HeaderValue::from_str(&"a".repeat(8 * 1024)).unwrap(),
+        let bytes = format!(
+            "GET / HTTP/1.1\r\nX-Bound: {}value\r\n\r\n",
+            " ".repeat(8 * 1024)
         );
-        assert!(request_header_bytes(&headers) > 8 * 1024);
+        assert!(raw_header_section_bytes(bytes.as_bytes()).unwrap() > 8 * 1024);
+        assert!(matches!(
+            parse_http_request(bytes.as_bytes()),
+            Err(super::RequestReadError::HeadersTooLarge)
+        ));
     }
 
     #[test]
@@ -1083,6 +1155,42 @@ mod tests {
             .unwrap()
     }
 
+    async fn direct_tls_response(
+        router: Router,
+        server_config: Arc<ServerConfig>,
+        client_config: Arc<ClientConfig>,
+        request: &[u8],
+        request_read_timeout: Duration,
+        processing_timeout: Duration,
+    ) -> Vec<u8> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, source) = listener.accept().await.unwrap();
+            serve_normal_connection_with_timeouts(
+                stream,
+                source.ip(),
+                TlsAcceptor::from(server_config),
+                router,
+                Arc::new(RateLimiter::new()),
+                ConnectionTimeouts {
+                    handshake: TLS_HANDSHAKE_TIMEOUT,
+                    request_read: request_read_timeout,
+                    processing: processing_timeout,
+                },
+            )
+            .await;
+        });
+        let mut client = tls_client(address, client_config).await;
+        if !request.is_empty() {
+            client.write_all(request).await.unwrap();
+        }
+        let mut response = Vec::new();
+        let _ = client.read_to_end(&mut response).await;
+        server.await.unwrap();
+        response
+    }
+
     #[tokio::test]
     async fn direct_tls_capacity_reserves_rejection_lane_and_releases_normal_slots() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1107,6 +1215,16 @@ mod tests {
             b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 31\r\nConnection: close\r\n\r\n{\"error\":\"service_unavailable\"}"
         );
 
+        let busy_rejection = TcpStream::connect(address).await.unwrap();
+        let mut further_overflow = TcpStream::connect(address).await.unwrap();
+        let mut bytes = [0_u8; 1];
+        match tokio::time::timeout(Duration::from_secs(1), further_overflow.read(&mut bytes)).await
+        {
+            Ok(Ok(0)) | Ok(Err(_)) => {}
+            outcome => panic!("further overflow must be transport-rejected, got {outcome:?}"),
+        }
+        drop(busy_rejection);
+
         drop(normal_connections.pop());
         let mut released = tls_client(address, client_config).await;
         released
@@ -1118,6 +1236,135 @@ mod tests {
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn rejection_lane_timeout_releases_its_permit() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (server_config, _client_config) = tls_configs();
+        let slots = ConnectionSlots::new();
+        let permit = slots.rejection.clone().try_acquire_owned().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            serve_rejection_connection_with_timeouts(
+                stream,
+                TlsAcceptor::from(server_config),
+                Duration::ZERO,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            drop(permit);
+        });
+
+        let _client = TcpStream::connect(address).await.unwrap();
+        server.await.unwrap();
+        assert!(slots.rejection.try_acquire_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rejects_parser_contract_violations() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (server_config, client_config) = tls_configs();
+        let server = tokio::spawn(serve_restricted_https_listener(
+            listener,
+            server_config,
+            StartupOutcome::UninitializedWithoutDatabase,
+        ));
+
+        for (request, status, body) in [
+            (
+                format!("GET /missing?{} HTTP/1.1\r\nHost: localhost\r\n\r\n", "a".repeat(2 * 1024)),
+                b"HTTP/1.1 414 URI Too Long\r\n".as_slice(),
+                b"{\"error\":\"uri_too_long\"}".as_slice(),
+            ),
+            (
+                format!("GET /api/v1/status HTTP/1.1\r\nX-Bound: {}value\r\n\r\n", " ".repeat(8 * 1024)),
+                b"HTTP/1.1 431 Request Header Fields Too Large\r\n".as_slice(),
+                b"{\"error\":\"request_header_fields_too_large\"}".as_slice(),
+            ),
+            (
+                "GET /api/v1/status HTTP/1.1\r\nAccept: application/json\r\nAccept: text/html\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 Bad Request\r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+        ] {
+            let mut client = tls_client(address, Arc::clone(&client_config)).await;
+            client.write_all(request.as_bytes()).await.unwrap();
+            let mut response = Vec::new();
+            let _ = client.read_to_end(&mut response).await;
+            assert!(response.starts_with(status));
+            assert!(response.ends_with(body));
+        }
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rate_limit_returns_the_fixed_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (server_config, client_config) = tls_configs();
+        let server = tokio::spawn(serve_restricted_https_listener(
+            listener,
+            server_config,
+            StartupOutcome::UninitializedWithoutDatabase,
+        ));
+
+        for _ in 0..5 {
+            let mut client = tls_client(address, Arc::clone(&client_config)).await;
+            client
+                .write_all(b"GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            let _ = client.read_to_end(&mut response).await;
+            assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        }
+
+        let mut client = tls_client(address, client_config).await;
+        client
+            .write_all(b"GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let _ = client.read_to_end(&mut response).await;
+        assert!(response.starts_with(b"HTTP/1.1 429 Too Many Requests\r\n"));
+        assert!(response.ends_with(b"{\"error\":\"rate_limited\"}"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn direct_tls_maps_read_and_processing_timeouts_to_fixed_responses() {
+        let (server_config, client_config) = tls_configs();
+        let read_timeout = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"",
+            Duration::ZERO,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert!(read_timeout.starts_with(b"HTTP/1.1 408 Request Timeout\r\n"));
+        assert!(read_timeout.ends_with(b"{\"error\":\"request_timeout\"}"));
+
+        let processing_timeout = direct_tls_response(
+            Router::new().route(
+                "/slow",
+                any(|| async { std::future::pending::<Response>().await }),
+            ),
+            server_config,
+            client_config,
+            b"GET /slow HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            Duration::ZERO,
+        )
+        .await;
+        assert!(processing_timeout.starts_with(b"HTTP/1.1 504 Gateway Timeout\r\n"));
+        assert!(processing_timeout.ends_with(b"{\"error\":\"gateway_timeout\"}"));
     }
 
     #[test]

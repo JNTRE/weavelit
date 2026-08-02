@@ -1115,6 +1115,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
+name = "weavelit-module-client-webui"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "tokio",
+]
+
+[[package]]
 name = "weavelit-server"
 version = "0.1.0"
 dependencies = [
@@ -1122,11 +1130,13 @@ dependencies = [
  "http-body-util",
  "httparse",
  "rcgen",
+ "rustix",
  "rustls",
  "tempfile",
  "tokio",
  "tokio-rustls",
  "tower",
+ "weavelit-module-client-webui",
  "weavelit-server-database-sqlite",
  "weavelit-server-lifecycle",
 ]

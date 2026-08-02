@@ -1,9 +1,11 @@
 use std::{
     fs,
-    net::TcpListener,
+    io::Read,
+    net::{TcpListener, TcpStream},
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    time::{Duration, Instant},
 };
 
 use weavelit_server::{
@@ -120,6 +122,14 @@ fn missing_unsafe_malformed_and_mismatched_tls_material_are_rejected() {
         &private_key_path,
     ));
 
+    let hard_link_path = directory.path().join("certificate-hard-link.pem");
+    fs::hard_link(&certificate_path, &hard_link_path).unwrap();
+    assert_tls_validation_error(validate_trusted_https_listener(
+        "127.0.0.1:8443",
+        &certificate_path,
+        &private_key_path,
+    ));
+
     let malformed_path = directory.path().join("malformed.pem");
     fs::write(&malformed_path, "not PEM").unwrap();
     fs::set_permissions(&malformed_path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -181,6 +191,75 @@ fn occupied_listener_port_exits_with_the_preoperational_unavailable_pair() {
     );
 }
 
+#[test]
+fn serving_process_retains_state_root_lock() {
+    let (_state_directory, state_root) = state_root();
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let first_address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let second_address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let mut first = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", first_address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", &certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", &private_key_path)
+        .env("WEAVELIT_STATE_ROOT", &state_root)
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while TcpStream::connect(first_address).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "first server did not bind in time"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut second = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env(
+            "WEAVELIT_HTTPS_LISTENER_ADDRESS",
+            second_address.to_string(),
+        )
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", state_root)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = second.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = second.kill();
+            let _ = second.wait();
+            panic!("second server retained the state-root lock incorrectly");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let mut stderr = Vec::new();
+    second
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_end(&mut stderr)
+        .unwrap();
+    let _ = first.kill();
+    let _ = first.wait();
+
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(
+        stderr,
+        b"{\"category\":\"preoperational_unavailable\",\"reason\":\"state_root_in_use\"}\n"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tests: fresh startup and restart
 // ---------------------------------------------------------------------------
@@ -189,7 +268,10 @@ fn occupied_listener_port_exits_with_the_preoperational_unavailable_pair() {
 fn fresh_first_start_classifies_as_uninitialized_without_database() {
     let (_dir, path) = state_root();
     let outcome = classify_restricted_startup(&path).expect("first start must succeed");
-    assert_eq!(outcome, StartupOutcome::UninitializedWithoutDatabase);
+    assert_eq!(
+        outcome.outcome(),
+        StartupOutcome::UninitializedWithoutDatabase
+    );
 }
 
 #[test]
@@ -197,7 +279,10 @@ fn restart_without_selection_is_stable() {
     let (_dir, path) = state_root();
     classify_restricted_startup(&path).unwrap();
     let outcome = classify_restricted_startup(&path).expect("restart must succeed");
-    assert_eq!(outcome, StartupOutcome::UninitializedWithoutDatabase);
+    assert_eq!(
+        outcome.outcome(),
+        StartupOutcome::UninitializedWithoutDatabase
+    );
 }
 
 #[test]
@@ -210,7 +295,7 @@ fn restart_with_selected_database_classifies_as_uninitialized_with_database() {
             .unwrap();
     }
     let outcome = classify_restricted_startup(&path).expect("restart with selection must succeed");
-    assert_eq!(outcome, StartupOutcome::UninitializedWithDatabase);
+    assert_eq!(outcome.outcome(), StartupOutcome::UninitializedWithDatabase);
 }
 
 #[test]
@@ -231,7 +316,7 @@ fn restart_with_init_pending_classifies_as_initialization_pending() {
     }
     let outcome = classify_restricted_startup(&path).expect("init-pending restart must succeed");
     assert_eq!(
-        outcome,
+        outcome.outcome(),
         StartupOutcome::InitializationPending(WorkflowKind::Init)
     );
 }
@@ -254,7 +339,7 @@ fn restart_with_restore_pending_classifies_as_initialization_pending() {
     }
     let outcome = classify_restricted_startup(&path).expect("restore-pending restart must succeed");
     assert_eq!(
-        outcome,
+        outcome.outcome(),
         StartupOutcome::InitializationPending(WorkflowKind::Restore)
     );
 }
