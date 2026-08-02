@@ -21,7 +21,7 @@ RUN apt-get update \
 RUN groupadd --gid 10001 weavelit \
 	&& useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash weavelit
 
-COPY server/rust-toolchain.toml /tmp/rust-toolchain.toml
+COPY --chown=weavelit:weavelit server/rust-toolchain.toml /tmp/rust-toolchain.toml
 
 USER weavelit
 
