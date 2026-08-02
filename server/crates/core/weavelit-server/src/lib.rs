@@ -17,7 +17,7 @@ use axum::{
     body::Body,
     extract::Request,
     http::{
-        HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
+        HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
         header::{ALLOW, CONTENT_TYPE},
     },
     response::Response,
@@ -711,17 +711,24 @@ enum RequestReadError {
     Invalid,
 }
 
+#[derive(Clone, Copy)]
+enum RequestLineClassification {
+    MethodNotAllowed,
+    HeadersTooLarge,
+    Invalid,
+}
+
 enum RequestLineState {
     Method,
     Target(usize),
     Version,
     VersionEnding,
-    Headers,
+    Headers(RequestLineClassification),
     Invalid,
 }
 
 impl RequestLineState {
-    fn observe(&mut self, byte: u8) -> Result<(), RequestReadError> {
+    fn observe(&mut self, byte: u8, bytes: &[u8]) -> Result<(), RequestReadError> {
         match self {
             Self::Method if byte == b' ' => *self = Self::Target(0),
             Self::Method if byte == b'\r' => *self = Self::Invalid,
@@ -735,9 +742,11 @@ impl RequestLineState {
             }
             Self::Version if byte == b'\r' => *self = Self::VersionEnding,
             Self::Version => {}
-            Self::VersionEnding if byte == b'\n' => *self = Self::Headers,
+            Self::VersionEnding if byte == b'\n' => {
+                *self = Self::Headers(classify_completed_request_line(bytes));
+            }
             Self::VersionEnding => *self = Self::Invalid,
-            Self::Headers | Self::Invalid | Self::Method => {}
+            Self::Headers(_) | Self::Invalid | Self::Method => {}
         }
         Ok(())
     }
@@ -752,8 +761,41 @@ impl RequestLineState {
             | Self::Version
             | Self::VersionEnding
             | Self::Invalid => RequestReadError::Invalid,
-            Self::Headers => RequestReadError::HeadersTooLarge,
+            Self::Headers(RequestLineClassification::MethodNotAllowed) => {
+                RequestReadError::MethodNotAllowed
+            }
+            Self::Headers(RequestLineClassification::HeadersTooLarge) => {
+                RequestReadError::HeadersTooLarge
+            }
+            Self::Headers(RequestLineClassification::Invalid) => RequestReadError::Invalid,
         }
+    }
+}
+
+fn classify_completed_request_line(bytes: &[u8]) -> RequestLineClassification {
+    let Some(request_line) = bytes.strip_suffix(b"\r\n") else {
+        return RequestLineClassification::Invalid;
+    };
+    let mut parts = request_line.split(|byte| *byte == b' ');
+    let (Some(method), Some(target), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return RequestLineClassification::Invalid;
+    };
+    let Ok(target) = std::str::from_utf8(target) else {
+        return RequestLineClassification::Invalid;
+    };
+    if method.is_empty()
+        || target.is_empty()
+        || !matches!(version, b"HTTP/1.0" | b"HTTP/1.1")
+        || target.parse::<Uri>().is_err()
+    {
+        return RequestLineClassification::Invalid;
+    }
+    match Method::from_bytes(method) {
+        Ok(method) if method == Method::GET => RequestLineClassification::HeadersTooLarge,
+        Ok(_) => RequestLineClassification::MethodNotAllowed,
+        Err(_) => RequestLineClassification::Invalid,
     }
 }
 
@@ -792,8 +834,8 @@ where
         if byte == b'\n' && bytes.last().is_none_or(|previous| *previous != b'\r') {
             return Err(RequestReadError::Invalid);
         }
-        request_line.observe(byte)?;
         bytes.push(byte);
+        request_line.observe(byte, &bytes)?;
         if bytes.len() > MAX_REQUEST_HEAD_BYTES {
             return Err(request_line.limit_error(&bytes));
         }
@@ -1632,6 +1674,88 @@ mod tests {
                 false,
             ),
         ] {
+            let response = direct_tls_response(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                request.as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert!(response.starts_with(status), "{name}: {response:?}");
+            assert_eq!(
+                response
+                    .windows(b"Allow: GET\r\n".len())
+                    .any(|window| window == b"Allow: GET\r\n"),
+                allows_get,
+                "{name}: {response:?}"
+            );
+            assert!(response.ends_with(body), "{name}: {response:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_tls_retains_completed_request_line_classification_at_header_limit() {
+        let (server_config, client_config) = tls_configs();
+        let exact_headers = |request_line: &str| {
+            format!(
+                "{request_line}X-Pad: {}\r\n\r\n",
+                "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len())
+            )
+        };
+        let valid_non_get = exact_headers(&format!(
+            "{} /api/v1/status HTTP/1.1\r\n",
+            "P".repeat(11 * 1024 / 5)
+        ));
+        let malformed_version = exact_headers(&format!(
+            "GET /api/v1/status HTTP/{}\r\n",
+            "1".repeat(11 * 1024 / 5)
+        ));
+        let oversized_headers = format!(
+            "GET /api/v1/status HTTP/1.1\r\nX-Pad: {}\r\n\r\n",
+            "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
+        );
+
+        for (name, request, header_bytes, exceeds_aggregate_limit, status, body, allows_get) in [
+            (
+                "valid non-GET method",
+                valid_non_get,
+                super::MAX_REQUEST_HEADER_BYTES,
+                true,
+                b"HTTP/1.1 405 \r\n".as_slice(),
+                b"{\"error\":\"method_not_allowed\"}".as_slice(),
+                true,
+            ),
+            (
+                "malformed HTTP version",
+                malformed_version,
+                super::MAX_REQUEST_HEADER_BYTES,
+                true,
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+                false,
+            ),
+            (
+                "oversized headers",
+                oversized_headers,
+                super::MAX_REQUEST_HEADER_BYTES + 1,
+                false,
+                b"HTTP/1.1 431 \r\n".as_slice(),
+                b"{\"error\":\"request_header_fields_too_large\"}".as_slice(),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                raw_header_section_bytes(request.as_bytes()).unwrap(),
+                header_bytes,
+                "{name}: raw header section length"
+            );
+            assert_eq!(
+                request.len() > super::MAX_REQUEST_HEAD_BYTES,
+                exceeds_aggregate_limit,
+                "{name}: aggregate request bound"
+            );
             let response = direct_tls_response(
                 restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
                 Arc::clone(&server_config),
