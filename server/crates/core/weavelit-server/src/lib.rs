@@ -245,6 +245,15 @@ fn read_tls_material(path: &Path, private_key: bool) -> Result<Vec<u8>, StartupE
 }
 
 fn open_tls_material(path: &Path, private_key: bool) -> Result<(fs::File, u64), StartupError> {
+    if path
+        .as_os_str()
+        .as_encoded_bytes()
+        .split(|byte| *byte == b'/')
+        .any(|component| matches!(component, b"." | b".."))
+    {
+        return Err(StartupError::TlsMaterialInvalid);
+    }
+
     let mut names = Vec::new();
     let mut saw_root = false;
     for component in path.components() {

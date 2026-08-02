@@ -96,6 +96,43 @@ fn valid_certificate_chain_and_private_key_are_accepted() {
 }
 
 #[test]
+fn tls_paths_with_interior_dot_components_are_rejected() {
+    for (role, component) in [
+        ("certificate", "."),
+        ("certificate", ".."),
+        ("private key", "."),
+        ("private key", ".."),
+    ] {
+        let (_directory, certificate_path, private_key_path) = tls_material();
+        let material_path = match role {
+            "certificate" => &certificate_path,
+            "private key" => &private_key_path,
+            _ => unreachable!(),
+        };
+        let directory = material_path.parent().unwrap();
+        let invalid_path = match component {
+            "." => directory.join(".").join(material_path.file_name().unwrap()),
+            ".." => directory
+                .join("unused")
+                .join("..")
+                .join(material_path.file_name().unwrap()),
+            _ => unreachable!(),
+        };
+        let (certificate_path, private_key_path) = match role {
+            "certificate" => (invalid_path, private_key_path),
+            "private key" => (certificate_path, invalid_path),
+            _ => unreachable!(),
+        };
+
+        assert_tls_validation_error(validate_trusted_https_listener(
+            "127.0.0.1:8443",
+            &certificate_path,
+            &private_key_path,
+        ));
+    }
+}
+
+#[test]
 fn certificate_pem_with_prefix_or_suffix_plaintext_is_rejected() {
     for (prefix, suffix) in [("prefix\n", ""), ("", "\nsuffix\n")] {
         let (_directory, certificate_path, private_key_path) = tls_material();

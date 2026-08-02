@@ -428,10 +428,11 @@ The runtime reads only these non-empty host environment variables:
 | `WEAVELIT_TLS_CERTIFICATE_PATH` | An absolute path with no `.` or `..` component to a PEM certificate chain. |
 | `WEAVELIT_TLS_PRIVATE_KEY_PATH` | An absolute path with no `.` or `..` component to one PEM private key. |
 
-The runtime rejects a relative path, a `.` or `..` component, a symbolic-link
-component, a non-regular file, a hard-linked file, a group- or world-writable
-file, empty or oversized material, and an unreadable file. A private key must
-also have no permissions for other users; host administration remains
+The runtime rejects a relative path, a `.` or `..` component in the raw host
+configuration before path normalization, a symbolic-link component, a
+non-regular file, a hard-linked file, a group- or world-writable file, empty or
+oversized material, and an unreadable file. A private key must also have no
+permissions for other users; host administration remains
 responsible for ensuring any group granted key access is narrowly scoped to TLS
 material. Certificate files contain only certificate PEM sections, private-key
 files contain exactly one supported private-key PEM section, and the runtime
