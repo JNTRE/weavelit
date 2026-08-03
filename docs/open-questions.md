@@ -90,7 +90,7 @@ What wire format and compatibility policy apply to later
 **[Restore](glossary.md#states-and-requests)** contracts, results, errors,
 pagination, idempotency keys, and Server/Weavelit CLI version compatibility?
 
-### 9. Application Database and log backup, retention, and recovery
+### 9. Application Database backup and Restore
 
 The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
 SQLite and is selected through the shared pre-operational contract before
@@ -99,12 +99,8 @@ either **[Init](glossary.md#states-and-requests)** or
 in-place database migration. What versioned backup format, cryptographic
 envelope, recovery-key format, compatibility window, and artifact-retention
 policy apply? How do upload retries, protected encrypted staging and cleanup,
-interrupted Restore, and crash reconciliation work? What delivery and
-Which additional fields, if any, identify the backup format without exposing
-backup contents? How are the
-separate System Log and Audit Log databases and remote Log Module destinations
-backed up, protected, restored, and migrated? What configuration bounds and
-execution behavior apply to their independent retention and purge policies?
+interrupted Restore, and crash reconciliation work? Which additional fields, if
+any, identify the backup format without exposing backup contents?
 
 ### 10. Secrets and provider credential management
 

@@ -342,6 +342,20 @@ read-only Web UI logging area and configure Log Modules through an
 **[Administration Plane](glossary.md#applications-and-interfaces)**. Client
 Modules MAY provide equivalent Administration Plane functions.
 
+Retention and purge are destination-module-owned policies. An Administrator
+MAY select a retention or purge policy only where the destination declares it
+relevant; the Server MUST NOT provide a Server-wide automatic purge or an
+arbitrary global retention default, and a destination MAY declare retention
+unsupported. System Logs MAY be purged only under a configured
+destination-owned policy. Audit Logs MUST NOT be automatically purged; any
+Audit Log retention or deletion capability requires a future explicit,
+authorized decision that includes a hold policy. Future Administration Plane
+policy, purge-start, failure, completion, and status functions MUST authorize
+the Administrator, require the applicable confirmation, and create Audit Logs
+for policy changes and purge start, failure, and completion. These requirements
+do not add purge behavior to the completed append-only MVP SQLite Log Module
+implementation.
+
 ## Application Data And Persistence
 
 The Server MUST store application state, including users, sessions, policy,
@@ -365,6 +379,15 @@ The Application Database backend MUST be SQLite. The default Log Module MUST
 also use SQLite and MUST store System Logs and Audit Logs in a database separate
 from the Application Database. Selecting SQLite for both MUST create separate
 implementations and resources.
+
+Every Log Module destination MUST own its protection, snapshot or backup,
+migration, compatibility, recovery, and retirement behavior. Application
+Database backups and Restore MUST include only non-secret Log Module
+configuration and assignments; they MUST NOT include destination data or
+authentication or connection credentials. A restored remote destination remains
+unusable until an authorized Administrator re-enters its credentials through an
+Administration Plane. The [Log Module Design](log-modules/log-module-design.md)
+defines the destination-specific recovery and capacity requirements.
 
 The Application Database is not a module. It MUST NOT be enabled, disabled, or
 changed after deployment initialization. Weavelit MUST NOT support in-place
@@ -548,9 +571,6 @@ Server build, and it MUST NOT compile the application when the container starts.
 
 Weavelit MUST offer MCP adapters through separate Client Modules that use the
 same supported Operation contracts as other clients.
-
-Administrators MUST be able to configure System Log and Audit Log retention and
-purging independently for each Log Module.
 
 Weavelit MAY grow through deliberate, maintained integrations that satisfy the
 acceptance requirements in this specification and provide appropriate

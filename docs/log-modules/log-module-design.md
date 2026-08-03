@@ -2,8 +2,9 @@
 
 This document defines the shared design for Server-side
 **[Log Modules](../glossary.md#applications-and-interfaces)**. It does not
-define a destination-specific storage, delivery, retention, backup, or
-migration implementation.
+define a destination-specific storage or delivery implementation. It defines
+the recovery and retention-policy boundaries that every destination must
+preserve.
 
 ## Contract And Delivery Boundary
 
@@ -67,8 +68,10 @@ or post-commit reconciliation. Restore imports Module configuration and
 assignments, never destination data.
 
 This MVP defines one local SQLite destination rather than Server-issued
-multiple destination instances. Destination backup, recovery, retention, purge,
-and automatic cleanup of valid preflight artifacts remain outside this design.
+multiple destination instances. The recovery and capacity policy below defines
+requirements for future destination implementation work; it does not add
+backup, recovery, retention, purge, or capacity behavior to the completed
+append-only MVP SQLite implementation.
 
 The SQLite destination derives its fixed `log.sqlite3` filename only from the
 trusted local root supplied to its factory; it does not inspect an environment
@@ -86,6 +89,47 @@ next local migration. A missing, unknown, reordered, changed, or schema-mutated
 applied migration fails closed. Opening, health, lock, and delivery failures
 map only to the shared payload-free destination errors; they do not disclose
 paths, SQL, record contents, or secrets.
+
+## Destination Recovery And Retirement
+
+Each destination owns its protection, snapshot or backup, migration,
+compatibility, recovery, and retirement behavior. A replacement destination
+must create or validate destination lineage. An unknown, corrupt, mismatched,
+or incompatible artifact must fail closed with a stable, redacted error; a
+destination must never automatically reset, overwrite, or delete it.
+
+SQLite destination protection and copying must use a destination-owned,
+SQLite-consistent snapshot procedure. Copying a lone WAL-mode database file is
+not a valid snapshot or recovery procedure. A future remote destination must
+choose either source-bound replacement lineage or validated shared continuity
+with exact record-identifier replay.
+
+## Destination Retention And Capacity
+
+Retention and purge are destination-owned and Administrator-selected only when
+the destination declares them relevant. A destination, including an email
+destination, may declare retention unsupported. The Server does not provide an
+automatic Server-wide purge or arbitrary global retention default.
+
+SQLite capacity protection is opt-in and disabled by default. When an
+authorized Administrator enables it, the SQLite destination validates and uses
+a module-specific page budget, filesystem and WAL reserve, and System Log purge
+rule and target. It must inspect its actual runtime page size and page ceiling
+and reject an invalid budget. Before reaching its hard budget, it may perform
+only the configured destination-owned purge and checkpoint work. It must not
+perform automatic `VACUUM`.
+
+At the hard budget or on SQLite `FULL`, the SQLite destination must stop durable
+delivery with a stable, payload-free unavailable error. It must not delete
+additional records unless the configured policy permits that deletion. System
+Logs may be purged only through the configured SQLite policy. Audit Logs must
+never be automatically purged; any Audit Log retention or deletion capability
+requires a future explicit authorized decision that includes a hold policy.
+
+A future Server administration contract owns authorization, confirmation,
+policy, run, and status APIs and the Audit Logs for policy changes and purge
+start, failure, and completion. This policy does not introduce purge behavior
+to the completed append-only MVP SQLite implementation.
 
 ## Init And Restore Configuration
 
@@ -126,12 +170,16 @@ the deployment is sealed. Init remains incomplete, and the Server does not begin
 normal operation, until both assignments are valid and the completion result is
 durable.
 
-During **[Restore](../glossary.md#states-and-requests)**, the Server imports Log
-Module configurations, enabled state, assignments, and protected credentials
-from the validated Application Database backup. It does not import System Log
-or Audit Log destination data. Every referenced Log Module must be compiled
-into the replacement Server, and every restored configuration and assignment
-must satisfy the same Server-owned validation used during normal administration.
+During **[Restore](../glossary.md#states-and-requests)**, the Server imports
+only non-secret Log Module configurations, enabled state, and assignments from
+the validated Application Database backup. It does not import System Log or
+Audit Log destination data or authentication or connection credentials. A
+restored remote destination remains unusable until an authorized Administrator
+re-enters its credentials through an
+**[Administration Plane](../glossary.md#applications-and-interfaces)**. Every
+referenced Log Module must be compiled into the replacement Server, and every
+restored configuration and assignment must satisfy the same Server-owned
+validation used during normal administration.
 
 Restore validates both restored assignments and does not seal the replacement
 deployment until the restored System Log assignment durably records the required

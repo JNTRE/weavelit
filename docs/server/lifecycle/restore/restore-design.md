@@ -115,10 +115,14 @@ bounds remain the decisions recorded in Open Questions.
 
 A valid backup supplies the application-owned state required for operation,
 including account records, password verifiers, Groups and grants, enabled
-component state, Log Module configurations and assignments, protected MFA
-factor data, Service Connection credentials, and the recovery public key. It
-does not supply the replacement deployment record, database locator, active
-sessions, Server-local at-rest key, or Log Module destination data.
+component state, non-secret Log Module configurations and assignments,
+protected MFA factor data, Service Connection credentials, and the recovery
+public key. It does not supply the replacement deployment record, database
+locator, active sessions, Server-local at-rest key, Log Module destination data,
+or Log Module authentication or connection credentials. A restored remote Log
+Module destination remains unusable until an authorized Administrator re-enters
+its credentials through an
+**[Administration Plane](../../../glossary.md#applications-and-interfaces)**.
 
 Restore binds all normalized state to the replacement deployment identifier.
 It creates no active session, accepts no session from the artifact, and ensures

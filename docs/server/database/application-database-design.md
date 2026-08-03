@@ -222,9 +222,10 @@ A backup includes the application configuration and state needed to restore
 operational status, including local accounts, password verifiers, Groups and
 their grants, enabled-module state, protected MFA factor data, Service
 Connection credentials, and other application configuration. It excludes active
-sessions, which are invalidated on restore. System Logs and Audit Logs are
-separate Log Module data and are outside this Application Database backup
-contract.
+sessions, which are invalidated on restore. For Log Modules, it includes only
+non-secret configuration and assignments. System Logs and Audit Logs, other Log
+Module destination data, and Log Module authentication or connection credentials
+are outside this Application Database backup contract.
 
 **[Restore](../../glossary.md#states-and-requests)** is exposed through a
 Restore-capable Client Module after the shared lifecycle contract selects and
