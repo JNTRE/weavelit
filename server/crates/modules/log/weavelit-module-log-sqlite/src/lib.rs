@@ -557,6 +557,9 @@ fn result_value(result: weavelit_server_log::LogResult) -> i64 {
 mod tests {
     use std::{fs, time::Duration};
 
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+
     use rusqlite::Connection;
     use weavelit_server_log::{
         AuditLogBody, CompleteLogRecord, CorrelationId, EventTime, LogDestination,
@@ -611,13 +614,41 @@ mod tests {
         drop(destination);
         let reopened = SqliteLogDestination::open(&context).unwrap();
         assert!(database_path(&temporary_directory).exists());
-        let journal_mode: String = reopened
-            .connection
-            .lock()
-            .unwrap()
+        let connection = reopened.connection.lock().unwrap();
+        let journal_mode: String = connection
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
             .unwrap();
+        let synchronous: i64 = connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
         assert_eq!(journal_mode, "wal");
+        assert_eq!(synchronous, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_symlink_is_rejected_without_following_target() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let target_directory = tempfile::tempdir().unwrap();
+        let target_database = database_path(&target_directory);
+        drop(Connection::open(&target_database).unwrap());
+        symlink(&target_database, database_path(&temporary_directory)).unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+
+        assert!(matches!(
+            SqliteLogDestination::open(&context),
+            Err(LogDestinationError::Unavailable)
+        ));
+
+        let target_connection = Connection::open(target_database).unwrap();
+        let schema_objects: i64 = target_connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_objects, 0);
     }
 
     #[test]
