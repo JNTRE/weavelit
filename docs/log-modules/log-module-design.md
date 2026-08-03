@@ -92,16 +92,20 @@ remain part of this destination's owned resource set when SQLite creates them.
 It stores the complete fields of System and Audit records in separate typed
 tables rather than exposing a serialized record blob.
 
-Only an absent `log.sqlite3` is fresh. Before the destination configures SQLite
-or applies a migration, every existing file must validate its single matching
-deployment binding, ordered checksummed migration ledger, and expected ledger
-prefix schema. A missing, empty, malformed, duplicate, mismatched, unknown,
-reordered, changed, or schema-mutated artifact fails closed without altering
-the destination. Fresh bootstrap atomically creates migration 1, its ledger
-entry, and the matching binding before later migrations may run. Opening,
-health, lock, and delivery failures map only to the shared payload-free
-destination errors; they do not disclose paths, SQL, record contents, or
-secrets.
+Freshness requires the absence of every recognized artifact: `log.sqlite3`,
+`log.sqlite3-journal`, `log.sqlite3-wal`, and `log.sqlite3-shm`. When the main
+database is absent but any recognized sidecar exists, the destination must fail
+closed with an integrity failure before reserving or opening the main database,
+configuring SQLite, or validating the binding, ledger, or schema. It must not
+alter an orphan sidecar. When the main database exists, its binding, ordered
+checksummed migration ledger, expected ledger-prefix schema, and SQLite
+sidecars retain their existing validation and recovery behavior. A missing,
+empty, malformed, duplicate, mismatched, unknown, reordered, changed, or
+schema-mutated artifact fails closed without altering the destination. Fresh
+bootstrap atomically creates migration 1, its ledger entry, and the matching
+binding before later migrations may run. Opening, health, lock, and delivery
+failures map only to the shared payload-free destination errors; they do not
+disclose paths, SQL, record contents, or secrets.
 
 SQLite stores the bounded record fields with byte-based `CAST(... AS BLOB)`
 constraints and the same aggregate 8 KiB maximum. A migration that adds these

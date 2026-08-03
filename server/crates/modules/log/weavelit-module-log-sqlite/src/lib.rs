@@ -16,6 +16,8 @@ use weavelit_server_log::{
 
 const MODULE_IDENTIFIER: &str = "sqlite";
 const DATABASE_FILENAME: &str = "log.sqlite3";
+const DATABASE_SIDECAR_FILENAMES: [&str; 3] =
+    ["log.sqlite3-journal", "log.sqlite3-wal", "log.sqlite3-shm"];
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const BUSY_TIMEOUT_MILLISECONDS: i64 = 5_000;
 const EXPECTED_HEALTH_RESULT: i64 = 1;
@@ -139,7 +141,7 @@ impl SqliteLogDestination {
     pub fn open(context: &TrustedLogModuleContext) -> Result<Self, LogDestinationError> {
         validate_registry()?;
         let database_path = context.local_root().join(DATABASE_FILENAME);
-        let fresh = database_is_fresh(&database_path)?;
+        let fresh = database_is_fresh(context.local_root(), &database_path)?;
         if fresh {
             reserve_fresh_database(&database_path)?;
         }
@@ -299,11 +301,20 @@ fn trusted_open_flags() -> OpenFlags {
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
 }
 
-fn database_is_fresh(database_path: &Path) -> Result<bool, LogDestinationError> {
+fn database_is_fresh(local_root: &Path, database_path: &Path) -> Result<bool, LogDestinationError> {
     match fs::symlink_metadata(database_path) {
         Ok(metadata) if metadata.len() == 0 => Err(LogDestinationError::IntegrityFailure),
         Ok(_) => Ok(false),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            for sidecar_filename in DATABASE_SIDECAR_FILENAMES {
+                match fs::symlink_metadata(local_root.join(sidecar_filename)) {
+                    Ok(_) => return Err(LogDestinationError::IntegrityFailure),
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(_) => return Err(LogDestinationError::Unavailable),
+                }
+            }
+            Ok(true)
+        }
         Err(_) => Err(LogDestinationError::Unavailable),
     }
 }
@@ -701,16 +712,21 @@ mod tests {
     }
 
     fn database_snapshot(temporary_directory: &tempfile::TempDir) -> Vec<Option<Vec<u8>>> {
-        ["log.sqlite3", "log.sqlite3-wal", "log.sqlite3-shm"]
-            .into_iter()
-            .map(
-                |filename| match fs::read(temporary_directory.path().join(filename)) {
-                    Ok(contents) => Some(contents),
-                    Err(error) if error.kind() == ErrorKind::NotFound => None,
-                    Err(error) => panic!("cannot snapshot {filename}: {error}"),
-                },
-            )
-            .collect()
+        [
+            "log.sqlite3",
+            "log.sqlite3-journal",
+            "log.sqlite3-wal",
+            "log.sqlite3-shm",
+        ]
+        .into_iter()
+        .map(
+            |filename| match fs::read(temporary_directory.path().join(filename)) {
+                Ok(contents) => Some(contents),
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(error) => panic!("cannot snapshot {filename}: {error}"),
+            },
+        )
+        .collect()
     }
 
     fn journal_mode(temporary_directory: &tempfile::TempDir) -> String {
@@ -798,9 +814,17 @@ mod tests {
         let context = context(&temporary_directory, [7; 16]);
 
         let destination = SqliteLogDestination::open(&context).unwrap();
-        drop(destination);
+        destination
+            .deliver(&system_record([1; 16], "before-reopen"))
+            .unwrap();
+        assert!(temporary_directory.path().join("log.sqlite3-wal").exists());
+        assert!(temporary_directory.path().join("log.sqlite3-shm").exists());
+
         let reopened = SqliteLogDestination::open(&context).unwrap();
         assert!(database_path(&temporary_directory).exists());
+        reopened
+            .deliver(&system_record([2; 16], "after-reopen"))
+            .unwrap();
         let connection = reopened.connection.lock().unwrap();
         let journal_mode: String = connection
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
@@ -810,6 +834,30 @@ mod tests {
             .unwrap();
         assert_eq!(journal_mode, "wal");
         assert_eq!(synchronous, 2);
+        let applied_migrations: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_migration_ledger",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let binding: Vec<u8> = connection
+            .query_row(
+                "SELECT deployment_identity FROM weavelit_log_deployment_binding",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let persisted_records: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_system_records",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied_migrations, MIGRATIONS.len() as i64);
+        assert_eq!(binding, vec![7; 16]);
+        assert_eq!(persisted_records, 2);
     }
 
     #[cfg(unix)]
@@ -1060,6 +1108,31 @@ mod tests {
         }
         assert_eq!(binding, vec![7; 16]);
         assert_eq!(journal_mode(&temporary_directory), "wal");
+    }
+
+    #[test]
+    fn orphaned_sqlite_sidecars_are_rejected_without_mutation() {
+        for (filename, contents) in [
+            ("log.sqlite3-journal", b"orphaned-journal".as_slice()),
+            ("log.sqlite3-wal", b"orphaned-wal".as_slice()),
+            ("log.sqlite3-shm", b"orphaned-shm".as_slice()),
+        ] {
+            let temporary_directory = tempfile::tempdir().unwrap();
+            fs::write(temporary_directory.path().join(filename), contents).unwrap();
+            let before = database_snapshot(&temporary_directory);
+            let context = context(&temporary_directory, [7; 16]);
+
+            assert!(matches!(
+                SqliteLogDestination::open(&context),
+                Err(LogDestinationError::IntegrityFailure)
+            ));
+            assert!(!database_path(&temporary_directory).exists());
+            assert_eq!(
+                database_snapshot(&temporary_directory),
+                before,
+                "{filename}"
+            );
+        }
     }
 
     #[test]
