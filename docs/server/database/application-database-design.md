@@ -38,9 +38,9 @@ mechanics. It supports only these capabilities:
 1. Inspect whether the Application Database is uninitialized,
    `InitializationPending`, or initialized, including the deployment identifier
    and workflow discriminator bound to pending or initialized state.
-2. Atomically create, reconcile, or discard a non-operational Init or Restore
-   checkpoint containing the deployment identifier, workflow discriminator,
-   and only the non-secret metadata defined by that workflow's contract.
+2. Atomically create a non-operational Init or Restore checkpoint containing
+   the deployment identifier, workflow discriminator, and only the non-secret
+   metadata defined by that workflow's contract.
 3. Atomically replace an eligible Init checkpoint with complete new application
    state bound to that deployment identifier exactly once.
 4. Atomically replace an eligible Restore checkpoint with complete validated
@@ -63,9 +63,8 @@ generates it cryptographically, and the contract rejects the reserved all-zero
 representation. The contract exposes only its binary representation and
 redacts it from diagnostic formatting. A migrated database with no checkpoint
 or application state is unbound. Creating the first checkpoint binds the
-database to its deployment identifier; discarding that matching checkpoint
-returns the otherwise empty database to unbound state. Pending and initialized
-state always carry the persisted binding.
+database to its deployment identifier. Pending and initialized state always
+carry the persisted binding.
 
 `DatabaseInspection` represents uninitialized, pending, and initialized state.
 A pending result contains a `WorkflowCheckpoint` whose `WorkflowKind`
@@ -85,27 +84,17 @@ contradictory field combinations return `IntegrityFailure`.
 
 Inspection receives the trusted expected deployment identifier and rejects a
 different persisted binding. Checkpoint creation receives the complete desired
-checkpoint. Reconciliation verifies that the same deployment identifier,
-workflow, and metadata remain durable without changing them. Discard receives
-the expected deployment identifier and workflow and removes only that matching
-pending checkpoint. These operations expose no transaction, query, migration,
-path, connection, or backend-selection mechanism.
-
-Checkpoint creation is one-shot: it succeeds only while no lifecycle-state row
-exists. Any pending checkpoint rejects another creation with `InvalidState`,
-including an identical request; callers use reconciliation for retry. An
-initialized row returns `AlreadyInitialized`. Reconciliation succeeds only when
-deployment identifier, workflow, and metadata all match exactly and never
-changes durable state. Discard requires the matching deployment and workflow,
-removes exactly that pending row, and returns the database to unbound
-`Uninitialized` state.
-
-Reconciliation or discard without a pending row returns `NotInitialized`.
-After a valid persisted identifier is decoded, a different deployment returns
-`DeploymentMismatch` before workflow or metadata comparison. A wrong workflow
-or metadata returns `InvalidState`; malformed durable state returns
-`IntegrityFailure`. Every mutation validates current state under the same
-serialized transaction that performs its write.
+checkpoint. Checkpoint creation is one-shot: it succeeds only while no
+lifecycle-state row exists. Any pending checkpoint rejects another creation
+with `InvalidState`, including an identical request; it is retained for
+fail-closed lifecycle-interruption classification rather than a retry, reset,
+or discard operation. An initialized row returns `AlreadyInitialized`. After a
+valid persisted identifier is decoded, a different deployment returns
+`DeploymentMismatch`; malformed durable state returns `IntegrityFailure`.
+Every mutation validates current state under the same serialized transaction
+that performs its write. The contract exposes no transaction, query, migration,
+path, connection, backend-selection, reconciliation, or checkpoint-discard
+mechanism.
 
 Each final write persists the complete supplied state and marks the database
 initialized as one operation. A pending checkpoint is not application state and
@@ -113,14 +102,15 @@ permits only the workflow identified by its discriminator. An Init checkpoint
 prevents a new key pair from being generated while the requesting client proves
 possession of the delivered private key. A Restore checkpoint prevents Init or
 a second Restore attempt from replacing its in-progress workflow. If a final
-write fails, the checkpoint remains available for that same workflow to resume
-or reset safely according to its owning design. Every later Init or Restore
-attempt returns the stable `AlreadyInitialized` error.
+write is interrupted, the checkpoint is retained for fail-closed
+lifecycle-interruption classification; the database does not offer resume or
+reset. Every later Init or Restore attempt returns the stable
+`AlreadyInitialized` error.
 
 The backend compares the expected deployment identifier on every checkpoint,
-discard, finalization, load, and restore operation. It rejects a mismatch before
-changing state. The identifier is an integrity binding between this database
-and the Server-local deployment record and locator; it is not an authentication
+finalization, load, and restore operation. It rejects a mismatch before changing
+state. The identifier is an integrity binding between this database and the
+Server-local deployment record and locator; it is not an authentication
 credential or secret.
 
 The contract initially exposes these storage-neutral error categories:
@@ -173,8 +163,8 @@ Post-initialization administration cannot rerun either workflow or change the
 selected backend. An unsafe or invalid locator, unavailable or
 integrity-failing configured database, or deployment identifier mismatch fails
 closed before state is read or changed and without exposing Init or Restore as
-a fallback. Cross-store ordering, sealing, and crash reconciliation are defined
-in the [Server Lifecycle Design](../lifecycle/lifecycle-design.md).
+a fallback. Cross-store ordering, sealing, and retained-state interruption
+classification are defined in the [Server Lifecycle Design](../lifecycle/lifecycle-design.md).
 
 ## Log Module Separation
 
@@ -243,9 +233,10 @@ replacement Server's own at-rest key material, preserves only the matching
 public recovery key, and verifies durable Restore-result System Log recording.
 The lifecycle crate seals the deployment record `Initialized` after the atomic
 database commit and before normal routes become available. A failure after the
-database commit fails closed and is reconciled before route exposure on the
-next startup. The private recovery key and decrypted backup contents are never
-persisted by the Application Database backend.
+database commit fails closed and is classified as retained partial state without
+route exposure, reconciliation, or sealing on restart. The private recovery key
+and decrypted backup contents are never persisted by the Application Database
+backend.
 
 ## Related Documents
 

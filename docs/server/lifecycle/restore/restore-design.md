@@ -15,7 +15,8 @@ workflow arbitration, persistence anchors, startup classification, and sealing.
 existing application state. The normal `weavelit-server` runtime composes it
 with `weavelit-server-lifecycle` and exposes it only through Restore-capable
 **[Client Modules](../../../glossary.md#applications-and-interfaces)** while the
-lifecycle authority reports that Restore is eligible or pending.
+lifecycle authority reports that Restore is eligible. Retained partial Restore
+state is not eligible for Restore routing.
 
 The Restore crate owns backup-specific request normalization, validation,
 decryption, compatibility checks, and restored-state transformation. It does
@@ -89,9 +90,10 @@ selected maintained cryptographic facilities when no longer needed.
 If staging is required, the Server may persist only the encrypted artifact in
 bounded protected temporary storage. It never persists the private recovery
 key, an unwrapped data key, or decrypted backup plaintext. Staged artifacts are
-not application state and are removed after success, rejection, or the
-workflow-specific interruption policy. Exact staging retention and upload retry
-mechanics remain an open design decision.
+not application state and are removed after success or rejection before a
+checkpoint exists. An interruption that retains staging state is classified
+fail-closed without automatic cleanup, resumption, or upload retry. Exact
+normal-request staging mechanics remain an open design decision.
 
 ## Backup Validation And Restored State
 
@@ -138,9 +140,9 @@ crate asks the Application Database contract to create a non-operational Restore
 checkpoint under the lifecycle authority's exclusive mutation permit. The
 checkpoint contains the replacement deployment identifier, the Restore workflow
 discriminator, and only format-defined non-secret metadata needed for safe
-retry or reconciliation. The lifecycle crate then advances the deployment
-record to `InitializationPending` using the crash-safe ordering defined in the
-Server Lifecycle Design.
+classification. The lifecycle crate then advances the deployment record to
+`InitializationPending` using the crash-safe ordering defined in the Server
+Lifecycle Design.
 
 The Restore crate asks the database contract to atomically replace the eligible
 Restore checkpoint with the complete normalized restored state. The backend
@@ -161,28 +163,26 @@ application state, and enables normal authenticated operation without a restart.
 
 If the database commit succeeds but System Log recording, sealing, or in-process
 activation fails, the Server exposes no routes and fails closed. On startup,
-the lifecycle crate recognizes the matching initialized database and pending
-deployment record, invokes Restore-specific post-commit reconciliation, and
-seals only after the durable Restore-result obligation is complete.
-Reconciliation retries completion logging until the result is durable. Init and
-a second Restore never reopen.
+the lifecycle crate classifies the matching initialized database and pending
+deployment record as retained partial state with the stable
+`lifecycle_interrupted` / `operator_redeploy_restore` diagnostic. It does not
+invoke Restore, retry completion logging, seal the deployment, or reopen Init
+or Restore.
 
-## Interruption, Retry, And Reset
+## Interruption Boundary
 
-Before a Restore checkpoint exists, a failed or abandoned request leaves the
-selected database eligible for either workflow after protected temporary data
-is cleaned according to policy. Once a Restore checkpoint exists, only Restore
-reconciliation, retry, or an explicit safe reset is available; Init and database
-replacement remain unavailable.
+Before a Restore checkpoint exists, a rejected request leaves the selected
+database eligible for either workflow and releases transient inputs. Once a
+checkpoint exists, interruption leaves retained partial state that is
+non-operational. The Server does not reconcile, retry, reset, resume a staged
+upload, delete a checkpoint or artifact, recreate state, seal, or expose Init
+or Restore over that state.
 
-A retry must match the trusted replacement deployment identifier and pending
-Restore checkpoint and must pass the same complete validation. Whether an
-interrupted client re-uploads the encrypted artifact or resumes protected
-staging is the open policy recorded in Open Questions. A reset may return the
-deployment to `Uninitialized` only after the lifecycle and database contracts
-confirm that no application state committed. Reset removes the Restore
-checkpoint and any staged artifact without persisting or redisplaying the
-private recovery key.
+The operator may preserve the failed root for diagnosis or evidence, or discard
+it and rebuild or redeploy the replacement host. Restore then begins again only
+on the new deployment with an independently retained compatible backup and its
+private recovery key. Weavelit does not retain the backup or private key and
+does not manage their durability.
 
 ## Concurrency And Errors
 
@@ -208,18 +208,18 @@ wrong recovery keys, compatibility rejection, duplicate and invalid restored
 state, unavailable required components, session invalidation, recovery-public-
 key preservation, protected-secret re-encryption, private-key and plaintext
 non-persistence, redaction, Restore-checkpoint validation, atomic rollback,
-retry and reset, durable System Log result handling and post-commit
-reconciliation, every Restore-specific crash point, concurrency with Init and
-Restore requests, direct invocation after sealing, and rejection before key or
-artifact processing.
+durable System Log result handling during a valid run, retained-partial-state
+classification, absence of reconciliation, retry, reset, automatic cleanup,
+recreation, and sealing after interruption, every Restore-specific crash point,
+concurrency with Init and Restore requests, direct invocation after sealing,
+and rejection before key or artifact processing.
 
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify
 bounded transfer, normalized status and errors, lifecycle gating, and absence
-of sensitive output. Server process tests verify post-commit reconciliation and
+of sensitive output. Server process tests verify interruption classification and
 the in-process transition to normal operation. Web UI end-to-end tests cover
-the complete Restore story and interrupted client behavior supported by the
-selected policy.
+the complete Restore story and fail-closed interrupted-workflow behavior.
 
 ## Related Documents
 

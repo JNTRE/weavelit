@@ -62,10 +62,15 @@ fails closed and the Server never generates a replacement key for that retained
 state. Recovery from permanent key loss requires a new deployment and a valid
 encrypted backup with its separate recovery private key.
 
-A valid key by itself is the only resumable incomplete bootstrap state. When no
-record, locator, Application Database file, or SQLite sidecar exists, startup
-reuses that key and creates a fresh deployment identifier and record. Every
-other partial bootstrap combination fails closed.
+The original profile treated a valid key by itself as a resumable incomplete
+bootstrap state: when no record, locator, Application Database file, or SQLite
+sidecar existed, startup reused that key and created a fresh deployment
+identifier and record. That lifecycle-interruption consequence is superseded by
+the [Technical Specification](../../spec.md#operating-responsibility-and-lifecycle-interruption):
+every incomplete bootstrap combination, including a key-only state, now remains
+fail-closed and non-operational without key reuse, record creation, or another
+automatic recovery action. The rest of this accepted anchor-protection profile
+remains current.
 
 The profile detects malformed or tampered anchors, interrupted replacement,
 deployment-identifier mismatch, and independently replayed or mixed record and

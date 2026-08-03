@@ -103,10 +103,11 @@ the **[Weavelit Server](../glossary.md#applications-and-interfaces)** can enter
 normal operation: deployment-record and database-locator types and persistence,
 startup classification, deployment-identifier binding, Application Database
 selection orchestration, mutation serialization, lifecycle eligibility, and
-seal reconciliation. The runtime supplies its compiled-in Application Database
-backend catalog and uses the lifecycle result to choose which routes may exist.
-The lifecycle crate does not create new application state, interpret backup
-contents, handle a private recovery key, or implement client presentation.
+fail-closed retained-state interruption classification. The runtime supplies
+its compiled-in Application Database backend catalog and uses the lifecycle
+result to choose which routes may exist. The lifecycle crate does not create
+new application state, interpret backup contents, handle a private recovery
+key, reconcile or seal retained partial state, or implement client presentation.
 
 The initial delivered lifecycle contract depends only on
 `weavelit-server-database`. It reuses that crate's deployment identifier and

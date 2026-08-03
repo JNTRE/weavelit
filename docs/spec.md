@@ -327,9 +327,12 @@ result, and correlation identifier.
 After Init or Restore commits application state, the Server MUST durably record
 that workflow's successful completion through the committed System Log
 assignment before sealing the deployment. The record MUST include the workflow,
-deployment identifier, time, result, and correlation identifier. Reconciliation
-after interruption MUST retry completion logging and MUST NOT seal until the
-result is durable.
+deployment identifier, time, result, and correlation identifier. Normal
+operation MUST NOT begin until every required workflow obligation is durable
+and the deployment is sealed during the same valid workflow run. If
+interruption prevents completion logging or sealing, the Server MUST apply the
+fail-closed lifecycle-interruption boundary and MUST NOT retry the obligation
+after restart.
 
 System Logs and Audit Logs MUST be structured and pre-redacted before they
 reach a Log Module. They MUST exclude secrets and unnecessary sensitive
@@ -416,6 +419,31 @@ MUST expose each path only through a
 **[Pre-Operational Surface](glossary.md#applications-and-interfaces)** whose
 Client Module explicitly declares the matching capability.
 
+### Operating Responsibility And Lifecycle Interruption
+
+Weavelit delivers its defined application workflows; the deployment operator
+is responsible for host availability and maintenance, power, installation and
+deployment execution, environment validity, backup custody, and recovery
+material retained outside Weavelit. These responsibilities do not weaken the
+Server's normal-operation validation of untrusted clients and data,
+authentication, authorization, secret handling, or protection against unsafe
+automatic overwrite.
+
+When an Init or Restore interruption leaves retained partial lifecycle state,
+the Server MUST classify that state, remain fail-closed and non-operational,
+and emit only a stable, redacted action-class diagnostic. It MUST NOT reconcile,
+resume, retry, complete logging for, seal, delete, recreate, or otherwise make
+the retained state usable. It MUST NOT expose normal operation or a
+Pre-Operational fallback over that ambiguous state.
+
+The operator MAY preserve the failed state root for diagnosis or evidence, or
+discard it and rebuild or redeploy the host. A failed fresh Init requires a new
+deployment and a new Init. A failed Restore requires a replacement deployment
+and a new Restore attempt using independently retained compatible backup and
+recovery material; Weavelit does not retain that material or manage its
+durability. Operator-directed destruction requires a separately documented
+procedure and boundary before the Server may support it.
+
 The normal Server runtime MUST compose `weavelit-server-lifecycle`,
 `weavelit-server-init`, and `weavelit-server-restore`. The lifecycle crate MUST
 own shared pre-operational state, Application Database selection,
@@ -462,7 +490,8 @@ record containing a unique deployment identifier and lifecycle state. The
 shared lifecycle MUST bind the Application Database locator and every pending
 or initialized database state to that identifier. Before Init or Restore
 commits initialized state, the record MUST enter `InitializationPending`. After
-the database commit, the Server MUST irreversibly seal the record as
+the database commit and completion of every required workflow obligation during
+the same valid workflow run, the Server MUST irreversibly seal the record as
 `Initialized` through supported application interfaces.
 
 A supported interface MUST NOT unseal the record or reopen Init or Restore.

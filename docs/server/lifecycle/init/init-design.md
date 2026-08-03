@@ -24,10 +24,9 @@ database locator, Application Database selection, or final lifecycle sealing.
 
 The lifecycle crate exposes shared pre-operational status and Application
 Database selection. The Init crate exposes Server-owned operations for
-preparing or resetting initial recovery-key delivery and invoking the final
-`InitializeServer` use case. These operations form the new-state workflow;
-none is an alternative path that can create complete application state
-independently.
+preparing initial recovery-key delivery and invoking the final `InitializeServer`
+use case. These operations form the new-state workflow; none is an alternative
+path that can create complete application state independently.
 
 Every mutating Init operation independently calls the lifecycle authority,
 which opens and validates the deployment record and selected database before
@@ -52,10 +51,11 @@ by declaring that capability and using the same Server-owned operations.
 
 The runtime uses the lifecycle classification before dispatching any client
 request. It exposes Init operations only while the lifecycle authority reports
-that the new-state workflow is eligible or already pending, and it rejects
-every normal application function during that period. After successful Init or
-Restore, it exposes no Init operation and serves only normal authenticated
-functions. A client-supplied state or route cannot alter that gate.
+that the new-state workflow is eligible, and it rejects every normal application
+function during that period. Retained partial Init state is never eligible for
+Init routing. After successful Init or Restore, it exposes no Init operation and
+serves only normal authenticated functions. A client-supplied state or route
+cannot alter that gate.
 
 ## Shared Lifecycle Dependency
 
@@ -143,39 +143,24 @@ key long enough to finalize Init; safeguarding the downloaded private key
 outside Weavelit remains the responsibility of the person completing Init. The
 Server never redisplays a private key associated with an existing checkpoint.
 
-If the response containing a newly generated private key is lost, the Server
-retains only the unusable public-key checkpoint. The client may explicitly
-reset recovery-key delivery while no application state exists. After verifying
-the matching checkpoint and confirming that the database contains no
-application state, the lifecycle crate first returns the deployment record to
-`Uninitialized`, and the Init crate then atomically discards the checkpoint.
-The private key is invalidated only when both writes succeed. If a crash or
-database failure occurs between them, lifecycle startup classification observes
-the still-present Init checkpoint, advances the record back to
-`InitializationPending`, and requires the reset to be retried. The next
-successful preparation generates a new pair. A client that still has the
-private key instead resumes by proving possession and resubmitting the final
-request. Reset is never available after the database contains initialized
-application state or the deployment record is sealed.
-
-A validation, Log Module, or final persistence failure before the database
-commit leaves the checkpoint intact so the same key can be used with a
-corrected request. An
-external Log Module destination may retain a non-application artifact created
-during validation; cleanup belongs to that module's design. If application
-state commits but System Log completion, deployment-record sealing, or
-in-process activation fails, the Server exposes no routes and fails closed. On
-the next startup, a matching initialized database and `InitializationPending`
-deployment record cause the Init crate to retry completion logging and the
-lifecycle crate to seal only after the result is durable. Init is never exposed
-again.
+If delivery, validation, final persistence, System Log completion,
+deployment-record sealing, or in-process activation is interrupted after the
+checkpoint exists, the Server exposes no routes and fails closed. On restart,
+the shared lifecycle classifies the retained state with the stable
+`lifecycle_interrupted` / `operator_redeploy_new` diagnostic; it does not
+redisplay a key, resume Init, retry a request or completion log, reset the
+checkpoint, delete retained state, or seal the deployment. The operator may
+preserve the failed root for diagnosis or evidence, or discard it and redeploy
+before beginning a new Init. An external Log Module destination may retain a
+non-application artifact created during validation; cleanup remains that
+module's design and is not a lifecycle recovery action.
 
 ## Concurrency, Lifecycle, And Errors
 
 The lifecycle crate serializes deployment-record and locator mutation across
 **[Init](../../../glossary.md#states-and-requests)** and Restore. Recovery-key
-preparation, reset, and finalization run only under its exclusive workflow
-mutation permit. The
+preparation and finalization run only under its exclusive workflow mutation
+permit. The
 **[Application Database](../../../glossary.md#applications-and-interfaces)**'s atomic
 state transitions remain the final one-time guard. Concurrent or stale requests
 are rechecked against current trusted state; at most one workflow can commit,
@@ -190,9 +175,9 @@ Uninitialized -> DatabaseSelected -> InitializationPending -> Initialized
 
 The deployment record remains `Uninitialized` through `DatabaseSelected`.
 Database selection may change only before `InitializationPending`. Failure
-before locator persistence leaves the deployment record `Uninitialized`; later
-validation or persistence failures leave the last durable non-operational state
-safely retryable. The `Initialized` transition is irreversible through every
+before locator persistence leaves the deployment record `Uninitialized`; an
+interruption after a checkpoint exists leaves the retained state
+non-operational. The `Initialized` transition is irreversible through every
 supported interface. Init never partially exposes normal application behavior.
 
 All Init failures use the Server's centralized typed error presentation and
@@ -208,10 +193,11 @@ reach clients or logs.
 ## Test Evidence
 
 `weavelit-server-init` has direct tests for normalized-request validation,
-recovery-key generation, one-time delivery, proof, reset, Init-checkpoint
-validation, atomic new-state creation, durable System Log completion and
-post-commit reconciliation, redaction, rollback, retry behavior, concurrency
-under a lifecycle mutation permit, direct invocation of every
+recovery-key generation, one-time delivery, proof, Init-checkpoint validation,
+atomic new-state creation, durable System Log completion during a
+valid run, retained-partial-state classification, absence of restart retry,
+reset, deletion, recreation, reconciliation, and sealing, redaction, rollback,
+concurrency under a lifecycle mutation permit, direct invocation of every
 mutating entry point after sealing, rejection before secret reading or side
 effects, and the one-time `AlreadyInitialized` guard.
 
@@ -222,10 +208,11 @@ new-state persistence. Init-capable
 verify one-time private-key delivery, finalization, normalized errors, rejection
 of normal functions before Init, and rejection of Init after completion. Shared
 lifecycle tests own status, database selection, startup classification, and seal
-reconciliation. Server process tests verify the in-process transition to normal
-operation.
+interruption classification. Server process tests verify the in-process
+transition to normal operation.
 **[Web UI](../../../glossary.md#applications-and-interfaces)** end-to-end tests cover
-the complete first-launch workflow and recovery from an interrupted delivery.
+the complete first-launch workflow and fail-closed handling of an interrupted
+delivery.
 
 ## Related Documents
 

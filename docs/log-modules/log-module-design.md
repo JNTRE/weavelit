@@ -46,12 +46,15 @@ Delivery is synchronous and succeeds only when the assigned destination has
 durably committed the complete record or confirms an exact existing record with
 the same type and record identifier. Before an Init or Restore application-state
 commit, the Server creates the opaque identifier and persists it with immutable
-completion-record fields in the post-commit obligation. Reconciliation retries
-the identical record until it receives a durable acknowledgement. A matching
-identifier with different content is an integrity failure. This provides
-at-least-once attempts and one persisted completion record per identifier for
-the MVP SQLite destination; it does not claim distributed exactly-once delivery
-or select a fan-out policy.
+completion-record fields in the post-commit obligation. During a valid
+uninterrupted workflow run, the Server delivers that identical record until it
+receives a durable acknowledgement. An interruption before acknowledgement
+leaves the workflow non-operational; the lifecycle does not retry delivery,
+construct a replacement record, or seal on restart. A matching identifier with
+different content is an integrity failure. This provides at-least-once attempts
+and one persisted completion record per identifier for the MVP SQLite
+destination; it does not claim distributed exactly-once delivery or select a
+fan-out policy.
 
 ## MVP SQLite Destination
 
@@ -73,8 +76,8 @@ database. It must not depend on or reuse an Application Database crate, file,
 schema, connection, configuration, or resource. It may use the same
 workspace-pinned `rusqlite` package after dependency review. The Server
 preflights the destination before an Init or Restore application-state commit,
-keeps it for the process lifetime, and reopens and validates it during startup
-or post-commit reconciliation. Restore imports Module configuration and
+keeps it for the process lifetime, and validates it during startup without
+post-commit reconciliation delivery. Restore imports Module configuration and
 assignments, never destination data.
 
 This MVP defines one local SQLite destination rather than Server-issued
@@ -208,9 +211,9 @@ validation used during normal administration.
 Restore validates both restored assignments and does not seal the replacement
 deployment until the restored System Log assignment durably records the required
 Restore result without recovery secrets or backup contents. A failure remains
-non-operational and follows the post-commit reconciliation rules in the
-[Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored Log Module
-never reads backup contents or Application Database state directly.
+non-operational and follows the retained-state interruption boundary in the
+[Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored
+Log Module never reads backup contents or Application Database state directly.
 
 ## Related Documents
 
