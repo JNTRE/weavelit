@@ -428,7 +428,7 @@ fn reset_rejected_for_wrong_metadata() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn crash_after_checkpoint_before_record_is_reconciled_by_classify_startup() {
+fn crash_after_checkpoint_before_record_fails_closed_at_startup() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
@@ -449,14 +449,11 @@ fn crash_after_checkpoint_before_record_is_reconciled_by_classify_startup() {
         drop(store); // Lock released; record is still Uninitialized.
     }
 
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    let classification = store
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    let error = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-    assert_eq!(
-        classification,
-        LifecycleClassification::InitializationPending(WorkflowKind::Init)
-    );
+        .unwrap_err();
+    assert_eq!(error, LifecycleError::IntegrityFailure);
     drop(store);
 }
 
@@ -476,7 +473,7 @@ fn crash_after_record_reset_before_checkpoint_discard_reclassifies_as_pending() 
         .unwrap();
     drop(arbiter);
 
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let store = LifecycleStore::open_or_create(&path).unwrap();
     let classification = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
         .unwrap();

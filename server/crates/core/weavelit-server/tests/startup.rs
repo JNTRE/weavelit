@@ -421,7 +421,7 @@ fn restart_with_selected_database_classifies_as_uninitialized_with_database() {
 }
 
 #[test]
-fn restart_with_init_pending_classifies_as_initialization_pending() {
+fn restart_with_init_pending_fails_closed() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
@@ -436,15 +436,14 @@ fn restart_with_init_pending_classifies_as_initialization_pending() {
             .unwrap();
         drop(db);
     }
-    let outcome = classify_restricted_startup(&path).expect("init-pending restart must succeed");
     assert_eq!(
-        outcome.outcome(),
-        StartupOutcome::InitializationPending(WorkflowKind::Init)
+        classify_restricted_startup(&path).unwrap_err(),
+        StartupError::DatabaseIntegrityFailure
     );
 }
 
 #[test]
-fn restart_with_restore_pending_classifies_as_initialization_pending() {
+fn restart_with_restore_pending_fails_closed() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
@@ -459,10 +458,9 @@ fn restart_with_restore_pending_classifies_as_initialization_pending() {
             .unwrap();
         drop(db);
     }
-    let outcome = classify_restricted_startup(&path).expect("restore-pending restart must succeed");
     assert_eq!(
-        outcome.outcome(),
-        StartupOutcome::InitializationPending(WorkflowKind::Restore)
+        classify_restricted_startup(&path).unwrap_err(),
+        StartupError::DatabaseIntegrityFailure
     );
 }
 
@@ -485,6 +483,34 @@ fn corrupted_anchor_fails_closed_with_anchor_set_invalid() {
     assert_eq!(error, StartupError::AnchorSetInvalid);
     let (category, _) = error.category_reason();
     assert_eq!(category, "storage_integrity_failure");
+}
+
+#[test]
+fn orphaned_application_database_artifact_exits_before_binding() {
+    let (_state_directory, state_root) = state_root();
+    let artifact = state_root.join("application.sqlite3");
+    fs::write(&artifact, b"retained application database artifact").unwrap();
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", state_root)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stderr,
+        b"{\"category\":\"storage_integrity_failure\",\"reason\":\"anchor_set_invalid\"}\n"
+    );
+    assert!(TcpStream::connect(address).is_err());
 }
 
 #[test]

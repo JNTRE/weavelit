@@ -623,7 +623,7 @@ fn reopen_without_locator_fails_closed() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn orphan_locator_from_crash_before_record_commit_is_cleaned_up() {
+fn orphan_locator_from_crash_before_record_commit_fails_closed_without_mutation() {
     let (_dir, path) = state_root();
     let mut store = LifecycleStore::open_or_create(&path).unwrap();
     store
@@ -634,10 +634,8 @@ fn orphan_locator_from_crash_before_record_commit_is_cleaned_up() {
             vec![],
         )
         .unwrap();
-    let committed_generation = store.locator().unwrap().generation();
     drop(store);
 
-    // Write an orphan locator file simulating a crash after write but before record commit.
     let orphan_bytes = [0xAB_u8; 16];
     let orphan_name = format!(
         "database-locator-{}.json",
@@ -646,14 +644,15 @@ fn orphan_locator_from_crash_before_record_commit_is_cleaned_up() {
             orphan_bytes
         )
     );
-    fs::write(path.join(&orphan_name), b"orphan-placeholder").unwrap();
+    let orphan_path = path.join(&orphan_name);
+    let orphan_contents = b"orphan-placeholder";
+    fs::write(&orphan_path, orphan_contents).unwrap();
 
-    let store = LifecycleStore::open_or_create(&path).unwrap();
-    assert_eq!(store.locator().unwrap().generation(), committed_generation);
-    assert!(
-        !path.join(&orphan_name).exists(),
-        "orphan must be cleaned up"
+    assert_eq!(
+        LifecycleStore::open_or_create(&path).unwrap_err(),
+        LifecycleError::IntegrityFailure
     );
+    assert_eq!(fs::read(orphan_path).unwrap(), orphan_contents);
 }
 
 // ---------------------------------------------------------------------------

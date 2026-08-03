@@ -1151,7 +1151,7 @@ fn map_classification_error(error: LifecycleError) -> StartupError {
 /// Fails closed for `Initialized` and `PostCommitReconciliationRequired` states
 /// since normal operation and sealing are not yet implemented.
 pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartup, StartupError> {
-    let mut store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
+    let store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
 
     let catalog = sqlite_catalog();
     let context = TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE));

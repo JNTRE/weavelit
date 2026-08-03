@@ -152,7 +152,7 @@ fn fake_checkpoint(
 #[test]
 fn first_start_creates_uninitialized_record_and_classifies_without_database() {
     let (_dir, path) = state_root();
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let store = LifecycleStore::open_or_create(&path).unwrap();
     let catalog = fake_catalog(Ok(DatabaseInspection::Uninitialized));
 
     let classification = store.classify_startup(&catalog, &fake_context()).unwrap();
@@ -166,7 +166,7 @@ fn first_start_creates_uninitialized_record_and_classifies_without_database() {
 #[test]
 fn uninitialized_record_with_no_locator_classifies_without_database() {
     let (_dir, path) = state_root();
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let store = LifecycleStore::open_or_create(&path).unwrap();
     assert!(store.locator().is_none());
     let catalog = fake_catalog(Ok(DatabaseInspection::Uninitialized));
 
@@ -204,7 +204,7 @@ fn uninitialized_record_with_eligible_database_classifies_with_database() {
 }
 
 #[test]
-fn uninitialized_record_with_init_checkpoint_advances_to_pending_and_classifies() {
+fn uninitialized_record_with_init_checkpoint_fails_closed_without_record_mutation() {
     let (_dir, path) = state_root();
     let mut store = LifecycleStore::open_or_create(&path).unwrap();
     let mut db = store
@@ -219,24 +219,21 @@ fn uninitialized_record_with_init_checkpoint_advances_to_pending_and_classifies(
     let checkpoint = fake_checkpoint(store.record().deployment_identifier(), WorkflowKind::Init);
     db.create_checkpoint(&checkpoint).unwrap();
     drop(db);
+    let record_bytes = fs::read(path.join("deployment-record.json")).unwrap();
 
-    let classification = store
+    let error = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
+        .unwrap_err();
 
+    assert_eq!(error, LifecycleError::IntegrityFailure);
     assert_eq!(
-        classification,
-        LifecycleClassification::InitializationPending(WorkflowKind::Init)
-    );
-    // Record must be advanced to InitializationPending.
-    assert_eq!(
-        store.record().state(),
-        weavelit_server_lifecycle::LifecycleState::InitializationPending
+        fs::read(path.join("deployment-record.json")).unwrap(),
+        record_bytes
     );
 }
 
 #[test]
-fn uninitialized_record_with_restore_checkpoint_advances_to_pending_and_classifies() {
+fn uninitialized_record_with_restore_checkpoint_fails_closed() {
     let (_dir, path) = state_root();
     let mut store = LifecycleStore::open_or_create(&path).unwrap();
     let mut db = store
@@ -255,18 +252,11 @@ fn uninitialized_record_with_restore_checkpoint_advances_to_pending_and_classifi
     db.create_checkpoint(&checkpoint).unwrap();
     drop(db);
 
-    let classification = store
+    let error = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(
-        classification,
-        LifecycleClassification::InitializationPending(WorkflowKind::Restore)
-    );
-    assert_eq!(
-        store.record().state(),
-        weavelit_server_lifecycle::LifecycleState::InitializationPending
-    );
+    assert_eq!(error, LifecycleError::IntegrityFailure);
 }
 
 #[test]
@@ -295,171 +285,7 @@ fn uninitialized_record_with_initialized_database_fails_closed() {
         )
         .unwrap_err();
 
-    assert_eq!(error, LifecycleError::InvalidState);
-}
-
-// ---------------------------------------------------------------------------
-// Matrix tests: InitializationPending record
-// ---------------------------------------------------------------------------
-
-#[test]
-fn initialization_pending_record_with_init_checkpoint_classifies_pending() {
-    let (_dir, path) = state_root();
-    // Build the state: select database, place Init checkpoint, classify to advance record.
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    let mut db = store
-        .select_database(
-            &sqlite_catalog(),
-            &sqlite_context(&path),
-            &sqlite_backend(),
-            vec![],
-        )
-        .unwrap();
-    let checkpoint = fake_checkpoint(store.record().deployment_identifier(), WorkflowKind::Init);
-    db.create_checkpoint(&checkpoint).unwrap();
-    drop(db);
-    // Advance record by classifying.
-    store
-        .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-    drop(store);
-
-    // Reopen: record is InitializationPending, database has Init checkpoint.
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    assert_eq!(
-        store.record().state(),
-        weavelit_server_lifecycle::LifecycleState::InitializationPending
-    );
-
-    let classification = store
-        .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-
-    assert_eq!(
-        classification,
-        LifecycleClassification::InitializationPending(WorkflowKind::Init)
-    );
-}
-
-#[test]
-fn initialization_pending_record_with_restore_checkpoint_classifies_pending() {
-    let (_dir, path) = state_root();
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    let mut db = store
-        .select_database(
-            &sqlite_catalog(),
-            &sqlite_context(&path),
-            &sqlite_backend(),
-            vec![],
-        )
-        .unwrap();
-    let checkpoint = fake_checkpoint(
-        store.record().deployment_identifier(),
-        WorkflowKind::Restore,
-    );
-    db.create_checkpoint(&checkpoint).unwrap();
-    drop(db);
-    store
-        .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-    drop(store);
-
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    let classification = store
-        .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-
-    assert_eq!(
-        classification,
-        LifecycleClassification::InitializationPending(WorkflowKind::Restore)
-    );
-}
-
-#[test]
-fn initialization_pending_record_with_initialized_database_classifies_post_commit() {
-    let (_dir, path) = state_root();
-    let deployment_identifier;
-
-    // Build InitializationPending record with a fake database.
-    {
-        let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        deployment_identifier = store.record().deployment_identifier();
-        store
-            .select_database(
-                &fake_catalog(Ok(DatabaseInspection::Uninitialized)),
-                &fake_context(),
-                &fake_backend(),
-                vec![],
-            )
-            .unwrap();
-        // Classify with Init checkpoint to advance record.
-        let checkpoint = fake_checkpoint(deployment_identifier, WorkflowKind::Init);
-        store
-            .classify_startup(
-                &fake_catalog(Ok(DatabaseInspection::Pending(checkpoint))),
-                &fake_context(),
-            )
-            .unwrap();
-        drop(store);
-    }
-
-    // Reopen: record is InitializationPending, simulate database became Initialized.
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    assert_eq!(
-        store.record().state(),
-        weavelit_server_lifecycle::LifecycleState::InitializationPending
-    );
-
-    let classification = store
-        .classify_startup(
-            &fake_catalog(Ok(DatabaseInspection::Initialized {
-                deployment_identifier,
-            })),
-            &fake_context(),
-        )
-        .unwrap();
-
-    assert_eq!(
-        classification,
-        LifecycleClassification::PostCommitReconciliationRequired
-    );
-}
-
-#[test]
-fn initialization_pending_record_with_uninitialized_database_fails_closed() {
-    let (_dir, path) = state_root();
-    let deployment_identifier;
-
-    {
-        let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        deployment_identifier = store.record().deployment_identifier();
-        store
-            .select_database(
-                &fake_catalog(Ok(DatabaseInspection::Uninitialized)),
-                &fake_context(),
-                &fake_backend(),
-                vec![],
-            )
-            .unwrap();
-        let checkpoint = fake_checkpoint(deployment_identifier, WorkflowKind::Init);
-        store
-            .classify_startup(
-                &fake_catalog(Ok(DatabaseInspection::Pending(checkpoint))),
-                &fake_context(),
-            )
-            .unwrap();
-        drop(store);
-    }
-
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    let error = store
-        .classify_startup(
-            &fake_catalog(Ok(DatabaseInspection::Uninitialized)),
-            &fake_context(),
-        )
-        .unwrap_err();
-
-    assert_eq!(error, LifecycleError::InvalidState);
+    assert_eq!(error, LifecycleError::IntegrityFailure);
 }
 
 // ---------------------------------------------------------------------------
@@ -632,7 +458,7 @@ fn integrity_failure_on_database_fails_closed() {
 fn first_start_classifies_without_database_and_record_survives_restart() {
     let (_dir, path) = state_root();
     {
-        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        let store = LifecycleStore::open_or_create(&path).unwrap();
         let classification = store
             .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
             .unwrap();
@@ -642,7 +468,7 @@ fn first_start_classifies_without_database_and_record_survives_restart() {
         );
     }
 
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let store = LifecycleStore::open_or_create(&path).unwrap();
     let classification = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
         .unwrap();
@@ -674,89 +500,13 @@ fn selected_database_classifies_with_database_after_restart() {
         );
     }
 
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let store = LifecycleStore::open_or_create(&path).unwrap();
     let classification = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
         .unwrap();
     assert_eq!(
         classification,
         LifecycleClassification::UninitializedWithDatabase
-    );
-}
-
-#[test]
-fn pending_classification_persists_across_restart() {
-    let (_dir, path) = state_root();
-    {
-        let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        let mut db = store
-            .select_database(
-                &sqlite_catalog(),
-                &sqlite_context(&path),
-                &sqlite_backend(),
-                vec![],
-            )
-            .unwrap();
-        let checkpoint =
-            fake_checkpoint(store.record().deployment_identifier(), WorkflowKind::Init);
-        db.create_checkpoint(&checkpoint).unwrap();
-        drop(db);
-        store
-            .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-            .unwrap();
-    }
-
-    // Restart: record is InitializationPending, database has checkpoint.
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    let classification = store
-        .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-    assert_eq!(
-        classification,
-        LifecycleClassification::InitializationPending(WorkflowKind::Init)
-    );
-}
-
-#[test]
-fn record_advancement_is_crash_safe_across_restart_points() {
-    let (_dir, path) = state_root();
-
-    // Advance to InitializationPending in first run.
-    {
-        let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        let mut db = store
-            .select_database(
-                &sqlite_catalog(),
-                &sqlite_context(&path),
-                &sqlite_backend(),
-                vec![],
-            )
-            .unwrap();
-        let checkpoint =
-            fake_checkpoint(store.record().deployment_identifier(), WorkflowKind::Init);
-        db.create_checkpoint(&checkpoint).unwrap();
-        drop(db);
-        let classification = store
-            .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-            .unwrap();
-        assert_eq!(
-            classification,
-            LifecycleClassification::InitializationPending(WorkflowKind::Init)
-        );
-    }
-
-    // Second restart: record should remain InitializationPending, not re-advance.
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    assert_eq!(
-        store.record().state(),
-        weavelit_server_lifecycle::LifecycleState::InitializationPending
-    );
-    let classification = store
-        .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-    assert_eq!(
-        classification,
-        LifecycleClassification::InitializationPending(WorkflowKind::Init)
     );
 }
 

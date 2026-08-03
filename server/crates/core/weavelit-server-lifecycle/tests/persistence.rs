@@ -56,19 +56,17 @@ fn first_start_and_restart_preserve_one_identity_with_restrictive_files() {
 }
 
 #[test]
-fn key_only_interruption_resumes_with_a_fresh_deployment_identity() {
+fn key_only_interruption_fails_closed_without_mutation() {
     let (_directory, path) = state_root();
     let store = LifecycleStore::open_or_create(&path).unwrap();
-    let original_identifier = store.record().deployment_identifier();
     drop(store);
     fs::remove_file(path.join("deployment-record.json")).unwrap();
+    let key_path = path.join("lifecycle-key.json");
+    let key_bytes = fs::read(&key_path).unwrap();
 
-    let resumed = LifecycleStore::open_or_create(&path).unwrap();
-    assert_eq!(resumed.load_state(), AnchorLoadState::FirstStartResumed);
-    assert_ne!(
-        resumed.record().deployment_identifier(),
-        original_identifier
-    );
+    expect_open_error(&path, LifecycleError::IntegrityFailure);
+    assert_eq!(fs::read(key_path).unwrap(), key_bytes);
+    assert!(!path.join("deployment-record.json").exists());
 }
 
 #[test]
@@ -265,24 +263,38 @@ fn state_root_entry_count_is_bounded_before_loading() {
 }
 
 #[test]
-fn orphaned_database_artifact_from_interrupted_initial_selection_is_recovered() {
+fn orphaned_database_artifact_from_interrupted_initial_selection_fails_closed_without_mutation() {
     let (_directory, path) = state_root();
-
-    // Simulate an interrupted initial selection: database artifact placed before
-    // any key/record/locator files were committed.
     let artifact_path = path.join("application.sqlite3");
-    {
-        let _ = fs::File::create(&artifact_path).unwrap();
-        fs::set_permissions(&artifact_path, fs::Permissions::from_mode(0o600)).unwrap();
-    }
+    let artifact_bytes = b"interrupted initial selection";
+    fs::write(&artifact_path, artifact_bytes).unwrap();
+    fs::set_permissions(&artifact_path, fs::Permissions::from_mode(0o600)).unwrap();
 
+    expect_open_error(&path, LifecycleError::IntegrityFailure);
+    assert_eq!(fs::read(artifact_path).unwrap(), artifact_bytes);
+    assert!(!path.join("lifecycle-key.json").exists());
+    assert!(!path.join("deployment-record.json").exists());
+}
+
+#[test]
+fn retained_temporary_and_unreferenced_locator_files_fail_closed_without_mutation() {
+    let (_directory, path) = state_root();
+    let temporary_path = path.join("deployment-record.json.tmp-ICEiIyQlJicoKSorLC0uLw");
+    let temporary_bytes = b"retained temporary";
+    fs::write(&temporary_path, temporary_bytes).unwrap();
+    fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    expect_open_error(&path, LifecycleError::IntegrityFailure);
+    assert_eq!(fs::read(temporary_path).unwrap(), temporary_bytes);
+
+    let (_directory, path) = state_root();
     let store = LifecycleStore::open_or_create(&path).unwrap();
+    drop(store);
+    let locator_path = path.join("database-locator-ICEiIyQlJicoKSorLC0uLw.json");
+    let locator_bytes = b"unreferenced locator";
+    fs::write(&locator_path, locator_bytes).unwrap();
+    fs::set_permissions(&locator_path, fs::Permissions::from_mode(0o600)).unwrap();
 
-    assert_eq!(store.load_state(), AnchorLoadState::FirstStartCreated);
-    assert_eq!(store.record().state(), LifecycleState::Uninitialized);
-    assert!(store.locator().is_none());
-    assert!(
-        !artifact_path.exists(),
-        "orphaned artifact must be removed before creating a new identity"
-    );
+    expect_open_error(&path, LifecycleError::IntegrityFailure);
+    assert_eq!(fs::read(locator_path).unwrap(), locator_bytes);
 }
