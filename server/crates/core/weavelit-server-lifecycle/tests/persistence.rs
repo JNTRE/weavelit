@@ -18,6 +18,21 @@ fn state_root() -> (tempfile::TempDir, PathBuf) {
     (directory, canonical)
 }
 
+fn root_snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut entries = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                PathBuf::from(entry.file_name()),
+                fs::read(entry.path()).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
 fn expect_open_error(path: &Path, expected: LifecycleError) {
     let error = LifecycleStore::open_or_create(path).unwrap_err();
     assert_eq!(error, expected);
@@ -283,9 +298,19 @@ fn retained_temporary_and_unreferenced_locator_files_fail_closed_without_mutatio
     let temporary_bytes = b"retained temporary";
     fs::write(&temporary_path, temporary_bytes).unwrap();
     fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let before = root_snapshot(&path);
 
     expect_open_error(&path, LifecycleError::IntegrityFailure);
-    assert_eq!(fs::read(temporary_path).unwrap(), temporary_bytes);
+    assert_eq!(root_snapshot(&path), before);
+
+    let (_directory, path) = state_root();
+    let lock_path = path.join("lifecycle.lock");
+    fs::write(&lock_path, b"").unwrap();
+    fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let before = root_snapshot(&path);
+
+    expect_open_error(&path, LifecycleError::IntegrityFailure);
+    assert_eq!(root_snapshot(&path), before);
 
     let (_directory, path) = state_root();
     let store = LifecycleStore::open_or_create(&path).unwrap();

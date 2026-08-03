@@ -28,6 +28,21 @@ fn state_root() -> (tempfile::TempDir, PathBuf) {
     (directory, canonical)
 }
 
+fn root_snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut entries = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                PathBuf::from(entry.file_name()),
+                fs::read(entry.path()).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
 fn context(root: &std::path::Path) -> TrustedBackendContext {
     TrustedBackendContext::new(root.join("application.sqlite3"))
 }
@@ -511,6 +526,36 @@ fn orphaned_application_database_artifact_exits_before_binding() {
         b"{\"category\":\"storage_integrity_failure\",\"reason\":\"anchor_set_invalid\"}\n"
     );
     assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn retained_temporary_file_exits_before_binding_without_mutating_the_root() {
+    let (_state_directory, state_root) = state_root();
+    let temporary = state_root.join("deployment-record.json.tmp-ICEiIyQlJicoKSorLC0uLw");
+    fs::write(&temporary, b"retained lifecycle temporary").unwrap();
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
+    let before = root_snapshot(&state_root);
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", &state_root)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stderr,
+        b"{\"category\":\"storage_integrity_failure\",\"reason\":\"anchor_set_invalid\"}\n"
+    );
+    assert!(TcpStream::connect(address).is_err());
+    assert_eq!(root_snapshot(&state_root), before);
 }
 
 #[test]
