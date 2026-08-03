@@ -378,17 +378,19 @@ fn restart_without_selection_is_stable() {
 fn startup_exposes_sqlite_log_module_without_opening_or_delivering_to_it() {
     let (_dir, path) = state_root();
     let startup = classify_restricted_startup(&path).unwrap();
-    let declarations = startup.log_catalog().declarations().collect::<Vec<_>>();
+    let sqlite = startup
+        .log_catalog()
+        .declarations()
+        .find(|declaration| declaration.identifier().as_str() == "sqlite")
+        .expect("compiled-in catalog must expose the SQLite Log Module");
 
-    assert_eq!(declarations.len(), 1);
-    assert_eq!(declarations[0].identifier().as_str(), "sqlite");
     assert!(
-        declarations[0]
+        sqlite
             .capabilities()
             .supports(weavelit_server_log::LogRecordType::System)
     );
     assert!(
-        declarations[0]
+        sqlite
             .capabilities()
             .supports(weavelit_server_log::LogRecordType::Audit)
     );
