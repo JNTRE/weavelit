@@ -17,6 +17,16 @@ time, result, and correlation identifier. It contains no SQLite, filesystem,
 Application Database, client-wire serialization, query, retention, backup,
 recovery, purge, or remote-credential behavior.
 
+The contract enforces UTF-8 byte limits before it constructs a complete record:
+the correlation identifier is at most 64 bytes; System classification and
+detail are at most 128 bytes and 4 KiB; and Audit principal, action, target,
+and detail are at most 256 bytes, 128 bytes, 1 KiB, and 4 KiB. The correlation
+identifier plus every body field is at most 8 KiB. Empty and oversized values
+are rejected without truncation, hashing, raw source payload retention, or a
+replacement record. Audit and Observability are the only producers of these
+pre-redacted bounded summaries; a logging-required workflow fails if it cannot
+construct one, and a destination receives no unbounded or partial record.
+
 Its compiled-in catalog validates each registration before invoking its factory
 with trusted Server context. A configured destination accepts only a complete
 immutable `CompleteLogRecord`; no public delivery operation accepts a raw
@@ -89,6 +99,13 @@ next local migration. A missing, unknown, reordered, changed, or schema-mutated
 applied migration fails closed. Opening, health, lock, and delivery failures
 map only to the shared payload-free destination errors; they do not disclose
 paths, SQL, record contents, or secrets.
+
+SQLite stores the bounded record fields with byte-based `CAST(... AS BLOB)`
+constraints and the same aggregate 8 KiB maximum. A migration that adds these
+constraints rebuilds its tables transactionally and copies existing records
+only when they satisfy the new schema. An existing oversized row makes the
+migration fail closed without dropping, altering, or replacing any destination
+record; this MVP defines no data-recovery exception for that incompatibility.
 
 ## Destination Recovery And Retirement
 

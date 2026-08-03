@@ -278,6 +278,11 @@ dependency-specific details, and sensitive filesystem information. Redaction
 must preserve the accountability fields required for an Audit Log and the
 diagnostic classification required for a System Log.
 
+Log-record validation failures must use stable payload-free errors. Their
+display and diagnostic representations must not include rejected values, and a
+logging-required workflow must fail closed when a pre-redacted bounded record
+cannot be constructed.
+
 ## Component Security Ownership
 
 - The [Authentication Design](server/authentication/authentication-design.md)

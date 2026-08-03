@@ -337,6 +337,19 @@ payloads. Log Modules MUST be server-side Rust libraries that persist or
 deliver System Logs, Audit Logs, or both. More than one enabled Log Module MAY
 be active for either log type.
 
+Before creating the complete typed record delivered to a Log Module, the Server
+MUST enforce UTF-8 byte limits: 64 bytes for the correlation identifier; 128
+bytes for a System Log classification and 4 KiB for System Log detail; and 256
+bytes for an Audit Log principal, 128 bytes for an Audit Log action, 1 KiB for
+an Audit Log target, and 4 KiB for Audit Log detail. The correlation identifier
+and all body fields together MUST NOT exceed 8 KiB. Empty or oversized input
+MUST be rejected before complete-record construction. The Server and Log
+Modules MUST NOT truncate, hash, retain raw source payloads, or create a
+replacement record for rejected input. A workflow that requires logging MUST
+fail when it cannot construct a valid bounded record. Rejection errors MUST be
+stable and payload-free, and every destination, including future Log Modules,
+MUST receive only complete bounded records.
+
 Administrators MUST be able to view System Logs and Audit Logs through a
 read-only Web UI logging area and configure Log Modules through an
 **[Administration Plane](glossary.md#applications-and-interfaces)**. Client

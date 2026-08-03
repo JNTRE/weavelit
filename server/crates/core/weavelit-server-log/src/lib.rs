@@ -11,6 +11,14 @@ use std::{
 const MAX_LOG_MODULES: usize = 64;
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 const RECORD_ID_LENGTH: usize = 16;
+const MAX_CORRELATION_ID_BYTES: usize = 64;
+const MAX_SYSTEM_CLASSIFICATION_BYTES: usize = 128;
+const MAX_SYSTEM_DETAIL_BYTES: usize = 4 * 1024;
+const MAX_AUDIT_PRINCIPAL_BYTES: usize = 256;
+const MAX_AUDIT_ACTION_BYTES: usize = 128;
+const MAX_AUDIT_TARGET_BYTES: usize = 1024;
+const MAX_AUDIT_DETAIL_BYTES: usize = 4 * 1024;
+const MAX_RECORD_PAYLOAD_BYTES: usize = 8 * 1024;
 
 /// Stable type of a complete record assigned to a Log Module.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -125,10 +133,14 @@ impl CorrelationId {
     /// Creates a non-empty bounded correlation identifier.
     pub fn new(value: impl Into<Box<str>>) -> Result<Self, RecordError> {
         let value = value.into();
-        if value.is_empty() || value.len() > MAX_IDENTIFIER_LENGTH {
+        if !is_nonempty_within_bytes(&value, MAX_CORRELATION_ID_BYTES) {
             return Err(RecordError::InvalidCorrelationIdentifier);
         }
         Ok(Self(value))
+    }
+
+    fn is_valid(&self) -> bool {
+        is_nonempty_within_bytes(&self.0, MAX_CORRELATION_ID_BYTES)
     }
 }
 
@@ -169,13 +181,20 @@ impl SystemLogBody {
     ) -> Result<Self, RecordError> {
         let classification = classification.into();
         let detail = detail.into();
-        if classification.is_empty() || detail.is_empty() {
-            return Err(RecordError::IncompleteRecord);
+        if !is_nonempty_within_bytes(&classification, MAX_SYSTEM_CLASSIFICATION_BYTES)
+            || !is_nonempty_within_bytes(&detail, MAX_SYSTEM_DETAIL_BYTES)
+        {
+            return Err(RecordError::InvalidSystemLogBody);
         }
         Ok(Self {
             classification,
             detail,
         })
+    }
+
+    fn is_valid(&self) -> bool {
+        is_nonempty_within_bytes(&self.classification, MAX_SYSTEM_CLASSIFICATION_BYTES)
+            && is_nonempty_within_bytes(&self.detail, MAX_SYSTEM_DETAIL_BYTES)
     }
 }
 
@@ -218,8 +237,12 @@ impl AuditLogBody {
         let action = action.into();
         let target = target.into();
         let detail = detail.into();
-        if principal.is_empty() || action.is_empty() || target.is_empty() || detail.is_empty() {
-            return Err(RecordError::IncompleteRecord);
+        if !is_nonempty_within_bytes(&principal, MAX_AUDIT_PRINCIPAL_BYTES)
+            || !is_nonempty_within_bytes(&action, MAX_AUDIT_ACTION_BYTES)
+            || !is_nonempty_within_bytes(&target, MAX_AUDIT_TARGET_BYTES)
+            || !is_nonempty_within_bytes(&detail, MAX_AUDIT_DETAIL_BYTES)
+        {
+            return Err(RecordError::InvalidAuditLogBody);
         }
         Ok(Self {
             principal,
@@ -227,6 +250,13 @@ impl AuditLogBody {
             target,
             detail,
         })
+    }
+
+    fn is_valid(&self) -> bool {
+        is_nonempty_within_bytes(&self.principal, MAX_AUDIT_PRINCIPAL_BYTES)
+            && is_nonempty_within_bytes(&self.action, MAX_AUDIT_ACTION_BYTES)
+            && is_nonempty_within_bytes(&self.target, MAX_AUDIT_TARGET_BYTES)
+            && is_nonempty_within_bytes(&self.detail, MAX_AUDIT_DETAIL_BYTES)
     }
 }
 
@@ -281,37 +311,66 @@ pub enum CompleteLogRecord {
 
 impl CompleteLogRecord {
     /// Constructs a complete pre-redacted System Log record.
-    pub const fn system(
+    pub fn system(
         record_id: RecordId,
         event_time: EventTime,
         result: LogResult,
         correlation_id: CorrelationId,
         body: SystemLogBody,
-    ) -> Self {
-        Self::System {
+    ) -> Result<Self, RecordError> {
+        if record_payload_bytes(&correlation_id, &[body.classification(), body.detail()])
+            > MAX_RECORD_PAYLOAD_BYTES
+        {
+            return Err(RecordError::RecordSizeLimitExceeded);
+        }
+        if !correlation_id.is_valid() {
+            return Err(RecordError::InvalidCorrelationIdentifier);
+        }
+        if !body.is_valid() {
+            return Err(RecordError::InvalidSystemLogBody);
+        }
+        Ok(Self::System {
             record_id,
             event_time,
             result,
             correlation_id,
             body,
-        }
+        })
     }
 
     /// Constructs a complete pre-redacted Audit Log record.
-    pub const fn audit(
+    pub fn audit(
         record_id: RecordId,
         event_time: EventTime,
         result: LogResult,
         correlation_id: CorrelationId,
         body: AuditLogBody,
-    ) -> Self {
-        Self::Audit {
+    ) -> Result<Self, RecordError> {
+        if record_payload_bytes(
+            &correlation_id,
+            &[
+                body.principal(),
+                body.action(),
+                body.target(),
+                body.detail(),
+            ],
+        ) > MAX_RECORD_PAYLOAD_BYTES
+        {
+            return Err(RecordError::RecordSizeLimitExceeded);
+        }
+        if !correlation_id.is_valid() {
+            return Err(RecordError::InvalidCorrelationIdentifier);
+        }
+        if !body.is_valid() {
+            return Err(RecordError::InvalidAuditLogBody);
+        }
+        Ok(Self::Audit {
             record_id,
             event_time,
             result,
             correlation_id,
             body,
-        }
+        })
     }
 
     /// Returns the immutable opaque record identifier.
@@ -739,8 +798,12 @@ pub enum RecordError {
     InvalidRecordIdentifier,
     /// The correlation identifier was empty or exceeded its fixed bound.
     InvalidCorrelationIdentifier,
-    /// A required complete-record field was absent.
-    IncompleteRecord,
+    /// A System Log field was empty or exceeded its fixed bound.
+    InvalidSystemLogBody,
+    /// An Audit Log field was empty or exceeded its fixed bound.
+    InvalidAuditLogBody,
+    /// The correlation identifier and record body exceeded their combined fixed bound.
+    RecordSizeLimitExceeded,
 }
 
 impl fmt::Display for RecordError {
@@ -857,6 +920,18 @@ fn is_valid_identifier(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn is_nonempty_within_bytes(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum_bytes
+}
+
+fn record_payload_bytes(correlation_id: &CorrelationId, body_fields: &[&str]) -> usize {
+    body_fields
+        .iter()
+        .fold(correlation_id.as_str().len(), |size, field| {
+            size.saturating_add(field.len())
+        })
 }
 
 #[cfg(test)]
@@ -1001,6 +1076,7 @@ mod tests {
             CorrelationId::new("correlation-1").expect("valid correlation identifier"),
             SystemLogBody::new("lifecycle-complete", detail).expect("complete system body"),
         )
+        .expect("complete system record")
     }
 
     fn audit_record(record_id: RecordId) -> CompleteLogRecord {
@@ -1012,6 +1088,112 @@ mod tests {
             AuditLogBody::new("administrator", "init", "deployment", "complete")
                 .expect("complete audit body"),
         )
+        .expect("complete audit record")
+    }
+
+    fn utf8_overflow(maximum_bytes: usize) -> String {
+        format!("{}€", "x".repeat(maximum_bytes - 2))
+    }
+
+    fn assert_rejection_is_payload_free(error: RecordError, rejected: &str) {
+        assert!(!error.to_string().contains(rejected));
+        assert!(!format!("{error:?}").contains(rejected));
+    }
+
+    #[test]
+    fn record_constructors_accept_exact_utf8_byte_boundaries() {
+        let issuer = TrustedRecordIssuer::new();
+        let correlation_id = CorrelationId::new("c".repeat(MAX_CORRELATION_ID_BYTES)).unwrap();
+        let system_body = SystemLogBody::new(
+            "s".repeat(MAX_SYSTEM_CLASSIFICATION_BYTES),
+            "d".repeat(MAX_SYSTEM_DETAIL_BYTES),
+        )
+        .unwrap();
+        let audit_body = AuditLogBody::new(
+            "p".repeat(MAX_AUDIT_PRINCIPAL_BYTES),
+            "a".repeat(MAX_AUDIT_ACTION_BYTES),
+            "t".repeat(MAX_AUDIT_TARGET_BYTES),
+            "d".repeat(MAX_AUDIT_DETAIL_BYTES),
+        )
+        .unwrap();
+
+        assert!(
+            CompleteLogRecord::system(
+                issuer.issue([1; RECORD_ID_LENGTH]).unwrap(),
+                EventTime::from_unix_milliseconds(1),
+                LogResult::Success,
+                correlation_id.clone(),
+                system_body,
+            )
+            .is_ok()
+        );
+        assert!(
+            CompleteLogRecord::audit(
+                issuer.issue([2; RECORD_ID_LENGTH]).unwrap(),
+                EventTime::from_unix_milliseconds(1),
+                LogResult::Success,
+                correlation_id,
+                audit_body,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn record_constructors_reject_byte_and_utf8_overflows_without_payloads() {
+        for rejected in [
+            "x".repeat(MAX_CORRELATION_ID_BYTES + 1),
+            utf8_overflow(MAX_CORRELATION_ID_BYTES),
+        ] {
+            let error = CorrelationId::new(rejected.as_str()).unwrap_err();
+            assert_eq!(error, RecordError::InvalidCorrelationIdentifier);
+            assert_rejection_is_payload_free(error, &rejected);
+        }
+
+        for rejected in [
+            "x".repeat(MAX_SYSTEM_DETAIL_BYTES + 1),
+            utf8_overflow(MAX_SYSTEM_DETAIL_BYTES),
+        ] {
+            let error = SystemLogBody::new("classification", rejected.as_str()).unwrap_err();
+            assert_eq!(error, RecordError::InvalidSystemLogBody);
+            assert_rejection_is_payload_free(error, &rejected);
+        }
+
+        for rejected in [
+            "x".repeat(MAX_AUDIT_TARGET_BYTES + 1),
+            utf8_overflow(MAX_AUDIT_TARGET_BYTES),
+        ] {
+            let error =
+                AuditLogBody::new("principal", "action", rejected.as_str(), "detail").unwrap_err();
+            assert_eq!(error, RecordError::InvalidAuditLogBody);
+            assert_rejection_is_payload_free(error, &rejected);
+        }
+    }
+
+    #[test]
+    fn complete_record_rejects_an_aggregate_overflow_before_delivery() {
+        let rejected = "x".repeat(MAX_RECORD_PAYLOAD_BYTES);
+        let body = SystemLogBody {
+            classification: "classification".into(),
+            detail: rejected.clone().into(),
+        };
+        let mut deliveries = 0;
+        let result = (|| -> Result<(), RecordError> {
+            let record = CompleteLogRecord::system(
+                TrustedRecordIssuer::new().issue([1; RECORD_ID_LENGTH])?,
+                EventTime::from_unix_milliseconds(1),
+                LogResult::Success,
+                CorrelationId::new("correlation")?,
+                body,
+            )?;
+            let _ = record;
+            deliveries += 1;
+            Ok(())
+        })();
+
+        assert_eq!(result, Err(RecordError::RecordSizeLimitExceeded));
+        assert_eq!(deliveries, 0);
+        assert_rejection_is_payload_free(RecordError::RecordSizeLimitExceeded, &rejected);
     }
 
     fn catalog(

@@ -36,10 +36,11 @@ struct SchemaObject {
     sql: Option<String>,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    sequence: 1,
-    identifier: "0001_create_log_destination_schema",
-    sql: "CREATE TABLE weavelit_log_migration_ledger (\
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        sequence: 1,
+        identifier: "0001_create_log_destination_schema",
+        sql: "CREATE TABLE weavelit_log_migration_ledger (\
             sequence_number INTEGER PRIMARY KEY,\
             identifier TEXT NOT NULL UNIQUE,\
             checksum BLOB NOT NULL\
@@ -66,7 +67,44 @@ const MIGRATIONS: &[Migration] = &[Migration {
             target TEXT NOT NULL,\
             detail TEXT NOT NULL\
           );",
-}];
+    },
+    Migration {
+        sequence: 2,
+        identifier: "0002_bound_record_payloads",
+        sql: "ALTER TABLE weavelit_log_system_records RENAME TO weavelit_log_system_records_legacy;\
+                    ALTER TABLE weavelit_log_audit_records RENAME TO weavelit_log_audit_records_legacy;\
+                    CREATE TABLE weavelit_log_system_records (\
+                        record_id BLOB PRIMARY KEY CHECK (length(record_id) = 16),\
+                        event_time_milliseconds TEXT NOT NULL,\
+                        result INTEGER NOT NULL CHECK (result IN (0, 1)),\
+                        correlation_id TEXT NOT NULL CHECK (length(CAST(correlation_id AS BLOB)) BETWEEN 1 AND 64),\
+                        classification TEXT NOT NULL CHECK (length(CAST(classification AS BLOB)) BETWEEN 1 AND 128),\
+                        detail TEXT NOT NULL CHECK (length(CAST(detail AS BLOB)) BETWEEN 1 AND 4096),\
+                        CHECK (length(CAST(correlation_id AS BLOB)) + length(CAST(classification AS BLOB)) + length(CAST(detail AS BLOB)) <= 8192)\
+                    );\
+                    CREATE TABLE weavelit_log_audit_records (\
+                        record_id BLOB PRIMARY KEY CHECK (length(record_id) = 16),\
+                        event_time_milliseconds TEXT NOT NULL,\
+                        result INTEGER NOT NULL CHECK (result IN (0, 1)),\
+                        correlation_id TEXT NOT NULL CHECK (length(CAST(correlation_id AS BLOB)) BETWEEN 1 AND 64),\
+                        principal TEXT NOT NULL CHECK (length(CAST(principal AS BLOB)) BETWEEN 1 AND 256),\
+                        action TEXT NOT NULL CHECK (length(CAST(action AS BLOB)) BETWEEN 1 AND 128),\
+                        target TEXT NOT NULL CHECK (length(CAST(target AS BLOB)) BETWEEN 1 AND 1024),\
+                        detail TEXT NOT NULL CHECK (length(CAST(detail AS BLOB)) BETWEEN 1 AND 4096),\
+                        CHECK (length(CAST(correlation_id AS BLOB)) + length(CAST(principal AS BLOB)) + length(CAST(action AS BLOB)) + length(CAST(target AS BLOB)) + length(CAST(detail AS BLOB)) <= 8192)\
+                    );\
+                    INSERT INTO weavelit_log_system_records \
+                        (record_id, event_time_milliseconds, result, correlation_id, classification, detail) \
+                        SELECT record_id, event_time_milliseconds, result, correlation_id, classification, detail \
+                        FROM weavelit_log_system_records_legacy;\
+                    INSERT INTO weavelit_log_audit_records \
+                        (record_id, event_time_milliseconds, result, correlation_id, principal, action, target, detail) \
+                        SELECT record_id, event_time_milliseconds, result, correlation_id, principal, action, target, detail \
+                        FROM weavelit_log_audit_records_legacy;\
+                    DROP TABLE weavelit_log_system_records_legacy;\
+                    DROP TABLE weavelit_log_audit_records_legacy;",
+    },
+];
 
 /// Factory for the compiled-in SQLite Log Module destination.
 pub struct SqliteLogDestinationFactory;
@@ -567,7 +605,7 @@ mod tests {
         TrustedLogModuleContext, TrustedRecordIssuer,
     };
 
-    use super::{SqliteLogDestination, registration};
+    use super::{MIGRATIONS, SqliteLogDestination, checksum, registration};
 
     fn context(
         temporary_directory: &tempfile::TempDir,
@@ -592,6 +630,7 @@ mod tests {
             CorrelationId::new("system-correlation").unwrap(),
             SystemLogBody::new("lifecycle", detail).unwrap(),
         )
+        .unwrap()
     }
 
     fn audit_record(record_id: [u8; 16]) -> CompleteLogRecord {
@@ -603,6 +642,7 @@ mod tests {
             CorrelationId::new("audit-correlation").unwrap(),
             AuditLogBody::new("operator", "init", "deployment", "pre-redacted").unwrap(),
         )
+        .unwrap()
     }
 
     #[test]
@@ -685,6 +725,146 @@ mod tests {
             (u64::MAX.to_string(), "pre-redacted-system-detail".into())
         );
         assert_eq!(audit_row, ("init".into(), "pre-redacted".into()));
+    }
+
+    #[test]
+    fn registration_persists_records_at_the_byte_boundaries() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let destination = SqliteLogDestination::open(&context).unwrap();
+        let issuer = TrustedRecordIssuer::new();
+        let system = CompleteLogRecord::system(
+            issuer.issue([1; 16]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            LogResult::Success,
+            CorrelationId::new("c".repeat(64)).unwrap(),
+            SystemLogBody::new("s".repeat(128), "d".repeat(4 * 1024)).unwrap(),
+        )
+        .unwrap();
+        let audit = CompleteLogRecord::audit(
+            issuer.issue([2; 16]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            LogResult::Success,
+            CorrelationId::new("c".repeat(64)).unwrap(),
+            AuditLogBody::new(
+                "p".repeat(256),
+                "a".repeat(128),
+                "t".repeat(1024),
+                "d".repeat(4 * 1024),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        destination.deliver(&system).unwrap();
+        destination.deliver(&audit).unwrap();
+        drop(destination);
+
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        let system_lengths: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT length(CAST(correlation_id AS BLOB)), length(CAST(classification AS BLOB)), \
+                 length(CAST(detail AS BLOB)) FROM weavelit_log_system_records",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let audit_lengths: (i64, i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT length(CAST(correlation_id AS BLOB)), length(CAST(principal AS BLOB)), \
+                 length(CAST(action AS BLOB)), length(CAST(target AS BLOB)), \
+                 length(CAST(detail AS BLOB)) FROM weavelit_log_audit_records",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(system_lengths, (64, 128, 4 * 1024));
+        assert_eq!(audit_lengths, (64, 256, 128, 1024, 4 * 1024));
+    }
+
+    #[test]
+    fn schema_rejects_direct_oversized_record_rows() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let destination = SqliteLogDestination::open(&context).unwrap();
+        drop(destination);
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+
+        let result = connection.execute(
+            "INSERT INTO weavelit_log_system_records \
+             (record_id, event_time_milliseconds, result, correlation_id, classification, detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                vec![3_u8; 16],
+                "1",
+                1,
+                "correlation",
+                "classification",
+                "d".repeat(4097)
+            ],
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn migration_fails_closed_when_an_existing_record_exceeds_new_bounds() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let database_path = database_path(&temporary_directory);
+        let connection = Connection::open(&database_path).unwrap();
+        connection.execute_batch(MIGRATIONS[0].sql).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_migration_ledger \
+                 (sequence_number, identifier, checksum) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    MIGRATIONS[0].sequence,
+                    MIGRATIONS[0].identifier,
+                    checksum(MIGRATIONS[0].sql.as_bytes()).as_slice()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_system_records \
+                 (record_id, event_time_milliseconds, result, correlation_id, classification, detail) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![vec![4_u8; 16], "1", 1, "correlation", "classification", "d".repeat(4097)],
+            )
+            .unwrap();
+        drop(connection);
+        let context = context(&temporary_directory, [7; 16]);
+
+        assert!(matches!(
+            SqliteLogDestination::open(&context),
+            Err(LogDestinationError::IntegrityFailure)
+        ));
+
+        let connection = Connection::open(database_path).unwrap();
+        let applied_migrations: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_migration_ledger",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let persisted_oversized_rows: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_system_records",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied_migrations, 1);
+        assert_eq!(persisted_oversized_rows, 1);
     }
 
     #[test]
@@ -775,10 +955,10 @@ mod tests {
     fn tampered_migration_ledger_fails_closed() {
         for mutation in [
             "UPDATE weavelit_log_migration_ledger SET checksum = zeroblob(32)",
-            "UPDATE weavelit_log_migration_ledger SET sequence_number = 2",
+            "UPDATE weavelit_log_migration_ledger SET sequence_number = 3 WHERE sequence_number = 2",
             "DELETE FROM weavelit_log_migration_ledger",
             "INSERT INTO weavelit_log_migration_ledger (sequence_number, identifier, checksum) \
-             VALUES (2, '0002_unknown', zeroblob(32))",
+             VALUES (3, '0003_unknown', zeroblob(32))",
         ] {
             let temporary_directory = tempfile::tempdir().unwrap();
             let context = context(&temporary_directory, [7; 16]);
