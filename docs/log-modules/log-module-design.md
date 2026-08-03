@@ -92,13 +92,16 @@ remain part of this destination's owned resource set when SQLite creates them.
 It stores the complete fields of System and Audit records in separate typed
 tables rather than exposing a serialized record blob.
 
-The destination binds a newly created database to the supplied deployment
-identity and rejects a later mismatched identity. Its ordered, checksummed
-migration ledger and expected schema must match exactly before it applies the
-next local migration. A missing, unknown, reordered, changed, or schema-mutated
-applied migration fails closed. Opening, health, lock, and delivery failures
-map only to the shared payload-free destination errors; they do not disclose
-paths, SQL, record contents, or secrets.
+Only an absent `log.sqlite3` is fresh. Before the destination configures SQLite
+or applies a migration, every existing file must validate its single matching
+deployment binding, ordered checksummed migration ledger, and expected ledger
+prefix schema. A missing, empty, malformed, duplicate, mismatched, unknown,
+reordered, changed, or schema-mutated artifact fails closed without altering
+the destination. Fresh bootstrap atomically creates migration 1, its ledger
+entry, and the matching binding before later migrations may run. Opening,
+health, lock, and delivery failures map only to the shared payload-free
+destination errors; they do not disclose paths, SQL, record contents, or
+secrets.
 
 SQLite stores the bounded record fields with byte-based `CAST(... AS BLOB)`
 constraints and the same aggregate 8 KiB maximum. A migration that adds these
