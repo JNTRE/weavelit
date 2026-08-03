@@ -43,6 +43,7 @@ use tower::ServiceExt;
 use weavelit_server_database_sqlite::SqliteDatabase;
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendRegistration,
+    DatabaseError, DatabaseInspection, DeploymentIdentifier, InterruptedLifecycleAction,
     LifecycleClassification, LifecycleError, LifecycleStore, TrustedBackendContext,
     ValidatedConnectionSettings, WorkflowKind,
 };
@@ -390,6 +391,32 @@ impl ApplicationDatabaseFactory for SqliteFactory {
             .map(|db| Box::new(db) as Box<dyn ApplicationDatabase>)
             .map_err(|_| LifecycleError::DependencyUnavailable)
     }
+
+    fn inspect_retained(
+        &self,
+        context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, LifecycleError> {
+        SqliteDatabase::inspect_retained(
+            context.application_database_path(),
+            expected_deployment_identifier,
+        )
+        .map_err(map_database_error)
+    }
+}
+
+fn map_database_error(error: DatabaseError) -> LifecycleError {
+    match error {
+        DatabaseError::DeploymentMismatch => LifecycleError::DeploymentMismatch,
+        DatabaseError::Unavailable => LifecycleError::DependencyUnavailable,
+        DatabaseError::IntegrityFailure => LifecycleError::IntegrityFailure,
+        DatabaseError::ConfigurationInvalid => LifecycleError::ConfigurationInvalid,
+        DatabaseError::InvalidState
+        | DatabaseError::AlreadyInitialized
+        | DatabaseError::NotInitialized => LifecycleError::InvalidState,
+        _ => LifecycleError::InvalidState,
+    }
 }
 
 /// Builds the compiled-in SQLite backend catalog.
@@ -490,6 +517,12 @@ pub enum StartupError {
     DatabaseIntegrityFailure,
     /// Startup state combination is invalid or unsupported.
     StateCombinationInvalid,
+    /// A retained new deployment requires operator redeployment.
+    LifecycleInterruptedRedeployNew,
+    /// A retained Restore requires operator redeployment.
+    LifecycleInterruptedRedeployRestore,
+    /// A retained state requires operator redeployment before a workflow decision.
+    LifecycleInterruptedRedeployRequired,
 }
 
 impl StartupError {
@@ -523,6 +556,15 @@ impl StartupError {
             }
             Self::StateCombinationInvalid => {
                 ("deployment_state_invalid", "state_combination_invalid")
+            }
+            Self::LifecycleInterruptedRedeployNew => {
+                ("lifecycle_interrupted", "operator_redeploy_new")
+            }
+            Self::LifecycleInterruptedRedeployRestore => {
+                ("lifecycle_interrupted", "operator_redeploy_restore")
+            }
+            Self::LifecycleInterruptedRedeployRequired => {
+                ("lifecycle_interrupted", "operator_redeploy_required")
             }
         }
     }
@@ -1169,6 +1211,19 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
         }
         LifecycleClassification::InitializationPending(kind) => {
             StartupOutcome::InitializationPending(kind)
+        }
+        LifecycleClassification::Interrupted(action) => {
+            return Err(match action {
+                InterruptedLifecycleAction::RedeployNew => {
+                    StartupError::LifecycleInterruptedRedeployNew
+                }
+                InterruptedLifecycleAction::RedeployRestore => {
+                    StartupError::LifecycleInterruptedRedeployRestore
+                }
+                InterruptedLifecycleAction::RedeployRequired => {
+                    StartupError::LifecycleInterruptedRedeployRequired
+                }
+            });
         }
         // Fail closed for states not yet handled by this milestone.
         LifecycleClassification::PostCommitReconciliationRequired

@@ -226,16 +226,22 @@ impl LifecycleStore {
                 let Some(locator) = self.locator.as_ref() else {
                     return Ok(LifecycleClassification::UninitializedWithoutDatabase);
                 };
-                let mut db = catalog.reopen(locator.settings(), context)?;
-                let inspection = db
-                    .inspect(self.record.deployment_identifier())
-                    .map_err(map_database_error_to_lifecycle)?;
+                let inspection = catalog.inspect_retained(
+                    locator.settings(),
+                    context,
+                    self.record.deployment_identifier(),
+                )?;
                 match inspection {
                     DatabaseInspection::Uninitialized => {
                         Ok(LifecycleClassification::UninitializedWithDatabase)
                     }
-                    DatabaseInspection::Pending(_) | DatabaseInspection::Initialized { .. } => {
-                        Err(LifecycleError::IntegrityFailure)
+                    DatabaseInspection::Pending(checkpoint) => Ok(
+                        LifecycleClassification::Interrupted(Self::interrupted_action(&checkpoint)),
+                    ),
+                    DatabaseInspection::Initialized { .. } => {
+                        Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ))
                     }
                 }
             }
@@ -245,14 +251,21 @@ impl LifecycleStore {
                     .locator
                     .as_ref()
                     .ok_or(LifecycleError::IntegrityFailure)?;
-                let mut db = catalog.reopen(locator.settings(), context)?;
-                let inspection = db
-                    .inspect(self.record.deployment_identifier())
-                    .map_err(map_database_error_to_lifecycle)?;
+                let inspection = catalog.inspect_retained(
+                    locator.settings(),
+                    context,
+                    self.record.deployment_identifier(),
+                )?;
                 match inspection {
-                    DatabaseInspection::Pending(_)
-                    | DatabaseInspection::Initialized { .. }
-                    | DatabaseInspection::Uninitialized => Err(LifecycleError::IntegrityFailure),
+                    DatabaseInspection::Pending(checkpoint) => Ok(
+                        LifecycleClassification::Interrupted(Self::interrupted_action(&checkpoint)),
+                    ),
+                    DatabaseInspection::Initialized { .. } => {
+                        Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ))
+                    }
+                    DatabaseInspection::Uninitialized => Err(LifecycleError::IntegrityFailure),
                 }
             }
             LifecycleState::Initialized => {
@@ -260,16 +273,30 @@ impl LifecycleStore {
                     .locator
                     .as_ref()
                     .ok_or(LifecycleError::IntegrityFailure)?;
-                let mut db = catalog.reopen(locator.settings(), context)?;
-                let inspection = db
-                    .inspect(self.record.deployment_identifier())
-                    .map_err(map_database_error_to_lifecycle)?;
+                let inspection = catalog.inspect_retained(
+                    locator.settings(),
+                    context,
+                    self.record.deployment_identifier(),
+                )?;
                 match inspection {
                     DatabaseInspection::Initialized { .. } => {
                         Ok(LifecycleClassification::Initialized)
                     }
                     _ => Err(LifecycleError::InvalidState),
                 }
+            }
+        }
+    }
+
+    fn interrupted_action(
+        checkpoint: &weavelit_server_database::WorkflowCheckpoint,
+    ) -> crate::InterruptedLifecycleAction {
+        match checkpoint.workflow() {
+            weavelit_server_database::WorkflowKind::Init => {
+                crate::InterruptedLifecycleAction::RedeployNew
+            }
+            weavelit_server_database::WorkflowKind::Restore => {
+                crate::InterruptedLifecycleAction::RedeployRestore
             }
         }
     }

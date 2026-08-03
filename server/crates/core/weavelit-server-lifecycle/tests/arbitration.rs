@@ -40,6 +40,19 @@ impl ApplicationDatabaseFactory for SqliteFactory {
             .map(|db| Box::new(db) as Box<dyn ApplicationDatabase>)
             .map_err(|_| LifecycleError::DependencyUnavailable)
     }
+
+    fn inspect_retained(
+        &self,
+        context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        expected_deployment_identifier: weavelit_server_lifecycle::DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, LifecycleError> {
+        SqliteDatabase::inspect_retained(
+            context.application_database_path(),
+            expected_deployment_identifier,
+        )
+        .map_err(|_| LifecycleError::DependencyUnavailable)
+    }
 }
 
 fn sqlite_catalog() -> BackendCatalog {
@@ -428,7 +441,7 @@ fn reset_rejected_for_wrong_metadata() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn crash_after_checkpoint_before_record_fails_closed_at_startup() {
+fn crash_after_checkpoint_before_record_requires_redeploy_at_startup() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
@@ -450,10 +463,15 @@ fn crash_after_checkpoint_before_record_fails_closed_at_startup() {
     }
 
     let store = LifecycleStore::open_or_create(&path).unwrap();
-    let error = store
+    let classification = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap_err();
-    assert_eq!(error, LifecycleError::IntegrityFailure);
+        .unwrap();
+    assert_eq!(
+        classification,
+        LifecycleClassification::Interrupted(
+            weavelit_server_lifecycle::InterruptedLifecycleAction::RedeployNew
+        )
+    );
     drop(store);
 }
 

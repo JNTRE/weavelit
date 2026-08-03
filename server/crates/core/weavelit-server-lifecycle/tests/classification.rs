@@ -10,8 +10,9 @@ use weavelit_server_database::{
 use weavelit_server_database_sqlite::SqliteDatabase;
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
-    BackendRegistration, LifecycleClassification, LifecycleError, LifecycleStore,
-    TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint, WorkflowKind,
+    BackendRegistration, InterruptedLifecycleAction, LifecycleClassification, LifecycleError,
+    LifecycleStore, TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint,
+    WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,19 @@ impl ApplicationDatabaseFactory for SqliteFactory {
         SqliteDatabase::open(context.application_database_path())
             .map(|db| Box::new(db) as Box<dyn ApplicationDatabase>)
             .map_err(|_| LifecycleError::DependencyUnavailable)
+    }
+
+    fn inspect_retained(
+        &self,
+        context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, LifecycleError> {
+        SqliteDatabase::inspect_retained(
+            context.application_database_path(),
+            expected_deployment_identifier,
+        )
+        .map_err(|_| LifecycleError::DependencyUnavailable)
     }
 }
 
@@ -114,6 +128,15 @@ impl ApplicationDatabaseFactory for FakeFactory {
             })),
             Err(e) => Err(*e),
         }
+    }
+
+    fn inspect_retained(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, LifecycleError> {
+        self.result.clone()
     }
 }
 
@@ -204,7 +227,7 @@ fn uninitialized_record_with_eligible_database_classifies_with_database() {
 }
 
 #[test]
-fn uninitialized_record_with_init_checkpoint_fails_closed_without_record_mutation() {
+fn uninitialized_record_with_init_checkpoint_is_interrupted_without_record_mutation() {
     let (_dir, path) = state_root();
     let mut store = LifecycleStore::open_or_create(&path).unwrap();
     let mut db = store
@@ -221,11 +244,14 @@ fn uninitialized_record_with_init_checkpoint_fails_closed_without_record_mutatio
     drop(db);
     let record_bytes = fs::read(path.join("deployment-record.json")).unwrap();
 
-    let error = store
+    let classification = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(error, LifecycleError::IntegrityFailure);
+    assert_eq!(
+        classification,
+        LifecycleClassification::Interrupted(InterruptedLifecycleAction::RedeployNew)
+    );
     assert_eq!(
         fs::read(path.join("deployment-record.json")).unwrap(),
         record_bytes
@@ -233,7 +259,7 @@ fn uninitialized_record_with_init_checkpoint_fails_closed_without_record_mutatio
 }
 
 #[test]
-fn uninitialized_record_with_restore_checkpoint_fails_closed() {
+fn uninitialized_record_with_restore_checkpoint_is_interrupted() {
     let (_dir, path) = state_root();
     let mut store = LifecycleStore::open_or_create(&path).unwrap();
     let mut db = store
@@ -252,15 +278,18 @@ fn uninitialized_record_with_restore_checkpoint_fails_closed() {
     db.create_checkpoint(&checkpoint).unwrap();
     drop(db);
 
-    let error = store
+    let classification = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(error, LifecycleError::IntegrityFailure);
+    assert_eq!(
+        classification,
+        LifecycleClassification::Interrupted(InterruptedLifecycleAction::RedeployRestore)
+    );
 }
 
 #[test]
-fn uninitialized_record_with_initialized_database_fails_closed() {
+fn uninitialized_record_with_initialized_database_is_interrupted() {
     // Use a fresh state root for this test. Select with Uninitialized, then classify
     // with a catalog that reports the database as already Initialized.
     let (_dir, path) = state_root();
@@ -276,16 +305,19 @@ fn uninitialized_record_with_initialized_database_fails_closed() {
         .unwrap();
 
     // Classify with a catalog that reports the database as Initialized.
-    let error = store
+    let classification = store
         .classify_startup(
             &fake_catalog(Ok(DatabaseInspection::Initialized {
                 deployment_identifier,
             })),
             &fake_context(),
         )
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(error, LifecycleError::IntegrityFailure);
+    assert_eq!(
+        classification,
+        LifecycleClassification::Interrupted(InterruptedLifecycleAction::RedeployRequired)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +418,15 @@ fn deployment_mismatch_on_database_fails_closed() {
             _settings: &ValidatedConnectionSettings,
         ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
             Ok(Box::new(MismatchDatabase))
+        }
+
+        fn inspect_retained(
+            &self,
+            _context: &TrustedBackendContext,
+            _settings: &ValidatedConnectionSettings,
+            _expected_deployment_identifier: DeploymentIdentifier,
+        ) -> Result<DatabaseInspection, LifecycleError> {
+            Err(LifecycleError::DeploymentMismatch)
         }
     }
     struct MismatchDatabase;
@@ -552,6 +593,9 @@ fn classification_results_are_redacted() {
         LifecycleClassification::UninitializedWithDatabase,
         LifecycleClassification::InitializationPending(WorkflowKind::Init),
         LifecycleClassification::InitializationPending(WorkflowKind::Restore),
+        LifecycleClassification::Interrupted(InterruptedLifecycleAction::RedeployNew),
+        LifecycleClassification::Interrupted(InterruptedLifecycleAction::RedeployRestore),
+        LifecycleClassification::Interrupted(InterruptedLifecycleAction::RedeployRequired),
         LifecycleClassification::PostCommitReconciliationRequired,
         LifecycleClassification::Initialized,
     ];

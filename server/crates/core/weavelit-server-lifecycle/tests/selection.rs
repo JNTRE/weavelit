@@ -56,6 +56,19 @@ impl ApplicationDatabaseFactory for SqliteFactory {
             .map(|db| Box::new(db) as Box<dyn ApplicationDatabase>)
             .map_err(|_| LifecycleError::DependencyUnavailable)
     }
+
+    fn inspect_retained(
+        &self,
+        context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, LifecycleError> {
+        SqliteDatabase::inspect_retained(
+            context.application_database_path(),
+            expected_deployment_identifier,
+        )
+        .map_err(|_| LifecycleError::DependencyUnavailable)
+    }
 }
 
 fn sqlite_catalog() -> BackendCatalog {
@@ -128,6 +141,15 @@ impl ApplicationDatabaseFactory for FakeFactory {
             Err(e) => Err(*e),
         }
     }
+
+    fn inspect_retained(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, LifecycleError> {
+        self.result.clone()
+    }
 }
 
 fn fake_catalog(inspection: Result<DatabaseInspection, LifecycleError>) -> BackendCatalog {
@@ -171,6 +193,15 @@ impl ApplicationDatabaseFactory for ControllableFactory {
             Ok(inspection) => Ok(Box::new(FakeDatabase { inspection })),
             Err(e) => Err(e),
         }
+    }
+
+    fn inspect_retained(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, LifecycleError> {
+        self.result.lock().unwrap().clone()
     }
 }
 

@@ -17,9 +17,9 @@ pub use catalog::{
 };
 pub use domain::{
     BackendIdentifier, ConnectionFieldIdentifier, ConnectionFieldRequirement, ConnectionValue,
-    ConnectionValueKind, DatabaseLocator, DeploymentRecord, LIFECYCLE_FORMAT_VERSION,
-    LOCATOR_GENERATION_LENGTH, LifecycleClassification, LifecycleState, LocatorConnectionField,
-    LocatorConnectionSettings, LocatorGeneration, MAX_CONNECTION_FIELDS,
+    ConnectionValueKind, DatabaseLocator, DeploymentRecord, InterruptedLifecycleAction,
+    LIFECYCLE_FORMAT_VERSION, LOCATOR_GENERATION_LENGTH, LifecycleClassification, LifecycleState,
+    LocatorConnectionField, LocatorConnectionSettings, LocatorGeneration, MAX_CONNECTION_FIELDS,
     MAX_CONNECTION_VALUE_LENGTH, MAX_IDENTIFIER_LENGTH, SecretClassification,
     ValidatedConnectionField, ValidatedConnectionSettings,
 };

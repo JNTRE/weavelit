@@ -1,13 +1,15 @@
 use std::{
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::Read,
     net::{TcpListener, TcpStream},
-    os::unix::fs::{PermissionsExt, symlink},
+    os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
+use rusqlite::{Connection, params};
 use weavelit_server::{
     StartupError, StartupOutcome, classify_restricted_startup, sqlite_catalog,
     validate_trusted_https_listener,
@@ -28,19 +30,54 @@ fn state_root() -> (tempfile::TempDir, PathBuf) {
     (directory, canonical)
 }
 
-fn root_snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+fn root_snapshot(path: &Path) -> Vec<(PathBuf, u32, u32, u32, u64, u64, u64)> {
     let mut entries = fs::read_dir(path)
         .unwrap()
         .map(|entry| {
             let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            let contents = fs::read(entry.path()).unwrap();
+            let mut hasher = DefaultHasher::new();
+            contents.hash(&mut hasher);
             (
                 PathBuf::from(entry.file_name()),
-                fs::read(entry.path()).unwrap(),
+                metadata.permissions().mode(),
+                metadata.uid(),
+                metadata.gid(),
+                metadata.nlink(),
+                metadata.size(),
+                hasher.finish(),
             )
         })
         .collect::<Vec<_>>();
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     entries
+}
+
+fn assert_interrupted_startup(state_root: &Path, expected_reason: &str) {
+    let before = root_snapshot(state_root);
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", state_root)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stderr,
+        format!("{{\"category\":\"lifecycle_interrupted\",\"reason\":\"{expected_reason}\"}}\n")
+            .as_bytes()
+    );
+    assert!(TcpStream::connect(address).is_err());
+    assert_eq!(root_snapshot(state_root), before);
 }
 
 fn context(root: &std::path::Path) -> TrustedBackendContext {
@@ -436,7 +473,7 @@ fn restart_with_selected_database_classifies_as_uninitialized_with_database() {
 }
 
 #[test]
-fn restart_with_init_pending_fails_closed() {
+fn retained_init_checkpoint_reports_redeploy_new_without_mutation_or_bind() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
@@ -451,14 +488,11 @@ fn restart_with_init_pending_fails_closed() {
             .unwrap();
         drop(db);
     }
-    assert_eq!(
-        classify_restricted_startup(&path).unwrap_err(),
-        StartupError::DatabaseIntegrityFailure
-    );
+    assert_interrupted_startup(&path, "operator_redeploy_new");
 }
 
 #[test]
-fn restart_with_restore_pending_fails_closed() {
+fn retained_restore_checkpoint_reports_redeploy_restore_without_mutation_or_bind() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
@@ -473,10 +507,32 @@ fn restart_with_restore_pending_fails_closed() {
             .unwrap();
         drop(db);
     }
-    assert_eq!(
-        classify_restricted_startup(&path).unwrap_err(),
-        StartupError::DatabaseIntegrityFailure
-    );
+    assert_interrupted_startup(&path, "operator_redeploy_restore");
+}
+
+#[test]
+fn retained_initialized_database_reports_redeploy_required_without_mutation_or_bind() {
+    let (_dir, path) = state_root();
+    let deployment_identifier;
+    {
+        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        deployment_identifier = store.record().deployment_identifier();
+        store
+            .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
+            .unwrap();
+    }
+    let database = Connection::open(path.join("application.sqlite3")).unwrap();
+    database
+        .execute(
+            "INSERT INTO weavelit_lifecycle_state \
+             (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+             VALUES (1, ?1, 'initialized', NULL, NULL)",
+            params![deployment_identifier.as_bytes().as_slice()],
+        )
+        .unwrap();
+    drop(database);
+
+    assert_interrupted_startup(&path, "operator_redeploy_required");
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +649,9 @@ fn every_startup_error_has_well_formed_category_reason() {
         StartupError::AnchorBindingInvalid,
         StartupError::DatabaseIntegrityFailure,
         StartupError::StateCombinationInvalid,
+        StartupError::LifecycleInterruptedRedeployNew,
+        StartupError::LifecycleInterruptedRedeployRestore,
+        StartupError::LifecycleInterruptedRedeployRequired,
     ];
     let sensitive = "/private/weavelit/state-root/sensitive";
     for error in &errors {

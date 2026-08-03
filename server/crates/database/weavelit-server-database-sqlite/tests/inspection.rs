@@ -1,4 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    hash::{DefaultHasher, Hash, Hasher},
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::{Path, PathBuf},
+};
 
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -179,6 +184,30 @@ fn snapshot(path: &Path) -> DatabaseSnapshot {
     (schema, ledger, state)
 }
 
+fn directory_snapshot(path: &Path) -> Vec<(PathBuf, u32, u32, u32, u64, u64, u64)> {
+    let mut entries = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            let contents = fs::read(entry.path()).unwrap();
+            let mut hasher = DefaultHasher::new();
+            contents.hash(&mut hasher);
+            (
+                PathBuf::from(entry.file_name()),
+                metadata.permissions().mode(),
+                metadata.uid(),
+                metadata.gid(),
+                metadata.nlink(),
+                metadata.size(),
+                hasher.finish(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
 #[test]
 fn fresh_database_is_uninitialized() {
     let temporary_directory = tempfile::tempdir().unwrap();
@@ -189,6 +218,19 @@ fn fresh_database_is_uninitialized() {
         database.inspect(identifier(1)).unwrap(),
         DatabaseInspection::Uninitialized
     );
+}
+
+#[test]
+fn retained_inspection_of_a_missing_database_does_not_create_it() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+
+    let error = SqliteDatabase::inspect_retained(&path, identifier(1)).unwrap_err();
+
+    assert_eq!(error, DatabaseError::Unavailable);
+    assert!(!path.exists());
+    assert!(!path.with_extension("db-wal").exists());
+    assert!(!path.with_extension("db-shm").exists());
 }
 
 #[test]
@@ -329,7 +371,7 @@ fn duplicate_lifecycle_rows_fail_cardinality_validation() {
 }
 
 #[test]
-fn inspection_is_stable_across_restart_and_does_not_mutate_database() {
+fn retained_inspection_is_stable_and_does_not_mutate_database_or_sidecars() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let expected_identifier = identifier(6);
@@ -342,16 +384,15 @@ fn inspection_is_stable_across_restart_and_does_not_mutate_database() {
         Some(b"restart-metadata"),
     );
     let before = snapshot(&path);
+    let directory_before = directory_snapshot(temporary_directory.path());
 
-    let first = {
-        let database = SqliteDatabase::open(&path).unwrap();
-        database.inspect(expected_identifier).unwrap()
-    };
-    let second = {
-        let database = SqliteDatabase::open(&path).unwrap();
-        database.inspect(expected_identifier).unwrap()
-    };
+    let first = SqliteDatabase::inspect_retained(&path, expected_identifier).unwrap();
+    let second = SqliteDatabase::inspect_retained(&path, expected_identifier).unwrap();
 
     assert_eq!(first, second);
     assert_eq!(snapshot(&path), before);
+    assert_eq!(
+        directory_snapshot(temporary_directory.path()),
+        directory_before
+    );
 }

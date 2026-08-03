@@ -1140,6 +1140,7 @@ dependencies = [
  "http-body-util",
  "httparse",
  "rcgen",
+ "rusqlite",
  "rustix",
  "rustls",
  "tempfile",

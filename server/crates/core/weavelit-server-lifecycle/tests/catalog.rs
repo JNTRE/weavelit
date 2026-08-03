@@ -74,6 +74,16 @@ impl ApplicationDatabaseFactory for FakeFactory {
         self.result?;
         Ok(Box::new(FakeDatabase))
     }
+
+    fn inspect_retained(
+        &self,
+        context: &TrustedBackendContext,
+        settings: &ValidatedConnectionSettings,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, LifecycleError> {
+        self.open(context, settings)?;
+        Ok(DatabaseInspection::Uninitialized)
+    }
 }
 
 fn required_field(
