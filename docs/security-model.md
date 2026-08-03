@@ -188,10 +188,14 @@ service-manager, development, and container configuration may select the state
 root but must not supply the key, child filenames, or individual artifact paths.
 
 The root uses a closed code-owned filename inventory. Unknown names, unsafe
-entries, or a filesystem that cannot provide required atomic replacement,
-durable file and directory synchronization, and advisory locking must fail
-closed without a reduced-security mode. A future release may deliberately add
-code-owned names; older binaries must reject rather than ignore them.
+entries, or a filesystem that cannot provide required atomic replacement or
+advisory locking must fail closed without a reduced-security mode. Failures of
+the configured file or directory synchronization operations during a valid run
+must also fail closed. These controls preserve active-operation integrity; they
+do not promise persistence across host power loss, filesystem loss or
+corruption, abrupt process termination, or an operator-broken environment. A
+future release may deliberately add code-owned names; older binaries must
+reject rather than ignore them.
 
 Milestone 1 does not rotate this key in place and has no external monotonic
 anchor. A missing, malformed, corrupted, or wrong key must fail startup closed

@@ -141,7 +141,7 @@ checkpoint under the lifecycle authority's exclusive mutation permit. The
 checkpoint contains the replacement deployment identifier, the Restore workflow
 discriminator, and only format-defined non-secret metadata needed for safe
 classification. The lifecycle crate then advances the deployment record to
-`InitializationPending` using the crash-safe ordering defined in the Server
+`InitializationPending` using the fail-closed ordering defined in the Server
 Lifecycle Design.
 
 The Restore crate asks the database contract to atomically replace the eligible
@@ -150,16 +150,17 @@ does not receive the backup artifact or private recovery key and independently
 verifies the expected deployment identifier, checkpoint kind, and one-time
 state transition. A failure before commit leaves no partial application state.
 
-The restored state carries a durable post-commit Restore-result obligation with
-non-secret event fields. The Restore crate
-loads the restored System Log assignment, durably records the Restore result,
-and marks that obligation complete. The record identifies Restore, the
-replacement deployment identifier, time, result, and correlation identifier
-without recovery keys, backup contents, restored identities, or other protected
-values. The lifecycle crate seals the deployment
-record `Initialized` only after the database commit and required System Log
-result are durable. The runtime then removes every pre-operational route, loads
-application state, and enables normal authenticated operation without a restart.
+The restored state carries a post-commit Restore-result obligation with
+non-secret event fields. The Restore crate loads the restored System Log
+assignment, receives the durable acknowledgement defined in the
+[Technical Specification](../../../spec.md#logging-and-accountability) for the
+Restore result, and marks that obligation complete. The record identifies
+Restore, the replacement deployment identifier, time, result, and correlation
+identifier without recovery keys, backup contents, restored identities, or other
+protected values. The lifecycle crate seals the deployment record `Initialized`
+only after the database commit and required System Log result acknowledgement.
+The runtime then removes every pre-operational route, loads application state,
+and enables normal authenticated operation without a restart.
 
 If the database commit succeeds but System Log recording, sealing, or in-process
 activation fails, the Server exposes no routes and fails closed. On startup,
@@ -208,11 +209,11 @@ wrong recovery keys, compatibility rejection, duplicate and invalid restored
 state, unavailable required components, session invalidation, recovery-public-
 key preservation, protected-secret re-encryption, private-key and plaintext
 non-persistence, redaction, Restore-checkpoint validation, atomic rollback,
-durable System Log result handling during a valid run, retained-partial-state
-classification, absence of reconciliation, retry, reset, automatic cleanup,
-recreation, and sealing after interruption, every Restore-specific crash point,
-concurrency with Init and Restore requests, direct invocation after sealing,
-and rejection before key or artifact processing.
+durable System Log result acknowledgement during a valid run, retained-partial-
+state classification, absence of reconciliation, retry, reset, automatic
+cleanup, recreation, and sealing after interruption, Restore-specific valid-run
+failure classification, concurrency with Init and Restore requests, direct
+invocation after sealing, and rejection before key or artifact processing.
 
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify

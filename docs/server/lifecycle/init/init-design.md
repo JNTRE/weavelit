@@ -112,9 +112,9 @@ initialized before the requesting client proves possession of the private key:
    atomically record an Init checkpoint containing the deployment identifier,
    public key, and a unique delivery nonce. The lifecycle crate advances the
    deployment record to `InitializationPending`. Init returns the private key
-   once over HTTPS only after both writes are durable. The private key exists
-   only transiently in Server memory and response handling and is never
-   persisted.
+   once over HTTPS only after both writes complete their configured valid-run
+   commit paths. The private key exists only transiently in Server memory and
+   response handling and is never persisted.
 2. The client saves the private key outside Weavelit and derives the
    key-format-defined proof of possession for the delivery nonce. It submits
    that proof, but not the private key, with the complete normalized
@@ -123,20 +123,23 @@ initialized before the requesting client proves possession of the private key:
    authority, verifies that the deployment identifiers, checkpoint, and proof
    match, validates the complete request, verifies the
    **[Log Module](../../../glossary.md#applications-and-interfaces)** assignments
-   and durable delivery for each assigned log type, and atomically replaces the
-   checkpoint with complete initialized application state bound to the
-   deployment identifier. The committed state includes the non-secret Init
-   completion-event fields as a pending obligation.
+   and their ability to provide the durable acknowledgement defined in the
+   [Technical Specification](../../../spec.md#logging-and-accountability) for
+   each assigned log type, and atomically replaces the checkpoint with complete
+   initialized application state bound to the deployment identifier. The
+   committed state includes the non-secret Init completion-event fields as a
+   pending obligation.
 4. The Init crate loads the committed
    **[System Log](../../../glossary.md#applications-and-interfaces)** assignment,
-   durably records the successful Init result, and marks the completion
-   obligation satisfied. The record identifies Init, the deployment identifier,
-   time, result, and correlation identifier without passwords, recovery-key
-   material, or other submitted secrets.
-5. After the completion result is durable, the lifecycle crate atomically seals
-   the deployment record `Initialized`. Only after that seal is durable does the
-   runtime close every pre-operational gate, load the committed application
-   state, and enable normal authenticated operation in the same process.
+   receives the required durable acknowledgement for the successful Init result,
+   and marks the completion obligation satisfied. The record identifies Init,
+   the deployment identifier, time, result, and correlation identifier without
+   passwords, recovery-key material, or other submitted secrets.
+5. After the completion result is acknowledged, the lifecycle crate atomically
+   seals the deployment record `Initialized`. Only after the seal's configured
+   valid-run commit path completes does the runtime close every pre-operational
+   gate, load the committed application state, and enable normal authenticated
+   operation in the same process.
 
 Proof of possession confirms that the requesting client retained the delivered
 key long enough to finalize Init; safeguarding the downloaded private key

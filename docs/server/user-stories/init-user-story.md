@@ -127,15 +127,16 @@ redisplays that private key.
 5. The Server validates the complete request, creates the first Human User and
    the system-defined Administrators Group, adds the user to that Group,
    protects submitted secrets, and confirms that the System Log and Audit Log
-   assignments can durably record their assigned log type.
+   assignments can provide their required durable acknowledgement during the
+   valid run.
 6. The Application Database atomically commits the initialized application
    state.
-7. The Server durably records the successful Init result through the committed
-   System Log assignment, then irreversibly seals the deployment record
-   `Initialized`.
-8. Only after the seal is durable does the Server remove the Pre-Operational
-   Surface and enable normal authenticated operation. No process restart is
-   required.
+7. The Server receives the required durable acknowledgement for the successful
+   Init result through the committed System Log assignment, then irreversibly
+   seals the deployment record `Initialized`.
+8. Only after the seal's configured valid-run commit path completes does the
+   Server remove the Pre-Operational Surface and enable normal authenticated
+   operation. No process restart is required.
 
 If validation fails before the database commit, the Web UI keeps the person in
 setup, presents an actionable redacted error, and allows correction without

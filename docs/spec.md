@@ -324,15 +324,17 @@ authenticated principal or written as Audit Logs. Audit Logs MUST capture the
 caller, Responsible Owner when applicable, action or Operation, target, time,
 result, and correlation identifier.
 
-After Init or Restore commits application state, the Server MUST durably record
-that workflow's successful completion through the committed System Log
-assignment before sealing the deployment. The record MUST include the workflow,
-deployment identifier, time, result, and correlation identifier. Normal
-operation MUST NOT begin until every required workflow obligation is durable
-and the deployment is sealed during the same valid workflow run. If
-interruption prevents completion logging or sealing, the Server MUST apply the
-fail-closed lifecycle-interruption boundary and MUST NOT retry the obligation
-after restart.
+After Init or Restore commits application state, the Server MUST receive a
+durable acknowledgement for that workflow's successful completion through the
+committed System Log assignment before sealing the deployment. A durable
+acknowledgement means that the destination completed its configured supported
+storage interface's commit path during the same valid Server process run. The
+record MUST include the workflow, deployment identifier, time, result, and
+correlation identifier. Normal operation MUST NOT begin until every required
+workflow obligation has that acknowledgement and the deployment is sealed
+during the same valid workflow run. If interruption prevents completion logging
+or sealing, the Server MUST apply the fail-closed lifecycle-interruption
+boundary and MUST NOT retry the obligation after restart.
 
 System Logs and Audit Logs MUST be structured and pre-redacted before they
 reach a Log Module. They MUST exclude secrets and unnecessary sensitive
@@ -369,8 +371,8 @@ authorized decision that includes a hold policy. Future Administration Plane
 policy, purge-start, failure, completion, and status functions MUST authorize
 the Administrator, require the applicable confirmation, and create Audit Logs
 for policy changes and purge start, failure, and completion. These requirements
-do not add purge behavior to the completed append-only MVP SQLite Log Module
-implementation.
+do not add purge behavior to the current unselected SQLite Log Module catalog
+scaffold.
 
 ## Application Data And Persistence
 
@@ -424,10 +426,20 @@ Client Module explicitly declares the matching capability.
 Weavelit delivers its defined application workflows; the deployment operator
 is responsible for host availability and maintenance, power, installation and
 deployment execution, environment validity, backup custody, and recovery
-material retained outside Weavelit. These responsibilities do not weaken the
-Server's normal-operation validation of untrusted clients and data,
-authentication, authorization, secret handling, or protection against unsafe
-automatic overwrite.
+material retained outside Weavelit. Weavelit does not promise recovery or
+survival of application state, Log Module records, or an acknowledged record
+across host power loss, filesystem loss or corruption, abrupt process
+termination, or an operator-broken environment. A durable acknowledgement is
+not such a survival guarantee. Where the Server can start and classify the
+state, it provides fail-closed behavior and only a stable, redacted
+operator-action notice; it does not claim post-failure health or add special
+recovery, retry, reconciliation, or filesystem-persistence hardening solely to
+guarantee acknowledged-record survival after those host failures. This boundary
+does not make every error an operator responsibility: within a valid supported
+running environment, the Server remains responsible for its defined
+correctness, validation of untrusted clients and data, authentication,
+authorization, secret handling, safe normal-run behavior, and protection
+against unsafe automatic overwrite.
 
 When an Init or Restore interruption leaves retained partial lifecycle state,
 the Server MUST classify that state, remain fail-closed and non-operational,
@@ -512,10 +524,12 @@ named Operations.
 Init MUST assign configured Log Modules separately to System Logs and Audit
 Logs; the same Log Module MAY receive both types. Init MUST NOT complete, and
 the Server MUST NOT begin normal operation, until both assignments are valid
-and can durably record their assigned log type. After the Application Database
-commit, the Server MUST durably record the Init result through the committed
-System Log assignment before sealing. Successful Init MUST then transition the
-running Server directly to normal operation without a restart.
+and can provide the durable acknowledgement defined in
+[Logging And Accountability](#logging-and-accountability) for their assigned
+log type. After the Application Database commit, the Server MUST receive that
+acknowledgement for the Init result through the committed System Log assignment
+before sealing. Successful Init MUST then transition the running Server directly
+to normal operation without a restart.
 
 Init MUST create a distinct backup recovery key pair. The Server MUST retain
 only the public recovery key, and the person completing Init MUST receive the
@@ -545,10 +559,12 @@ configuration, and Log Module assignments from the validated backup instead of
 creating replacement initial state.
 
 A successful Restore MUST commit the restored state under the replacement
-deployment identifier, durably record the Restore result through the restored
-System Log assignment, seal the replacement deployment, and transition the
-running Server directly to normal operation without a restart. Restore MUST NOT
-support in-place migration between Application Database technologies.
+deployment identifier, receive the durable acknowledgement defined in
+[Logging And Accountability](#logging-and-accountability) for the Restore result
+through the restored System Log assignment, seal the replacement deployment,
+and transition the running Server directly to normal operation without a
+restart. Restore MUST NOT support in-place migration between Application
+Database technologies.
 
 ## Client Applications And User Experience
 

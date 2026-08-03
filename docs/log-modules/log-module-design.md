@@ -11,7 +11,8 @@ preserve.
 `weavelit-server-log` is the Server-owned shared contract and dispatch crate.
 It defines a bounded typed record envelope with distinct System and Audit
 variants, declared module capabilities, trusted registration and factory
-inputs, durable-delivery acknowledgement, and payload-free typed errors. The
+inputs, process-level durable-delivery acknowledgement, and payload-free typed
+errors. The
 common envelope includes a Server-generated opaque record identifier, event
 time, result, and correlation identifier. It contains no SQLite, filesystem,
 Application Database, client-wire serialization, query, retention, backup,
@@ -31,8 +32,10 @@ Its compiled-in catalog validates each registration before invoking its factory
 with trusted Server context. A configured destination accepts only a complete
 immutable `CompleteLogRecord`; no public delivery operation accepts a raw
 source payload or a caller-created record identifier. The destination must
-acknowledge the same identifier and type synchronously after durable commit or
-an exact prior-record match. A capability mismatch, malformed registration,
+acknowledge the same identifier and type synchronously after completing its
+configured supported storage interface's commit path during a valid process run
+or confirming an exact prior-record match. A capability mismatch, malformed
+registration,
 unavailable destination, or conflicting replay returns a stable payload-free
 error.
 
@@ -42,19 +45,22 @@ results. A Log Module accepts only these complete typed records. It may validate
 its declared capability and persist or deliver a record, but it must not redact,
 enrich, reinterpret, or access Application Database state.
 
-Delivery is synchronous and succeeds only when the assigned destination has
-durably committed the complete record or confirms an exact existing record with
-the same type and record identifier. Before an Init or Restore application-state
-commit, the Server creates the opaque identifier and persists it with immutable
+Delivery is synchronous and succeeds only when the assigned destination
+completes its configured supported storage interface's commit path for the
+complete record or confirms an exact existing record with the same type and
+record identifier. Before an Init or Restore application-state commit, the
+Server creates the opaque identifier and persists it with immutable
 completion-record fields in the post-commit obligation. During a valid
 uninterrupted workflow run, the Server delivers that identical record until it
-receives a durable acknowledgement. An interruption before acknowledgement
-leaves the workflow non-operational; the lifecycle does not retry delivery,
-construct a replacement record, or seal on restart. A matching identifier with
-different content is an integrity failure. This provides at-least-once attempts
-and one persisted completion record per identifier for the MVP SQLite
-destination; it does not claim distributed exactly-once delivery or select a
-fan-out policy.
+receives a durable acknowledgement. That acknowledgement does not guarantee
+record survival across host power loss, filesystem loss or corruption, abrupt
+process termination, or an operator-broken environment. An interruption before
+acknowledgement leaves the workflow non-operational; the lifecycle does not
+retry delivery, construct a replacement record, or seal on restart. A matching
+identifier with different content is an integrity failure. This provides
+at-least-once attempts and one persisted completion record per identifier for
+the MVP SQLite destination; it does not claim distributed exactly-once delivery
+or select a fan-out policy.
 
 ## MVP SQLite Destination
 
@@ -83,17 +89,20 @@ assignments, never destination data.
 This MVP defines one local SQLite destination rather than Server-issued
 multiple destination instances. The recovery and capacity policy below defines
 requirements for future destination implementation work; it does not add
-backup, recovery, retention, purge, or capacity behavior to the completed
-append-only MVP SQLite implementation.
+backup, recovery, retention, purge, or capacity behavior to the current
+unselected SQLite catalog scaffold, assert that it is production-ready, or
+activate it through a configuration or assignment flow.
 
 The SQLite destination derives its fixed `log.sqlite3` filename only from the
 trusted local root supplied to its factory; it does not inspect an environment
 variable or accept a client path. It opens the destination without following a
 database-file symlink, uses SQLite write-ahead logging with full synchronous
-commit behavior, and serializes its owned connection. Transient SQLite sidecars
-remain part of this destination's owned resource set when SQLite creates them.
-It stores the complete fields of System and Audit records in separate typed
-tables rather than exposing a serialized record blob.
+commit behavior as its configured valid-run commit path, and serializes its
+owned connection. That commit path does not provide a host-failure survival
+guarantee. Transient SQLite sidecars remain part of this destination's owned
+resource set when SQLite creates them. It stores the complete fields of System
+and Audit records in separate typed tables rather than exposing a serialized
+record blob.
 
 Freshness requires the absence of every recognized artifact: `log.sqlite3`,
 `log.sqlite3-journal`, `log.sqlite3-wal`, and `log.sqlite3-shm`. When the main
@@ -156,7 +165,7 @@ requires a future explicit authorized decision that includes a hold policy.
 A future Server administration contract owns authorization, confirmation,
 policy, run, and status APIs and the Audit Logs for policy changes and purge
 start, failure, and completion. This policy does not introduce purge behavior
-to the completed append-only MVP SQLite implementation.
+to the current unselected SQLite catalog scaffold.
 
 ## Init And Restore Configuration
 
@@ -190,12 +199,13 @@ configuration and two explicit assignments to the same Server-owned
 validation; no client defines an alternative Log Module initialization path.
 
 Init rejects an absent, disabled, unconfigured, or incompatible assignment. It
-also rejects an assignment unless its configured Log Module can durably record
-the assigned log type. After Init commits application state, it durably records
+also rejects an assignment unless its configured Log Module can complete its
+configured supported storage interface's commit path for the assigned log type.
+After Init commits application state, it receives a durable acknowledgement for
 the Init completion result through the committed System Log assignment before
 the deployment is sealed. Init remains incomplete, and the Server does not begin
 normal operation, until both assignments are valid and the completion result is
-durable.
+acknowledged during that valid run.
 
 During **[Restore](../glossary.md#states-and-requests)**, the Server imports
 only non-secret Log Module configurations, enabled state, and assignments from
@@ -209,9 +219,9 @@ restored configuration and assignment must satisfy the same Server-owned
 validation used during normal administration.
 
 Restore validates both restored assignments and does not seal the replacement
-deployment until the restored System Log assignment durably records the required
-Restore result without recovery secrets or backup contents. A failure remains
-non-operational and follows the retained-state interruption boundary in the
+deployment until the restored System Log assignment provides a durable
+acknowledgement for the required Restore result without recovery secrets or
+backup contents. A failure remains non-operational and follows the retained-state interruption boundary in the
 [Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored
 Log Module never reads backup contents or Application Database state directly.
 

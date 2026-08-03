@@ -95,12 +95,12 @@ not consume or modify that source file.
 5. The Server invalidates restored sessions, re-encrypts protected application
    secrets with the replacement Server's at-rest key, and atomically commits
    restored application state bound to the replacement deployment identifier.
-6. The Server durably records the required Restore result through the restored
-   System Log assignment and irreversibly seals the deployment record
-   `Initialized`.
-7. Only after the seal is durable does the Server remove every pre-operational
-   surface and enable normal authenticated operation. No process restart is
-   required.
+6. The Server receives the required durable acknowledgement for the Restore
+   result through the restored System Log assignment and irreversibly seals the
+   deployment record `Initialized`.
+7. Only after the seal's configured valid-run commit path completes does the
+   Server remove every pre-operational surface and enable normal authenticated
+   operation. No process restart is required.
 
 If validation fails before the database commit, the Web UI remains in Restore,
 shows an actionable redacted error, discards the key from page memory when the

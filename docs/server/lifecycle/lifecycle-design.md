@@ -79,12 +79,12 @@ complete locator payload is encrypted. A later database-selection operation
 must revalidate retained field types and classifications against the current
 runtime catalog before invoking its backend factory.
 
-Locator replacement durably publishes an immutable generation, then atomically
-replaces the deployment record pointer as the commit point, authenticates on
-reopen, and removes the prior generation. Record replacement requires the same
-deployment identifier and active locator generation. Both operations remain
-persistence mechanisms; eligibility and backend preflight remain owned by the
-selection and startup-classification work.
+Locator replacement publishes an immutable generation through its configured
+valid-run commit path, then atomically replaces the deployment record pointer
+as the commit point, authenticates on reopen, and removes the prior generation.
+Record replacement requires the same deployment identifier and active locator
+generation. Both operations remain persistence mechanisms; eligibility and
+backend preflight remain owned by the selection and startup-classification work.
 
 Raw locator creation and replacement require a non-exhaustive
 `LocatorPersistencePermit`; raw record replacement requires a non-exhaustive
@@ -137,10 +137,12 @@ process lock; no third-party lock dependency is required.
 Before creating a managed file, the process sets an owner-only `0077` umask.
 Every managed child must be a regular non-symlink file owned by the effective
 user, have exactly mode `0600`, and have exactly one hard link. The state-root
-filesystem must provide same-directory atomic replacement, durable file and
-directory synchronization, and advisory locking. A filesystem that cannot
-provide those guarantees is unsupported; a missing or failed guarantee stops
-startup or mutation without a reduced-durability mode.
+filesystem must provide same-directory atomic replacement and advisory locking.
+A missing or failed configured file or directory synchronization operation stops
+startup or mutation without a reduced-safety mode. These valid-run controls
+support atomicity and fail-closed classification; they do not promise survival
+across host power loss, filesystem loss or corruption, abrupt process
+termination, or an operator-broken environment.
 
 ### Version 1 State-Root Inventory
 
@@ -306,7 +308,7 @@ selected Application Database. Authentication completes before plaintext JSON
 parsing. No format field selects arbitrary cryptography: version 1 accepts only
 the exact algorithm values above.
 
-### Creation And Crash-Safe Replacement
+### Creation And Interruption Classification
 
 After obtaining the process lock and validating the root inventory, an empty
 deployment creates state in this order:
@@ -328,20 +330,24 @@ Each lifecycle write uses an artifact-specific temporary name with a fresh
 nonzero random 16-byte suffix. It creates the temporary regular file
 exclusively at mode `0600`, writes all canonical bytes, calls `sync_all`,
 atomically renames it to the final same-directory name, and synchronizes the
-state-root directory. Key and locator publication require the destination to be
-absent; deployment-record replacement atomically replaces the prior record.
-Any operation or synchronization failure returns a redacted failure and exposes
-no route. A crash before rename or after publication leaves retained state for
-startup classification; the lifecycle crate does not infer that the write may
-be completed or cleaned up.
+state-root directory as its configured valid-run commit path. Key and locator
+publication require the destination to be absent; deployment-record replacement
+atomically replaces the prior record. Any operation or synchronization failure
+returns a redacted failure and exposes no route. Those operations do not
+guarantee state survival after host failure. A crash before rename or after
+publication leaves retained state for startup classification when the Server can
+start; the lifecycle crate does not infer that the write may be completed or
+cleaned up.
 
 Database selection and replacement use prepare-then-commit ordering:
 
 1. Fully preflight the target backend and database without changing the active
    locator.
-2. Generate a fresh nonzero locator generation, write and durably publish its
-   immutable locator file, then reopen and authenticate it.
-3. Write and durably replace the deployment record so its
+2. Generate a fresh nonzero locator generation, write and publish its immutable
+   locator file through the configured valid-run commit path, then reopen and
+   authenticate it.
+3. Write and replace the deployment record through the configured valid-run
+   commit path so its
    `locator_generation` points to the new locator. This record replacement is
    the commit point.
 4. Reopen and authenticate the active record and locator, remove every safe
@@ -527,16 +533,18 @@ Uninitialized -> DatabaseSelected -> InitializationPending -> Initialized
 
 The deployment record remains `Uninitialized` through `DatabaseSelected`.
 Before either workflow commits application state, its database checkpoint and
-the deployment record become `InitializationPending` using crash-safe ordering.
+the deployment record become `InitializationPending` using fail-closed ordering.
 The Application Database performs the workflow's complete state replacement
 atomically and remains the final one-time guard. The committed state carries a
 workflow-specific System Log completion obligation with non-secret event fields.
-After that commit, the owning workflow durably delivers the completion result
-through the committed System Log assignment and marks the obligation complete.
+After that commit, the owning workflow receives the durable acknowledgement
+defined in the [Technical Specification](../../spec.md#logging-and-accountability)
+for the completion result through the committed System Log assignment and marks
+the obligation complete.
 Only then does the lifecycle crate seal the deployment record `Initialized`.
-Only after the seal is durable may the runtime remove all pre-operational routes,
-load application state, and enable normal authenticated operation in the same
-process.
+Only after the seal's configured valid-run commit path completes may the runtime
+remove all pre-operational routes, load application state, and enable normal
+authenticated operation in the same process.
 
 If database state commits but sealing or in-process activation fails, the
 runtime exposes no routes and fails closed. On restart, the lifecycle crate
@@ -659,7 +667,7 @@ Base64, and canonical JSON parsing, restrictive and atomic local writes,
 rejection of client-supplied paths and file references, Server-derived backend
 paths, encrypted connection-secret persistence and restart reopening,
 deployment-identifier matching, backend selection and replacement, mutation
-serialization, workflow exclusivity, every cross-store crash point, seal
+serialization, workflow exclusivity, cross-store operation failure handling, seal
 interruption classification, absence of reconciliation, retry, reset, deletion,
 recreation, and sealing after restart, direct invocation after sealing,
 rejection before secret or backup reading, redaction, and fail-closed missing,
@@ -668,11 +676,14 @@ malformed, mismatched, unavailable, and integrity-failing state.
 Real-filesystem tests use isolated roots to exercise missing and malformed
 configuration, root execution, every symlink position, wrong owner and mode,
 hard links, non-regular and unknown entries, the 256-entry bound, lock
-contention, unsupported or failed synchronization, retained temporary and
-orphan classification, interrupted bootstrap classification, every invalid
-partial anchor set, and every failure point before and after file sync, rename,
-record commit, directory sync, and failed cleanup. Tests retain and reopen real SQLite `-journal`, `-wal`, and `-shm`
-sidecars through the backend rather than deleting them as lifecycle orphans.
+contention, unavailable or failed synchronization operations, retained temporary
+and orphan classification, interrupted bootstrap classification, every invalid
+partial anchor set, and failure handling for file synchronization, rename,
+record commit, directory synchronization, and cleanup. Tests retain and reopen
+real SQLite `-journal`, `-wal`, and `-shm` sidecars through the backend rather
+than deleting them as lifecycle orphans. They do not assert power-cut or abrupt
+termination survival as a Weavelit guarantee; where the Server can restart,
+they assert fail-closed classification and redacted operator-action output.
 
 Format and cryptographic negative vectors change one property at a time:
 oversized, empty, truncated, invalid UTF-8, non-canonical, duplicate, unknown,
