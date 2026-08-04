@@ -39,6 +39,23 @@ registration,
 unavailable destination, or conflicting replay returns a stable payload-free
 error.
 
+The Server-owned contract and dispatch boundary retains the trusted context
+that configures a catalog destination and creates record issuers, read-only
+factory context, configured dispatch, and durable acknowledgement capabilities.
+An ordinary compiled-in Log Module can register its declared capabilities and
+receive only a read-only factory context, a complete assigned record, and the
+one-use acknowledgement capability that dispatch supplies for that record. It
+cannot mint a record identity or trusted context, construct an acknowledgement,
+turn factory context into trusted context to configure a catalog destination,
+or inject a configured dispatch. A validated catalog without the Server-retained
+trusted context has no configured destination or delivery authority. Isolated
+SQLite destination tests construct only private SQLite-owned persistence inputs;
+normal module dependency graphs contain no authority-minting test feature and do
+not depend on Server or lifecycle crates. External-consumer compile fixtures prove
+provide stable boundary evidence for both the permitted registration surface and rejection of issuer, context,
+acknowledgement, direct dispatch, and catalog-mediated destination-configuration
+attempts.
+
 Server Audit constructs and pre-redacts Audit records; Server Observability
 constructs and pre-redacts System records, including Init and Restore completion
 results. A Log Module accepts only these complete typed records. It may validate
@@ -125,6 +142,27 @@ constraints rebuilds its tables transactionally and copies existing records
 only when they satisfy the new schema. An existing oversized row makes the
 migration fail closed without dropping, altering, or replacing any destination
 record; this MVP defines no data-recovery exception for that incompatibility.
+
+### Descriptor-Relative Candidate Evidence
+
+On supported Ubuntu, an isolated real-filesystem probe held a root-directory
+descriptor, renamed its former pathname, and recreated that pathname as a
+replacement directory. The unselected
+`/proc/self/fd/<held-root-fd>/log.sqlite3` candidate resolved fresh-artifact
+preflight and reservation beneath the held directory, with no recognized
+artifact created in the replacement directory. The failed fresh attempt leaves
+only its zero-length main-file reservation in the held directory. Pinned
+`rusqlite` 0.40.1 with bundled SQLite then rejected the main database open with
+`SQLITE_CANTOPEN_SYMLINK` under the required `SQLITE_OPEN_NOFOLLOW` policy,
+before WAL or SHM creation. An existing destination similarly remained
+unchanged when reopened through that candidate; orphan sidecars were found
+beneath the held directory and rejected as integrity failures; and a final
+database-file symlink remained rejected without following its target. An
+unavailable descriptor root maps only to the payload-free unavailable error.
+
+This is supported-environment feasibility evidence, not a selected root-handle
+propagation mechanism. It does not authorize a change to the trusted-context
+contract, the symlink policy, or SQLite's VFS behavior.
 
 ## Destination Recovery And Retirement
 

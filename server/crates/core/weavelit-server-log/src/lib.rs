@@ -67,7 +67,7 @@ impl fmt::Debug for LogCapabilities {
 }
 
 /// Stable opaque identifier for one Server-generated immutable record.
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq)]
 pub struct RecordId([u8; RECORD_ID_LENGTH]);
 
 impl fmt::Debug for RecordId {
@@ -77,6 +77,10 @@ impl fmt::Debug for RecordId {
 }
 
 impl RecordId {
+    fn duplicate(&self) -> Self {
+        Self(self.0)
+    }
+
     /// Returns the stable opaque bytes issued by the Server for persistence matching.
     pub const fn as_bytes(&self) -> &[u8; RECORD_ID_LENGTH] {
         &self.0
@@ -90,7 +94,8 @@ pub struct TrustedRecordIssuer {
 
 impl TrustedRecordIssuer {
     /// Creates the Server-owned issuer used by Audit and Observability.
-    pub const fn new() -> Self {
+    #[allow(dead_code)]
+    pub(crate) const fn new() -> Self {
         Self { _private: () }
     }
 
@@ -100,12 +105,6 @@ impl TrustedRecordIssuer {
             return Err(RecordError::InvalidRecordIdentifier);
         }
         Ok(RecordId(entropy))
-    }
-}
-
-impl Default for TrustedRecordIssuer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -289,7 +288,7 @@ impl AuditLogBody {
 }
 
 /// Complete immutable record dispatched to a Log Module.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub enum CompleteLogRecord {
     /// A System Log record constructed by Observability.
     System {
@@ -541,7 +540,8 @@ pub struct TrustedLogModuleContext {
 
 impl TrustedLogModuleContext {
     /// Creates the Server-owned runtime context with deployment-bound local inputs.
-    pub fn new(local_root: PathBuf, deployment_identity: [u8; RECORD_ID_LENGTH]) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn new(local_root: PathBuf, deployment_identity: [u8; RECORD_ID_LENGTH]) -> Self {
         Self {
             local_root,
             deployment_identity,
@@ -567,8 +567,41 @@ impl fmt::Debug for TrustedLogModuleContext {
     }
 }
 
+/// Read-only trusted inputs available while a Log Module factory opens its destination.
+pub struct LogModuleFactoryContext<'a> {
+    local_root: &'a Path,
+    deployment_identity: &'a [u8; RECORD_ID_LENGTH],
+}
+
+impl<'a> LogModuleFactoryContext<'a> {
+    fn from_trusted(context: &'a TrustedLogModuleContext) -> Self {
+        Self {
+            local_root: context.local_root(),
+            deployment_identity: context.deployment_identity(),
+        }
+    }
+
+    /// Returns the Server-supplied local root without deriving a destination path.
+    pub const fn local_root(&self) -> &'a Path {
+        self.local_root
+    }
+
+    /// Returns the Server-supplied deployment identity for destination binding.
+    pub const fn deployment_identity(&self) -> &'a [u8; RECORD_ID_LENGTH] {
+        self.deployment_identity
+    }
+}
+
+impl fmt::Debug for LogModuleFactoryContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LogModuleFactoryContext")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Synchronous durable acknowledgement returned by a destination.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct DurableAcknowledgement {
     record_id: RecordId,
     record_type: LogRecordType,
@@ -576,9 +609,9 @@ pub struct DurableAcknowledgement {
 
 impl DurableAcknowledgement {
     /// Acknowledges exactly the record that was durably committed or matched.
-    pub fn for_record(record: &CompleteLogRecord) -> Self {
+    fn for_record(record: &CompleteLogRecord) -> Self {
         Self {
-            record_id: record.record_id().clone(),
+            record_id: record.record_id().duplicate(),
             record_type: record.record_type(),
         }
     }
@@ -596,19 +629,20 @@ impl fmt::Debug for DurableAcknowledgement {
 
 /// Destination contract for capability validation and durable record handling only.
 pub trait LogDestination: Send + Sync {
-    /// Durably commits the record or acknowledges an exact prior record with its ID and type.
+    /// Durably commits the record and returns its exact acknowledgement capability.
     fn deliver(
         &self,
         record: &CompleteLogRecord,
+        acknowledgement: DurableAcknowledgement,
     ) -> Result<DurableAcknowledgement, LogDestinationError>;
 }
 
 /// Factory for one runtime-supplied compiled-in Log Module destination.
 pub trait LogDestinationFactory: Send + Sync {
-    /// Creates a destination using only trusted runtime inputs.
+    /// Creates a destination using read-only Server-owned factory inputs.
     fn create(
         &self,
-        context: &TrustedLogModuleContext,
+        context: &LogModuleFactoryContext<'_>,
     ) -> Result<Box<dyn LogDestination>, LogDestinationError>;
 }
 
@@ -732,9 +766,10 @@ impl LogModuleCatalog {
         let entry = self
             .entry(identifier)
             .ok_or(LogConfigurationError::UnknownModule)?;
+        let factory_context = LogModuleFactoryContext::from_trusted(context);
         let destination = entry
             .factory
-            .create(context)
+            .create(&factory_context)
             .map_err(LogConfigurationError::Destination)?;
         Ok(ConfiguredLogDestination {
             capabilities: entry.declaration.capabilities.clone(),
@@ -771,9 +806,10 @@ impl ConfiguredLogDestination {
         if !self.capabilities.supports(record.record_type()) {
             return Err(LogDeliveryError::CapabilityUnavailable);
         }
+        let acknowledgement = DurableAcknowledgement::for_record(record);
         let acknowledgement = self
             .destination
-            .deliver(record)
+            .deliver(record, acknowledgement)
             .map_err(LogDeliveryError::Destination)?;
         if !acknowledgement.matches(record) {
             return Err(LogDeliveryError::IntegrityFailure);
@@ -937,6 +973,7 @@ fn record_payload_bytes(correlation_id: &CorrelationId, body_fields: &[&str]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1007,6 +1044,7 @@ mod tests {
         fn deliver(
             &self,
             record: &CompleteLogRecord,
+            acknowledgement: DurableAcknowledgement,
         ) -> Result<DurableAcknowledgement, LogDestinationError> {
             let mut records = self
                 .records
@@ -1020,10 +1058,10 @@ mod tests {
                 if existing != &persisted_record {
                     return Err(LogDestinationError::IntegrityFailure);
                 }
-                return Ok(DurableAcknowledgement::for_record(record));
+                return Ok(acknowledgement);
             }
             records.push(persisted_record);
-            Ok(DurableAcknowledgement::for_record(record))
+            Ok(acknowledgement)
         }
     }
 
@@ -1034,7 +1072,7 @@ mod tests {
     impl LogDestinationFactory for ReplayFactory {
         fn create(
             &self,
-            _context: &TrustedLogModuleContext,
+            _context: &LogModuleFactoryContext<'_>,
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             Ok(Box::new(ReplayDestination::new(Arc::clone(&self.records))))
         }
@@ -1049,7 +1087,7 @@ mod tests {
     impl LogDestinationFactory for ContextForwardingFactory {
         fn create(
             &self,
-            context: &TrustedLogModuleContext,
+            context: &LogModuleFactoryContext<'_>,
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             *self
                 .observed_context
@@ -1061,6 +1099,36 @@ mod tests {
             Ok(Box::new(ReplayDestination::new(Arc::new(Mutex::new(
                 Vec::new(),
             )))))
+        }
+    }
+
+    struct MismatchedAcknowledgementDestination;
+
+    impl LogDestination for MismatchedAcknowledgementDestination {
+        fn deliver(
+            &self,
+            record: &CompleteLogRecord,
+            _acknowledgement: DurableAcknowledgement,
+        ) -> Result<DurableAcknowledgement, LogDestinationError> {
+            let record_type = match record.record_type() {
+                LogRecordType::System => LogRecordType::Audit,
+                LogRecordType::Audit => LogRecordType::System,
+            };
+            Ok(DurableAcknowledgement {
+                record_id: record.record_id().duplicate(),
+                record_type,
+            })
+        }
+    }
+
+    struct MismatchedAcknowledgementFactory;
+
+    impl LogDestinationFactory for MismatchedAcknowledgementFactory {
+        fn create(
+            &self,
+            _context: &LogModuleFactoryContext<'_>,
+        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+            Ok(Box::new(MismatchedAcknowledgementDestination))
         }
     }
 
@@ -1098,6 +1166,69 @@ mod tests {
     fn assert_rejection_is_payload_free(error: RecordError, rejected: &str) {
         assert!(!error.to_string().contains(rejected));
         assert!(!format!("{error:?}").contains(rejected));
+    }
+
+    fn cargo_json_messages(output: &std::process::Output) -> Vec<Value> {
+        let stdout =
+            std::str::from_utf8(&output.stdout).expect("Cargo JSON output must be valid UTF-8");
+        stdout
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("Cargo must emit JSON messages"))
+            .collect()
+    }
+
+    fn assert_forbidden_fixture_rejected(
+        fixture_root: &Path,
+        target_root: &Path,
+        binary: &str,
+        expected_code: &str,
+    ) {
+        let forbidden = std::process::Command::new(env!("CARGO"))
+            .arg("check")
+            .arg("--offline")
+            .arg("--quiet")
+            .arg("--message-format=json")
+            .arg("--manifest-path")
+            .arg(fixture_root.join("forbidden-authority/Cargo.toml"))
+            .arg("--bin")
+            .arg(binary)
+            .env("CARGO_TARGET_DIR", target_root)
+            .output()
+            .expect("forbidden external fixture must run");
+
+        assert!(
+            !forbidden.status.success(),
+            "forbidden {binary} fixture unexpectedly compiled"
+        );
+
+        let messages = cargo_json_messages(&forbidden);
+        let errors = messages
+            .iter()
+            .filter(|message| {
+                message["reason"] == "compiler-message" && message["message"]["level"] == "error"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            errors.len(),
+            1,
+            "forbidden {binary} fixture must emit exactly one structured compiler error"
+        );
+
+        let diagnostic = &errors[0]["message"];
+        assert_eq!(
+            diagnostic["code"]["code"].as_str(),
+            Some(expected_code),
+            "forbidden {binary} fixture emitted an unexpected rustc code"
+        );
+        let expected_source = format!("src/{}.rs", binary.replace('-', "_"));
+        assert!(
+            diagnostic["spans"].as_array().is_some_and(|spans| {
+                spans
+                    .iter()
+                    .any(|span| span["is_primary"] == true && span["file_name"] == expected_source)
+            }),
+            "forbidden {binary} fixture must identify its authority-minting source span"
+        );
     }
 
     #[test]
@@ -1338,7 +1469,7 @@ mod tests {
         let record_id = issuer
             .issue([4; RECORD_ID_LENGTH])
             .expect("valid record ID");
-        let original = system_record(record_id.clone(), "complete");
+        let original = system_record(record_id.duplicate(), "complete");
         let changed = system_record(record_id, "different-complete-record");
 
         assert_eq!(destination.deliver(&original), Ok(()));
@@ -1366,7 +1497,7 @@ mod tests {
         let record_id = issuer
             .issue([5; RECORD_ID_LENGTH])
             .expect("valid record ID");
-        let system_record = system_record(record_id.clone(), "complete");
+        let system_record = system_record(record_id.duplicate(), "complete");
         let audit_record = audit_record(record_id);
 
         assert_eq!(destination.deliver(&system_record), Ok(()));
@@ -1375,6 +1506,32 @@ mod tests {
             Err(LogDeliveryError::Destination(
                 LogDestinationError::IntegrityFailure
             ))
+        );
+    }
+
+    #[test]
+    fn configured_destination_rejects_an_acknowledgement_for_the_wrong_record_type() {
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Box::new(MismatchedAcknowledgementFactory),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let destination = catalog
+            .create_destination(&identifier, &trusted_context())
+            .expect("registered destination is configured");
+        let record = system_record(
+            TrustedRecordIssuer::new()
+                .issue([6; RECORD_ID_LENGTH])
+                .expect("valid record ID"),
+            "complete",
+        );
+
+        assert_eq!(
+            destination.deliver(&record),
+            Err(LogDeliveryError::IntegrityFailure)
         );
     }
 
@@ -1424,5 +1581,85 @@ mod tests {
                 .expect("test context lock must not poison"),
             Some((PathBuf::from("/var/lib/weavelit"), [8; RECORD_ID_LENGTH]))
         );
+    }
+
+    #[test]
+    fn external_consumers_can_register_but_cannot_construct_server_authority() {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let target_root = std::env::temp_dir().join(format!(
+            "weavelit-server-log-fixtures-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&target_root);
+
+        let permitted = std::process::Command::new(env!("CARGO"))
+            .arg("check")
+            .arg("--offline")
+            .arg("--quiet")
+            .arg("--manifest-path")
+            .arg(fixture_root.join("permitted-module/Cargo.toml"))
+            .env("CARGO_TARGET_DIR", &target_root)
+            .output()
+            .expect("permitted external fixture must run");
+        assert!(
+            permitted.status.success(),
+            "permitted external fixture failed: {}",
+            String::from_utf8_lossy(&permitted.stderr)
+        );
+
+        let metadata = std::process::Command::new(env!("CARGO"))
+            .arg("metadata")
+            .arg("--offline")
+            .arg("--format-version=1")
+            .arg("--manifest-path")
+            .arg(fixture_root.join("removed-test-support/Cargo.toml"))
+            .output()
+            .expect("external fixture metadata query must run");
+        assert!(
+            metadata.status.success(),
+            "external fixture metadata query failed: {}",
+            String::from_utf8_lossy(&metadata.stderr)
+        );
+        let metadata: Value =
+            serde_json::from_slice(&metadata.stdout).expect("Cargo metadata must be valid JSON");
+        let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let manifest_path = manifest_path
+            .to_str()
+            .expect("log contract manifest path must be UTF-8");
+        let package = metadata["packages"]
+            .as_array()
+            .and_then(|packages| {
+                packages.iter().find(|package| {
+                    package["name"] == "weavelit-server-log"
+                        && package["manifest_path"].as_str() == Some(manifest_path)
+                })
+            })
+            .expect("Cargo metadata must include the log contract package");
+        let features = package["features"]
+            .as_object()
+            .expect("Cargo metadata must include the log contract feature map");
+        assert!(
+            !features.contains_key("test-support"),
+            "external consumer metadata must not expose the removed test-support feature"
+        );
+
+        for (binary, expected_code) in [
+            ("issuer", "E0624"),
+            ("record-identity", "E0308"),
+            ("context", "E0624"),
+            ("acknowledgement", "E0624"),
+            ("dispatch", "E0451"),
+            ("catalog-dispatch", "E0308"),
+        ] {
+            assert_forbidden_fixture_rejected(&fixture_root, &target_root, binary, expected_code);
+        }
+        let _ = std::fs::remove_dir_all(&target_root);
+        for fixture in [
+            "permitted-module",
+            "forbidden-authority",
+            "removed-test-support",
+        ] {
+            let _ = std::fs::remove_file(fixture_root.join(fixture).join("Cargo.lock"));
+        }
     }
 }

@@ -1189,6 +1189,9 @@ dependencies = [
 [[package]]
 name = "weavelit-server-log"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "windows-link"

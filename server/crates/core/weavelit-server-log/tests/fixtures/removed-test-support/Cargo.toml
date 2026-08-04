@@ -1,0 +1,10 @@
+[workspace]
+
+[package]
+name = "weavelit-server-log-removed-test-support-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavelit-server-log = { path = "../../.." }
