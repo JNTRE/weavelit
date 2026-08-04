@@ -6,9 +6,9 @@ use std::{
 use crate::{
     ApplicationDatabase, BackendIdentifier, BackendOpenError, CatalogError,
     ConnectionFieldIdentifier, ConnectionFieldRequirement, ConnectionValidationError,
-    ConnectionValue, ConnectionValueKind, FieldDeclarationError, LifecycleError,
-    LocatorConnectionSettings, SecretClassification, ValidatedConnectionField,
-    ValidatedConnectionSettings, domain::MAX_CONNECTION_FIELDS,
+    ConnectionValue, ConnectionValueKind, DatabaseInspection, DeploymentIdentifier,
+    FieldDeclarationError, LifecycleError, LocatorConnectionSettings, SecretClassification,
+    ValidatedConnectionField, ValidatedConnectionSettings, domain::MAX_CONNECTION_FIELDS,
 };
 
 const MAX_BACKENDS: usize = 64;
@@ -149,6 +149,14 @@ pub trait ApplicationDatabaseFactory: Send + Sync {
         context: &TrustedBackendContext,
         settings: &ValidatedConnectionSettings,
     ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError>;
+
+    /// Inspects existing retained state without opening the backend for normal use.
+    fn inspect_retained(
+        &self,
+        context: &TrustedBackendContext,
+        settings: &ValidatedConnectionSettings,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<RetainedDatabaseInspection, LifecycleError>;
 }
 
 /// Unvalidated backend registration consumed by catalog construction.
@@ -267,6 +275,15 @@ impl fmt::Debug for BackendDeclaration {
 struct BackendEntry {
     declaration: BackendDeclaration,
     factory: Box<dyn ApplicationDatabaseFactory>,
+}
+
+/// Non-mutating result of classifying retained Application Database state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetainedDatabaseInspection {
+    /// The backend safely inspected the retained database state.
+    Inspected(DatabaseInspection),
+    /// The retained state must be redeployed without database inspection.
+    RedeployRequired,
 }
 
 /// Validated runtime-supplied catalog of compiled-in database backends.
@@ -396,37 +413,25 @@ impl BackendCatalog {
         let entry = self
             .entry(identifier)
             .ok_or(LifecycleError::IntegrityFailure)?;
-
-        let mut validated: Vec<ValidatedConnectionField> =
-            Vec::with_capacity(locator_settings.len());
-        for locator_field in locator_settings.iter() {
-            let declaration = entry
-                .declaration
-                .fields
-                .iter()
-                .find(|d| d.identifier() == locator_field.identifier())
-                .ok_or(LifecycleError::IntegrityFailure)?;
-            if declaration.value_kind() != locator_field.value().kind() {
-                return Err(LifecycleError::IntegrityFailure);
-            }
-            validated.push(ValidatedConnectionField::new(
-                locator_field.identifier().clone(),
-                declaration.classification(),
-                locator_field.value().clone(),
-            ));
-        }
-        for declaration in entry.declaration.fields() {
-            if declaration.requirement() == ConnectionFieldRequirement::Required
-                && !validated
-                    .iter()
-                    .any(|f| f.identifier() == declaration.identifier())
-            {
-                return Err(LifecycleError::IntegrityFailure);
-            }
-        }
-        validated.sort_by(|a, b| a.identifier().cmp(b.identifier()));
-        let settings = ValidatedConnectionSettings::new(identifier.clone(), validated);
+        let settings = validated_locator_settings(&entry.declaration, locator_settings)?;
         entry.factory.open(context, &settings)
+    }
+
+    /// Inspects retained state using the backend's existing-only, read-only path.
+    pub fn inspect_retained(
+        &self,
+        locator_settings: &LocatorConnectionSettings,
+        context: &TrustedBackendContext,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        let identifier = locator_settings.backend_identifier();
+        let entry = self
+            .entry(identifier)
+            .ok_or(LifecycleError::IntegrityFailure)?;
+        let settings = validated_locator_settings(&entry.declaration, locator_settings)?;
+        entry
+            .factory
+            .inspect_retained(context, &settings, expected_deployment_identifier)
     }
 
     fn entry(&self, identifier: &BackendIdentifier) -> Option<&BackendEntry> {
@@ -435,6 +440,43 @@ impl BackendCatalog {
             .ok()
             .map(|position| &self.0[position])
     }
+}
+
+fn validated_locator_settings(
+    declaration: &BackendDeclaration,
+    locator_settings: &LocatorConnectionSettings,
+) -> Result<ValidatedConnectionSettings, LifecycleError> {
+    let identifier = locator_settings.backend_identifier();
+    let mut validated: Vec<ValidatedConnectionField> = Vec::with_capacity(locator_settings.len());
+    for locator_field in locator_settings.iter() {
+        let declaration = declaration
+            .fields
+            .iter()
+            .find(|field| field.identifier() == locator_field.identifier())
+            .ok_or(LifecycleError::IntegrityFailure)?;
+        if declaration.value_kind() != locator_field.value().kind() {
+            return Err(LifecycleError::IntegrityFailure);
+        }
+        validated.push(ValidatedConnectionField::new(
+            locator_field.identifier().clone(),
+            declaration.classification(),
+            locator_field.value().clone(),
+        ));
+    }
+    for declaration in declaration.fields() {
+        if declaration.requirement() == ConnectionFieldRequirement::Required
+            && !validated
+                .iter()
+                .any(|field| field.identifier() == declaration.identifier())
+        {
+            return Err(LifecycleError::IntegrityFailure);
+        }
+    }
+    validated.sort_by(|left, right| left.identifier().cmp(right.identifier()));
+    Ok(ValidatedConnectionSettings::new(
+        identifier.clone(),
+        validated,
+    ))
 }
 
 impl fmt::Debug for BackendCatalog {

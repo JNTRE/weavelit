@@ -84,6 +84,12 @@ weavelit-server-init
 weavelit-server-restore
 ```
 
+The shared Log Module contract is `weavelit-server-log`. It owns the Server
+core's typed record and dispatch boundary, not log-record construction or a
+destination implementation. `weavelit-module-log-sqlite` and a future
+`weavelit-module-log-mysql` may implement that contract while retaining their
+own persistence and delivery behavior.
+
 `weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
 shared by **[Init](../glossary.md#states-and-requests)** and
 **[Restore](../glossary.md#states-and-requests)**. The two workflow crates own
@@ -97,10 +103,11 @@ the **[Weavelit Server](../glossary.md#applications-and-interfaces)** can enter
 normal operation: deployment-record and database-locator types and persistence,
 startup classification, deployment-identifier binding, Application Database
 selection orchestration, mutation serialization, lifecycle eligibility, and
-seal reconciliation. The runtime supplies its compiled-in Application Database
-backend catalog and uses the lifecycle result to choose which routes may exist.
-The lifecycle crate does not create new application state, interpret backup
-contents, handle a private recovery key, or implement client presentation.
+fail-closed retained-state interruption classification. The runtime supplies
+its compiled-in Application Database backend catalog and uses the lifecycle
+result to choose which routes may exist. The lifecycle crate does not create
+new application state, interpret backup contents, handle a private recovery
+key, reconcile or seal retained partial state, or implement client presentation.
 
 The initial delivered lifecycle contract depends only on
 `weavelit-server-database`. It reuses that crate's deployment identifier and
@@ -119,8 +126,8 @@ crate to select and reopen the Application Database and to validate and advance
 trusted lifecycle state. It owns initialization requests, first-user and
 Administrators Group creation, initial Log Module configuration and assignment,
 recovery-key generation and delivery, proof verification, the atomic creation of
-new application state, and durable Init-result delivery through the committed
-System Log assignment. Its detailed workflow is defined in the
+new application state, and the required process-level Init-result durable
+acknowledgement through the committed System Log assignment. Its detailed workflow is defined in the
 [Server Init Design](lifecycle/init/init-design.md).
 
 `weavelit-server-restore` owns only the existing-state workflow. It uses the
@@ -128,8 +135,8 @@ lifecycle crate to select and reopen an eligible Application Database and to
 validate and advance trusted lifecycle state. It owns bounded encrypted backup
 staging, backup and recovery-key validation, authenticated decryption, format
 and compatibility validation, restored-session invalidation, protected-secret
-re-encryption, atomic restoration, and durable Restore-result delivery through
-the restored System Log assignment. It never exposes the private
+re-encryption, atomic restoration, and the required process-level Restore-result
+durable acknowledgement through the restored System Log assignment. It never exposes the private
 recovery key or decrypted backup contents outside its Server-owned boundary.
 
 The Init and Restore crates depend on the lifecycle and Application Database

@@ -25,7 +25,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
 - Keep Log Module design aligned with the canonical logging policy in `../spec.md` and `../security-model.md`.
-- Record unresolved destination backup, restore, migration, retention-bound, purge-execution, and remote-credential choices in `../open-questions.md`.
+- Record only genuinely unresolved destination implementation choices in `../open-questions.md`; do not restate the settled destination recovery and retention policies there.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 
 ## Standards and Conventions

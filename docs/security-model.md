@@ -47,6 +47,13 @@ or destroy all persistent deployment anchors. Weavelit cannot distinguish
 complete destruction of those anchors from a new installation; preventing and
 detecting that action belongs to deployment access control and monitoring.
 
+Host availability, power, installation and deployment execution, environment
+validity, and recovery material retained outside Weavelit are deployment
+operator responsibilities. The Server's fail-closed response to retained
+partial lifecycle state is defined by the [Technical Specification](spec.md#operating-responsibility-and-lifecycle-interruption).
+This allocation does not relax any Server validation or protection of untrusted
+clients, data, secrets, authentication, or authorization.
+
 ## HTTPS Listener And Pre-Operational Surface Security Profile
 
 The direct TLS termination and listener requirements are defined by the
@@ -181,10 +188,14 @@ service-manager, development, and container configuration may select the state
 root but must not supply the key, child filenames, or individual artifact paths.
 
 The root uses a closed code-owned filename inventory. Unknown names, unsafe
-entries, or a filesystem that cannot provide required atomic replacement,
-durable file and directory synchronization, and advisory locking must fail
-closed without a reduced-security mode. A future release may deliberately add
-code-owned names; older binaries must reject rather than ignore them.
+entries, or a filesystem that cannot provide required atomic replacement or
+advisory locking must fail closed without a reduced-security mode. Failures of
+the configured file or directory synchronization operations during a valid run
+must also fail closed. These controls preserve active-operation integrity; they
+do not promise persistence across host power loss, filesystem loss or
+corruption, abrupt process termination, or an operator-broken environment. A
+future release may deliberately add code-owned names; older binaries must
+reject rather than ignore them.
 
 Milestone 1 does not rotate this key in place and has no external monotonic
 anchor. A missing, malformed, corrupted, or wrong key must fail startup closed
@@ -194,11 +205,12 @@ independent anchor replay. It does not guarantee detection when sufficient host
 authority coherently replaces the complete key, deployment record, and database
 locator set with an older valid set.
 
-A valid key with no other deployment or database artifact is the only resumable
-incomplete bootstrap state. Owned key and decrypted plaintext buffers must be
-zeroized on normal and error exits where the maintained facilities can control
-their storage, without claiming protection against unavoidable copies, swap,
-process-memory inspection, or host compromise.
+A valid key with no other deployment or database artifact is incomplete
+bootstrap state and must fail startup closed; it must not trigger key reuse,
+record creation, or another automatic recovery action. Owned key and decrypted
+plaintext buffers must be zeroized on normal and error exits where the
+maintained facilities can control their storage, without claiming protection
+against unavoidable copies, swap, process-memory inspection, or host compromise.
 
 The lifecycle anchor store implements this profile with maintained
 XChaCha20-Poly1305, operating-system randomness, strict typed JSON, canonical
@@ -260,9 +272,10 @@ without application state and expose only stable, redacted errors.
 Restore must not persist a private recovery key, unwrapped backup key, or
 decrypted backup plaintext. If temporary staging is required, the Server may
 persist only the bounded encrypted artifact in protected storage and must remove
-it according to the Restore workflow's success, failure, and interruption
-rules. The Restore Design owns concrete formats, algorithms, bounds, validation
-order, staging mechanics, and cleanup flow.
+it after success or rejection before lifecycle interruption. Retained staging
+state after interruption must remain fail-closed without Server-managed cleanup
+or resumption. The Restore Design owns concrete formats, algorithms, bounds,
+validation order, staging mechanics, and cleanup flow.
 
 ## Log And Client Output Security Profile
 
@@ -277,6 +290,11 @@ submitted secrets. Client-visible errors must also exclude raw internal traces,
 dependency-specific details, and sensitive filesystem information. Redaction
 must preserve the accountability fields required for an Audit Log and the
 diagnostic classification required for a System Log.
+
+Log-record validation failures must use stable payload-free errors. Their
+display and diagnostic representations must not include rejected values, and a
+logging-required workflow must fail closed when a pre-redacted bounded record
+cannot be constructed.
 
 ## Component Security Ownership
 

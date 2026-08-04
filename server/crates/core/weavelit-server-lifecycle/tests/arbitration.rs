@@ -7,12 +7,13 @@ use std::{
 };
 
 use weavelit_server_database::{CheckpointMetadata, DatabaseInspection};
-use weavelit_server_database_sqlite::SqliteDatabase;
+use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
-    ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
-    BackendRegistration, CheckpointMetadata as LifecycleCheckpointMetadata,
-    LifecycleClassification, LifecycleError, LifecycleState, LifecycleStore, TrustedBackendContext,
-    ValidatedConnectionSettings, WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
+    AnchorLoadState, ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog,
+    BackendIdentifier, BackendRegistration, CheckpointMetadata as LifecycleCheckpointMetadata,
+    LifecycleClassification, LifecycleError, LifecycleState, LifecycleStore,
+    RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
+    WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,25 @@ impl ApplicationDatabaseFactory for SqliteFactory {
         SqliteDatabase::open(context.application_database_path())
             .map(|db| Box::new(db) as Box<dyn ApplicationDatabase>)
             .map_err(|_| LifecycleError::DependencyUnavailable)
+    }
+
+    fn inspect_retained(
+        &self,
+        context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        expected_deployment_identifier: weavelit_server_lifecycle::DeploymentIdentifier,
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        SqliteDatabase::inspect_retained(
+            context.application_database_path(),
+            expected_deployment_identifier,
+        )
+        .map(|inspection| match inspection {
+            RetainedSqliteInspection::Inspected(inspection) => {
+                RetainedDatabaseInspection::Inspected(inspection)
+            }
+            RetainedSqliteInspection::WalPresent => RetainedDatabaseInspection::RedeployRequired,
+        })
+        .map_err(|_| LifecycleError::DependencyUnavailable)
     }
 }
 
@@ -218,217 +238,11 @@ fn conflicting_workflow_rejected_when_checkpoint_exists() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: reconcile_workflow
-// ---------------------------------------------------------------------------
-
-#[test]
-fn reconcile_advances_record_when_uninitialized_with_matching_checkpoint() {
-    // Build state: select database + create checkpoint WITHOUT advancing record.
-    let (_dir, path) = state_root();
-    {
-        let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        let catalog = sqlite_catalog();
-        let context = sqlite_context(&path);
-        store
-            .select_database(&catalog, &context, &sqlite_backend(), vec![])
-            .unwrap();
-        let dep_id = store.record().deployment_identifier();
-        let mut db = store.reopen_selected_database(&catalog, &context).unwrap();
-        db.create_checkpoint(&WorkflowCheckpoint::new(
-            dep_id,
-            WorkflowKind::Init,
-            init_metadata(),
-        ))
-        .unwrap();
-        // Do NOT advance the record — simulate crash after checkpoint, before record.
-        drop(db);
-        drop(store);
-    }
-
-    // Reopen and wrap in arbiter for reconcile.
-    let store = LifecycleStore::open_or_create(&path).unwrap();
-    assert_eq!(store.record().state(), LifecycleState::Uninitialized);
-    let arbiter = WorkflowArbiter::new(store);
-
-    arbiter
-        .reconcile_workflow(
-            &sqlite_catalog(),
-            &sqlite_context(&path),
-            WorkflowKind::Init,
-            &init_metadata(),
-        )
-        .expect("reconcile must succeed");
-
-    assert_eq!(
-        arbiter.record_state(),
-        LifecycleState::InitializationPending
-    );
-    drop(arbiter);
-
-    let store = LifecycleStore::open_or_create(&path).unwrap();
-    assert_eq!(
-        store.record().state(),
-        LifecycleState::InitializationPending
-    );
-    drop(store);
-}
-
-#[test]
-fn reconcile_is_idempotent_when_record_already_advanced() {
-    let (_dir, path) = state_root();
-    let (arbiter, catalog, context) = setup(&path);
-
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
-
-    arbiter
-        .reconcile_workflow(&catalog, &context, WorkflowKind::Init, &init_metadata())
-        .expect("reconcile must be idempotent");
-
-    assert_eq!(
-        arbiter.record_state(),
-        LifecycleState::InitializationPending
-    );
-}
-
-#[test]
-fn reconcile_rejected_for_wrong_workflow_kind() {
-    let (_dir, path) = state_root();
-    let (arbiter, catalog, context) = setup(&path);
-
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
-
-    assert_eq!(
-        arbiter
-            .reconcile_workflow(
-                &catalog,
-                &context,
-                WorkflowKind::Restore,
-                &restore_metadata()
-            )
-            .unwrap_err(),
-        WorkflowError::StateMismatch
-    );
-}
-
-#[test]
-fn reconcile_rejected_for_wrong_metadata() {
-    let (_dir, path) = state_root();
-    let (arbiter, catalog, context) = setup(&path);
-
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
-
-    assert_eq!(
-        arbiter
-            .reconcile_workflow(
-                &catalog,
-                &context,
-                WorkflowKind::Init,
-                &metadata(b"different")
-            )
-            .unwrap_err(),
-        WorkflowError::StateMismatch
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Tests: reset_workflow
-// ---------------------------------------------------------------------------
-
-#[test]
-fn reset_returns_to_uninitialized_state_with_database_selected() {
-    let (_dir, path) = state_root();
-    let (arbiter, catalog, context) = setup(&path);
-
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
-    arbiter
-        .reset_workflow(&catalog, &context, WorkflowKind::Init, &init_metadata())
-        .expect("reset must succeed");
-
-    assert_eq!(arbiter.record_state(), LifecycleState::Uninitialized);
-    drop(arbiter);
-
-    let store = LifecycleStore::open_or_create(&path).unwrap();
-    assert_eq!(store.record().state(), LifecycleState::Uninitialized);
-    assert!(
-        store.locator().is_some(),
-        "database selection must be preserved after reset"
-    );
-    let mut db = store
-        .reopen_selected_database(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-    assert_eq!(
-        db.inspect(store.record().deployment_identifier()).unwrap(),
-        DatabaseInspection::Uninitialized
-    );
-    drop(store);
-}
-
-#[test]
-fn reset_rejected_for_wrong_workflow_kind() {
-    let (_dir, path) = state_root();
-    let (arbiter, catalog, context) = setup(&path);
-
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
-
-    assert_eq!(
-        arbiter
-            .reset_workflow(
-                &catalog,
-                &context,
-                WorkflowKind::Restore,
-                &restore_metadata()
-            )
-            .unwrap_err(),
-        WorkflowError::StateMismatch
-    );
-}
-
-#[test]
-fn reset_rejected_when_record_is_not_pending() {
-    let (_dir, path) = state_root();
-    let (arbiter, catalog, context) = setup(&path);
-
-    assert_eq!(
-        arbiter
-            .reset_workflow(&catalog, &context, WorkflowKind::Init, &init_metadata())
-            .unwrap_err(),
-        WorkflowError::NotAllowed
-    );
-}
-
-#[test]
-fn reset_rejected_for_wrong_metadata() {
-    let (_dir, path) = state_root();
-    let (arbiter, catalog, context) = setup(&path);
-
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
-
-    assert_eq!(
-        arbiter
-            .reset_workflow(&catalog, &context, WorkflowKind::Init, &metadata(b"other"))
-            .unwrap_err(),
-        WorkflowError::StateMismatch
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Tests: crash-point ordering
 // ---------------------------------------------------------------------------
 
 #[test]
-fn crash_after_checkpoint_before_record_is_reconciled_by_classify_startup() {
+fn crash_after_checkpoint_before_record_requires_redeploy_at_startup() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
@@ -449,40 +263,15 @@ fn crash_after_checkpoint_before_record_is_reconciled_by_classify_startup() {
         drop(store); // Lock released; record is still Uninitialized.
     }
 
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let store = LifecycleStore::open_or_create(&path).unwrap();
     let classification = store
         .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
         .unwrap();
     assert_eq!(
         classification,
-        LifecycleClassification::InitializationPending(WorkflowKind::Init)
-    );
-    drop(store);
-}
-
-#[test]
-fn crash_after_record_reset_before_checkpoint_discard_reclassifies_as_pending() {
-    // After successful reset, restart should see UninitializedWithDatabase.
-    // Crash scenario (record reset but checkpoint not discarded) is tested
-    // through classify_startup behavior: Uninitialized + checkpoint → advances.
-    let (_dir, path) = state_root();
-    let (arbiter, catalog, context) = setup(&path);
-
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
-    arbiter
-        .reset_workflow(&catalog, &context, WorkflowKind::Init, &init_metadata())
-        .unwrap();
-    drop(arbiter);
-
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    let classification = store
-        .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-    assert_eq!(
-        classification,
-        LifecycleClassification::UninitializedWithDatabase
+        LifecycleClassification::Interrupted(
+            weavelit_server_lifecycle::InterruptedLifecycleAction::RedeployNew
+        )
     );
     drop(store);
 }
@@ -582,50 +371,40 @@ fn begin_rejected_when_checkpoint_already_exists_for_same_workflow() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: redaction
+// Tests: retained eligible state and redaction
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reset_retries_from_uninitialized_when_checkpoint_discard_was_interrupted() {
-    let (_dir, path) = state_root();
-    let mut store = LifecycleStore::open_or_create(&path).unwrap();
-    let catalog = sqlite_catalog();
-    let context = sqlite_context(&path);
-    store
-        .select_database(&catalog, &context, &sqlite_backend(), vec![])
-        .unwrap();
-    let dep_id = store.record().deployment_identifier();
+fn retained_eligible_store_can_begin_init_or_restore() {
+    for (kind, metadata) in [
+        (WorkflowKind::Init, init_metadata()),
+        (WorkflowKind::Restore, restore_metadata()),
+    ] {
+        let (_dir, path) = state_root();
+        {
+            let mut store = LifecycleStore::open_or_create(&path).unwrap();
+            store
+                .select_database(
+                    &sqlite_catalog(),
+                    &sqlite_context(&path),
+                    &sqlite_backend(),
+                    vec![],
+                )
+                .unwrap();
+        }
 
-    // Insert checkpoint directly to simulate partial reset: record was written to
-    // Uninitialized but discard_checkpoint had not yet succeeded.
-    let mut db = store.reopen_selected_database(&catalog, &context).unwrap();
-    db.create_checkpoint(&WorkflowCheckpoint::new(
-        dep_id,
-        WorkflowKind::Init,
-        init_metadata(),
-    ))
-    .unwrap();
-    drop(db);
+        let store = LifecycleStore::open_or_create(&path).unwrap();
+        assert_eq!(store.load_state(), AnchorLoadState::Retained);
+        let arbiter = WorkflowArbiter::new(store);
 
-    let arbiter = WorkflowArbiter::new(store);
-    assert_eq!(arbiter.record_state(), LifecycleState::Uninitialized);
-
-    arbiter
-        .reset_workflow(&catalog, &context, WorkflowKind::Init, &init_metadata())
-        .expect("reset must succeed from partial-reset Uninitialized+checkpoint state");
-
-    assert_eq!(arbiter.record_state(), LifecycleState::Uninitialized);
-    drop(arbiter);
-
-    // Checkpoint must have been discarded.
-    let store = LifecycleStore::open_or_create(&path).unwrap();
-    let mut db = store
-        .reopen_selected_database(&sqlite_catalog(), &sqlite_context(&path))
-        .unwrap();
-    assert_eq!(
-        db.inspect(store.record().deployment_identifier()).unwrap(),
-        DatabaseInspection::Uninitialized
-    );
+        arbiter
+            .begin_workflow(&sqlite_catalog(), &sqlite_context(&path), kind, metadata)
+            .expect("retained eligible store must permit a new workflow");
+        assert_eq!(
+            arbiter.record_state(),
+            LifecycleState::InitializationPending
+        );
+    }
 }
 
 #[test]

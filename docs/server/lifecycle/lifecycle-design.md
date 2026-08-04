@@ -5,7 +5,8 @@ the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** enters
 normal operation. It owns startup classification, the deployment record,
 **[Application Database](../../glossary.md#applications-and-interfaces)** selection
 and locator persistence, workflow arbitration, mutation serialization, and
-irreversible sealing. The [Server Init Design](init/init-design.md) and
+irreversible sealing. It classifies retained partial lifecycle state as
+fail-closed and non-operational; it does not recover that state. The [Server Init Design](init/init-design.md) and
 [Server Restore Design](restore/restore-design.md) own their distinct application-state
 workflows.
 
@@ -67,9 +68,9 @@ implementation detail.
 It opens one trusted root without following any path component, validates its
 closed inventory, holds the process-lifetime lock, and creates or authenticates
 the key, deployment record, and active locator before returning. It never opens
-an Application Database. `FirstStartCreated`, `FirstStartResumed`, and
-`Retained` report whether the store created both anchors, recovered the sole
-permitted key-only interruption, or reopened retained state.
+an Application Database. `FirstStartCreated` and `Retained` report whether the
+store created a complete initial anchor set or reopened complete retained state.
+It does not resume an incomplete anchor set.
 
 Validated request settings retain the catalog's trusted secret classifications.
 Before locator persistence, the store converts them to backend-bound typed
@@ -78,12 +79,12 @@ complete locator payload is encrypted. A later database-selection operation
 must revalidate retained field types and classifications against the current
 runtime catalog before invoking its backend factory.
 
-Locator replacement durably publishes an immutable generation, then atomically
-replaces the deployment record pointer as the commit point, authenticates on
-reopen, and removes the prior generation. Record replacement requires the same
-deployment identifier and active locator generation. Both operations remain
-persistence mechanisms; eligibility and backend preflight remain owned by the
-selection and startup-classification work.
+Locator replacement publishes an immutable generation through its configured
+valid-run commit path, then atomically replaces the deployment record pointer
+as the commit point, authenticates on reopen, and removes the prior generation.
+Record replacement requires the same deployment identifier and active locator
+generation. Both operations remain persistence mechanisms; eligibility and
+backend preflight remain owned by the selection and startup-classification work.
 
 Raw locator creation and replacement require a non-exhaustive
 `LocatorPersistencePermit`; raw record replacement requires a non-exhaustive
@@ -128,18 +129,25 @@ application request may select the root or a child path.
 The lifecycle crate holds the opened root directory handle for its lifetime and
 performs child inspection and mutation relative to that handle. It creates or
 opens `lifecycle.lock` without following links and obtains a non-blocking
-exclusive lock before inspecting another child. The lock is held for the
-process lifetime. A second Server process using the same root exits before
-binding HTTPS. The pinned Rust standard library's `File::try_lock` supplies this
-process lock; no third-party lock dependency is required.
+exclusive lock before inventorying or inspecting another child. The lock is
+held for the process lifetime. Contention therefore fails as `LockContended`
+even when another process has retained a temporary, unknown, or otherwise
+invalid child. A newly created lock with no other entry is a fresh bootstrap;
+an existing lock with no other entry, or a newly created lock with any retained
+entry, fails closed after lock acquisition. A second Server process using the
+same root exits before binding HTTPS. The pinned Rust standard library's
+`File::try_lock` supplies this process lock; no third-party lock dependency is
+required.
 
 Before creating a managed file, the process sets an owner-only `0077` umask.
 Every managed child must be a regular non-symlink file owned by the effective
 user, have exactly mode `0600`, and have exactly one hard link. The state-root
-filesystem must provide same-directory atomic replacement, durable file and
-directory synchronization, and advisory locking. A filesystem that cannot
-provide those guarantees is unsupported; a missing or failed guarantee stops
-startup or mutation without a reduced-durability mode.
+filesystem must provide same-directory atomic replacement and advisory locking.
+A missing or failed configured file or directory synchronization operation stops
+startup or mutation without a reduced-safety mode. These valid-run controls
+support atomicity and fail-closed classification; they do not promise survival
+across host power loss, filesystem loss or corruption, abrupt process
+termination, or an operator-broken environment.
 
 ### Version 1 State-Root Inventory
 
@@ -155,6 +163,10 @@ Version 1 permits only these code-owned entries beneath the state root:
 | `application.sqlite3-journal` | SQLite rollback or crash-recovery journal. |
 | `application.sqlite3-wal` | SQLite write-ahead log. |
 | `application.sqlite3-shm` | SQLite WAL shared-memory index. |
+| `log.sqlite3` | SQLite Log Module destination. |
+| `log.sqlite3-journal` | SQLite Log Module rollback or crash-recovery journal. |
+| `log.sqlite3-wal` | SQLite Log Module write-ahead log. |
+| `log.sqlite3-shm` | SQLite Log Module WAL shared-memory index. |
 
 `<generation>` is exactly 22 canonical unpadded URL-safe Base64 characters
 decoding to a nonzero 16-byte value. Lifecycle writes may also leave one of
@@ -170,11 +182,14 @@ database-locator-<generation>.json.tmp-<temporary>
 The root may contain at most 256 entries. Any other name, subdirectory, FIFO,
 socket, device, symbolic link, unsafe hard link, wrong owner, wrong mode, or
 excess entry fails startup. After the active anchor set authenticates, the
-lifecycle crate removes recognized lifecycle temporary files and unreferenced
-locator generations and synchronizes the directory before exposing a route. An
-unsafe recognized entry or cleanup failure fails closed. The lifecycle crate
-never removes SQLite's `-journal`, `-wal`, or `-shm` files; the SQLite backend
-owns their validation and recovery.
+lifecycle crate does not remove recognized lifecycle temporary files,
+unreferenced locator generations, or interrupted database-selection artifacts.
+Their presence is retained partial lifecycle state and is classified as
+non-operational. The lifecycle crate never removes SQLite's `-journal`, `-wal`,
+or `-shm` files; the SQLite backend owns Application Database sidecar validation
+and recovery, and the SQLite Log Module owns the corresponding log-destination
+behavior. This boundary does not authorize the lifecycle crate to infer which
+retained files an operator intends to discard.
 
 Future Server releases and compiled-in backends may expand this closed
 code-owned inventory. A binary that does not recognize a newer entry fails
@@ -298,7 +313,7 @@ selected Application Database. Authentication completes before plaintext JSON
 parsing. No format field selects arbitrary cryptography: version 1 accepts only
 the exact algorithm values above.
 
-### Creation And Crash-Safe Replacement
+### Creation And Interruption Classification
 
 After obtaining the process lock and validating the root inventory, an empty
 deployment creates state in this order:
@@ -311,42 +326,46 @@ deployment creates state in this order:
 3. Reopen and authenticate both files before exposing restricted status.
 
 A valid key file with no record, locator, Application Database file, or SQLite
-sidecar is the one resumable incomplete anchor set. Startup reuses that key and
-creates a fresh deployment identifier and record. Any malformed key, record or
-locator without a key, locator or database artifact without a record, or other
-partial bootstrap combination fails closed and never causes key regeneration.
+sidecar is an interrupted bootstrap state. Any malformed key, record or locator
+without a key, locator or database artifact without a record, or other partial
+bootstrap combination is classified as non-operational and never causes key
+reuse, regeneration, record creation, or another automatic recovery action.
 
 Each lifecycle write uses an artifact-specific temporary name with a fresh
 nonzero random 16-byte suffix. It creates the temporary regular file
 exclusively at mode `0600`, writes all canonical bytes, calls `sync_all`,
 atomically renames it to the final same-directory name, and synchronizes the
-state-root directory. Key and locator publication require the destination to be
-absent; deployment-record replacement atomically replaces the prior record.
-Any operation or synchronization failure returns a redacted failure and exposes
-no route. A crash before rename leaves an ignorable recognized temporary file;
-a crash after rename leaves the final complete file and is reconciled from the
-directory state.
+state-root directory as its configured valid-run commit path. Key and locator
+publication require the destination to be absent; deployment-record replacement
+atomically replaces the prior record. Any operation or synchronization failure
+returns a redacted failure and exposes no route. Those operations do not
+guarantee state survival after host failure. A crash before rename or after
+publication leaves retained state for startup classification when the Server can
+start; the lifecycle crate does not infer that the write may be completed or
+cleaned up.
 
 Database selection and replacement use prepare-then-commit ordering:
 
 1. Fully preflight the target backend and database without changing the active
    locator.
-2. Generate a fresh nonzero locator generation, write and durably publish its
-   immutable locator file, then reopen and authenticate it.
-3. Write and durably replace the deployment record so its
+2. Generate a fresh nonzero locator generation, write and publish its immutable
+   locator file through the configured valid-run commit path, then reopen and
+   authenticate it.
+3. Write and replace the deployment record through the configured valid-run
+   commit path so its
    `locator_generation` points to the new locator. This record replacement is
    the commit point.
 4. Reopen and authenticate the active record and locator, remove every safe
-   unreferenced locator generation, synchronize the root, and only then expose
-   the selected database or another route.
+   unreferenced locator generation during the same valid selection operation,
+   synchronize the root, and only then expose the selected database or another
+   route.
 
-A crash before the record commit leaves the old selection active and the new
-locator as a removable orphan. A crash after the record commit leaves the new
-selection active; the old locator is removed during reconciliation. If the
-record points to a missing, unsafe, unauthentic, mismatched, or unavailable
-locator, startup fails closed rather than falling back to another generation.
-The lifecycle crate never scans for a usable locator or selects the newest
-filename.
+A crash before or after the record commit leaves retained partial lifecycle
+state. Startup classifies it as non-operational; it does not remove an orphan,
+select a previous or newer generation, or complete the selection. If the record
+points to a missing, unsafe, unauthentic, mismatched, or unavailable locator,
+startup fails closed rather than falling back to another generation. The
+lifecycle crate never scans for a usable locator or selects the newest filename.
 
 The deployment key remains fixed for the deployment. Milestone 1 does not
 rotate it in place. A missing, malformed, corrupted, or wrong key is never
@@ -388,20 +407,17 @@ Initialized
 The selected database distinguishes an Init checkpoint from a Restore
 checkpoint while reporting both as non-operational pending state. Each pending
 checkpoint carries the deployment identifier, a workflow discriminator, and
-only the non-secret workflow metadata required for safe retry or reconciliation.
+only the non-secret workflow metadata required to classify the retained state.
 Workflow crates own the meaning and validation of their checkpoint metadata.
 
 No supported operation transitions an `Initialized` record to another state.
-`InitializationPending` may return to `Uninitialized` only through an explicit
-workflow recovery operation after the lifecycle crate verifies that the
-selected database contains no application state. Only the workflow identified
-by the checkpoint may request that reset; the other workflow remains
-unavailable. The lifecycle crate performs the shared record transition, and the
-owning workflow discards its checkpoint and any workflow-owned temporary
-artifacts according to its design. Complete removal of every persistent
-deployment anchor by sufficient host authority may appear to the Server as a
-new installation; preventing or detecting that destruction belongs to
 deployment access control and monitoring.
+`InitializationPending` does not return to `Uninitialized` through a supported
+interface. On restart, it is an interrupted lifecycle classification: no
+workflow route, reset, discard, reconciliation, deletion, or sealing is
+available. Complete removal of every persistent deployment anchor by sufficient
+host authority may appear to the Server as a new installation; preventing or
+detecting that destruction belongs to deployment access control and monitoring.
 
 ## Startup Classification
 
@@ -455,27 +471,29 @@ each startup rather than issuing, renewing, or replacing it.
 | Absent | Locator present | Fail startup closed without exposing Init or Restore. |
 | `Uninitialized` | Locator absent | Expose restricted pre-operational status without a database selection. |
 | `Uninitialized` | Matching locator and uninitialized database | Expose restricted pre-operational status with the selected database. |
-| `Uninitialized` | Matching locator and Init checkpoint | Advance the record to `InitializationPending`, then expose only Init reconciliation. |
-| `Uninitialized` | Matching locator and Restore checkpoint | Advance the record to `InitializationPending`, then expose only Restore reconciliation. |
-| `Uninitialized` | Matching locator and initialized database | Fail startup closed because the combination violates finalization ordering. |
-| `InitializationPending` | Matching locator and Init checkpoint | Expose only Init reconciliation and finalization. |
-| `InitializationPending` | Matching locator and Restore checkpoint | Expose only Restore reconciliation and finalization. |
-| `InitializationPending` | Matching locator and initialized database | Complete workflow-specific post-commit reconciliation and seal the record before normal operation. |
+| `Uninitialized` | Matching locator and Init checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_new`; expose no route. |
+| `Uninitialized` | Matching locator and Restore checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_restore`; expose no route. |
+| `Uninitialized` | Matching locator and initialized database | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required`; expose no route. |
+| `InitializationPending` | Matching locator and Init checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_new`; expose no route. |
+| `InitializationPending` | Matching locator and Restore checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_restore`; expose no route. |
+| `InitializationPending` | Matching locator and initialized database | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required`; expose no route. |
 | `Initialized` | Matching locator and initialized database | Load application state and start normal authenticated operation. |
+| Any record requiring retained SQLite inspection | Existing `application.sqlite3-wal` | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required` without opening the Application Database; expose no route. |
 | Any existing record | Missing required locator, identifier mismatch, unexpected state combination, unsafe or malformed state, unavailable database, or integrity failure | Fail startup closed without exposing Init or Restore. |
 
 An unavailable, missing, malformed, unsafe, mismatched, or integrity-failing
 configured database never causes the Server to expose a pre-operational
-workflow as fallback recovery. An `InitializationPending` deployment is
-non-operational and exposes only the workflow identified by its checkpoint. It
-does not enable login, administration, or normal client functions.
+workflow as fallback recovery. An `InitializationPending` deployment and every
+other retained partial lifecycle classification are non-operational. They do
+not enable login, administration, normal client functions, Init, Restore, or a
+status fallback.
 
 The Milestone 1 runtime maps the two uninitialized rows to the Web UI Client
 Module's status-only Pre-Operational Surface. It removes that status route from
-every pending, sealed, normal, and failed-startup classification. Pending Init
-and Restore classifications retain the sole direct TLS listener but register no
-functional route; every valid unmatched request receives the Client Module's
-fixed JSON `404` result. The
+every retained partial, sealed, normal, and failed-startup classification.
+Retained partial classifications retain the sole direct TLS listener but
+register no functional route; every valid unmatched request receives the Client
+Module's fixed JSON `404` result. The
 [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
 defines its public contract; this lifecycle boundary remains the authority for
 whether the route exists.
@@ -521,26 +539,28 @@ Uninitialized -> DatabaseSelected -> InitializationPending -> Initialized
 
 The deployment record remains `Uninitialized` through `DatabaseSelected`.
 Before either workflow commits application state, its database checkpoint and
-the deployment record become `InitializationPending` using crash-safe ordering.
+the deployment record become `InitializationPending` using fail-closed ordering.
 The Application Database performs the workflow's complete state replacement
 atomically and remains the final one-time guard. The committed state carries a
 workflow-specific System Log completion obligation with non-secret event fields.
-After that commit, the owning workflow durably delivers the completion result
-through the committed System Log assignment and marks the obligation complete.
+After that commit, the owning workflow receives the durable acknowledgement
+defined in the [Technical Specification](../../spec.md#logging-and-accountability)
+for the completion result through the committed System Log assignment and marks
+the obligation complete.
 Only then does the lifecycle crate seal the deployment record `Initialized`.
-Only after the seal is durable may the runtime remove all pre-operational routes,
-load application state, and enable normal authenticated operation in the same
-process.
+Only after the seal's configured valid-run commit path completes may the runtime
+remove all pre-operational routes, load application state, and enable normal
+authenticated operation in the same process.
 
 If database state commits but sealing or in-process activation fails, the
 runtime exposes no routes and fails closed. On restart, the lifecycle crate
-verifies the matching initialized state, completes any workflow-specific
-post-commit requirement, seals the record, and only then permits normal
-operation. The lifecycle crate does not interpret a workflow-specific
-obligation: it invokes the workflow crate that created it and seals only after
-that crate reports durable completion. Init and Restore each own their required
-System Log result. Reconciliation retries incomplete completion logging and does
-not seal until the result is durable. Neither Init nor Restore is exposed again.
+classifies the retained partial state and exits without invoking either workflow
+crate, retrying completion logging, sealing the record, or exposing Init or
+Restore. The operator action class distinguishes a failed new deployment from a
+failed replacement Restore: a new deployment requires redeploying and beginning
+Init again; a replacement Restore requires redeploying and using independently
+retained compatible backup and recovery material. The lifecycle crate neither
+retains that material nor manages its durability.
 
 ## Errors And Sensitive Output
 
@@ -558,6 +578,15 @@ typed error presentation. The allowed pairs are:
 | `storage_unavailable` | `storage_operation_failed`, `database_unavailable` |
 | `storage_integrity_failure` | `anchor_set_invalid`, `anchor_version_unsupported`, `anchor_binding_invalid`, `database_integrity_failure` |
 | `deployment_state_invalid` | `state_combination_invalid` |
+| `lifecycle_interrupted` | `operator_redeploy_new`, `operator_redeploy_restore`, `operator_redeploy_required` |
+
+The `lifecycle_interrupted` pairs are stable action-class diagnostics. They
+identify only whether the operator must redeploy for a new deployment, redeploy
+before a new Restore using independently retained material, or redeploy before
+determining a fresh supported workflow. `operator_redeploy_required` also
+covers retained SQLite WAL state that cannot be inspected without touching
+source artifacts. These pairs do not disclose retained payloads, host paths,
+deployment identifiers, state contents, or internal errors.
 
 For example, a missing environment variable produces exactly:
 
@@ -646,19 +675,25 @@ Base64, and canonical JSON parsing, restrictive and atomic local writes,
 rejection of client-supplied paths and file references, Server-derived backend
 paths, encrypted connection-secret persistence and restart reopening,
 deployment-identifier matching, backend selection and replacement, mutation
-serialization, workflow exclusivity, every cross-store crash point, seal
-reconciliation, direct invocation after sealing, rejection before secret or
-backup reading, redaction, and fail-closed missing, malformed, mismatched,
-unavailable, and integrity-failing state.
+serialization, workflow exclusivity, cross-store operation failure handling, seal
+interruption classification, absence of reconciliation, retry, reset, deletion,
+recreation, and sealing after restart, direct invocation after sealing,
+rejection before secret or backup reading, redaction, and fail-closed missing,
+malformed, mismatched, unavailable, and integrity-failing state.
 
 Real-filesystem tests use isolated roots to exercise missing and malformed
 configuration, root execution, every symlink position, wrong owner and mode,
 hard links, non-regular and unknown entries, the 256-entry bound, lock
-contention, unsupported or failed synchronization, temporary cleanup, key-only
-bootstrap recovery, every invalid partial anchor set, and every failure point
-before and after file sync, rename, record commit, directory sync, and orphan
-cleanup. Tests retain and reopen real SQLite `-journal`, `-wal`, and `-shm`
-sidecars through the backend rather than deleting them as lifecycle orphans.
+contention, unavailable or failed synchronization operations, retained temporary
+and orphan classification, interrupted bootstrap classification, every invalid
+partial anchor set, and failure handling for file synchronization, rename,
+record commit, directory synchronization, and cleanup. Tests retain real SQLite
+`-journal`, `-wal`, and `-shm` sidecars rather than deleting them as lifecycle
+orphans. A retained WAL is classified through the generic operator action
+without opening SQLite, and raw directory snapshots prove that the original
+database and sidecars remain unchanged. They do not assert power-cut or abrupt
+termination survival as a Weavelit guarantee; where the Server can restart,
+they assert fail-closed classification and redacted operator-action output.
 
 Format and cryptographic negative vectors change one property at a time:
 oversized, empty, truncated, invalid UTF-8, non-canonical, duplicate, unknown,

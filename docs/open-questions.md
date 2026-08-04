@@ -90,23 +90,16 @@ What wire format and compatibility policy apply to later
 **[Restore](glossary.md#states-and-requests)** contracts, results, errors,
 pagination, idempotency keys, and Server/Weavelit CLI version compatibility?
 
-### 9. Application Database and log backup, retention, and recovery
+### 9. Application Database backup and Restore
 
 The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
 SQLite and is selected through the shared pre-operational contract before
 either **[Init](glossary.md#states-and-requests)** or
 **[Restore](glossary.md#states-and-requests)**; Weavelit does not support
 in-place database migration. What versioned backup format, cryptographic
-envelope, recovery-key format, compatibility window, and artifact-retention
-policy apply? How do upload retries, protected encrypted staging and cleanup,
-interrupted Restore, and crash reconciliation work? What delivery and
-deduplication semantics apply when Init or Restore retries its required durable
-System Log completion result after application-state commit but before sealing?
-Which additional fields, if any, identify the backup format without exposing
-backup contents? How are the
-separate System Log and Audit Log databases and remote Log Module destinations
-backed up, protected, restored, and migrated? What configuration bounds and
-execution behavior apply to their independent retention and purge policies?
+envelope, recovery-key format, compatibility window, and normal-request
+artifact-staging policy apply? Which additional fields, if any, identify the
+backup format without exposing backup contents?
 
 ### 10. Secrets and provider credential management
 
@@ -117,6 +110,18 @@ automation credentials encrypted or protected by the host, rotated, revoked,
 recovered, and kept out of clients, System Logs, and Audit Logs? How are
 credentials used by remote Log Modules protected, rotated, revoked, and kept out
 of all log output?
+
+### 15. Direct-TLS HTTP version compatibility
+
+The Milestone 1 [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md)
+listener currently accepts HTTP/1.0 request lines while serializing fixed HTTP/1.1
+response lines. This limited compatibility risk is explicitly deferred and
+accepted for the current loopback-only, status-only scope. Should the direct-TLS
+listener preserve the request version in fixed responses to support HTTP/1.0, or
+instead restrict supported request versions to HTTP/1.1? The future decision
+needs executable direct-TLS process compatibility evidence for the selected
+behavior and validation that no cleartext listener exists, consistent with the
+[Testing and Validation Policy](testing.md).
 
 ## Packages and Integrations
 
@@ -172,3 +177,5 @@ appropriate single source of truth after that validation.
 - [Technical Specification](spec.md)
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
+- [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md)
+- [Testing and Validation Policy](testing.md)

@@ -9,6 +9,20 @@ may be included for context. If this index differs from GitHub, GitHub controls.
 
 ## Open Issues
 
+### #34 Establish trusted pre-operational lifecycle foundation
+
+[Open GitHub Issue #34](https://github.com/JNTRE/weavelit/issues/34).
+
+**Summary:** Establish the trusted Server-owned pre-operational lifecycle
+authority so one deployment can persist and validate its identity and
+Application Database selection, reopen safely after restart, classify startup
+state, serialize Init and Restore checkpoint ownership, and compose restricted
+startup without exposing normal operation.
+
+| Group | Field | Value |
+| --- | --- | --- |
+| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
+
 ### #47 Establish HTTPS listener and Client Module API foundation
 
 [Open GitHub Issue #47](https://github.com/JNTRE/weavelit/issues/47).
@@ -66,40 +80,6 @@ Module with redacted, separately stored System Logs and Audit Logs.
 
 | Group | Field | Value |
 | --- | --- | --- |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
-### #69 Define Log Module delivery and durable completion semantics
-
-[Open GitHub Issue #69](https://github.com/JNTRE/weavelit/issues/69).
-
-**Summary:** Define the delivery and durable completion semantics for Log
-Module records.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#48 Compose Log Module contract and MVP SQLite Log Module](https://github.com/JNTRE/weavelit/issues/48) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
-### #70 Define SQLite Log Module destination lifecycle
-
-[Open GitHub Issue #70](https://github.com/JNTRE/weavelit/issues/70).
-
-**Summary:** Define the lifecycle for an SQLite Log Module destination.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#48 Compose Log Module contract and MVP SQLite Log Module](https://github.com/JNTRE/weavelit/issues/48) |
-| Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
-
-### #71 Define MVP Log Module contract and structured record boundary
-
-[Open GitHub Issue #71](https://github.com/JNTRE/weavelit/issues/71).
-
-**Summary:** Define the MVP Log Module contract and structured record boundary.
-
-| Group | Field | Value |
-| --- | --- | --- |
-| Related | Related epic | [#48 Compose Log Module contract and MVP SQLite Log Module](https://github.com/JNTRE/weavelit/issues/48) |
 | Related | Milestone | [Milestone 1: Core Server Application](https://github.com/JNTRE/weavelit/milestone/1) |
 
 ### #72 Implement isolated MVP SQLite Log Module

@@ -324,12 +324,17 @@ authenticated principal or written as Audit Logs. Audit Logs MUST capture the
 caller, Responsible Owner when applicable, action or Operation, target, time,
 result, and correlation identifier.
 
-After Init or Restore commits application state, the Server MUST durably record
-that workflow's successful completion through the committed System Log
-assignment before sealing the deployment. The record MUST include the workflow,
-deployment identifier, time, result, and correlation identifier. Reconciliation
-after interruption MUST retry completion logging and MUST NOT seal until the
-result is durable.
+After Init or Restore commits application state, the Server MUST receive a
+durable acknowledgement for that workflow's successful completion through the
+committed System Log assignment before sealing the deployment. A durable
+acknowledgement means that the destination completed its configured supported
+storage interface's commit path during the same valid Server process run. The
+record MUST include the workflow, deployment identifier, time, result, and
+correlation identifier. Normal operation MUST NOT begin until every required
+workflow obligation has that acknowledgement and the deployment is sealed
+during the same valid workflow run. If interruption prevents completion logging
+or sealing, the Server MUST apply the fail-closed lifecycle-interruption
+boundary and MUST NOT retry the obligation after restart.
 
 System Logs and Audit Logs MUST be structured and pre-redacted before they
 reach a Log Module. They MUST exclude secrets and unnecessary sensitive
@@ -337,10 +342,37 @@ payloads. Log Modules MUST be server-side Rust libraries that persist or
 deliver System Logs, Audit Logs, or both. More than one enabled Log Module MAY
 be active for either log type.
 
+Before creating the complete typed record delivered to a Log Module, the Server
+MUST enforce UTF-8 byte limits: 64 bytes for the correlation identifier; 128
+bytes for a System Log classification and 4 KiB for System Log detail; and 256
+bytes for an Audit Log principal, 128 bytes for an Audit Log action, 1 KiB for
+an Audit Log target, and 4 KiB for Audit Log detail. The correlation identifier
+and all body fields together MUST NOT exceed 8 KiB. Empty or oversized input
+MUST be rejected before complete-record construction. The Server and Log
+Modules MUST NOT truncate, hash, retain raw source payloads, or create a
+replacement record for rejected input. A workflow that requires logging MUST
+fail when it cannot construct a valid bounded record. Rejection errors MUST be
+stable and payload-free, and every destination, including future Log Modules,
+MUST receive only complete bounded records.
+
 Administrators MUST be able to view System Logs and Audit Logs through a
 read-only Web UI logging area and configure Log Modules through an
 **[Administration Plane](glossary.md#applications-and-interfaces)**. Client
 Modules MAY provide equivalent Administration Plane functions.
+
+Retention and purge are destination-module-owned policies. An Administrator
+MAY select a retention or purge policy only where the destination declares it
+relevant; the Server MUST NOT provide a Server-wide automatic purge or an
+arbitrary global retention default, and a destination MAY declare retention
+unsupported. System Logs MAY be purged only under a configured
+destination-owned policy. Audit Logs MUST NOT be automatically purged; any
+Audit Log retention or deletion capability requires a future explicit,
+authorized decision that includes a hold policy. Future Administration Plane
+policy, purge-start, failure, completion, and status functions MUST authorize
+the Administrator, require the applicable confirmation, and create Audit Logs
+for policy changes and purge start, failure, and completion. These requirements
+do not add purge behavior to the current unselected SQLite Log Module catalog
+scaffold.
 
 ## Application Data And Persistence
 
@@ -366,6 +398,15 @@ also use SQLite and MUST store System Logs and Audit Logs in a database separate
 from the Application Database. Selecting SQLite for both MUST create separate
 implementations and resources.
 
+Every Log Module destination MUST own its protection, snapshot or backup,
+migration, compatibility, recovery, and retirement behavior. Application
+Database backups and Restore MUST include only non-secret Log Module
+configuration and assignments; they MUST NOT include destination data or
+authentication or connection credentials. A restored remote destination remains
+unusable until an authorized Administrator re-enters its credentials through an
+Administration Plane. The [Log Module Design](log-modules/log-module-design.md)
+defines the destination-specific recovery and capacity requirements.
+
 The Application Database is not a module. It MUST NOT be enabled, disabled, or
 changed after deployment initialization. Weavelit MUST NOT support in-place
 migration between Application Database technologies. Database backends MUST be
@@ -379,6 +420,48 @@ initialized state and MUST NOT require an existing Administrator. The Server
 MUST expose each path only through a
 **[Pre-Operational Surface](glossary.md#applications-and-interfaces)** whose
 Client Module explicitly declares the matching capability.
+
+### Operating Responsibility And Lifecycle Interruption
+
+Weavelit delivers its defined application workflows; the deployment operator
+is responsible for host availability and maintenance, power, installation and
+deployment execution, environment validity, backup custody, and recovery
+material retained outside Weavelit. Weavelit does not promise recovery or
+survival of application state, Log Module records, or an acknowledged record
+across host power loss, filesystem loss or corruption, abrupt process
+termination, or an operator-broken environment. A durable acknowledgement is
+not such a survival guarantee. Where the Server can start and classify the
+state, it provides fail-closed behavior and only a stable, redacted
+operator-action notice; it does not claim post-failure health or add special
+recovery, retry, reconciliation, or filesystem-persistence hardening solely to
+guarantee acknowledged-record survival after those host failures. This boundary
+does not make every error an operator responsibility: within a valid supported
+running environment, the Server remains responsible for its defined
+correctness, validation of untrusted clients and data, authentication,
+authorization, secret handling, safe normal-run behavior, and protection
+against unsafe automatic overwrite.
+
+When an Init or Restore interruption leaves retained partial lifecycle state,
+the Server MUST classify that state, remain fail-closed and non-operational,
+and emit only a stable, redacted action-class diagnostic. It MUST NOT reconcile,
+resume, retry, complete logging for, seal, delete, recreate, or otherwise make
+the retained state usable. It MUST NOT expose normal operation or a
+Pre-Operational fallback over that ambiguous state.
+
+When retained **[Application Database](glossary.md#applications-and-interfaces)**
+state includes a SQLite write-ahead log (WAL), the Server MUST classify it as
+`lifecycle_interrupted` / `operator_redeploy_required` without opening,
+copying, inspecting, recovering, checkpointing, or otherwise modifying the
+original database, WAL, or shared-memory artifacts. It MUST NOT derive an
+Init- or Restore-specific action from WAL-bearing retained state.
+
+The operator MAY preserve the failed state root for diagnosis or evidence, or
+discard it and rebuild or redeploy the host. A failed fresh Init requires a new
+deployment and a new Init. A failed Restore requires a replacement deployment
+and a new Restore attempt using independently retained compatible backup and
+recovery material; Weavelit does not retain that material or manage its
+durability. Operator-directed destruction requires a separately documented
+procedure and boundary before the Server may support it.
 
 The normal Server runtime MUST compose `weavelit-server-lifecycle`,
 `weavelit-server-init`, and `weavelit-server-restore`. The lifecycle crate MUST
@@ -426,7 +509,8 @@ record containing a unique deployment identifier and lifecycle state. The
 shared lifecycle MUST bind the Application Database locator and every pending
 or initialized database state to that identifier. Before Init or Restore
 commits initialized state, the record MUST enter `InitializationPending`. After
-the database commit, the Server MUST irreversibly seal the record as
+the database commit and completion of every required workflow obligation during
+the same valid workflow run, the Server MUST irreversibly seal the record as
 `Initialized` through supported application interfaces.
 
 A supported interface MUST NOT unseal the record or reopen Init or Restore.
@@ -447,10 +531,12 @@ named Operations.
 Init MUST assign configured Log Modules separately to System Logs and Audit
 Logs; the same Log Module MAY receive both types. Init MUST NOT complete, and
 the Server MUST NOT begin normal operation, until both assignments are valid
-and can durably record their assigned log type. After the Application Database
-commit, the Server MUST durably record the Init result through the committed
-System Log assignment before sealing. Successful Init MUST then transition the
-running Server directly to normal operation without a restart.
+and can provide the durable acknowledgement defined in
+[Logging And Accountability](#logging-and-accountability) for their assigned
+log type. After the Application Database commit, the Server MUST receive that
+acknowledgement for the Init result through the committed System Log assignment
+before sealing. Successful Init MUST then transition the running Server directly
+to normal operation without a restart.
 
 Init MUST create a distinct backup recovery key pair. The Server MUST retain
 only the public recovery key, and the person completing Init MUST receive the
@@ -480,10 +566,12 @@ configuration, and Log Module assignments from the validated backup instead of
 creating replacement initial state.
 
 A successful Restore MUST commit the restored state under the replacement
-deployment identifier, durably record the Restore result through the restored
-System Log assignment, seal the replacement deployment, and transition the
-running Server directly to normal operation without a restart. Restore MUST NOT
-support in-place migration between Application Database technologies.
+deployment identifier, receive the durable acknowledgement defined in
+[Logging And Accountability](#logging-and-accountability) for the Restore result
+through the restored System Log assignment, seal the replacement deployment,
+and transition the running Server directly to normal operation without a
+restart. Restore MUST NOT support in-place migration between Application
+Database technologies.
 
 ## Client Applications And User Experience
 
@@ -548,9 +636,6 @@ Server build, and it MUST NOT compile the application when the container starts.
 
 Weavelit MUST offer MCP adapters through separate Client Modules that use the
 same supported Operation contracts as other clients.
-
-Administrators MUST be able to configure System Log and Audit Log retention and
-purging independently for each Log Module.
 
 Weavelit MAY grow through deliberate, maintained integrations that satisfy the
 acceptance requirements in this specification and provide appropriate

@@ -108,30 +108,24 @@ payload-free storage-neutral errors.
 
 `SqliteDatabase` implements the complete `ApplicationDatabase` contract after
 the read and mutation paths are available. Trait inspection delegates to the
-inherent read-only operation. Create, reconcile, and discard each begin an
-immediate SQLite transaction, load and validate the bounded lifecycle state
-under that write lock, and commit only the allowed result. Separate backend
-instances therefore serialize and recheck stale requests before any write.
+inherent read-only operation. Checkpoint creation begins an immediate SQLite
+transaction, loads and validates the bounded lifecycle state under that write
+lock, and commits only the allowed result. Separate backend instances therefore
+serialize and recheck stale requests before any write.
 
 Creation inserts a pending singleton row only when inspection returns
 `Uninitialized`. A pending row returns `InvalidState` even when the requested
 checkpoint is identical, and initialized state returns `AlreadyInitialized`.
-Reconciliation commits no data change and succeeds only when deployment,
-workflow, and opaque metadata match exactly. Discard deletes exactly one row
-only when deployment and workflow match; the resulting absence represents an
-unbound uninitialized database.
-
-Reconciliation and discard return `NotInitialized` for an absent row,
-`AlreadyInitialized` for initialized state, `DeploymentMismatch` for another
-valid deployment, and `InvalidState` for a wrong workflow or metadata.
-Malformed state returns `IntegrityFailure` for every operation before mutation.
-SQL parameters bind identifiers and metadata as BLOBs and workflow as a fixed
-internal string. Driver payloads, SQL, paths, identifiers, and metadata are
-never included in returned errors or ordinary diagnostics.
+The backend exposes no reconciliation or discard operation: a pending row is
+retained for fail-closed lifecycle-interruption classification. Malformed state
+returns `IntegrityFailure` before mutation. SQL parameters bind identifiers and
+metadata as BLOBs and workflow as a fixed internal string. Driver payloads,
+SQL, paths, identifiers, and metadata are never included in returned errors or
+ordinary diagnostics.
 
 Real-SQLite tests use separate stale backend instances to prove serialized
-rechecking and test-only table triggers to force insert and delete failures.
-The trigger failures roll back fully and remain unchanged after reopen without
+rechecking and test-only table triggers to force insert failures. The trigger
+failures roll back fully and remain unchanged after reopen without
 adding a production failure-injection mechanism.
 
 Each shared Application Database contract write is one SQLite transaction unless
@@ -166,6 +160,26 @@ filename and cannot select SQLite URI behavior. `SQLITE_OPEN_NOFOLLOW` rejects a
 symbolic link in the supplied database path. The lifecycle boundary must supply
 a symlink-free path beneath the protected Server state directory; protection of
 those parent directories remains a Server deployment responsibility.
+
+Before retained inspection opens SQLite, the backend checks the trusted derived
+WAL path through non-mutating filesystem metadata. An existing WAL returns an
+uninspectable retained-state result to the lifecycle boundary, which classifies
+it as the generic `lifecycle_interrupted` / `operator_redeploy_required` action.
+The backend does not open, copy, inspect, recover, checkpoint, clean up, or
+otherwise modify the original database, WAL, or shared-memory artifacts in that
+case.
+
+does not configure pragmas or WAL, apply migrations, create files or sidecars,
+Only when no WAL is present does retained inspection open a private absolute
+`file:` URI for the same trusted path. It percent-encodes every
+non-unreserved path byte while retaining separators and appends the fixed
+`?immutable=1` query. This URI is opened with exactly read-only,
+`SQLITE_OPEN_NO_MUTEX`, `SQLITE_OPEN_NOFOLLOW`, and `SQLITE_OPEN_URI` access;
+the URI flag applies only to retained inspection, not ordinary database opens.
+It does not configure pragmas or WAL, apply migrations, create files or
+sidecars, checkpoint, recover, clean up, or write. This safe inspection may
+establish the exact Init or Restore interruption action for retained state
+without WAL ambiguity.
 
 Before returning a connection, the backend performs and verifies this fixed
 configuration sequence:

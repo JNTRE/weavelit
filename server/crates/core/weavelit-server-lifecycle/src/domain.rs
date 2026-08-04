@@ -591,11 +591,24 @@ pub enum LifecycleClassification {
     UninitializedWithDatabase,
     /// One workflow owns the non-operational pending state.
     InitializationPending(WorkflowKind),
+    /// Retained lifecycle work requires an operator redeployment action.
+    Interrupted(InterruptedLifecycleAction),
     /// The Init or Restore workflow committed the database but the deployment record
     /// has not yet been sealed; workflow-specific post-commit reconciliation is required.
     PostCommitReconciliationRequired,
     /// The deployment is sealed for normal operation.
     Initialized,
+}
+
+/// Redacted operator action required for verified retained lifecycle work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptedLifecycleAction {
+    /// The retained state belongs to an interrupted new deployment.
+    RedeployNew,
+    /// The retained state belongs to an interrupted Restore.
+    RedeployRestore,
+    /// The retained state requires redeployment before a supported workflow can be chosen.
+    RedeployRequired,
 }
 
 fn is_valid_identifier(identifier: &str) -> bool {

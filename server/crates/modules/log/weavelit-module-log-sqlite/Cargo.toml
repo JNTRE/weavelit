@@ -1,14 +1,13 @@
 [package]
-name = "weavelit-server-database-sqlite"
+name = "weavelit-module-log-sqlite"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
-percent-encoding.workspace = true
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
 sha2 = { version = "=0.11.0", default-features = false }
-weavelit-server-database = { path = "../weavelit-server-database" }
+weavelit-server-log = { path = "../../../core/weavelit-server-log" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

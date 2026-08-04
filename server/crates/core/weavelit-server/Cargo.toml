@@ -22,8 +22,11 @@ tokio-rustls = { version = "=0.26.4", default-features = false }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 weavelit-server-database-sqlite = { path = "../../database/weavelit-server-database-sqlite" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
+weavelit-server-log = { path = "../weavelit-server-log" }
 weavelit-module-client-webui = { path = "../../modules/client/weavelit-module-client-webui" }
+weavelit-module-log-sqlite = { path = "../../modules/log/weavelit-module-log-sqlite" }
 
 [dev-dependencies]
 rcgen = "=0.14.8"
+rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
 tempfile = "=3.27.0"

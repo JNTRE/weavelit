@@ -62,10 +62,15 @@ fails closed and the Server never generates a replacement key for that retained
 state. Recovery from permanent key loss requires a new deployment and a valid
 encrypted backup with its separate recovery private key.
 
-A valid key by itself is the only resumable incomplete bootstrap state. When no
-record, locator, Application Database file, or SQLite sidecar exists, startup
-reuses that key and creates a fresh deployment identifier and record. Every
-other partial bootstrap combination fails closed.
+The original profile treated a valid key by itself as a resumable incomplete
+bootstrap state: when no record, locator, Application Database file, or SQLite
+sidecar existed, startup reused that key and created a fresh deployment
+identifier and record. That lifecycle-interruption consequence is superseded by
+the [Technical Specification](../../spec.md#operating-responsibility-and-lifecycle-interruption):
+every incomplete bootstrap combination, including a key-only state, now remains
+fail-closed and non-operational without key reuse, record creation, or another
+automatic recovery action. The rest of this accepted anchor-protection profile
+remains current.
 
 The profile detects malformed or tampered anchors, interrupted replacement,
 deployment-identifier mismatch, and independently replayed or mixed record and
@@ -118,17 +123,20 @@ dependency.
 
 Every lifecycle file uses exclusive same-directory temporary creation, complete
 write, file synchronization, atomic rename, and state-root directory
-synchronization. Database locator files are immutable generations. A new
-locator is durably prepared first; atomic replacement of the deployment record's
-generation pointer is the commit point. This makes a pre-commit locator an
-ignorable orphan and avoids a fixed-locator crash window that could destroy the
-previous selection.
+synchronization as its configured valid-run commit path. Database locator files
+are immutable generations. A new locator is prepared first; atomic replacement
+of the deployment record's generation pointer is the commit point. This makes a
+pre-commit locator an ignorable orphan and avoids a fixed-locator crash window
+that could destroy the previous selection. Completing this path does not promise
+survival across host power loss, filesystem loss or corruption, abrupt process
+termination, or an operator-broken environment.
 
-The state-root filesystem must support the required atomic replacement,
-synchronization, and advisory-lock semantics. The Server has no reduced-
-durability mode. Recognized lifecycle temporary files and unreferenced locator
-generations are removed and the root is synchronized before routes are exposed;
-SQLite recovery sidecars remain under SQLite ownership.
+The state-root filesystem must support atomic replacement and advisory-lock
+semantics. A failed configured synchronization operation during a valid run
+fails closed; it is not a host-failure durability guarantee. Recognized
+lifecycle temporary files and unreferenced locator generations are removed and
+the root is synchronized before routes are exposed; SQLite recovery sidecars
+remain under SQLite ownership.
 
 An untrusted startup state emits one compact diagnostic containing only a fixed
 category and safe reason code, exits with status `1`, and never binds HTTPS.

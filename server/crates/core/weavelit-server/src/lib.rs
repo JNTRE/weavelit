@@ -40,12 +40,14 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
-use weavelit_server_database_sqlite::SqliteDatabase;
+use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendRegistration,
-    LifecycleClassification, LifecycleError, LifecycleStore, TrustedBackendContext,
+    DatabaseError, DeploymentIdentifier, InterruptedLifecycleAction, LifecycleClassification,
+    LifecycleError, LifecycleStore, RetainedDatabaseInspection, TrustedBackendContext,
     ValidatedConnectionSettings, WorkflowKind,
 };
+use weavelit_server_log::LogModuleCatalog;
 
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
 const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
@@ -389,6 +391,38 @@ impl ApplicationDatabaseFactory for SqliteFactory {
             .map(|db| Box::new(db) as Box<dyn ApplicationDatabase>)
             .map_err(|_| LifecycleError::DependencyUnavailable)
     }
+
+    fn inspect_retained(
+        &self,
+        context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        SqliteDatabase::inspect_retained(
+            context.application_database_path(),
+            expected_deployment_identifier,
+        )
+        .map(|inspection| match inspection {
+            RetainedSqliteInspection::Inspected(inspection) => {
+                RetainedDatabaseInspection::Inspected(inspection)
+            }
+            RetainedSqliteInspection::WalPresent => RetainedDatabaseInspection::RedeployRequired,
+        })
+        .map_err(map_database_error)
+    }
+}
+
+fn map_database_error(error: DatabaseError) -> LifecycleError {
+    match error {
+        DatabaseError::DeploymentMismatch => LifecycleError::DeploymentMismatch,
+        DatabaseError::Unavailable => LifecycleError::DependencyUnavailable,
+        DatabaseError::IntegrityFailure => LifecycleError::IntegrityFailure,
+        DatabaseError::ConfigurationInvalid => LifecycleError::ConfigurationInvalid,
+        DatabaseError::InvalidState
+        | DatabaseError::AlreadyInitialized
+        | DatabaseError::NotInitialized => LifecycleError::InvalidState,
+        _ => LifecycleError::InvalidState,
+    }
 }
 
 /// Builds the compiled-in SQLite backend catalog.
@@ -399,6 +433,12 @@ pub fn sqlite_catalog() -> BackendCatalog {
         Box::new(SqliteFactory),
     )])
     .expect("compiled-in SQLite catalog must be valid")
+}
+
+/// Builds the compiled-in SQLite Log Module catalog.
+pub fn sqlite_log_catalog() -> LogModuleCatalog {
+    LogModuleCatalog::new(vec![weavelit_module_log_sqlite::registration()])
+        .expect("compiled-in SQLite Log Module catalog must be valid")
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +459,7 @@ pub enum StartupOutcome {
 /// Restricted startup state, including the process-lifetime state-root lock.
 pub struct RestrictedStartup {
     outcome: StartupOutcome,
+    log_catalog: LogModuleCatalog,
     _store: LifecycleStore,
 }
 
@@ -426,6 +467,11 @@ impl RestrictedStartup {
     /// Returns the lifecycle outcome used to select restricted routes.
     pub fn outcome(&self) -> StartupOutcome {
         self.outcome
+    }
+
+    /// Returns the compiled-in Log Module catalog retained for process lifetime.
+    pub const fn log_catalog(&self) -> &LogModuleCatalog {
+        &self.log_catalog
     }
 }
 
@@ -477,6 +523,12 @@ pub enum StartupError {
     DatabaseIntegrityFailure,
     /// Startup state combination is invalid or unsupported.
     StateCombinationInvalid,
+    /// A retained new deployment requires operator redeployment.
+    LifecycleInterruptedRedeployNew,
+    /// A retained Restore requires operator redeployment.
+    LifecycleInterruptedRedeployRestore,
+    /// A retained state requires operator redeployment before a workflow decision.
+    LifecycleInterruptedRedeployRequired,
 }
 
 impl StartupError {
@@ -510,6 +562,15 @@ impl StartupError {
             }
             Self::StateCombinationInvalid => {
                 ("deployment_state_invalid", "state_combination_invalid")
+            }
+            Self::LifecycleInterruptedRedeployNew => {
+                ("lifecycle_interrupted", "operator_redeploy_new")
+            }
+            Self::LifecycleInterruptedRedeployRestore => {
+                ("lifecycle_interrupted", "operator_redeploy_restore")
+            }
+            Self::LifecycleInterruptedRedeployRequired => {
+                ("lifecycle_interrupted", "operator_redeploy_required")
             }
         }
     }
@@ -1138,7 +1199,7 @@ fn map_classification_error(error: LifecycleError) -> StartupError {
 /// Fails closed for `Initialized` and `PostCommitReconciliationRequired` states
 /// since normal operation and sealing are not yet implemented.
 pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartup, StartupError> {
-    let mut store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
+    let store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
 
     let catalog = sqlite_catalog();
     let context = TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE));
@@ -1157,6 +1218,19 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
         LifecycleClassification::InitializationPending(kind) => {
             StartupOutcome::InitializationPending(kind)
         }
+        LifecycleClassification::Interrupted(action) => {
+            return Err(match action {
+                InterruptedLifecycleAction::RedeployNew => {
+                    StartupError::LifecycleInterruptedRedeployNew
+                }
+                InterruptedLifecycleAction::RedeployRestore => {
+                    StartupError::LifecycleInterruptedRedeployRestore
+                }
+                InterruptedLifecycleAction::RedeployRequired => {
+                    StartupError::LifecycleInterruptedRedeployRequired
+                }
+            });
+        }
         // Fail closed for states not yet handled by this milestone.
         LifecycleClassification::PostCommitReconciliationRequired
         | LifecycleClassification::Initialized => {
@@ -1165,6 +1239,7 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
     };
     Ok(RestrictedStartup {
         outcome,
+        log_catalog: sqlite_log_catalog(),
         _store: store,
     })
 }

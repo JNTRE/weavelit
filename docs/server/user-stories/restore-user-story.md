@@ -95,12 +95,12 @@ not consume or modify that source file.
 5. The Server invalidates restored sessions, re-encrypts protected application
    secrets with the replacement Server's at-rest key, and atomically commits
    restored application state bound to the replacement deployment identifier.
-6. The Server durably records the required Restore result through the restored
-   System Log assignment and irreversibly seals the deployment record
-   `Initialized`.
-7. Only after the seal is durable does the Server remove every pre-operational
-   surface and enable normal authenticated operation. No process restart is
-   required.
+6. The Server receives the required durable acknowledgement for the Restore
+   result through the restored System Log assignment and irreversibly seals the
+   deployment record `Initialized`.
+7. Only after the seal's configured valid-run commit path completes does the
+   Server remove every pre-operational surface and enable normal authenticated
+   operation. No process restart is required.
 
 If validation fails before the database commit, the Web UI remains in Restore,
 shows an actionable redacted error, discards the key from page memory when the
@@ -122,7 +122,7 @@ and testing backup and Administrator-account practices appropriate to their
 needs; restoring a valid backup does not guarantee usable credentials or MFA
 factors.
 
-## Resume Interrupted Restore
+## Interrupted Restore
 
 The Web UI asks the Server for trusted lifecycle and Restore status whenever the
 workflow opens or refreshes. It never infers progress only from browser state.
@@ -131,19 +131,15 @@ workflow opens or refreshes. It never infers progress only from browser state.
 - After database selection but before a Restore checkpoint, Restore resumes
   with the selected database. The backup and private recovery key must be
   selected again because the Web UI did not persist them.
-- Once a Restore checkpoint exists, Init and database replacement remain
-  unavailable. The Web UI follows the Server-reported Restore retry,
-  reconciliation, or safe-reset options.
-- Depending on the selected artifact-staging policy, retry may require the
-  person to reselect the same encrypted backup and private key or may resume a
-  protected encrypted upload. The Web UI never persists the key for that retry.
-- A safe reset is offered only when the Server proves that no application state
-  committed. Reset removes pending Restore state and never redisplays or
-  reconstructs the private recovery key.
-- If application state commits but Restore-result System Log recording or
-  deployment sealing is interrupted, the Server exposes no routes. On restart
-  it completes Restore-specific reconciliation and sealing before presenting
-  normal sign-in; it never reopens Init or the upload workflow.
+- Once a Restore checkpoint exists, interruption leaves retained partial state.
+   The Server exposes no Init, Restore, status, or normal route over that state
+   and emits only its stable redacted operator action class.
+- The Web UI does not offer retry, reconciliation, safe reset, resumed upload,
+   retained-state deletion, recreation, or sealing.
+- The operator may preserve the failed root for diagnosis or evidence, or
+   discard it and redeploy the replacement host. Restore then begins on the new
+   deployment using an independently retained compatible backup and private
+   recovery key. The Web UI never retains either item for this purpose.
 
 ## After Restore
 

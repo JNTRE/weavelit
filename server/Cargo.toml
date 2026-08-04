@@ -2,13 +2,16 @@
 resolver = "2"
 members = [
 	"crates/core/weavelit-server",
+	"crates/core/weavelit-server-log",
 	"crates/core/weavelit-server-lifecycle",
 	"crates/database/weavelit-server-database",
 	"crates/database/weavelit-server-database-sqlite",
 	"crates/modules/client/weavelit-module-client-webui",
+	"crates/modules/log/weavelit-module-log-sqlite",
 ]
 
 [workspace.dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+percent-encoding = { version = "=2.3.2", default-features = false }
 rustix = { version = "=1.1.4", default-features = false, features = ["std", "fs", "process"] }
 tokio = { version = "=1.53.1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

@@ -1,21 +1,22 @@
 use std::{
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::Read,
     net::{TcpListener, TcpStream},
-    os::unix::fs::{PermissionsExt, symlink},
+    os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
+use rusqlite::{Connection, params};
 use weavelit_server::{
     StartupError, StartupOutcome, classify_restricted_startup, sqlite_catalog,
     validate_trusted_https_listener,
 };
-use weavelit_server_lifecycle::{
-    BackendIdentifier, CheckpointMetadata, DeploymentIdentifier, LifecycleStore,
-    TrustedBackendContext, WorkflowCheckpoint, WorkflowKind,
-};
+use weavelit_server_lifecycle::{BackendIdentifier, LifecycleStore, TrustedBackendContext};
+
+type RootEntrySnapshot = (PathBuf, u32, u32, u32, u64, u64, i64, i64, i64, i64, u64);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,20 +29,76 @@ fn state_root() -> (tempfile::TempDir, PathBuf) {
     (directory, canonical)
 }
 
+fn root_snapshot(path: &Path) -> Vec<RootEntrySnapshot> {
+    let mut entries = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            let contents = fs::read(entry.path()).unwrap();
+            let mut hasher = DefaultHasher::new();
+            contents.hash(&mut hasher);
+            (
+                PathBuf::from(entry.file_name()),
+                metadata.permissions().mode(),
+                metadata.uid(),
+                metadata.gid(),
+                metadata.nlink(),
+                metadata.size(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+                hasher.finish(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
+fn assert_interrupted_startup(state_root: &Path, expected_reason: &str) {
+    let before = root_snapshot(state_root);
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", state_root)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stderr,
+        format!("{{\"category\":\"lifecycle_interrupted\",\"reason\":\"{expected_reason}\"}}\n")
+            .as_bytes()
+    );
+    assert!(TcpStream::connect(address).is_err());
+    assert_eq!(root_snapshot(state_root), before);
+}
+
 fn context(root: &std::path::Path) -> TrustedBackendContext {
     TrustedBackendContext::new(root.join("application.sqlite3"))
 }
 
-fn sqlite() -> BackendIdentifier {
-    BackendIdentifier::new("sqlite").unwrap()
+fn checkpoint_and_close_wal(path: &Path) {
+    let connection = Connection::open(path.join("application.sqlite3")).unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .unwrap();
+    drop(connection);
+    assert!(!path.join("application.sqlite3-wal").exists());
+    assert!(!path.join("application.sqlite3-shm").exists());
 }
 
-fn checkpoint(dep_id: DeploymentIdentifier, kind: WorkflowKind) -> WorkflowCheckpoint {
-    WorkflowCheckpoint::new(
-        dep_id,
-        kind,
-        CheckpointMetadata::from_bytes(b"meta".as_slice()).unwrap(),
-    )
+fn sqlite() -> BackendIdentifier {
+    BackendIdentifier::new("sqlite").unwrap()
 }
 
 fn tls_material() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -375,6 +432,39 @@ fn restart_without_selection_is_stable() {
 }
 
 #[test]
+fn startup_exposes_sqlite_log_module_without_opening_or_delivering_to_it() {
+    let (_dir, path) = state_root();
+    let startup = classify_restricted_startup(&path).unwrap();
+    let sqlite = startup
+        .log_catalog()
+        .declarations()
+        .find(|declaration| declaration.identifier().as_str() == "sqlite")
+        .expect("compiled-in catalog must expose the SQLite Log Module");
+
+    assert!(
+        sqlite
+            .capabilities()
+            .supports(weavelit_server_log::LogRecordType::System)
+    );
+    assert!(
+        sqlite
+            .capabilities()
+            .supports(weavelit_server_log::LogRecordType::Audit)
+    );
+    for name in [
+        "log.sqlite3",
+        "log.sqlite3-journal",
+        "log.sqlite3-wal",
+        "log.sqlite3-shm",
+    ] {
+        assert!(
+            !path.join(name).exists(),
+            "unconfigured startup must not create {name}"
+        );
+    }
+}
+
+#[test]
 fn restart_with_selected_database_classifies_as_uninitialized_with_database() {
     let (_dir, path) = state_root();
     {
@@ -388,49 +478,105 @@ fn restart_with_selected_database_classifies_as_uninitialized_with_database() {
 }
 
 #[test]
-fn restart_with_init_pending_classifies_as_initialization_pending() {
+fn retained_init_checkpoint_without_wal_reports_redeploy_new_without_mutation_or_bind() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        store
+        let database = store
             .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
             .unwrap();
         let dep_id = store.record().deployment_identifier();
-        let mut db = store
-            .reopen_selected_database(&sqlite_catalog(), &context(&path))
-            .unwrap();
-        db.create_checkpoint(&checkpoint(dep_id, WorkflowKind::Init))
-            .unwrap();
-        drop(db);
+        drop(database);
+        {
+            let writer = Connection::open(path.join("application.sqlite3")).unwrap();
+            writer
+                .execute(
+                    "INSERT INTO weavelit_lifecycle_state \
+                     (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                     VALUES (1, ?1, 'pending', 'init', ?2)",
+                    params![dep_id.as_bytes().as_slice(), b"meta"],
+                )
+                .unwrap();
+        }
     }
-    let outcome = classify_restricted_startup(&path).expect("init-pending restart must succeed");
-    assert_eq!(
-        outcome.outcome(),
-        StartupOutcome::InitializationPending(WorkflowKind::Init)
-    );
+    checkpoint_and_close_wal(&path);
+    assert_interrupted_startup(&path, "operator_redeploy_new");
 }
 
 #[test]
-fn restart_with_restore_pending_classifies_as_initialization_pending() {
+fn retained_restore_checkpoint_without_wal_reports_redeploy_restore_without_mutation_or_bind() {
     let (_dir, path) = state_root();
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        store
+        let database = store
             .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
             .unwrap();
         let dep_id = store.record().deployment_identifier();
-        let mut db = store
-            .reopen_selected_database(&sqlite_catalog(), &context(&path))
-            .unwrap();
-        db.create_checkpoint(&checkpoint(dep_id, WorkflowKind::Restore))
-            .unwrap();
-        drop(db);
+        drop(database);
+        {
+            let writer = Connection::open(path.join("application.sqlite3")).unwrap();
+            writer
+                .execute(
+                    "INSERT INTO weavelit_lifecycle_state \
+                     (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                     VALUES (1, ?1, 'pending', 'restore', ?2)",
+                    params![dep_id.as_bytes().as_slice(), b"meta"],
+                )
+                .unwrap();
+        }
     }
-    let outcome = classify_restricted_startup(&path).expect("restore-pending restart must succeed");
-    assert_eq!(
-        outcome.outcome(),
-        StartupOutcome::InitializationPending(WorkflowKind::Restore)
-    );
+    checkpoint_and_close_wal(&path);
+    assert_interrupted_startup(&path, "operator_redeploy_restore");
+}
+
+#[test]
+fn retained_wal_requires_generic_redeploy_without_mutation_or_bind() {
+    let (_dir, path) = state_root();
+    let writer;
+    {
+        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        let database = store
+            .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
+            .unwrap();
+        let dep_id = store.record().deployment_identifier();
+        drop(database);
+        writer = Connection::open(path.join("application.sqlite3")).unwrap();
+        writer
+            .execute(
+                "INSERT INTO weavelit_lifecycle_state \
+                 (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                 VALUES (1, ?1, 'pending', 'init', ?2)",
+                params![dep_id.as_bytes().as_slice(), b"meta"],
+            )
+            .unwrap();
+    }
+    assert!(path.join("application.sqlite3-wal").exists());
+    assert!(path.join("application.sqlite3-shm").exists());
+    assert_interrupted_startup(&path, "operator_redeploy_required");
+    drop(writer);
+}
+
+#[test]
+fn retained_initialized_database_reports_redeploy_required_without_mutation_or_bind() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let deployment_identifier = store.record().deployment_identifier();
+    store
+        .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
+        .unwrap();
+    drop(store);
+    let database = Connection::open(path.join("application.sqlite3")).unwrap();
+    database
+        .execute(
+            "INSERT INTO weavelit_lifecycle_state \
+             (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+             VALUES (1, ?1, 'initialized', NULL, NULL)",
+            params![deployment_identifier.as_bytes().as_slice()],
+        )
+        .unwrap();
+
+    assert_interrupted_startup(&path, "operator_redeploy_required");
+    drop(database);
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +598,65 @@ fn corrupted_anchor_fails_closed_with_anchor_set_invalid() {
     assert_eq!(error, StartupError::AnchorSetInvalid);
     let (category, _) = error.category_reason();
     assert_eq!(category, "storage_integrity_failure");
+}
+
+#[test]
+fn orphaned_application_database_artifact_exits_before_binding() {
+    let (_state_directory, state_root) = state_root();
+    let artifact = state_root.join("application.sqlite3");
+    fs::write(&artifact, b"retained application database artifact").unwrap();
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", state_root)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stderr,
+        b"{\"category\":\"storage_integrity_failure\",\"reason\":\"anchor_set_invalid\"}\n"
+    );
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn retained_temporary_file_exits_before_binding_after_creating_the_lock() {
+    let (_state_directory, state_root) = state_root();
+    let temporary = state_root.join("deployment-record.json.tmp-ICEiIyQlJicoKSorLC0uLw");
+    let temporary_bytes = b"retained lifecycle temporary";
+    fs::write(&temporary, temporary_bytes).unwrap();
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", &state_root)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.stderr,
+        b"{\"category\":\"storage_integrity_failure\",\"reason\":\"anchor_set_invalid\"}\n"
+    );
+    assert!(TcpStream::connect(address).is_err());
+    assert_eq!(fs::read(&temporary).unwrap(), temporary_bytes);
+    assert!(state_root.join("lifecycle.lock").exists());
 }
 
 #[test]
@@ -489,6 +694,9 @@ fn every_startup_error_has_well_formed_category_reason() {
         StartupError::AnchorBindingInvalid,
         StartupError::DatabaseIntegrityFailure,
         StartupError::StateCombinationInvalid,
+        StartupError::LifecycleInterruptedRedeployNew,
+        StartupError::LifecycleInterruptedRedeployRestore,
+        StartupError::LifecycleInterruptedRedeployRequired,
     ];
     let sensitive = "/private/weavelit/state-root/sensitive";
     for error in &errors {

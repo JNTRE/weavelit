@@ -127,15 +127,16 @@ redisplays that private key.
 5. The Server validates the complete request, creates the first Human User and
    the system-defined Administrators Group, adds the user to that Group,
    protects submitted secrets, and confirms that the System Log and Audit Log
-   assignments can durably record their assigned log type.
+   assignments can provide their required durable acknowledgement during the
+   valid run.
 6. The Application Database atomically commits the initialized application
    state.
-7. The Server durably records the successful Init result through the committed
-   System Log assignment, then irreversibly seals the deployment record
-   `Initialized`.
-8. Only after the seal is durable does the Server remove the Pre-Operational
-   Surface and enable normal authenticated operation. No process restart is
-   required.
+7. The Server receives the required durable acknowledgement for the successful
+   Init result through the committed System Log assignment, then irreversibly
+   seals the deployment record `Initialized`.
+8. Only after the seal's configured valid-run commit path completes does the
+   Server remove the Pre-Operational Surface and enable normal authenticated
+   operation. No process restart is required.
 
 If validation fails before the database commit, the Web UI keeps the person in
 setup, presents an actionable redacted error, and allows correction without
@@ -150,7 +151,7 @@ session. The first **[Human User](../../glossary.md#identities-and-access)** ent
 their new credentials and receives a Server-managed session only after normal
 authentication succeeds.
 
-## Resume Interrupted Setup
+## Interrupted Setup
 
 The **[Web UI](../../glossary.md#applications-and-interfaces)** asks the lifecycle
 and Init contracts for trusted **[Init](../../glossary.md#states-and-requests)**
@@ -161,21 +162,14 @@ browser state.
 - After database selection but before recovery-key preparation, setup resumes
   with the selected database. User-supplied values that were held only in page
   memory must be entered again.
-- After recovery-key preparation, only recovery-key reconciliation and
-  finalization are available. Database selection does not reopen.
-- If the person retained the private key after losing page state, the Web UI may
-  accept that saved key solely to derive proof and resume finalization. This is
-  an interrupted-flow recovery action, not a requirement in the normal flow.
-- If the private key was not saved or cannot be used, the person may explicitly
-  reset recovery-key delivery. The Web UI warns that reset invalidates the
-  previously delivered key and generates a replacement pair only after the
-  Server completes the reset safely.
-- A correctable validation or persistence failure leaves setup pending so the
-  person can correct the request and continue with the same saved key.
-- If initialized database state commits but deployment sealing is interrupted,
-  the Server exposes no routes. On restart it verifies the matching deployment
-  identifier, completes the seal, and proceeds to normal sign-in without
-  reopening Init.
+- After recovery-key preparation, an interruption leaves retained partial state.
+   The Server exposes no Init, status, or normal route over that state and emits
+   only its stable redacted operator action class.
+- The Web UI does not offer reconciliation, recovery-key reset, resumed
+   finalization, or any retained-state deletion or recreation action.
+- The operator may preserve the failed root for diagnosis or evidence, or
+   discard it and redeploy before beginning a new Init. The private recovery key
+   from the failed deployment is not a way to resume that deployment.
 
 ## After Init
 

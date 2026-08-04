@@ -8,10 +8,10 @@ operation.
 
 - This crate owns lifecycle record and locator domain types, stable identifiers,
   typed connection declarations and values, common input validation, trusted
-  backend context, factory dispatch, classifications, startup classification and
-  reconciliation, workflow arbitration and crash reconciliation, protected anchor
-  formats, trusted-root filesystem behavior, Application Database selection and
-  restart reopening, and redacted errors.
+  backend context, factory dispatch, classifications, startup classification,
+  workflow arbitration, protected anchor formats, trusted-root filesystem
+  behavior, Application Database selection and restart reopening, and redacted
+  errors.
 - It reuses the Application Database contract and deployment identifier.
 - It does not own concrete backend registration, workflow-specific metadata
   interpretation, sealing, runtime composition, or Client Modules.

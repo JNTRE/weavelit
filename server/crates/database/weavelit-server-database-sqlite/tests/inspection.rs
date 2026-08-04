@@ -1,4 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    hash::{DefaultHasher, Hash, Hasher},
+    os::unix::fs::{MetadataExt, PermissionsExt, symlink},
+    path::{Path, PathBuf},
+};
 
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -6,7 +11,7 @@ use weavelit_server_database::{
     DatabaseError, DatabaseInspection, DeploymentIdentifier, MAX_CHECKPOINT_METADATA_LENGTH,
     WorkflowKind,
 };
-use weavelit_server_database_sqlite::SqliteDatabase;
+use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 
 type SchemaSnapshot = Vec<(String, String)>;
 type LedgerSnapshot = Vec<(i64, String, Vec<u8>)>;
@@ -47,6 +52,16 @@ fn insert_state(
             ],
         )
         .unwrap();
+}
+
+fn checkpoint_and_close_wal(path: &Path) {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .unwrap();
+    drop(connection);
+    assert!(!path.with_extension("db-wal").exists());
+    assert!(!path.with_extension("db-shm").exists());
 }
 
 fn rebuild_unconstrained_lifecycle_table(path: &Path) -> Connection {
@@ -179,6 +194,30 @@ fn snapshot(path: &Path) -> DatabaseSnapshot {
     (schema, ledger, state)
 }
 
+fn directory_snapshot(path: &Path) -> Vec<(PathBuf, u32, u32, u32, u64, u64, u64)> {
+    let mut entries = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            let contents = fs::read(entry.path()).unwrap();
+            let mut hasher = DefaultHasher::new();
+            contents.hash(&mut hasher);
+            (
+                PathBuf::from(entry.file_name()),
+                metadata.permissions().mode(),
+                metadata.uid(),
+                metadata.gid(),
+                metadata.nlink(),
+                metadata.size(),
+                hasher.finish(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
 #[test]
 fn fresh_database_is_uninitialized() {
     let temporary_directory = tempfile::tempdir().unwrap();
@@ -188,6 +227,73 @@ fn fresh_database_is_uninitialized() {
     assert_eq!(
         database.inspect(identifier(1)).unwrap(),
         DatabaseInspection::Uninitialized
+    );
+}
+
+#[test]
+fn retained_inspection_of_a_missing_database_does_not_create_it() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+
+    let error = SqliteDatabase::inspect_retained(&path, identifier(1)).unwrap_err();
+
+    assert_eq!(error, DatabaseError::Unavailable);
+    assert!(!path.exists());
+    assert!(!path.with_extension("db-wal").exists());
+    assert!(!path.with_extension("db-shm").exists());
+}
+
+#[test]
+fn retained_inspection_encodes_uri_metacharacters_in_trusted_paths() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let trusted_root = temporary_directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("trusted ?#% path caf\u{e9}");
+    fs::create_dir(&trusted_root).unwrap();
+    let path = trusted_root.join("application.db");
+    let expected_identifier = identifier(2);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+    insert_state(
+        &path,
+        expected_identifier,
+        "pending",
+        Some("init"),
+        Some(b"uri-metadata"),
+    );
+    assert!(!path.with_extension("db-wal").exists());
+    assert!(!path.with_extension("db-shm").exists());
+
+    let RetainedSqliteInspection::Inspected(DatabaseInspection::Pending(checkpoint)) =
+        SqliteDatabase::inspect_retained(&path, expected_identifier).unwrap()
+    else {
+        panic!("expected retained inspection to read the trusted database");
+    };
+    assert_eq!(checkpoint.workflow(), WorkflowKind::Init);
+    assert_eq!(checkpoint.metadata().as_bytes(), b"uri-metadata");
+}
+
+#[test]
+fn retained_inspection_rejects_a_symbolic_link_database() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let target_path = database_path(&temporary_directory);
+    let expected_identifier = identifier(3);
+    drop(SqliteDatabase::open(&target_path).unwrap());
+    insert_state(
+        &target_path,
+        expected_identifier,
+        "pending",
+        Some("restore"),
+        Some(b"symlink-metadata"),
+    );
+    let linked_path = temporary_directory.path().join("retained-link.db");
+    symlink(&target_path, &linked_path).unwrap();
+
+    assert_eq!(
+        SqliteDatabase::inspect_retained(&linked_path, expected_identifier).unwrap_err(),
+        DatabaseError::Unavailable
     );
 }
 
@@ -329,7 +435,7 @@ fn duplicate_lifecycle_rows_fail_cardinality_validation() {
 }
 
 #[test]
-fn inspection_is_stable_across_restart_and_does_not_mutate_database() {
+fn retained_inspection_is_stable_and_does_not_mutate_database_or_sidecars() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let expected_identifier = identifier(6);
@@ -341,17 +447,68 @@ fn inspection_is_stable_across_restart_and_does_not_mutate_database() {
         Some("restore"),
         Some(b"restart-metadata"),
     );
+    checkpoint_and_close_wal(&path);
     let before = snapshot(&path);
+    let directory_before = directory_snapshot(temporary_directory.path());
 
-    let first = {
-        let database = SqliteDatabase::open(&path).unwrap();
-        database.inspect(expected_identifier).unwrap()
-    };
-    let second = {
-        let database = SqliteDatabase::open(&path).unwrap();
-        database.inspect(expected_identifier).unwrap()
-    };
+    let first = SqliteDatabase::inspect_retained(&path, expected_identifier).unwrap();
+    let second = SqliteDatabase::inspect_retained(&path, expected_identifier).unwrap();
 
     assert_eq!(first, second);
     assert_eq!(snapshot(&path), before);
+    assert_eq!(
+        directory_snapshot(temporary_directory.path()),
+        directory_before
+    );
+}
+
+#[test]
+fn retained_inspection_detects_wal_without_opening_or_mutation() {
+    for (workflow, metadata) in [
+        (WorkflowKind::Init, b"init-wal-checkpoint".as_slice()),
+        (WorkflowKind::Restore, b"restore-wal-checkpoint".as_slice()),
+    ] {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let expected_identifier = identifier(match workflow {
+            WorkflowKind::Init => 7,
+            WorkflowKind::Restore => 8,
+        });
+        let workflow_label = match workflow {
+            WorkflowKind::Init => "init",
+            WorkflowKind::Restore => "restore",
+        };
+        drop(SqliteDatabase::open(&path).unwrap());
+
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute(
+                "INSERT INTO weavelit_lifecycle_state \
+                 (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                 VALUES (1, ?1, 'pending', ?2, ?3)",
+                params![
+                    expected_identifier.as_bytes().as_slice(),
+                    workflow_label,
+                    metadata
+                ],
+            )
+            .unwrap();
+
+        let wal_path = path.with_extension("db-wal");
+        let shm_path = path.with_extension("db-shm");
+        assert!(wal_path.exists());
+        assert!(shm_path.exists());
+        let directory_before = directory_snapshot(temporary_directory.path());
+
+        assert_eq!(
+            SqliteDatabase::inspect_retained(&path, expected_identifier).unwrap(),
+            RetainedSqliteInspection::WalPresent
+        );
+        assert_eq!(
+            directory_snapshot(temporary_directory.path()),
+            directory_before
+        );
+
+        drop(writer);
+    }
 }

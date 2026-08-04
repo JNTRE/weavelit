@@ -4,8 +4,8 @@ use weavelit_server_database::{DatabaseError, DatabaseInspection};
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
-    LifecycleClassification, LifecycleError, LifecycleState, SelectionError, TrustedBackendContext,
-    ValidatedConnectionSettings,
+    LifecycleClassification, LifecycleError, LifecycleState, RetainedDatabaseInspection,
+    SelectionError, TrustedBackendContext, ValidatedConnectionSettings,
     filesystem::{Inventory, StateRoot},
     format::{
         AnchorKey, KEY_FILE_LIMIT, KEY_FILE_NAME, LOCATOR_ENVELOPE_LIMIT, RECORD_ENVELOPE_LIMIT,
@@ -20,8 +20,6 @@ use crate::{
 pub enum AnchorLoadState {
     /// A new key and deployment record were created.
     FirstStartCreated,
-    /// A valid key-only interrupted first start was resumed.
-    FirstStartResumed,
     /// An existing complete anchor set was reopened.
     Retained,
 }
@@ -50,25 +48,12 @@ impl LifecycleStore {
         let inventory = root.inventory()?;
         match (inventory.has_key, inventory.has_record) {
             (false, false)
-                if inventory.locator_files.is_empty() && !inventory.has_database_artifact =>
+                if inventory.locator_files.is_empty()
+                    && inventory.temporary_files.is_empty()
+                    && !inventory.has_application_database_artifact
+                    && !inventory.has_log_database_artifact =>
             {
-                cleanup(&root, &inventory.temporary_files)?;
-                Self::create(root, AnchorLoadState::FirstStartCreated, None)
-            }
-            (false, false)
-                if inventory.locator_files.is_empty() && inventory.has_database_artifact =>
-            {
-                // Orphan from an interrupted initial selection: remove artifact and retry fresh.
-                cleanup(&root, &inventory.temporary_files)?;
-                root.cleanup_database_artifacts()?;
-                Self::create(root, AnchorLoadState::FirstStartCreated, None)
-            }
-            (true, false)
-                if inventory.locator_files.is_empty() && !inventory.has_database_artifact =>
-            {
-                let key = parse_key(&root.read(KEY_FILE_NAME, KEY_FILE_LIMIT)?)?;
-                cleanup(&root, &inventory.temporary_files)?;
-                Self::create(root, AnchorLoadState::FirstStartResumed, Some(key))
+                Self::create(root, AnchorLoadState::FirstStartCreated)
             }
             (true, true) => Self::load(root, inventory),
             _ => Err(LifecycleError::IntegrityFailure),
@@ -230,15 +215,9 @@ impl LifecycleStore {
         Ok(database)
     }
 
-    /// Classifies startup state from the current anchor set and performs the documented
-    /// reconciliation for the `Uninitialized` record with a pending database checkpoint.
-    ///
-    /// Applies the full startup matrix. For an `Uninitialized` record with a pending
-    /// checkpoint, advances the deployment record to `InitializationPending` in documented
-    /// cross-store order before returning. Performs no other mutation: no checkpoint
-    /// creation, locator replacement, sealing, state loading, or route changes.
+    /// Classifies startup state from the current anchor set without mutating retained state.
     pub fn classify_startup(
-        &mut self,
+        &self,
         catalog: &BackendCatalog,
         context: &TrustedBackendContext,
     ) -> Result<LifecycleClassification, LifecycleError> {
@@ -247,28 +226,31 @@ impl LifecycleStore {
                 let Some(locator) = self.locator.as_ref() else {
                     return Ok(LifecycleClassification::UninitializedWithoutDatabase);
                 };
-                let mut db = catalog.reopen(locator.settings(), context)?;
-                let inspection = db
-                    .inspect(self.record.deployment_identifier())
-                    .map_err(map_database_error_to_lifecycle)?;
+                let inspection = catalog.inspect_retained(
+                    locator.settings(),
+                    context,
+                    self.record.deployment_identifier(),
+                )?;
+                let inspection = match inspection {
+                    RetainedDatabaseInspection::Inspected(inspection) => inspection,
+                    RetainedDatabaseInspection::RedeployRequired => {
+                        return Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ));
+                    }
+                };
                 match inspection {
                     DatabaseInspection::Uninitialized => {
                         Ok(LifecycleClassification::UninitializedWithDatabase)
                     }
-                    DatabaseInspection::Pending(checkpoint) => {
-                        let kind = checkpoint.workflow();
-                        let generation = self.locator.as_ref().unwrap().generation();
-                        let new_record = DeploymentRecord::new(
-                            self.record.deployment_identifier(),
-                            LifecycleState::InitializationPending,
-                            Some(generation),
-                        )
-                        .map_err(|_| LifecycleError::InvalidState)?;
-                        let permit = RecordPersistencePermit;
-                        self.replace_record(&permit, new_record)?;
-                        Ok(LifecycleClassification::InitializationPending(kind))
+                    DatabaseInspection::Pending(checkpoint) => Ok(
+                        LifecycleClassification::Interrupted(Self::interrupted_action(&checkpoint)),
+                    ),
+                    DatabaseInspection::Initialized { .. } => {
+                        Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ))
                     }
-                    DatabaseInspection::Initialized { .. } => Err(LifecycleError::InvalidState),
                 }
             }
             LifecycleState::InitializationPending => {
@@ -277,18 +259,29 @@ impl LifecycleStore {
                     .locator
                     .as_ref()
                     .ok_or(LifecycleError::IntegrityFailure)?;
-                let mut db = catalog.reopen(locator.settings(), context)?;
-                let inspection = db
-                    .inspect(self.record.deployment_identifier())
-                    .map_err(map_database_error_to_lifecycle)?;
+                let inspection = catalog.inspect_retained(
+                    locator.settings(),
+                    context,
+                    self.record.deployment_identifier(),
+                )?;
+                let inspection = match inspection {
+                    RetainedDatabaseInspection::Inspected(inspection) => inspection,
+                    RetainedDatabaseInspection::RedeployRequired => {
+                        return Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ));
+                    }
+                };
                 match inspection {
                     DatabaseInspection::Pending(checkpoint) => Ok(
-                        LifecycleClassification::InitializationPending(checkpoint.workflow()),
+                        LifecycleClassification::Interrupted(Self::interrupted_action(&checkpoint)),
                     ),
                     DatabaseInspection::Initialized { .. } => {
-                        Ok(LifecycleClassification::PostCommitReconciliationRequired)
+                        Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ))
                     }
-                    DatabaseInspection::Uninitialized => Err(LifecycleError::InvalidState),
+                    DatabaseInspection::Uninitialized => Err(LifecycleError::IntegrityFailure),
                 }
             }
             LifecycleState::Initialized => {
@@ -296,10 +289,19 @@ impl LifecycleStore {
                     .locator
                     .as_ref()
                     .ok_or(LifecycleError::IntegrityFailure)?;
-                let mut db = catalog.reopen(locator.settings(), context)?;
-                let inspection = db
-                    .inspect(self.record.deployment_identifier())
-                    .map_err(map_database_error_to_lifecycle)?;
+                let inspection = catalog.inspect_retained(
+                    locator.settings(),
+                    context,
+                    self.record.deployment_identifier(),
+                )?;
+                let inspection = match inspection {
+                    RetainedDatabaseInspection::Inspected(inspection) => inspection,
+                    RetainedDatabaseInspection::RedeployRequired => {
+                        return Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ));
+                    }
+                };
                 match inspection {
                     DatabaseInspection::Initialized { .. } => {
                         Ok(LifecycleClassification::Initialized)
@@ -310,18 +312,22 @@ impl LifecycleStore {
         }
     }
 
-    fn create(
-        root: StateRoot,
-        load_state: AnchorLoadState,
-        existing_key: Option<AnchorKey>,
-    ) -> Result<Self, LifecycleError> {
-        let key = if let Some(key) = existing_key {
-            key
-        } else {
-            let key = generate_key()?;
-            root.publish_new(KEY_FILE_NAME, &serialize_key(&key)?)?;
-            key
-        };
+    fn interrupted_action(
+        checkpoint: &weavelit_server_database::WorkflowCheckpoint,
+    ) -> crate::InterruptedLifecycleAction {
+        match checkpoint.workflow() {
+            weavelit_server_database::WorkflowKind::Init => {
+                crate::InterruptedLifecycleAction::RedeployNew
+            }
+            weavelit_server_database::WorkflowKind::Restore => {
+                crate::InterruptedLifecycleAction::RedeployRestore
+            }
+        }
+    }
+
+    fn create(root: StateRoot, load_state: AnchorLoadState) -> Result<Self, LifecycleError> {
+        let key = generate_key()?;
+        root.publish_new(KEY_FILE_NAME, &serialize_key(&key)?)?;
         let record = DeploymentRecord::new(
             generate_deployment_identifier()?,
             LifecycleState::Uninitialized,
@@ -344,10 +350,13 @@ impl LifecycleStore {
     }
 
     fn load(root: StateRoot, inventory: Inventory) -> Result<Self, LifecycleError> {
+        if !inventory.temporary_files.is_empty() {
+            return Err(LifecycleError::IntegrityFailure);
+        }
         let key = parse_key(&root.read(KEY_FILE_NAME, KEY_FILE_LIMIT)?)?;
         let record = decrypt_record(&key, &root.read(RECORD_FILE_NAME, RECORD_ENVELOPE_LIMIT)?)?;
         let active_generation = record.locator_generation();
-        if active_generation.is_none() && inventory.has_database_artifact {
+        if active_generation.is_none() && inventory.has_application_database_artifact {
             return Err(LifecycleError::IntegrityFailure);
         }
 
@@ -372,12 +381,12 @@ impl LifecycleStore {
         } else {
             None
         };
-
-        cleanup(&root, &inventory.temporary_files)?;
-        for (_, name) in inventory.locator_files {
-            if Some(name.as_str()) != active_name.as_deref() {
-                root.remove(&name)?;
-            }
+        if inventory
+            .locator_files
+            .iter()
+            .any(|(_, name)| Some(name.as_str()) != active_name.as_deref())
+        {
+            return Err(LifecycleError::IntegrityFailure);
         }
         Ok(Self {
             root,
@@ -398,13 +407,6 @@ impl fmt::Debug for LifecycleStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("LifecycleStore(REDACTED)")
     }
-}
-
-fn cleanup(root: &StateRoot, names: &[String]) -> Result<(), LifecycleError> {
-    for name in names {
-        root.remove(name)?;
-    }
-    Ok(())
 }
 
 fn map_database_error(error: DatabaseError) -> SelectionError {

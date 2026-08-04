@@ -22,20 +22,28 @@ use crate::{
 const ROOT_MODE: RawMode = 0o700;
 const FILE_MODE: RawMode = 0o600;
 const MAX_ROOT_ENTRIES: usize = 256;
-const SQLITE_FILES: &[&str] = &[
+const APPLICATION_DATABASE_SQLITE_FILES: &[&str] = &[
     "application.sqlite3",
     "application.sqlite3-journal",
     "application.sqlite3-wal",
     "application.sqlite3-shm",
 ];
+const LOG_DATABASE_SQLITE_FILES: &[&str] = &[
+    "log.sqlite3",
+    "log.sqlite3-journal",
+    "log.sqlite3-wal",
+    "log.sqlite3-shm",
+];
 
 #[derive(Debug)]
 pub(crate) struct Inventory {
+    has_lock: bool,
     pub(crate) has_key: bool,
     pub(crate) has_record: bool,
     pub(crate) locator_files: Vec<(LocatorGeneration, String)>,
     pub(crate) temporary_files: Vec<String>,
-    pub(crate) has_database_artifact: bool,
+    pub(crate) has_application_database_artifact: bool,
+    pub(crate) has_log_database_artifact: bool,
 }
 
 pub(crate) struct StateRoot {
@@ -77,7 +85,14 @@ impl StateRoot {
         }
         validate_root(&directory)?;
         let directory = File::from(directory);
-        let lock = open_lock(&directory)?;
+        let (lock, lock_was_created) = open_lock(&directory)?;
+        let inventory = inspect_inventory(&directory)?;
+        if !inventory.has_lock
+            || (lock_was_created && !inventory.is_empty())
+            || (!lock_was_created && inventory.is_empty())
+        {
+            return Err(LifecycleError::IntegrityFailure);
+        }
         Ok(Self {
             directory,
             _lock: lock,
@@ -85,62 +100,86 @@ impl StateRoot {
     }
 
     pub(crate) fn inventory(&self) -> Result<Inventory, LifecycleError> {
-        let iterator_fd = fs::openat(
-            &self.directory,
-            ".",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|_| LifecycleError::Persistence)?;
-        let mut directory = Dir::new(iterator_fd).map_err(|_| LifecycleError::Persistence)?;
-        let mut names = Vec::new();
-        while let Some(entry) = directory.read() {
-            let entry = entry.map_err(|_| LifecycleError::IntegrityFailure)?;
-            let name = entry.file_name().to_bytes();
-            if name == b"." || name == b".." {
-                continue;
-            }
-            if names.len() == MAX_ROOT_ENTRIES {
-                return Err(LifecycleError::IntegrityFailure);
-            }
-            let name = std::str::from_utf8(name)
-                .map_err(|_| LifecycleError::IntegrityFailure)?
-                .to_owned();
-            validate_child_name_and_metadata(&self.directory, &name)?;
-            names.push(name);
-        }
+        inspect_inventory(&self.directory)
+    }
+}
 
-        let mut inventory = Inventory {
-            has_key: false,
-            has_record: false,
-            locator_files: Vec::new(),
-            temporary_files: Vec::new(),
-            has_database_artifact: false,
-        };
-        for name in names {
-            match name.as_str() {
-                LOCK_FILE_NAME => {}
-                KEY_FILE_NAME => inventory.has_key = true,
-                RECORD_FILE_NAME => inventory.has_record = true,
-                name if SQLITE_FILES.contains(&name) => inventory.has_database_artifact = true,
-                _ => {
-                    if let Some(generation) = parse_locator_file_name(&name)? {
-                        inventory.locator_files.push((generation, name));
-                    } else if is_valid_temporary_name(&name)? {
-                        inventory.temporary_files.push(name);
-                    } else {
-                        return Err(LifecycleError::IntegrityFailure);
-                    }
+impl Inventory {
+    fn is_empty(&self) -> bool {
+        !self.has_key
+            && !self.has_record
+            && self.locator_files.is_empty()
+            && self.temporary_files.is_empty()
+            && !self.has_application_database_artifact
+            && !self.has_log_database_artifact
+    }
+}
+
+fn inspect_inventory(directory: &File) -> Result<Inventory, LifecycleError> {
+    let iterator_fd = fs::openat(
+        directory,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|_| LifecycleError::Persistence)?;
+    let mut iterator = Dir::new(iterator_fd).map_err(|_| LifecycleError::Persistence)?;
+    let mut names = Vec::new();
+    while let Some(entry) = iterator.read() {
+        let entry = entry.map_err(|_| LifecycleError::IntegrityFailure)?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        if names.len() == MAX_ROOT_ENTRIES {
+            return Err(LifecycleError::IntegrityFailure);
+        }
+        let name = std::str::from_utf8(name)
+            .map_err(|_| LifecycleError::IntegrityFailure)?
+            .to_owned();
+        validate_child_name_and_metadata(directory, &name)?;
+        names.push(name);
+    }
+
+    let mut inventory = Inventory {
+        has_lock: false,
+        has_key: false,
+        has_record: false,
+        locator_files: Vec::new(),
+        temporary_files: Vec::new(),
+        has_application_database_artifact: false,
+        has_log_database_artifact: false,
+    };
+    for name in names {
+        match name.as_str() {
+            LOCK_FILE_NAME => inventory.has_lock = true,
+            KEY_FILE_NAME => inventory.has_key = true,
+            RECORD_FILE_NAME => inventory.has_record = true,
+            name if APPLICATION_DATABASE_SQLITE_FILES.contains(&name) => {
+                inventory.has_application_database_artifact = true;
+            }
+            name if LOG_DATABASE_SQLITE_FILES.contains(&name) => {
+                inventory.has_log_database_artifact = true;
+            }
+            _ => {
+                if let Some(generation) = parse_locator_file_name(&name)? {
+                    inventory.locator_files.push((generation, name));
+                } else if is_valid_temporary_name(&name)? {
+                    inventory.temporary_files.push(name);
+                } else {
+                    return Err(LifecycleError::IntegrityFailure);
                 }
             }
         }
-        inventory
-            .locator_files
-            .sort_by(|left, right| left.1.cmp(&right.1));
-        inventory.temporary_files.sort();
-        Ok(inventory)
     }
+    inventory
+        .locator_files
+        .sort_by(|left, right| left.1.cmp(&right.1));
+    inventory.temporary_files.sort();
+    Ok(inventory)
+}
 
+impl StateRoot {
     pub(crate) fn read(&self, name: &str, limit: usize) -> Result<Vec<u8>, LifecycleError> {
         let descriptor = fs::openat(
             &self.directory,
@@ -173,22 +212,6 @@ impl StateRoot {
         fs::unlinkat(&self.directory, name, AtFlags::empty())
             .map_err(|_| LifecycleError::Persistence)?;
         self.sync_directory()
-    }
-
-    /// Removes all known SQLite sidecar files, ignoring absent files.
-    pub(crate) fn cleanup_database_artifacts(&self) -> Result<(), LifecycleError> {
-        let mut removed_any = false;
-        for name in SQLITE_FILES {
-            match fs::unlinkat(&self.directory, *name, AtFlags::empty()) {
-                Ok(()) => removed_any = true,
-                Err(Errno::NOENT) => {}
-                Err(_) => return Err(LifecycleError::Persistence),
-            }
-        }
-        if removed_any {
-            self.sync_directory()?;
-        }
-        Ok(())
     }
 
     pub(crate) fn sync_directory(&self) -> Result<(), LifecycleError> {
@@ -249,18 +272,31 @@ impl fmt::Debug for StateRoot {
     }
 }
 
-fn open_lock(directory: &File) -> Result<File, LifecycleError> {
-    let descriptor = fs::openat(
+fn open_lock(directory: &File) -> Result<(File, bool), LifecycleError> {
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let (descriptor, was_created) = match fs::openat(
         directory,
         LOCK_FILE_NAME,
-        OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        flags | OFlags::EXCL,
         Mode::from_raw_mode(FILE_MODE),
-    )
-    .map_err(|_| LifecycleError::ConfigurationInvalid)?;
+    ) {
+        Ok(descriptor) => (descriptor, true),
+        Err(Errno::EXIST) => (
+            fs::openat(
+                directory,
+                LOCK_FILE_NAME,
+                flags,
+                Mode::from_raw_mode(FILE_MODE),
+            )
+            .map_err(|_| LifecycleError::ConfigurationInvalid)?,
+            false,
+        ),
+        Err(_) => return Err(LifecycleError::ConfigurationInvalid),
+    };
     validate_file(&descriptor)?;
     let lock = File::from(descriptor);
     lock.try_lock().map_err(|_| LifecycleError::LockContended)?;
-    Ok(lock)
+    Ok((lock, was_created))
 }
 
 fn validate_root<Fd: std::os::fd::AsFd>(descriptor: &Fd) -> Result<(), LifecycleError> {

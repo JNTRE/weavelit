@@ -52,7 +52,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Keep startup-state classification and the lifecycle gate in the Server
-  runtime composition. Persist and reconcile the deployment record and database
+  runtime composition. Persist and validate the deployment record and database
   locator through `weavelit-server-lifecycle`; never expose normal functions
   before the `Initialized` seal is durable or reopen Init or Restore as a
   fallback for missing or invalid deployment state.
