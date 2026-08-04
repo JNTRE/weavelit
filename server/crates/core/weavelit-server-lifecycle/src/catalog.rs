@@ -156,7 +156,7 @@ pub trait ApplicationDatabaseFactory: Send + Sync {
         context: &TrustedBackendContext,
         settings: &ValidatedConnectionSettings,
         expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError>;
+    ) -> Result<RetainedDatabaseInspection, LifecycleError>;
 }
 
 /// Unvalidated backend registration consumed by catalog construction.
@@ -275,6 +275,15 @@ impl fmt::Debug for BackendDeclaration {
 struct BackendEntry {
     declaration: BackendDeclaration,
     factory: Box<dyn ApplicationDatabaseFactory>,
+}
+
+/// Non-mutating result of classifying retained Application Database state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetainedDatabaseInspection {
+    /// The backend safely inspected the retained database state.
+    Inspected(DatabaseInspection),
+    /// The retained state must be redeployed without database inspection.
+    RedeployRequired,
 }
 
 /// Validated runtime-supplied catalog of compiled-in database backends.
@@ -414,7 +423,7 @@ impl BackendCatalog {
         locator_settings: &LocatorConnectionSettings,
         context: &TrustedBackendContext,
         expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
         let identifier = locator_settings.backend_identifier();
         let entry = self
             .entry(identifier)

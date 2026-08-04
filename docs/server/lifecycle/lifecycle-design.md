@@ -129,10 +129,15 @@ application request may select the root or a child path.
 The lifecycle crate holds the opened root directory handle for its lifetime and
 performs child inspection and mutation relative to that handle. It creates or
 opens `lifecycle.lock` without following links and obtains a non-blocking
-exclusive lock before inspecting another child. The lock is held for the
-process lifetime. A second Server process using the same root exits before
-binding HTTPS. The pinned Rust standard library's `File::try_lock` supplies this
-process lock; no third-party lock dependency is required.
+exclusive lock before inventorying or inspecting another child. The lock is
+held for the process lifetime. Contention therefore fails as `LockContended`
+even when another process has retained a temporary, unknown, or otherwise
+invalid child. A newly created lock with no other entry is a fresh bootstrap;
+an existing lock with no other entry, or a newly created lock with any retained
+entry, fails closed after lock acquisition. A second Server process using the
+same root exits before binding HTTPS. The pinned Rust standard library's
+`File::try_lock` supplies this process lock; no third-party lock dependency is
+required.
 
 Before creating a managed file, the process sets an owner-only `0077` umask.
 Every managed child must be a regular non-symlink file owned by the effective
@@ -473,6 +478,7 @@ each startup rather than issuing, renewing, or replacing it.
 | `InitializationPending` | Matching locator and Restore checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_restore`; expose no route. |
 | `InitializationPending` | Matching locator and initialized database | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required`; expose no route. |
 | `Initialized` | Matching locator and initialized database | Load application state and start normal authenticated operation. |
+| Any record requiring retained SQLite inspection | Existing `application.sqlite3-wal` | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required` without opening the Application Database; expose no route. |
 | Any existing record | Missing required locator, identifier mismatch, unexpected state combination, unsafe or malformed state, unavailable database, or integrity failure | Fail startup closed without exposing Init or Restore. |
 
 An unavailable, missing, malformed, unsafe, mismatched, or integrity-failing
@@ -577,8 +583,10 @@ typed error presentation. The allowed pairs are:
 The `lifecycle_interrupted` pairs are stable action-class diagnostics. They
 identify only whether the operator must redeploy for a new deployment, redeploy
 before a new Restore using independently retained material, or redeploy before
-determining a fresh supported workflow. They do not disclose retained payloads,
-host paths, deployment identifiers, state contents, or internal errors.
+determining a fresh supported workflow. `operator_redeploy_required` also
+covers retained SQLite WAL state that cannot be inspected without touching
+source artifacts. These pairs do not disclose retained payloads, host paths,
+deployment identifiers, state contents, or internal errors.
 
 For example, a missing environment variable produces exactly:
 
@@ -679,9 +687,11 @@ hard links, non-regular and unknown entries, the 256-entry bound, lock
 contention, unavailable or failed synchronization operations, retained temporary
 and orphan classification, interrupted bootstrap classification, every invalid
 partial anchor set, and failure handling for file synchronization, rename,
-record commit, directory synchronization, and cleanup. Tests retain and reopen
-real SQLite `-journal`, `-wal`, and `-shm` sidecars through the backend rather
-than deleting them as lifecycle orphans. They do not assert power-cut or abrupt
+record commit, directory synchronization, and cleanup. Tests retain real SQLite
+`-journal`, `-wal`, and `-shm` sidecars rather than deleting them as lifecycle
+orphans. A retained WAL is classified through the generic operator action
+without opening SQLite, and raw directory snapshots prove that the original
+database and sidecars remain unchanged. They do not assert power-cut or abrupt
 termination survival as a Weavelit guarantee; where the Server can restart,
 they assert fail-closed classification and redacted operator-action output.
 

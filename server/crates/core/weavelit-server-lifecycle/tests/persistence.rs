@@ -92,6 +92,23 @@ fn process_lifetime_lock_rejects_a_second_store() {
 }
 
 #[test]
+fn lock_contention_precedes_retained_child_validation() {
+    let (_directory, path) = state_root();
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    let child = path.join("unexpected-entry");
+    let child_bytes = b"retained child";
+    fs::write(&child, child_bytes).unwrap();
+    fs::set_permissions(&child, fs::Permissions::from_mode(0o600)).unwrap();
+
+    expect_open_error(&path, LifecycleError::LockContended);
+    assert_eq!(fs::read(&child).unwrap(), child_bytes);
+
+    drop(store);
+    expect_open_error(&path, LifecycleError::IntegrityFailure);
+    assert_eq!(fs::read(&child).unwrap(), child_bytes);
+}
+
+#[test]
 fn missing_wrong_and_tampered_key_or_record_fail_closed() {
     let mut cases: Vec<Mutation> = Vec::new();
     cases.push(Box::new(|path| {
@@ -298,10 +315,10 @@ fn retained_temporary_and_unreferenced_locator_files_fail_closed_without_mutatio
     let temporary_bytes = b"retained temporary";
     fs::write(&temporary_path, temporary_bytes).unwrap();
     fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600)).unwrap();
-    let before = root_snapshot(&path);
 
     expect_open_error(&path, LifecycleError::IntegrityFailure);
-    assert_eq!(root_snapshot(&path), before);
+    assert_eq!(fs::read(&temporary_path).unwrap(), temporary_bytes);
+    assert!(path.join("lifecycle.lock").exists());
 
     let (_directory, path) = state_root();
     let lock_path = path.join("lifecycle.lock");

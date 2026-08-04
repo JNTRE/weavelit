@@ -448,6 +448,13 @@ resume, retry, complete logging for, seal, delete, recreate, or otherwise make
 the retained state usable. It MUST NOT expose normal operation or a
 Pre-Operational fallback over that ambiguous state.
 
+When retained **[Application Database](glossary.md#applications-and-interfaces)**
+state includes a SQLite write-ahead log (WAL), the Server MUST classify it as
+`lifecycle_interrupted` / `operator_redeploy_required` without opening,
+copying, inspecting, recovering, checkpointing, or otherwise modifying the
+original database, WAL, or shared-memory artifacts. It MUST NOT derive an
+Init- or Restore-specific action from WAL-bearing retained state.
+
 The operator MAY preserve the failed state root for diagnosis or evidence, or
 discard it and rebuild or redeploy the host. A failed fresh Init requires a new
 deployment and a new Init. A failed Restore requires a replacement deployment

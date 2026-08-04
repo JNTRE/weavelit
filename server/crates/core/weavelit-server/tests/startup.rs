@@ -16,6 +16,8 @@ use weavelit_server::{
 };
 use weavelit_server_lifecycle::{BackendIdentifier, LifecycleStore, TrustedBackendContext};
 
+type RootEntrySnapshot = (PathBuf, u32, u32, u32, u64, u64, i64, i64, i64, i64, u64);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -27,7 +29,7 @@ fn state_root() -> (tempfile::TempDir, PathBuf) {
     (directory, canonical)
 }
 
-fn root_snapshot(path: &Path) -> Vec<(PathBuf, u32, u32, u32, u64, u64, u64)> {
+fn root_snapshot(path: &Path) -> Vec<RootEntrySnapshot> {
     let mut entries = fs::read_dir(path)
         .unwrap()
         .map(|entry| {
@@ -35,9 +37,7 @@ fn root_snapshot(path: &Path) -> Vec<(PathBuf, u32, u32, u32, u64, u64, u64)> {
             let metadata = entry.metadata().unwrap();
             let contents = fs::read(entry.path()).unwrap();
             let mut hasher = DefaultHasher::new();
-            if entry.file_name() != "application.sqlite3-shm" {
-                contents.hash(&mut hasher);
-            }
+            contents.hash(&mut hasher);
             (
                 PathBuf::from(entry.file_name()),
                 metadata.permissions().mode(),
@@ -45,6 +45,10 @@ fn root_snapshot(path: &Path) -> Vec<(PathBuf, u32, u32, u32, u64, u64, u64)> {
                 metadata.gid(),
                 metadata.nlink(),
                 metadata.size(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
                 hasher.finish(),
             )
         })
@@ -81,6 +85,16 @@ fn assert_interrupted_startup(state_root: &Path, expected_reason: &str) {
 
 fn context(root: &std::path::Path) -> TrustedBackendContext {
     TrustedBackendContext::new(root.join("application.sqlite3"))
+}
+
+fn checkpoint_and_close_wal(path: &Path) {
+    let connection = Connection::open(path.join("application.sqlite3")).unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .unwrap();
+    drop(connection);
+    assert!(!path.join("application.sqlite3-wal").exists());
+    assert!(!path.join("application.sqlite3-shm").exists());
 }
 
 fn sqlite() -> BackendIdentifier {
@@ -464,7 +478,59 @@ fn restart_with_selected_database_classifies_as_uninitialized_with_database() {
 }
 
 #[test]
-fn retained_init_checkpoint_reports_redeploy_new_without_mutation_or_bind() {
+fn retained_init_checkpoint_without_wal_reports_redeploy_new_without_mutation_or_bind() {
+    let (_dir, path) = state_root();
+    {
+        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        let database = store
+            .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
+            .unwrap();
+        let dep_id = store.record().deployment_identifier();
+        drop(database);
+        {
+            let writer = Connection::open(path.join("application.sqlite3")).unwrap();
+            writer
+                .execute(
+                    "INSERT INTO weavelit_lifecycle_state \
+                     (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                     VALUES (1, ?1, 'pending', 'init', ?2)",
+                    params![dep_id.as_bytes().as_slice(), b"meta"],
+                )
+                .unwrap();
+        }
+    }
+    checkpoint_and_close_wal(&path);
+    assert_interrupted_startup(&path, "operator_redeploy_new");
+}
+
+#[test]
+fn retained_restore_checkpoint_without_wal_reports_redeploy_restore_without_mutation_or_bind() {
+    let (_dir, path) = state_root();
+    {
+        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        let database = store
+            .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
+            .unwrap();
+        let dep_id = store.record().deployment_identifier();
+        drop(database);
+        {
+            let writer = Connection::open(path.join("application.sqlite3")).unwrap();
+            writer
+                .execute(
+                    "INSERT INTO weavelit_lifecycle_state \
+                     (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                     VALUES (1, ?1, 'pending', 'restore', ?2)",
+                    params![dep_id.as_bytes().as_slice(), b"meta"],
+                )
+                .unwrap();
+        }
+    }
+    checkpoint_and_close_wal(&path);
+    assert_interrupted_startup(&path, "operator_redeploy_restore");
+}
+
+#[test]
+fn retained_wal_requires_generic_redeploy_without_mutation_or_bind() {
     let (_dir, path) = state_root();
     let writer;
     {
@@ -485,33 +551,8 @@ fn retained_init_checkpoint_reports_redeploy_new_without_mutation_or_bind() {
             .unwrap();
     }
     assert!(path.join("application.sqlite3-wal").exists());
-    assert_interrupted_startup(&path, "operator_redeploy_new");
-    drop(writer);
-}
-
-#[test]
-fn retained_restore_checkpoint_reports_redeploy_restore_without_mutation_or_bind() {
-    let (_dir, path) = state_root();
-    let writer;
-    {
-        let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        let database = store
-            .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
-            .unwrap();
-        let dep_id = store.record().deployment_identifier();
-        drop(database);
-        writer = Connection::open(path.join("application.sqlite3")).unwrap();
-        writer
-            .execute(
-                "INSERT INTO weavelit_lifecycle_state \
-                 (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
-                 VALUES (1, ?1, 'pending', 'restore', ?2)",
-                params![dep_id.as_bytes().as_slice(), b"meta"],
-            )
-            .unwrap();
-    }
-    assert!(path.join("application.sqlite3-wal").exists());
-    assert_interrupted_startup(&path, "operator_redeploy_restore");
+    assert!(path.join("application.sqlite3-shm").exists());
+    assert_interrupted_startup(&path, "operator_redeploy_required");
     drop(writer);
 }
 
@@ -588,12 +629,12 @@ fn orphaned_application_database_artifact_exits_before_binding() {
 }
 
 #[test]
-fn retained_temporary_file_exits_before_binding_without_mutating_the_root() {
+fn retained_temporary_file_exits_before_binding_after_creating_the_lock() {
     let (_state_directory, state_root) = state_root();
     let temporary = state_root.join("deployment-record.json.tmp-ICEiIyQlJicoKSorLC0uLw");
-    fs::write(&temporary, b"retained lifecycle temporary").unwrap();
+    let temporary_bytes = b"retained lifecycle temporary";
+    fs::write(&temporary, temporary_bytes).unwrap();
     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
-    let before = root_snapshot(&state_root);
     let (_tls_directory, certificate_path, private_key_path) = tls_material();
     let address = TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -614,7 +655,8 @@ fn retained_temporary_file_exits_before_binding_without_mutating_the_root() {
         b"{\"category\":\"storage_integrity_failure\",\"reason\":\"anchor_set_invalid\"}\n"
     );
     assert!(TcpStream::connect(address).is_err());
-    assert_eq!(root_snapshot(&state_root), before);
+    assert_eq!(fs::read(&temporary).unwrap(), temporary_bytes);
+    assert!(state_root.join("lifecycle.lock").exists());
 }
 
 #[test]

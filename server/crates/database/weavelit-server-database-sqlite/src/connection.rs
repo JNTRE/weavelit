@@ -1,7 +1,7 @@
-use std::{path::Path, time::Duration};
+use std::{fs, io::ErrorKind, path::Path, time::Duration};
 
 use rusqlite::{Connection, OpenFlags};
-use weavelit_server_database::DatabaseError;
+use weavelit_server_database::{DatabaseError, DatabaseInspection, DeploymentIdentifier};
 
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::migrations::apply_pending;
@@ -9,6 +9,15 @@ use crate::migrations::apply_pending;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const BUSY_TIMEOUT_MILLISECONDS: i64 = 5_000;
 const EXPECTED_HEALTH_RESULT: i64 = 1;
+
+/// Non-mutating result of inspecting retained SQLite state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetainedSqliteInspection {
+    /// SQLite safely inspected retained main-database state without a WAL.
+    Inspected(DatabaseInspection),
+    /// A retained WAL is present and must not be opened during classification.
+    WalPresent,
+}
 
 /// SQLite Application Database backend with one privately owned connection.
 pub struct SqliteDatabase {
@@ -32,11 +41,15 @@ impl SqliteDatabase {
     /// Inspects an existing trusted database without applying connection setup or migrations.
     pub fn inspect_retained(
         path: &Path,
-        expected_deployment_identifier: weavelit_server_database::DeploymentIdentifier,
-    ) -> Result<weavelit_server_database::DatabaseInspection, DatabaseError> {
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<RetainedSqliteInspection, DatabaseError> {
+        if retained_wal_exists(path)? {
+            return Ok(RetainedSqliteInspection::WalPresent);
+        }
         let connection = Connection::open_with_flags(path, retained_inspection_open_flags())
             .map_err(|error| map_sqlite_error(error, ErrorContext::Open))?;
         crate::inspection::inspect_connection(&connection, expected_deployment_identifier)
+            .map(RetainedSqliteInspection::Inspected)
     }
 
     fn verify_health(&self) -> Result<(), DatabaseError> {
@@ -63,6 +76,19 @@ fn retained_inspection_open_flags() -> OpenFlags {
     OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
+}
+
+fn retained_wal_exists(path: &Path) -> Result<bool, DatabaseError> {
+    let mut wal_name = path
+        .file_name()
+        .ok_or(DatabaseError::ConfigurationInvalid)?
+        .to_os_string();
+    wal_name.push("-wal");
+    match fs::symlink_metadata(path.with_file_name(wal_name)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(DatabaseError::Unavailable),
+    }
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), DatabaseError> {

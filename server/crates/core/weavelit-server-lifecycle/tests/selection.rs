@@ -8,14 +8,14 @@ use std::{
 use weavelit_server_database::{
     CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
 };
-use weavelit_server_database_sqlite::SqliteDatabase;
+use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
     BackendOpenError, BackendRegistration, ConnectionFieldDeclaration, ConnectionFieldIdentifier,
     ConnectionFieldInput, ConnectionFieldRequirement, ConnectionValidationError, ConnectionValue,
     ConnectionValueKind, FieldDeclarationError, LifecycleError, LifecycleStore,
-    SecretClassification, SelectionError, TrustedBackendContext, ValidatedConnectionSettings,
-    WorkflowCheckpoint, WorkflowKind,
+    RetainedDatabaseInspection, SecretClassification, SelectionError, TrustedBackendContext,
+    ValidatedConnectionSettings, WorkflowCheckpoint, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -62,11 +62,17 @@ impl ApplicationDatabaseFactory for SqliteFactory {
         context: &TrustedBackendContext,
         _settings: &ValidatedConnectionSettings,
         expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
         SqliteDatabase::inspect_retained(
             context.application_database_path(),
             expected_deployment_identifier,
         )
+        .map(|inspection| match inspection {
+            RetainedSqliteInspection::Inspected(inspection) => {
+                RetainedDatabaseInspection::Inspected(inspection)
+            }
+            RetainedSqliteInspection::WalPresent => RetainedDatabaseInspection::RedeployRequired,
+        })
         .map_err(|_| LifecycleError::DependencyUnavailable)
     }
 }
@@ -147,8 +153,10 @@ impl ApplicationDatabaseFactory for FakeFactory {
         _context: &TrustedBackendContext,
         _settings: &ValidatedConnectionSettings,
         _expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
-        self.result.clone()
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        self.result
+            .clone()
+            .map(RetainedDatabaseInspection::Inspected)
     }
 }
 
@@ -200,8 +208,12 @@ impl ApplicationDatabaseFactory for ControllableFactory {
         _context: &TrustedBackendContext,
         _settings: &ValidatedConnectionSettings,
         _expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
-        self.result.lock().unwrap().clone()
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        self.result
+            .lock()
+            .unwrap()
+            .clone()
+            .map(RetainedDatabaseInspection::Inspected)
     }
 }
 

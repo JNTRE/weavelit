@@ -4,8 +4,8 @@ use weavelit_server_database::{DatabaseError, DatabaseInspection};
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
-    LifecycleClassification, LifecycleError, LifecycleState, SelectionError, TrustedBackendContext,
-    ValidatedConnectionSettings,
+    LifecycleClassification, LifecycleError, LifecycleState, RetainedDatabaseInspection,
+    SelectionError, TrustedBackendContext, ValidatedConnectionSettings,
     filesystem::{Inventory, StateRoot},
     format::{
         AnchorKey, KEY_FILE_LIMIT, KEY_FILE_NAME, LOCATOR_ENVELOPE_LIMIT, RECORD_ENVELOPE_LIMIT,
@@ -231,6 +231,14 @@ impl LifecycleStore {
                     context,
                     self.record.deployment_identifier(),
                 )?;
+                let inspection = match inspection {
+                    RetainedDatabaseInspection::Inspected(inspection) => inspection,
+                    RetainedDatabaseInspection::RedeployRequired => {
+                        return Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ));
+                    }
+                };
                 match inspection {
                     DatabaseInspection::Uninitialized => {
                         Ok(LifecycleClassification::UninitializedWithDatabase)
@@ -256,6 +264,14 @@ impl LifecycleStore {
                     context,
                     self.record.deployment_identifier(),
                 )?;
+                let inspection = match inspection {
+                    RetainedDatabaseInspection::Inspected(inspection) => inspection,
+                    RetainedDatabaseInspection::RedeployRequired => {
+                        return Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ));
+                    }
+                };
                 match inspection {
                     DatabaseInspection::Pending(checkpoint) => Ok(
                         LifecycleClassification::Interrupted(Self::interrupted_action(&checkpoint)),
@@ -278,6 +294,14 @@ impl LifecycleStore {
                     context,
                     self.record.deployment_identifier(),
                 )?;
+                let inspection = match inspection {
+                    RetainedDatabaseInspection::Inspected(inspection) => inspection,
+                    RetainedDatabaseInspection::RedeployRequired => {
+                        return Ok(LifecycleClassification::Interrupted(
+                            crate::InterruptedLifecycleAction::RedeployRequired,
+                        ));
+                    }
+                };
                 match inspection {
                     DatabaseInspection::Initialized { .. } => {
                         Ok(LifecycleClassification::Initialized)

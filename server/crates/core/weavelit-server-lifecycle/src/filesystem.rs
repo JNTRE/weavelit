@@ -7,6 +7,7 @@ use std::{
 
 use rustix::{
     fs::{self, AtFlags, Dir, FileType, Mode, OFlags, RawMode, RenameFlags},
+    io::Errno,
     process,
 };
 
@@ -84,15 +85,14 @@ impl StateRoot {
         }
         validate_root(&directory)?;
         let directory = File::from(directory);
+        let (lock, lock_was_created) = open_lock(&directory)?;
         let inventory = inspect_inventory(&directory)?;
-        if inventory.has_lock {
-            if inventory.is_empty() {
-                return Err(LifecycleError::IntegrityFailure);
-            }
-        } else if !inventory.is_empty() {
+        if !inventory.has_lock
+            || (lock_was_created && !inventory.is_empty())
+            || (!lock_was_created && inventory.is_empty())
+        {
             return Err(LifecycleError::IntegrityFailure);
         }
-        let lock = open_lock(&directory)?;
         Ok(Self {
             directory,
             _lock: lock,
@@ -272,18 +272,31 @@ impl fmt::Debug for StateRoot {
     }
 }
 
-fn open_lock(directory: &File) -> Result<File, LifecycleError> {
-    let descriptor = fs::openat(
+fn open_lock(directory: &File) -> Result<(File, bool), LifecycleError> {
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let (descriptor, was_created) = match fs::openat(
         directory,
         LOCK_FILE_NAME,
-        OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        flags | OFlags::EXCL,
         Mode::from_raw_mode(FILE_MODE),
-    )
-    .map_err(|_| LifecycleError::ConfigurationInvalid)?;
+    ) {
+        Ok(descriptor) => (descriptor, true),
+        Err(Errno::EXIST) => (
+            fs::openat(
+                directory,
+                LOCK_FILE_NAME,
+                flags,
+                Mode::from_raw_mode(FILE_MODE),
+            )
+            .map_err(|_| LifecycleError::ConfigurationInvalid)?,
+            false,
+        ),
+        Err(_) => return Err(LifecycleError::ConfigurationInvalid),
+    };
     validate_file(&descriptor)?;
     let lock = File::from(descriptor);
     lock.try_lock().map_err(|_| LifecycleError::LockContended)?;
-    Ok(lock)
+    Ok((lock, was_created))
 }
 
 fn validate_root<Fd: std::os::fd::AsFd>(descriptor: &Fd) -> Result<(), LifecycleError> {

@@ -11,8 +11,9 @@ use weavelit_server_lifecycle::{
     BackendOpenError, BackendRegistration, CatalogError, ConnectionFieldDeclaration,
     ConnectionFieldIdentifier, ConnectionFieldInput, ConnectionFieldRequirement,
     ConnectionValidationError, ConnectionValue, ConnectionValueKind, DatabaseError,
-    DatabaseInspection, DeploymentIdentifier, LifecycleError, SecretClassification,
-    TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint, WorkflowKind,
+    DatabaseInspection, DeploymentIdentifier, LifecycleError, RetainedDatabaseInspection,
+    SecretClassification, TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint,
+    WorkflowKind,
 };
 
 const SENSITIVE_PATH: &str = "/private/sensitive/application.sqlite3";
@@ -80,9 +81,11 @@ impl ApplicationDatabaseFactory for FakeFactory {
         context: &TrustedBackendContext,
         settings: &ValidatedConnectionSettings,
         _expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
         self.open(context, settings)?;
-        Ok(DatabaseInspection::Uninitialized)
+        Ok(RetainedDatabaseInspection::Inspected(
+            DatabaseInspection::Uninitialized,
+        ))
     }
 }
 

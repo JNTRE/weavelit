@@ -13,7 +13,8 @@ mod persistence;
 pub use arbitration::WorkflowArbiter;
 pub use catalog::{
     ApplicationDatabaseFactory, BackendCatalog, BackendDeclaration, BackendRegistration,
-    ConnectionFieldDeclaration, ConnectionFieldInput, TrustedBackendContext,
+    ConnectionFieldDeclaration, ConnectionFieldInput, RetainedDatabaseInspection,
+    TrustedBackendContext,
 };
 pub use domain::{
     BackendIdentifier, ConnectionFieldIdentifier, ConnectionFieldRequirement, ConnectionValue,

@@ -7,12 +7,13 @@ use std::{
 };
 
 use weavelit_server_database::{CheckpointMetadata, DatabaseInspection};
-use weavelit_server_database_sqlite::SqliteDatabase;
+use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
     BackendRegistration, CheckpointMetadata as LifecycleCheckpointMetadata,
-    LifecycleClassification, LifecycleError, LifecycleState, LifecycleStore, TrustedBackendContext,
-    ValidatedConnectionSettings, WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
+    LifecycleClassification, LifecycleError, LifecycleState, LifecycleStore,
+    RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
+    WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -46,11 +47,17 @@ impl ApplicationDatabaseFactory for SqliteFactory {
         context: &TrustedBackendContext,
         _settings: &ValidatedConnectionSettings,
         expected_deployment_identifier: weavelit_server_lifecycle::DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
         SqliteDatabase::inspect_retained(
             context.application_database_path(),
             expected_deployment_identifier,
         )
+        .map(|inspection| match inspection {
+            RetainedSqliteInspection::Inspected(inspection) => {
+                RetainedDatabaseInspection::Inspected(inspection)
+            }
+            RetainedSqliteInspection::WalPresent => RetainedDatabaseInspection::RedeployRequired,
+        })
         .map_err(|_| LifecycleError::DependencyUnavailable)
     }
 }

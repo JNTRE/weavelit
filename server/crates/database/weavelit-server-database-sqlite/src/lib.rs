@@ -8,7 +8,7 @@ mod error;
 mod inspection;
 mod migrations;
 
-pub use connection::SqliteDatabase;
+pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
     ApplicationDatabase, DatabaseError, DatabaseInspection, DeploymentIdentifier,

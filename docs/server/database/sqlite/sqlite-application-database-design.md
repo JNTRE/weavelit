@@ -161,11 +161,20 @@ symbolic link in the supplied database path. The lifecycle boundary must supply
 a symlink-free path beneath the protected Server state directory; protection of
 those parent directories remains a Server deployment responsibility.
 
-Retained inspection opens the same trusted path with read-only,
-`SQLITE_OPEN_NO_MUTEX`, and `SQLITE_OPEN_NOFOLLOW` access. It uses normal SQLite
-read behavior to classify committed state present in existing WAL and shared-memory
-sidecars, without configuring pragmas or WAL, applying migrations, creating files
-or sidecars, checkpointing, recovery, cleanup, or writes.
+Before retained inspection opens SQLite, the backend checks the trusted derived
+WAL path through non-mutating filesystem metadata. An existing WAL returns an
+uninspectable retained-state result to the lifecycle boundary, which classifies
+it as the generic `lifecycle_interrupted` / `operator_redeploy_required` action.
+The backend does not open, copy, inspect, recover, checkpoint, clean up, or
+otherwise modify the original database, WAL, or shared-memory artifacts in that
+case.
+
+Only when no WAL is present does retained inspection open the same trusted path
+with read-only, `SQLITE_OPEN_NO_MUTEX`, and `SQLITE_OPEN_NOFOLLOW` access. It
+does not configure pragmas or WAL, apply migrations, create files or sidecars,
+checkpoint, recover, clean up, or write. This safe inspection may establish the
+exact Init or Restore interruption action for retained state without WAL
+ambiguity.
 
 Before returning a connection, the backend performs and verifies this fixed
 configuration sequence:

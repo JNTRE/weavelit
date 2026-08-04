@@ -40,11 +40,11 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
-use weavelit_server_database_sqlite::SqliteDatabase;
+use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendRegistration,
-    DatabaseError, DatabaseInspection, DeploymentIdentifier, InterruptedLifecycleAction,
-    LifecycleClassification, LifecycleError, LifecycleStore, TrustedBackendContext,
+    DatabaseError, DeploymentIdentifier, InterruptedLifecycleAction, LifecycleClassification,
+    LifecycleError, LifecycleStore, RetainedDatabaseInspection, TrustedBackendContext,
     ValidatedConnectionSettings, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
@@ -397,11 +397,17 @@ impl ApplicationDatabaseFactory for SqliteFactory {
         context: &TrustedBackendContext,
         _settings: &ValidatedConnectionSettings,
         expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
         SqliteDatabase::inspect_retained(
             context.application_database_path(),
             expected_deployment_identifier,
         )
+        .map(|inspection| match inspection {
+            RetainedSqliteInspection::Inspected(inspection) => {
+                RetainedDatabaseInspection::Inspected(inspection)
+            }
+            RetainedSqliteInspection::WalPresent => RetainedDatabaseInspection::RedeployRequired,
+        })
         .map_err(map_database_error)
     }
 }

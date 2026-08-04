@@ -4,15 +4,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use rusqlite::Connection;
 use weavelit_server_database::{
     CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
 };
-use weavelit_server_database_sqlite::SqliteDatabase;
+use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
     BackendRegistration, InterruptedLifecycleAction, LifecycleClassification, LifecycleError,
-    LifecycleStore, TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint,
-    WorkflowKind,
+    LifecycleStore, RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
+    WorkflowCheckpoint, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -50,11 +51,17 @@ impl ApplicationDatabaseFactory for SqliteFactory {
         context: &TrustedBackendContext,
         _settings: &ValidatedConnectionSettings,
         expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
         SqliteDatabase::inspect_retained(
             context.application_database_path(),
             expected_deployment_identifier,
         )
+        .map(|inspection| match inspection {
+            RetainedSqliteInspection::Inspected(inspection) => {
+                RetainedDatabaseInspection::Inspected(inspection)
+            }
+            RetainedSqliteInspection::WalPresent => RetainedDatabaseInspection::RedeployRequired,
+        })
         .map_err(|_| LifecycleError::DependencyUnavailable)
     }
 }
@@ -74,6 +81,16 @@ fn sqlite_context(root: &Path) -> TrustedBackendContext {
 
 fn sqlite_backend() -> BackendIdentifier {
     BackendIdentifier::new(SQLITE_BACKEND).unwrap()
+}
+
+fn checkpoint_and_close_wal(path: &Path) {
+    let connection = Connection::open(path.join("application.sqlite3")).unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .unwrap();
+    drop(connection);
+    assert!(!path.join("application.sqlite3-wal").exists());
+    assert!(!path.join("application.sqlite3-shm").exists());
 }
 
 // ---------------------------------------------------------------------------
@@ -135,8 +152,10 @@ impl ApplicationDatabaseFactory for FakeFactory {
         _context: &TrustedBackendContext,
         _settings: &ValidatedConnectionSettings,
         _expected_deployment_identifier: DeploymentIdentifier,
-    ) -> Result<DatabaseInspection, LifecycleError> {
-        self.result.clone()
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        self.result
+            .clone()
+            .map(RetainedDatabaseInspection::Inspected)
     }
 }
 
@@ -320,6 +339,54 @@ fn uninitialized_record_with_initialized_database_is_interrupted() {
     );
 }
 
+#[test]
+fn uninspectable_retained_database_requires_generic_redeploy() {
+    struct RedeployFactory;
+
+    impl ApplicationDatabaseFactory for RedeployFactory {
+        fn open(
+            &self,
+            _context: &TrustedBackendContext,
+            _settings: &ValidatedConnectionSettings,
+        ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+            Ok(Box::new(FakeDatabase {
+                inspection: DatabaseInspection::Uninitialized,
+            }))
+        }
+
+        fn inspect_retained(
+            &self,
+            _context: &TrustedBackendContext,
+            _settings: &ValidatedConnectionSettings,
+            _expected_deployment_identifier: DeploymentIdentifier,
+        ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+            Ok(RetainedDatabaseInspection::RedeployRequired)
+        }
+    }
+
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    store
+        .select_database(
+            &fake_catalog(Ok(DatabaseInspection::Uninitialized)),
+            &fake_context(),
+            &fake_backend(),
+            vec![],
+        )
+        .unwrap();
+    let catalog = BackendCatalog::new(vec![BackendRegistration::new(
+        "fake-backend",
+        vec![],
+        Box::new(RedeployFactory),
+    )])
+    .unwrap();
+
+    assert_eq!(
+        store.classify_startup(&catalog, &fake_context()).unwrap(),
+        LifecycleClassification::Interrupted(InterruptedLifecycleAction::RedeployRequired)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Matrix tests: Initialized record
 // ---------------------------------------------------------------------------
@@ -425,7 +492,7 @@ fn deployment_mismatch_on_database_fails_closed() {
             _context: &TrustedBackendContext,
             _settings: &ValidatedConnectionSettings,
             _expected_deployment_identifier: DeploymentIdentifier,
-        ) -> Result<DatabaseInspection, LifecycleError> {
+        ) -> Result<RetainedDatabaseInspection, LifecycleError> {
             Err(LifecycleError::DeploymentMismatch)
         }
     }
@@ -540,6 +607,7 @@ fn selected_database_classifies_with_database_after_restart() {
             LifecycleClassification::UninitializedWithDatabase
         );
     }
+    checkpoint_and_close_wal(&path);
 
     let store = LifecycleStore::open_or_create(&path).unwrap();
     let classification = store
