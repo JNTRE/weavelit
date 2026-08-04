@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "weavelit-server-log-forbidden-authority-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavelit-server-log = { path = "../../.." }
+
+[[bin]]
+name = "issuer"
+path = "src/issuer.rs"
+
+[[bin]]
+name = "record-identity"
+path = "src/record_identity.rs"
+
+[[bin]]
+name = "context"
+path = "src/context.rs"
+
+[[bin]]
+name = "acknowledgement"
+path = "src/acknowledgement.rs"
+
+[[bin]]
+name = "dispatch"
+path = "src/dispatch.rs"

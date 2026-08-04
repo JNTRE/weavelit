@@ -266,6 +266,7 @@ impl LogDestination for SqliteLogDestination {
     fn deliver(
         &self,
         record: &CompleteLogRecord,
+        acknowledgement: DurableAcknowledgement,
     ) -> Result<DurableAcknowledgement, LogDestinationError> {
         let mut connection = self
             .connection
@@ -285,7 +286,7 @@ impl LogDestination for SqliteLogDestination {
         transaction
             .commit()
             .map_err(|_| LogDestinationError::Unavailable)?;
-        Ok(DurableAcknowledgement::for_record(record))
+        Ok(acknowledgement)
     }
 }
 
@@ -692,7 +693,7 @@ mod tests {
     use weavelit_server_log::{
         AuditLogBody, CompleteLogRecord, CorrelationId, EventTime, LogDestination,
         LogDestinationError, LogModuleCatalog, LogModuleIdentifier, LogResult, SystemLogBody,
-        TrustedLogModuleContext, TrustedRecordIssuer,
+        TrustedLogModuleContext, test_support,
     };
 
     use super::{MIGRATIONS, SqliteLogDestination, checksum, registration, trusted_open_flags};
@@ -701,7 +702,7 @@ mod tests {
         temporary_directory: &tempfile::TempDir,
         deployment_identity: [u8; 16],
     ) -> TrustedLogModuleContext {
-        TrustedLogModuleContext::new(
+        test_support::trusted_context(
             temporary_directory.path().canonicalize().unwrap(),
             deployment_identity,
         )
@@ -723,7 +724,7 @@ mod tests {
             std::path::PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
         (
             descriptor,
-            TrustedLogModuleContext::new(descriptor_root, deployment_identity),
+            test_support::trusted_context(descriptor_root, deployment_identity),
         )
     }
 
@@ -826,7 +827,7 @@ mod tests {
     }
 
     fn system_record(record_id: [u8; 16], detail: &str) -> CompleteLogRecord {
-        let record_id = TrustedRecordIssuer::new().issue(record_id).unwrap();
+        let record_id = test_support::record_issuer().issue(record_id).unwrap();
         CompleteLogRecord::system(
             record_id,
             EventTime::from_unix_milliseconds(u64::MAX),
@@ -838,7 +839,7 @@ mod tests {
     }
 
     fn audit_record(record_id: [u8; 16]) -> CompleteLogRecord {
-        let record_id = TrustedRecordIssuer::new().issue(record_id).unwrap();
+        let record_id = test_support::record_issuer().issue(record_id).unwrap();
         CompleteLogRecord::audit(
             record_id,
             EventTime::from_unix_milliseconds(42),
@@ -849,23 +850,28 @@ mod tests {
         .unwrap()
     }
 
+    fn deliver(
+        destination: &SqliteLogDestination,
+        record: &CompleteLogRecord,
+    ) -> Result<(), LogDestinationError> {
+        destination
+            .deliver(record, test_support::acknowledgement_for(record))
+            .map(|_| ())
+    }
+
     #[test]
     fn first_open_and_reopen_preserve_a_healthy_destination() {
         let temporary_directory = tempfile::tempdir().unwrap();
         let context = context(&temporary_directory, [7; 16]);
 
         let destination = SqliteLogDestination::open(&context).unwrap();
-        destination
-            .deliver(&system_record([1; 16], "before-reopen"))
-            .unwrap();
+        deliver(&destination, &system_record([1; 16], "before-reopen")).unwrap();
         assert!(temporary_directory.path().join("log.sqlite3-wal").exists());
         assert!(temporary_directory.path().join("log.sqlite3-shm").exists());
 
         let reopened = SqliteLogDestination::open(&context).unwrap();
         assert!(database_path(&temporary_directory).exists());
-        reopened
-            .deliver(&system_record([2; 16], "after-reopen"))
-            .unwrap();
+        deliver(&reopened, &system_record([2; 16], "after-reopen")).unwrap();
         let connection = reopened.connection.lock().unwrap();
         let journal_mode: String = connection
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
@@ -947,11 +953,13 @@ mod tests {
         let temporary_directory = tempfile::tempdir().unwrap();
         let original_root = temporary_directory.path().join("state-root");
         fs::create_dir(&original_root).unwrap();
-        let initial_context = TrustedLogModuleContext::new(original_root.clone(), [7; 16]);
+        let initial_context = test_support::trusted_context(original_root.clone(), [7; 16]);
         let destination = SqliteLogDestination::open(&initial_context).unwrap();
-        destination
-            .deliver(&system_record([1; 16], "existing-destination"))
-            .unwrap();
+        deliver(
+            &destination,
+            &system_record([1; 16], "existing-destination"),
+        )
+        .unwrap();
         drop(destination);
 
         let (_root_descriptor, context) = descriptor_context(&original_root, [7; 16]);
@@ -1015,7 +1023,7 @@ mod tests {
     fn unavailable_descriptor_root_returns_a_payload_free_error() {
         let unavailable_root =
             std::path::PathBuf::from("/proc/self/fd/2147483647/descriptor-root-secret");
-        let context = TrustedLogModuleContext::new(unavailable_root.clone(), [7; 16]);
+        let context = test_support::trusted_context(unavailable_root.clone(), [7; 16]);
 
         let error = match SqliteLogDestination::open(&context) {
             Err(error) => error,
@@ -1098,7 +1106,7 @@ mod tests {
         let temporary_directory = tempfile::tempdir().unwrap();
         let context = context(&temporary_directory, [7; 16]);
         let destination = SqliteLogDestination::open(&context).unwrap();
-        let issuer = TrustedRecordIssuer::new();
+        let issuer = test_support::record_issuer();
         let system = CompleteLogRecord::system(
             issuer.issue([1; 16]).unwrap(),
             EventTime::from_unix_milliseconds(1),
@@ -1122,8 +1130,8 @@ mod tests {
         )
         .unwrap();
 
-        destination.deliver(&system).unwrap();
-        destination.deliver(&audit).unwrap();
+        deliver(&destination, &system).unwrap();
+        deliver(&destination, &audit).unwrap();
         drop(destination);
 
         let connection = Connection::open(database_path(&temporary_directory)).unwrap();
@@ -1431,14 +1439,14 @@ mod tests {
         let destination = SqliteLogDestination::open(&context).unwrap();
         let record = system_record([3; 16], "pre-redacted-detail");
 
-        destination.deliver(&record).unwrap();
-        destination.deliver(&record).unwrap();
+        deliver(&destination, &record).unwrap();
+        deliver(&destination, &record).unwrap();
         assert_eq!(
-            destination.deliver(&system_record([3; 16], "changed-detail")),
+            deliver(&destination, &system_record([3; 16], "changed-detail")),
             Err(LogDestinationError::IntegrityFailure)
         );
         assert_eq!(
-            destination.deliver(&audit_record([3; 16])),
+            deliver(&destination, &audit_record([3; 16])),
             Err(LogDestinationError::IntegrityFailure)
         );
     }
@@ -1462,7 +1470,7 @@ mod tests {
         let temporary_directory = tempfile::tempdir().unwrap();
         let unavailable_root = temporary_directory.path().join("not-a-directory");
         fs::write(&unavailable_root, "not-a-directory").unwrap();
-        let unavailable_context = TrustedLogModuleContext::new(unavailable_root.clone(), [7; 16]);
+        let unavailable_context = test_support::trusted_context(unavailable_root.clone(), [7; 16]);
         let unavailable = match SqliteLogDestination::open(&unavailable_context) {
             Err(error) => error,
             Ok(_) => panic!("a file cannot be a destination root"),
@@ -1500,9 +1508,11 @@ mod tests {
         let lock = Connection::open(database_path(&temporary_directory)).unwrap();
         lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
 
-        let error = destination
-            .deliver(&system_record([4; 16], "secret-record-content"))
-            .unwrap_err();
+        let error = deliver(
+            &destination,
+            &system_record([4; 16], "secret-record-content"),
+        )
+        .unwrap_err();
         assert_eq!(error, LogDestinationError::Unavailable);
         assert!(!error.to_string().contains("secret-record-content"));
         lock.execute_batch("ROLLBACK").unwrap();

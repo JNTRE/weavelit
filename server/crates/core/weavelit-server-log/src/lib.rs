@@ -67,7 +67,7 @@ impl fmt::Debug for LogCapabilities {
 }
 
 /// Stable opaque identifier for one Server-generated immutable record.
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq)]
 pub struct RecordId([u8; RECORD_ID_LENGTH]);
 
 impl fmt::Debug for RecordId {
@@ -77,6 +77,10 @@ impl fmt::Debug for RecordId {
 }
 
 impl RecordId {
+    fn duplicate(&self) -> Self {
+        Self(self.0)
+    }
+
     /// Returns the stable opaque bytes issued by the Server for persistence matching.
     pub const fn as_bytes(&self) -> &[u8; RECORD_ID_LENGTH] {
         &self.0
@@ -90,7 +94,8 @@ pub struct TrustedRecordIssuer {
 
 impl TrustedRecordIssuer {
     /// Creates the Server-owned issuer used by Audit and Observability.
-    pub const fn new() -> Self {
+    #[allow(dead_code)]
+    pub(crate) const fn new() -> Self {
         Self { _private: () }
     }
 
@@ -100,12 +105,6 @@ impl TrustedRecordIssuer {
             return Err(RecordError::InvalidRecordIdentifier);
         }
         Ok(RecordId(entropy))
-    }
-}
-
-impl Default for TrustedRecordIssuer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -289,7 +288,7 @@ impl AuditLogBody {
 }
 
 /// Complete immutable record dispatched to a Log Module.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub enum CompleteLogRecord {
     /// A System Log record constructed by Observability.
     System {
@@ -541,7 +540,8 @@ pub struct TrustedLogModuleContext {
 
 impl TrustedLogModuleContext {
     /// Creates the Server-owned runtime context with deployment-bound local inputs.
-    pub fn new(local_root: PathBuf, deployment_identity: [u8; RECORD_ID_LENGTH]) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn new(local_root: PathBuf, deployment_identity: [u8; RECORD_ID_LENGTH]) -> Self {
         Self {
             local_root,
             deployment_identity,
@@ -568,7 +568,7 @@ impl fmt::Debug for TrustedLogModuleContext {
 }
 
 /// Synchronous durable acknowledgement returned by a destination.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct DurableAcknowledgement {
     record_id: RecordId,
     record_type: LogRecordType,
@@ -576,9 +576,9 @@ pub struct DurableAcknowledgement {
 
 impl DurableAcknowledgement {
     /// Acknowledges exactly the record that was durably committed or matched.
-    pub fn for_record(record: &CompleteLogRecord) -> Self {
+    fn for_record(record: &CompleteLogRecord) -> Self {
         Self {
-            record_id: record.record_id().clone(),
+            record_id: record.record_id().duplicate(),
             record_type: record.record_type(),
         }
     }
@@ -594,12 +594,42 @@ impl fmt::Debug for DurableAcknowledgement {
     }
 }
 
+/// Test-only trusted values for isolated compiled-in destination tests.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support {
+    use super::{
+        CompleteLogRecord, DurableAcknowledgement, RECORD_ID_LENGTH, TrustedLogModuleContext,
+        TrustedRecordIssuer,
+    };
+    use std::path::PathBuf;
+
+    /// Creates a trusted context for an isolated destination test.
+    pub fn trusted_context(
+        local_root: PathBuf,
+        deployment_identity: [u8; RECORD_ID_LENGTH],
+    ) -> TrustedLogModuleContext {
+        TrustedLogModuleContext::new(local_root, deployment_identity)
+    }
+
+    /// Creates a record issuer for an isolated destination test.
+    pub const fn record_issuer() -> TrustedRecordIssuer {
+        TrustedRecordIssuer::new()
+    }
+
+    /// Creates the acknowledgement capability for an isolated destination test.
+    pub fn acknowledgement_for(record: &CompleteLogRecord) -> DurableAcknowledgement {
+        DurableAcknowledgement::for_record(record)
+    }
+}
+
 /// Destination contract for capability validation and durable record handling only.
 pub trait LogDestination: Send + Sync {
-    /// Durably commits the record or acknowledges an exact prior record with its ID and type.
+    /// Durably commits the record and returns its exact acknowledgement capability.
     fn deliver(
         &self,
         record: &CompleteLogRecord,
+        acknowledgement: DurableAcknowledgement,
     ) -> Result<DurableAcknowledgement, LogDestinationError>;
 }
 
@@ -771,9 +801,10 @@ impl ConfiguredLogDestination {
         if !self.capabilities.supports(record.record_type()) {
             return Err(LogDeliveryError::CapabilityUnavailable);
         }
+        let acknowledgement = DurableAcknowledgement::for_record(record);
         let acknowledgement = self
             .destination
-            .deliver(record)
+            .deliver(record, acknowledgement)
             .map_err(LogDeliveryError::Destination)?;
         if !acknowledgement.matches(record) {
             return Err(LogDeliveryError::IntegrityFailure);
@@ -1007,6 +1038,7 @@ mod tests {
         fn deliver(
             &self,
             record: &CompleteLogRecord,
+            acknowledgement: DurableAcknowledgement,
         ) -> Result<DurableAcknowledgement, LogDestinationError> {
             let mut records = self
                 .records
@@ -1020,10 +1052,10 @@ mod tests {
                 if existing != &persisted_record {
                     return Err(LogDestinationError::IntegrityFailure);
                 }
-                return Ok(DurableAcknowledgement::for_record(record));
+                return Ok(acknowledgement);
             }
             records.push(persisted_record);
-            Ok(DurableAcknowledgement::for_record(record))
+            Ok(acknowledgement)
         }
     }
 
@@ -1061,6 +1093,36 @@ mod tests {
             Ok(Box::new(ReplayDestination::new(Arc::new(Mutex::new(
                 Vec::new(),
             )))))
+        }
+    }
+
+    struct MismatchedAcknowledgementDestination;
+
+    impl LogDestination for MismatchedAcknowledgementDestination {
+        fn deliver(
+            &self,
+            record: &CompleteLogRecord,
+            _acknowledgement: DurableAcknowledgement,
+        ) -> Result<DurableAcknowledgement, LogDestinationError> {
+            let record_type = match record.record_type() {
+                LogRecordType::System => LogRecordType::Audit,
+                LogRecordType::Audit => LogRecordType::System,
+            };
+            Ok(DurableAcknowledgement {
+                record_id: record.record_id().duplicate(),
+                record_type,
+            })
+        }
+    }
+
+    struct MismatchedAcknowledgementFactory;
+
+    impl LogDestinationFactory for MismatchedAcknowledgementFactory {
+        fn create(
+            &self,
+            _context: &TrustedLogModuleContext,
+        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+            Ok(Box::new(MismatchedAcknowledgementDestination))
         }
     }
 
@@ -1338,7 +1400,7 @@ mod tests {
         let record_id = issuer
             .issue([4; RECORD_ID_LENGTH])
             .expect("valid record ID");
-        let original = system_record(record_id.clone(), "complete");
+        let original = system_record(record_id.duplicate(), "complete");
         let changed = system_record(record_id, "different-complete-record");
 
         assert_eq!(destination.deliver(&original), Ok(()));
@@ -1366,7 +1428,7 @@ mod tests {
         let record_id = issuer
             .issue([5; RECORD_ID_LENGTH])
             .expect("valid record ID");
-        let system_record = system_record(record_id.clone(), "complete");
+        let system_record = system_record(record_id.duplicate(), "complete");
         let audit_record = audit_record(record_id);
 
         assert_eq!(destination.deliver(&system_record), Ok(()));
@@ -1375,6 +1437,32 @@ mod tests {
             Err(LogDeliveryError::Destination(
                 LogDestinationError::IntegrityFailure
             ))
+        );
+    }
+
+    #[test]
+    fn configured_destination_rejects_an_acknowledgement_for_the_wrong_record_type() {
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Box::new(MismatchedAcknowledgementFactory),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let destination = catalog
+            .create_destination(&identifier, &trusted_context())
+            .expect("registered destination is configured");
+        let record = system_record(
+            TrustedRecordIssuer::new()
+                .issue([6; RECORD_ID_LENGTH])
+                .expect("valid record ID"),
+            "complete",
+        );
+
+        assert_eq!(
+            destination.deliver(&record),
+            Err(LogDeliveryError::IntegrityFailure)
         );
     }
 
@@ -1424,5 +1512,76 @@ mod tests {
                 .expect("test context lock must not poison"),
             Some((PathBuf::from("/var/lib/weavelit"), [8; RECORD_ID_LENGTH]))
         );
+    }
+
+    #[test]
+    fn external_consumers_can_register_but_cannot_construct_server_authority() {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let target_root = std::env::temp_dir().join(format!(
+            "weavelit-server-log-fixtures-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&target_root);
+
+        let permitted = std::process::Command::new(env!("CARGO"))
+            .arg("check")
+            .arg("--offline")
+            .arg("--quiet")
+            .arg("--manifest-path")
+            .arg(fixture_root.join("permitted-module/Cargo.toml"))
+            .env("CARGO_TARGET_DIR", &target_root)
+            .output()
+            .expect("permitted external fixture must run");
+        assert!(
+            permitted.status.success(),
+            "permitted external fixture failed: {}",
+            String::from_utf8_lossy(&permitted.stderr)
+        );
+
+        for (binary, rejected_operation, rejection_reason) in [
+            ("issuer", "TrustedRecordIssuer::new", "private"),
+            (
+                "record-identity",
+                "record.record_id().clone()",
+                "does not implement `Clone`",
+            ),
+            ("context", "TrustedLogModuleContext::new", "private"),
+            (
+                "acknowledgement",
+                "DurableAcknowledgement::for_record",
+                "private",
+            ),
+            ("dispatch", "ConfiguredLogDestination", "private"),
+        ] {
+            let forbidden = std::process::Command::new(env!("CARGO"))
+                .arg("check")
+                .arg("--offline")
+                .arg("--quiet")
+                .arg("--manifest-path")
+                .arg(fixture_root.join("forbidden-authority/Cargo.toml"))
+                .arg("--bin")
+                .arg(binary)
+                .env("CARGO_TARGET_DIR", &target_root)
+                .output()
+                .expect("forbidden external fixture must run");
+            let diagnostics = String::from_utf8_lossy(&forbidden.stderr);
+
+            assert!(
+                !forbidden.status.success(),
+                "forbidden {binary} fixture unexpectedly compiled"
+            );
+            assert!(
+                diagnostics.contains(rejected_operation),
+                "compiler diagnostics must identify {rejected_operation}: {diagnostics}"
+            );
+            assert!(
+                diagnostics.contains(rejection_reason),
+                "compiler diagnostics must report {rejection_reason}: {diagnostics}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&target_root);
+        for fixture in ["permitted-module", "forbidden-authority"] {
+            let _ = std::fs::remove_file(fixture_root.join(fixture).join("Cargo.lock"));
+        }
     }
 }
