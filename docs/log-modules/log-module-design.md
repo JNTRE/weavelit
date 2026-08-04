@@ -39,17 +39,21 @@ registration,
 unavailable destination, or conflicting replay returns a stable payload-free
 error.
 
-The Server-owned contract and dispatch boundary creates record issuers, trusted
+The Server-owned contract and dispatch boundary retains the trusted context
+that configures a catalog destination and creates record issuers, read-only
 factory context, configured dispatch, and durable acknowledgement capabilities.
 An ordinary compiled-in Log Module can register its declared capabilities and
-receive only a factory context, a complete assigned record, and the one-use
-acknowledgement capability that dispatch supplies for that record. It cannot
-mint a record identity or trusted context, construct an acknowledgement, or
-inject a configured dispatch. Isolated destination tests use a dev-only
-contract test-support feature; normal module dependency graphs do not enable
-that feature or depend on Server or lifecycle crates. External-consumer
-compile fixtures prove both the permitted registration surface and rejection of
-issuer, context, acknowledgement, and dispatch construction attempts.
+receive only a read-only factory context, a complete assigned record, and the
+one-use acknowledgement capability that dispatch supplies for that record. It
+cannot mint a record identity or trusted context, construct an acknowledgement,
+turn factory context into trusted context to configure a catalog destination,
+or inject a configured dispatch. A validated catalog without the Server-retained
+trusted context has no configured destination or delivery authority. Isolated
+destination tests use a dev-only contract test-support feature; normal module
+dependency graphs do not enable that feature or depend on Server or lifecycle
+crates. External-consumer compile fixtures prove both the permitted registration
+surface and rejection of issuer, context, acknowledgement, direct dispatch, and
+catalog-mediated destination-configuration attempts.
 
 Server Audit constructs and pre-redacts Audit records; Server Observability
 constructs and pre-redacts System records, including Init and Restore completion

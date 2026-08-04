@@ -28,3 +28,7 @@ path = "src/acknowledgement.rs"
 [[bin]]
 name = "dispatch"
 path = "src/dispatch.rs"
+
+[[bin]]
+name = "catalog-dispatch"
+path = "src/catalog_dispatch.rs"

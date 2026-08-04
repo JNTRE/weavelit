@@ -567,6 +567,39 @@ impl fmt::Debug for TrustedLogModuleContext {
     }
 }
 
+/// Read-only trusted inputs available while a Log Module factory opens its destination.
+pub struct LogModuleFactoryContext<'a> {
+    local_root: &'a Path,
+    deployment_identity: &'a [u8; RECORD_ID_LENGTH],
+}
+
+impl<'a> LogModuleFactoryContext<'a> {
+    fn from_trusted(context: &'a TrustedLogModuleContext) -> Self {
+        Self {
+            local_root: context.local_root(),
+            deployment_identity: context.deployment_identity(),
+        }
+    }
+
+    /// Returns the Server-supplied local root without deriving a destination path.
+    pub const fn local_root(&self) -> &'a Path {
+        self.local_root
+    }
+
+    /// Returns the Server-supplied deployment identity for destination binding.
+    pub const fn deployment_identity(&self) -> &'a [u8; RECORD_ID_LENGTH] {
+        self.deployment_identity
+    }
+}
+
+impl fmt::Debug for LogModuleFactoryContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LogModuleFactoryContext")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Synchronous durable acknowledgement returned by a destination.
 #[derive(Eq, PartialEq)]
 pub struct DurableAcknowledgement {
@@ -635,10 +668,10 @@ pub trait LogDestination: Send + Sync {
 
 /// Factory for one runtime-supplied compiled-in Log Module destination.
 pub trait LogDestinationFactory: Send + Sync {
-    /// Creates a destination using only trusted runtime inputs.
+    /// Creates a destination using read-only Server-owned factory inputs.
     fn create(
         &self,
-        context: &TrustedLogModuleContext,
+        context: &LogModuleFactoryContext<'_>,
     ) -> Result<Box<dyn LogDestination>, LogDestinationError>;
 }
 
@@ -762,9 +795,10 @@ impl LogModuleCatalog {
         let entry = self
             .entry(identifier)
             .ok_or(LogConfigurationError::UnknownModule)?;
+        let factory_context = LogModuleFactoryContext::from_trusted(context);
         let destination = entry
             .factory
-            .create(context)
+            .create(&factory_context)
             .map_err(LogConfigurationError::Destination)?;
         Ok(ConfiguredLogDestination {
             capabilities: entry.declaration.capabilities.clone(),
@@ -1066,7 +1100,7 @@ mod tests {
     impl LogDestinationFactory for ReplayFactory {
         fn create(
             &self,
-            _context: &TrustedLogModuleContext,
+            _context: &LogModuleFactoryContext<'_>,
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             Ok(Box::new(ReplayDestination::new(Arc::clone(&self.records))))
         }
@@ -1081,7 +1115,7 @@ mod tests {
     impl LogDestinationFactory for ContextForwardingFactory {
         fn create(
             &self,
-            context: &TrustedLogModuleContext,
+            context: &LogModuleFactoryContext<'_>,
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             *self
                 .observed_context
@@ -1120,7 +1154,7 @@ mod tests {
     impl LogDestinationFactory for MismatchedAcknowledgementFactory {
         fn create(
             &self,
-            _context: &TrustedLogModuleContext,
+            _context: &LogModuleFactoryContext<'_>,
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             Ok(Box::new(MismatchedAcknowledgementDestination))
         }
@@ -1552,6 +1586,11 @@ mod tests {
                 "private",
             ),
             ("dispatch", "ConfiguredLogDestination", "private"),
+            (
+                "catalog-dispatch",
+                "create_destination",
+                "expected `&TrustedLogModuleContext`",
+            ),
         ] {
             let forbidden = std::process::Command::new(env!("CARGO"))
                 .arg("check")

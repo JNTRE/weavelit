@@ -10,8 +10,8 @@ use rusqlite::{
 use sha2::{Digest, Sha256};
 use weavelit_server_log::{
     CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
-    LogDestinationError, LogDestinationFactory, LogModuleRegistration, LogRecordPersistenceView,
-    LogRecordType, TrustedLogModuleContext,
+    LogDestinationError, LogDestinationFactory, LogModuleFactoryContext, LogModuleRegistration,
+    LogRecordPersistenceView, LogRecordType, TrustedLogModuleContext,
 };
 
 const MODULE_IDENTIFIER: &str = "sqlite";
@@ -114,9 +114,11 @@ pub struct SqliteLogDestinationFactory;
 impl LogDestinationFactory for SqliteLogDestinationFactory {
     fn create(
         &self,
-        context: &TrustedLogModuleContext,
+        context: &LogModuleFactoryContext<'_>,
     ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
-        Ok(Box::new(SqliteLogDestination::open(context)?))
+        Ok(Box::new(SqliteLogDestination::open_from_factory_context(
+            context,
+        )?))
     }
 }
 
@@ -139,9 +141,22 @@ pub struct SqliteLogDestination {
 impl SqliteLogDestination {
     /// Opens the fixed destination beneath the trusted Server-owned local root.
     pub fn open(context: &TrustedLogModuleContext) -> Result<Self, LogDestinationError> {
+        Self::open_with_inputs(context.local_root(), context.deployment_identity())
+    }
+
+    fn open_from_factory_context(
+        context: &LogModuleFactoryContext<'_>,
+    ) -> Result<Self, LogDestinationError> {
+        Self::open_with_inputs(context.local_root(), context.deployment_identity())
+    }
+
+    fn open_with_inputs(
+        local_root: &Path,
+        deployment_identity: &[u8; 16],
+    ) -> Result<Self, LogDestinationError> {
         validate_registry()?;
-        let database_path = context.local_root().join(DATABASE_FILENAME);
-        let fresh = database_is_fresh(context.local_root(), &database_path)?;
+        let database_path = local_root.join(DATABASE_FILENAME);
+        let fresh = database_is_fresh(local_root, &database_path)?;
         if fresh {
             reserve_fresh_database(&database_path)?;
         }
@@ -154,12 +169,12 @@ impl SqliteLogDestination {
         destination.verify_health()?;
         if fresh {
             destination.configure_connection()?;
-            destination.bootstrap(context.deployment_identity())?;
+            destination.bootstrap(deployment_identity)?;
         } else {
-            destination.validate_existing(context.deployment_identity())?;
+            destination.validate_existing(deployment_identity)?;
             destination.configure_connection()?;
         }
-        destination.apply_migrations(context.deployment_identity())?;
+        destination.apply_migrations(deployment_identity)?;
         Ok(destination)
     }
 
