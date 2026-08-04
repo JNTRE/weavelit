@@ -52,7 +52,7 @@ trusted context has no configured destination or delivery authority. Isolated
 SQLite destination tests construct only private SQLite-owned persistence inputs;
 normal module dependency graphs contain no authority-minting test feature and do
 not depend on Server or lifecycle crates. External-consumer compile fixtures prove
-both the permitted registration surface and rejection of issuer, context,
+provide stable boundary evidence for both the permitted registration surface and rejection of issuer, context,
 acknowledgement, direct dispatch, and catalog-mediated destination-configuration
 attempts.
 

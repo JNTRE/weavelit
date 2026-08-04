@@ -6,3 +6,6 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }

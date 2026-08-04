@@ -6,8 +6,5 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[features]
-enable-removed-test-support = ["weavelit-server-log/test-support"]
-
 [dependencies]
 weavelit-server-log = { path = "../../.." }

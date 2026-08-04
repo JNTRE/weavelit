@@ -973,6 +973,7 @@ fn record_payload_bytes(correlation_id: &CorrelationId, body_fields: &[&str]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1165,6 +1166,69 @@ mod tests {
     fn assert_rejection_is_payload_free(error: RecordError, rejected: &str) {
         assert!(!error.to_string().contains(rejected));
         assert!(!format!("{error:?}").contains(rejected));
+    }
+
+    fn cargo_json_messages(output: &std::process::Output) -> Vec<Value> {
+        let stdout =
+            std::str::from_utf8(&output.stdout).expect("Cargo JSON output must be valid UTF-8");
+        stdout
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("Cargo must emit JSON messages"))
+            .collect()
+    }
+
+    fn assert_forbidden_fixture_rejected(
+        fixture_root: &Path,
+        target_root: &Path,
+        binary: &str,
+        expected_code: &str,
+    ) {
+        let forbidden = std::process::Command::new(env!("CARGO"))
+            .arg("check")
+            .arg("--offline")
+            .arg("--quiet")
+            .arg("--message-format=json")
+            .arg("--manifest-path")
+            .arg(fixture_root.join("forbidden-authority/Cargo.toml"))
+            .arg("--bin")
+            .arg(binary)
+            .env("CARGO_TARGET_DIR", target_root)
+            .output()
+            .expect("forbidden external fixture must run");
+
+        assert!(
+            !forbidden.status.success(),
+            "forbidden {binary} fixture unexpectedly compiled"
+        );
+
+        let messages = cargo_json_messages(&forbidden);
+        let errors = messages
+            .iter()
+            .filter(|message| {
+                message["reason"] == "compiler-message" && message["message"]["level"] == "error"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            errors.len(),
+            1,
+            "forbidden {binary} fixture must emit exactly one structured compiler error"
+        );
+
+        let diagnostic = &errors[0]["message"];
+        assert_eq!(
+            diagnostic["code"]["code"].as_str(),
+            Some(expected_code),
+            "forbidden {binary} fixture emitted an unexpected rustc code"
+        );
+        let expected_source = format!("src/{}.rs", binary.replace('-', "_"));
+        assert!(
+            diagnostic["spans"].as_array().is_some_and(|spans| {
+                spans
+                    .iter()
+                    .any(|span| span["is_primary"] == true && span["file_name"] == expected_source)
+            }),
+            "forbidden {binary} fixture must identify its authority-minting source span"
+        );
     }
 
     #[test]
@@ -1543,76 +1607,51 @@ mod tests {
             String::from_utf8_lossy(&permitted.stderr)
         );
 
-        let removed_feature = std::process::Command::new(env!("CARGO"))
-            .arg("check")
+        let metadata = std::process::Command::new(env!("CARGO"))
+            .arg("metadata")
             .arg("--offline")
-            .arg("--quiet")
+            .arg("--format-version=1")
             .arg("--manifest-path")
             .arg(fixture_root.join("removed-test-support/Cargo.toml"))
-            .arg("--features")
-            .arg("enable-removed-test-support")
-            .env("CARGO_TARGET_DIR", &target_root)
             .output()
-            .expect("removed test-support feature fixture must run");
-        let diagnostics = String::from_utf8_lossy(&removed_feature.stderr);
+            .expect("external fixture metadata query must run");
         assert!(
-            !removed_feature.status.success(),
-            "removed test-support feature fixture unexpectedly compiled"
+            metadata.status.success(),
+            "external fixture metadata query failed: {}",
+            String::from_utf8_lossy(&metadata.stderr)
         );
+        let metadata: Value =
+            serde_json::from_slice(&metadata.stdout).expect("Cargo metadata must be valid JSON");
+        let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let manifest_path = manifest_path
+            .to_str()
+            .expect("log contract manifest path must be UTF-8");
+        let package = metadata["packages"]
+            .as_array()
+            .and_then(|packages| {
+                packages.iter().find(|package| {
+                    package["name"] == "weavelit-server-log"
+                        && package["manifest_path"].as_str() == Some(manifest_path)
+                })
+            })
+            .expect("Cargo metadata must include the log contract package");
+        let features = package["features"]
+            .as_object()
+            .expect("Cargo metadata must include the log contract feature map");
         assert!(
-            diagnostics.contains("test-support"),
-            "compiler diagnostics must identify test-support: {diagnostics}"
-        );
-        assert!(
-            diagnostics.contains("does not have that feature"),
-            "compiler diagnostics must report the removed feature: {diagnostics}"
+            !features.contains_key("test-support"),
+            "external consumer metadata must not expose the removed test-support feature"
         );
 
-        for (binary, rejected_operation, rejection_reason) in [
-            ("issuer", "TrustedRecordIssuer::new", "private"),
-            (
-                "record-identity",
-                "record.record_id().clone()",
-                "does not implement `Clone`",
-            ),
-            ("context", "TrustedLogModuleContext::new", "private"),
-            (
-                "acknowledgement",
-                "DurableAcknowledgement::for_record",
-                "private",
-            ),
-            ("dispatch", "ConfiguredLogDestination", "private"),
-            (
-                "catalog-dispatch",
-                "create_destination",
-                "expected `&TrustedLogModuleContext`",
-            ),
+        for (binary, expected_code) in [
+            ("issuer", "E0624"),
+            ("record-identity", "E0308"),
+            ("context", "E0624"),
+            ("acknowledgement", "E0624"),
+            ("dispatch", "E0451"),
+            ("catalog-dispatch", "E0308"),
         ] {
-            let forbidden = std::process::Command::new(env!("CARGO"))
-                .arg("check")
-                .arg("--offline")
-                .arg("--quiet")
-                .arg("--manifest-path")
-                .arg(fixture_root.join("forbidden-authority/Cargo.toml"))
-                .arg("--bin")
-                .arg(binary)
-                .env("CARGO_TARGET_DIR", &target_root)
-                .output()
-                .expect("forbidden external fixture must run");
-            let diagnostics = String::from_utf8_lossy(&forbidden.stderr);
-
-            assert!(
-                !forbidden.status.success(),
-                "forbidden {binary} fixture unexpectedly compiled"
-            );
-            assert!(
-                diagnostics.contains(rejected_operation),
-                "compiler diagnostics must identify {rejected_operation}: {diagnostics}"
-            );
-            assert!(
-                diagnostics.contains(rejection_reason),
-                "compiler diagnostics must report {rejection_reason}: {diagnostics}"
-            );
+            assert_forbidden_fixture_rejected(&fixture_root, &target_root, binary, expected_code);
         }
         let _ = std::fs::remove_dir_all(&target_root);
         for fixture in [
