@@ -13,7 +13,6 @@ use weavelit_server_lifecycle::{
     ConnectionValidationError, ConnectionValue, ConnectionValueKind, DatabaseError,
     DatabaseInspection, DeploymentIdentifier, LifecycleError, RetainedDatabaseInspection,
     SecretClassification, TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint,
-    WorkflowKind,
 };
 
 const SENSITIVE_PATH: &str = "/private/sensitive/application.sqlite3";
@@ -30,21 +29,6 @@ impl ApplicationDatabase for FakeDatabase {
     }
 
     fn create_checkpoint(&mut self, _checkpoint: &WorkflowCheckpoint) -> Result<(), DatabaseError> {
-        Ok(())
-    }
-
-    fn reconcile_checkpoint(
-        &mut self,
-        _expected_checkpoint: &WorkflowCheckpoint,
-    ) -> Result<(), DatabaseError> {
-        Ok(())
-    }
-
-    fn discard_checkpoint(
-        &mut self,
-        _expected_deployment_identifier: DeploymentIdentifier,
-        _expected_workflow: WorkflowKind,
-    ) -> Result<(), DatabaseError> {
         Ok(())
     }
 }

@@ -82,7 +82,7 @@ fn assert_redacted(error: DatabaseError, path: &Path, metadata: &[u8]) {
 }
 
 #[test]
-fn trait_dispatch_creates_reconciles_inspects_and_discards_both_workflows() {
+fn trait_dispatch_creates_and_inspects_both_workflows() {
     for workflow in [WorkflowKind::Init, WorkflowKind::Restore] {
         let temporary_directory = tempfile::tempdir().unwrap();
         let path = database_path(&temporary_directory);
@@ -92,23 +92,15 @@ fn trait_dispatch_creates_reconciles_inspects_and_discards_both_workflows() {
         let database: &mut dyn ApplicationDatabase = &mut concrete;
 
         database.create_checkpoint(&expected).unwrap();
-        database.reconcile_checkpoint(&expected).unwrap();
         assert_eq!(
             database.inspect(deployment_identifier).unwrap(),
             DatabaseInspection::Pending(expected.clone())
-        );
-        database
-            .discard_checkpoint(deployment_identifier, workflow)
-            .unwrap();
-        assert_eq!(
-            database.inspect(deployment_identifier).unwrap(),
-            DatabaseInspection::Uninitialized
         );
     }
 }
 
 #[test]
-fn checkpoint_persists_across_reopen_and_exact_reconciliation_is_stable() {
+fn checkpoint_persists_across_reopen_without_mutation() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let deployment_identifier = identifier(2);
@@ -123,8 +115,7 @@ fn checkpoint_persists_across_reopen_and_exact_reconciliation_is_stable() {
     }
     let before = snapshot(&path);
 
-    let mut database = SqliteDatabase::open(&path).unwrap();
-    database.reconcile_checkpoint(&expected).unwrap();
+    let database = SqliteDatabase::open(&path).unwrap();
 
     assert_eq!(snapshot(&path), before);
     assert_eq!(
@@ -178,7 +169,7 @@ fn repeated_and_conflicting_creation_is_rejected_without_mutation() {
 }
 
 #[test]
-fn deployment_mismatch_precedes_checkpoint_comparison() {
+fn deployment_mismatch_rejects_checkpoint_creation_without_mutation() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let persisted = checkpoint(identifier(5), WorkflowKind::Init, b"persisted-secret");
@@ -187,90 +178,26 @@ fn deployment_mismatch_precedes_checkpoint_comparison() {
     database.create_checkpoint(&persisted).unwrap();
     let before = snapshot(&path);
 
-    let reconcile_error = database.reconcile_checkpoint(&expected).unwrap_err();
-    let discard_error = database
-        .discard_checkpoint(expected.deployment_identifier(), expected.workflow())
-        .unwrap_err();
     let create_error = database.create_checkpoint(&expected).unwrap_err();
 
-    assert_eq!(reconcile_error, DatabaseError::DeploymentMismatch);
-    assert_eq!(discard_error, DatabaseError::DeploymentMismatch);
     assert_eq!(create_error, DatabaseError::DeploymentMismatch);
     assert_eq!(snapshot(&path), before);
-    assert_redacted(reconcile_error, &path, b"persisted-secret");
+    assert_redacted(create_error, &path, b"persisted-secret");
 }
 
 #[test]
-fn reconciliation_rejects_wrong_workflow_or_metadata_without_mutation() {
-    let temporary_directory = tempfile::tempdir().unwrap();
-    let path = database_path(&temporary_directory);
-    let deployment_identifier = identifier(7);
-    let persisted = checkpoint(deployment_identifier, WorkflowKind::Init, b"original");
-    let mismatches = [
-        checkpoint(deployment_identifier, WorkflowKind::Restore, b"original"),
-        checkpoint(deployment_identifier, WorkflowKind::Init, b"different"),
-    ];
-    let mut database = SqliteDatabase::open(&path).unwrap();
-    database.create_checkpoint(&persisted).unwrap();
-    let before = snapshot(&path);
-
-    for mismatch in mismatches {
-        assert_eq!(
-            database.reconcile_checkpoint(&mismatch),
-            Err(DatabaseError::InvalidState)
-        );
-        assert_eq!(snapshot(&path), before);
-    }
-}
-
-#[test]
-fn discard_rejects_wrong_workflow_and_preserves_checkpoint() {
-    let temporary_directory = tempfile::tempdir().unwrap();
-    let path = database_path(&temporary_directory);
-    let deployment_identifier = identifier(8);
-    let persisted = checkpoint(deployment_identifier, WorkflowKind::Restore, b"original");
-    let mut database = SqliteDatabase::open(&path).unwrap();
-    database.create_checkpoint(&persisted).unwrap();
-    let before = snapshot(&path);
-
-    let error = database
-        .discard_checkpoint(deployment_identifier, WorkflowKind::Init)
-        .unwrap_err();
-
-    assert_eq!(error, DatabaseError::InvalidState);
-    assert_eq!(snapshot(&path), before);
-}
-
-#[test]
-fn absent_and_initialized_states_return_stable_categories() {
+fn initialized_state_rejects_checkpoint_creation() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let deployment_identifier = identifier(9);
     let expected = checkpoint(deployment_identifier, WorkflowKind::Init, b"metadata");
-    let mut database = SqliteDatabase::open(&path).unwrap();
-
-    assert_eq!(
-        database.reconcile_checkpoint(&expected),
-        Err(DatabaseError::NotInitialized)
-    );
-    assert_eq!(
-        database.discard_checkpoint(deployment_identifier, WorkflowKind::Init),
-        Err(DatabaseError::NotInitialized)
-    );
+    let database = SqliteDatabase::open(&path).unwrap();
     drop(database);
     insert_initialized(&path, deployment_identifier);
     let mut database = SqliteDatabase::open(&path).unwrap();
 
     assert_eq!(
         database.create_checkpoint(&expected),
-        Err(DatabaseError::AlreadyInitialized)
-    );
-    assert_eq!(
-        database.reconcile_checkpoint(&expected),
-        Err(DatabaseError::AlreadyInitialized)
-    );
-    assert_eq!(
-        database.discard_checkpoint(deployment_identifier, WorkflowKind::Init),
         Err(DatabaseError::AlreadyInitialized)
     );
 }
@@ -312,46 +239,6 @@ fn insert_trigger_failure_rolls_back_checkpoint_creation() {
 }
 
 #[test]
-fn delete_trigger_failure_rolls_back_checkpoint_discard() {
-    let temporary_directory = tempfile::tempdir().unwrap();
-    let path = database_path(&temporary_directory);
-    let deployment_identifier = identifier(11);
-    let persisted = checkpoint(deployment_identifier, WorkflowKind::Restore, b"secret");
-    let mut database = SqliteDatabase::open(&path).unwrap();
-    database.create_checkpoint(&persisted).unwrap();
-    let before = snapshot(&path);
-    let connection = Connection::open(&path).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TRIGGER test_reject_checkpoint_delete \
-             BEFORE DELETE ON weavelit_lifecycle_state \
-             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
-        )
-        .unwrap();
-    drop(connection);
-
-    let error = database
-        .discard_checkpoint(deployment_identifier, WorkflowKind::Restore)
-        .unwrap_err();
-    drop(database);
-
-    assert_eq!(error, DatabaseError::IntegrityFailure);
-    assert_eq!(snapshot(&path), before);
-    Connection::open(&path)
-        .unwrap()
-        .execute_batch("DROP TRIGGER test_reject_checkpoint_delete;")
-        .unwrap();
-    assert_eq!(
-        SqliteDatabase::open(&path)
-            .unwrap()
-            .inspect(deployment_identifier)
-            .unwrap(),
-        DatabaseInspection::Pending(persisted)
-    );
-    assert_redacted(error, &path, b"secret");
-}
-
-#[test]
 fn malformed_state_is_rejected_before_any_mutation() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
@@ -378,14 +265,6 @@ fn malformed_state_is_rejected_before_any_mutation() {
 
     assert_eq!(
         database.create_checkpoint(&expected),
-        Err(DatabaseError::IntegrityFailure)
-    );
-    assert_eq!(
-        database.reconcile_checkpoint(&expected),
-        Err(DatabaseError::IntegrityFailure)
-    );
-    assert_eq!(
-        database.discard_checkpoint(identifier(12), WorkflowKind::Init),
         Err(DatabaseError::IntegrityFailure)
     );
     assert_eq!(snapshot(&path), before);

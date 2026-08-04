@@ -147,19 +147,6 @@ pub trait ApplicationDatabase: Send {
 
     /// Atomically creates a checkpoint in an eligible uninitialized database.
     fn create_checkpoint(&mut self, checkpoint: &WorkflowCheckpoint) -> Result<(), DatabaseError>;
-
-    /// Verifies that the same checkpoint remains durable without changing it.
-    fn reconcile_checkpoint(
-        &mut self,
-        expected_checkpoint: &WorkflowCheckpoint,
-    ) -> Result<(), DatabaseError>;
-
-    /// Atomically discards the matching pending checkpoint.
-    fn discard_checkpoint(
-        &mut self,
-        expected_deployment_identifier: DeploymentIdentifier,
-        expected_workflow: WorkflowKind,
-    ) -> Result<(), DatabaseError>;
 }
 
 /// Invalid caller-provided value rejected before persistence access.
