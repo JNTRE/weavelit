@@ -126,6 +126,27 @@ only when they satisfy the new schema. An existing oversized row makes the
 migration fail closed without dropping, altering, or replacing any destination
 record; this MVP defines no data-recovery exception for that incompatibility.
 
+### Descriptor-Relative Candidate Evidence
+
+On supported Ubuntu, an isolated real-filesystem probe held a root-directory
+descriptor, renamed its former pathname, and recreated that pathname as a
+replacement directory. The unselected
+`/proc/self/fd/<held-root-fd>/log.sqlite3` candidate resolved fresh-artifact
+preflight and reservation beneath the held directory, with no recognized
+artifact created in the replacement directory. The failed fresh attempt leaves
+only its zero-length main-file reservation in the held directory. Pinned
+`rusqlite` 0.40.1 with bundled SQLite then rejected the main database open with
+`SQLITE_CANTOPEN_SYMLINK` under the required `SQLITE_OPEN_NOFOLLOW` policy,
+before WAL or SHM creation. An existing destination similarly remained
+unchanged when reopened through that candidate; orphan sidecars were found
+beneath the held directory and rejected as integrity failures; and a final
+database-file symlink remained rejected without following its target. An
+unavailable descriptor root maps only to the payload-free unavailable error.
+
+This is supported-environment feasibility evidence, not a selected root-handle
+propagation mechanism. It does not authorize a change to the trusted-context
+contract, the symlink policy, or SQLite's VFS behavior.
+
 ## Destination Recovery And Retirement
 
 Each destination owns its protection, snapshot or backup, migration,

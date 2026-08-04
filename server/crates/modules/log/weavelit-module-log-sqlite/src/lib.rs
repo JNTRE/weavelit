@@ -695,7 +695,7 @@ mod tests {
         TrustedLogModuleContext, TrustedRecordIssuer,
     };
 
-    use super::{MIGRATIONS, SqliteLogDestination, checksum, registration};
+    use super::{MIGRATIONS, SqliteLogDestination, checksum, registration, trusted_open_flags};
 
     fn context(
         temporary_directory: &tempfile::TempDir,
@@ -711,7 +711,50 @@ mod tests {
         temporary_directory.path().join("log.sqlite3")
     }
 
+    #[cfg(target_os = "linux")]
+    fn descriptor_context(
+        root: &std::path::Path,
+        deployment_identity: [u8; 16],
+    ) -> (fs::File, TrustedLogModuleContext) {
+        use std::os::fd::AsRawFd;
+
+        let descriptor = fs::File::open(root).unwrap();
+        let descriptor_root =
+            std::path::PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
+        (
+            descriptor,
+            TrustedLogModuleContext::new(descriptor_root, deployment_identity),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn replace_root(root: &std::path::Path) -> std::path::PathBuf {
+        let relocated_root = root.with_file_name("relocated-state-root");
+        fs::rename(root, &relocated_root).unwrap();
+        fs::create_dir(root).unwrap();
+        relocated_root
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_no_sqlite_artifacts(root: &std::path::Path) {
+        for filename in [
+            "log.sqlite3",
+            "log.sqlite3-journal",
+            "log.sqlite3-wal",
+            "log.sqlite3-shm",
+        ] {
+            assert!(
+                !root.join(filename).exists(),
+                "replacement root unexpectedly contains {filename}"
+            );
+        }
+    }
+
     fn database_snapshot(temporary_directory: &tempfile::TempDir) -> Vec<Option<Vec<u8>>> {
+        database_snapshot_at(temporary_directory.path())
+    }
+
+    fn database_snapshot_at(root: &std::path::Path) -> Vec<Option<Vec<u8>>> {
         [
             "log.sqlite3",
             "log.sqlite3-journal",
@@ -719,13 +762,11 @@ mod tests {
             "log.sqlite3-shm",
         ]
         .into_iter()
-        .map(
-            |filename| match fs::read(temporary_directory.path().join(filename)) {
-                Ok(contents) => Some(contents),
-                Err(error) if error.kind() == ErrorKind::NotFound => None,
-                Err(error) => panic!("cannot snapshot {filename}: {error}"),
-            },
-        )
+        .map(|filename| match fs::read(root.join(filename)) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => panic!("cannot snapshot {filename}: {error}"),
+        })
         .collect()
     }
 
@@ -858,6 +899,136 @@ mod tests {
         assert_eq!(applied_migrations, MIGRATIONS.len() as i64);
         assert_eq!(binding, vec![7; 16]);
         assert_eq!(persisted_records, 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_relative_fresh_destination_fails_closed_after_root_replacement() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let original_root = temporary_directory.path().join("state-root");
+        fs::create_dir(&original_root).unwrap();
+        let (_root_descriptor, context) = descriptor_context(&original_root, [7; 16]);
+        let relocated_root = replace_root(&original_root);
+
+        let error = match SqliteLogDestination::open(&context) {
+            Err(error) => error,
+            Ok(_) => panic!("descriptor-relative destination must fail closed"),
+        };
+        assert_eq!(error, LogDestinationError::Unavailable);
+        assert_eq!(error.to_string(), "log destination is unavailable");
+        assert!(!error.to_string().contains("state-root"));
+        let sqlite_error = match Connection::open_with_flags(
+            context.local_root().join("log.sqlite3"),
+            trusted_open_flags(),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("SQLite must reject the descriptor-relative NOFOLLOW path"),
+        };
+        assert!(matches!(
+            sqlite_error,
+            rusqlite::Error::SqliteFailure(ref error, _)
+                if error.extended_code == rusqlite::ffi::SQLITE_CANTOPEN_SYMLINK
+        ));
+        assert_eq!(
+            fs::metadata(relocated_root.join("log.sqlite3"))
+                .unwrap()
+                .len(),
+            0
+        );
+        for filename in ["log.sqlite3-journal", "log.sqlite3-wal", "log.sqlite3-shm"] {
+            assert!(!relocated_root.join(filename).exists(), "{filename}");
+        }
+        assert_no_sqlite_artifacts(&original_root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_relative_existing_destination_reopen_fails_without_mutation() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let original_root = temporary_directory.path().join("state-root");
+        fs::create_dir(&original_root).unwrap();
+        let initial_context = TrustedLogModuleContext::new(original_root.clone(), [7; 16]);
+        let destination = SqliteLogDestination::open(&initial_context).unwrap();
+        destination
+            .deliver(&system_record([1; 16], "existing-destination"))
+            .unwrap();
+        drop(destination);
+
+        let (_root_descriptor, context) = descriptor_context(&original_root, [7; 16]);
+        let relocated_root = replace_root(&original_root);
+        let before = database_snapshot_at(&relocated_root);
+
+        assert!(matches!(
+            SqliteLogDestination::open(&context),
+            Err(LogDestinationError::Unavailable)
+        ));
+        assert_eq!(database_snapshot_at(&relocated_root), before);
+        assert_no_sqlite_artifacts(&original_root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_relative_orphan_sidecar_preflight_uses_the_held_root() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let original_root = temporary_directory.path().join("state-root");
+        fs::create_dir(&original_root).unwrap();
+        fs::write(original_root.join("log.sqlite3-wal"), b"orphaned-wal").unwrap();
+        let (_root_descriptor, context) = descriptor_context(&original_root, [7; 16]);
+        let relocated_root = replace_root(&original_root);
+        let before = database_snapshot_at(&relocated_root);
+
+        let error = match SqliteLogDestination::open(&context) {
+            Err(error) => error,
+            Ok(_) => panic!("an orphaned sidecar must fail closed"),
+        };
+        assert_eq!(error, LogDestinationError::IntegrityFailure);
+        assert_eq!(
+            error.to_string(),
+            "log destination integrity validation failed"
+        );
+        assert_eq!(database_snapshot_at(&relocated_root), before);
+        assert_no_sqlite_artifacts(&original_root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_relative_final_component_symlink_is_rejected_without_following_target() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let original_root = temporary_directory.path().join("state-root");
+        let target_database = temporary_directory.path().join("target.sqlite3");
+        fs::create_dir(&original_root).unwrap();
+        fs::write(&target_database, "target-marker").unwrap();
+        symlink(&target_database, original_root.join("log.sqlite3")).unwrap();
+        let (_root_descriptor, context) = descriptor_context(&original_root, [7; 16]);
+        let _relocated_root = replace_root(&original_root);
+
+        assert!(matches!(
+            SqliteLogDestination::open(&context),
+            Err(LogDestinationError::Unavailable)
+        ));
+        assert_eq!(fs::read(&target_database).unwrap(), b"target-marker");
+        assert_no_sqlite_artifacts(&original_root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unavailable_descriptor_root_returns_a_payload_free_error() {
+        let unavailable_root =
+            std::path::PathBuf::from("/proc/self/fd/2147483647/descriptor-root-secret");
+        let context = TrustedLogModuleContext::new(unavailable_root.clone(), [7; 16]);
+
+        let error = match SqliteLogDestination::open(&context) {
+            Err(error) => error,
+            Ok(_) => panic!("an unavailable descriptor root must be rejected"),
+        };
+        assert_eq!(error, LogDestinationError::Unavailable);
+        assert_eq!(error.to_string(), "log destination is unavailable");
+        assert!(!error.to_string().contains("descriptor-root-secret"));
+        assert!(
+            !error
+                .to_string()
+                .contains(unavailable_root.to_str().unwrap())
+        );
     }
 
     #[cfg(unix)]
