@@ -50,4 +50,4 @@ Environment and evidence:
 
 ## Related Documents
 
-- [GitHub Project Standards](../../project/project-standards.md)
+- [GitHub Planning Compatibility Index](../../../docs/plan/project/project-standards.md)

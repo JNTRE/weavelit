@@ -1,105 +1,50 @@
-# GitHub Project Standards
+# GitHub Planning Compatibility Index
 
-This document records the active GitHub planning metadata for
-[JNTRE/weavelit](https://github.com/JNTRE/weavelit) and the
-[Weavelit GitHub Project](https://github.com/orgs/JNTRE/projects/1/views/1).
-GitHub remains the source of truth; update this reference when that configuration
-changes.
+**Deprecated.** This transitional index preserves the existing repository path
+while JNTRE planning workflow authority moves to focused agent skills and live
+GitHub discovery. It does not define Issue, Pull Request, epic, or Project
+workflow policy, and new policy must not be added here.
 
-## Metadata Scope
+## Current Authorities
 
-These standards apply to GitHub Issues and Pull Requests where GitHub supports
-the metadata. Labels, GitHub Project fields, and milestones use the same
-configured values for both work-item types. Native issue types,
-organization-level `Priority`, and issue relationships apply only to Issues.
+- GitHub is authoritative for live Issue and Pull Request state, native types,
+  labels, assignees, priorities, relationships, milestones, Project fields,
+  option identifiers, and configured values. Read the
+  [JNTRE/weavelit repository](https://github.com/JNTRE/weavelit) and
+  [Weavelit GitHub Project](https://github.com/orgs/JNTRE/projects/1/views/1)
+  before an operation that depends on them.
+- `.github/jntre/project.yaml` binds automation to the expected
+  repository and Project identity. It is not a snapshot of live metadata or
+  workflow policy.
+- The Markdown files under `.github/jntre/issue_templates/` define the body
+  shape for agent-created Issues. The resulting GitHub Issue is authoritative
+  after creation.
+- [Contributing](../../../CONTRIBUTING.md) defines branch roles, branch naming,
+  commit messages, and contribution flow.
+- `.github/pull_request_template.md` defines the required Pull Request body and
+  final checklist shape.
+- GitHub Milestones own their live delivery records; the
+  [Milestone Index](../milestones/milestones.md) provides navigation only.
 
-## Issue Types
+## Compatibility Rules
 
-Create issues from the matching Markdown template in
-[`docs/plan/issues/templates/`](../issues/templates/). Copy the template sections beginning with
-`##` into the body file, then pass the completed file to
-`gh issue create --body-file` and set the matching native type with `--type`.
-After creation, assign the labels, `Priority`, GitHub Milestone, Project status,
-and issue relationships required for the work.
+Existing references to this path use it only to locate the current authorities
+above. Agents must discover live GitHub configuration, bind it to
+`.github/jntre/project.yaml`, and apply the active focused workflow
+before mutating GitHub. They must stop on missing, stale, or ambiguous binding
+or configuration instead of inferring a value from this index.
 
-| Type | Use |
-| --- | --- |
-| `task` | A specific piece of work. |
-| `bug` | An unexpected problem or behavior. |
-| `feature` | A request, idea, or new functionality. |
-| `epic` | A cohesive outcome that organizes related issues. |
-| `decision` | A bounded question requiring a documented conclusion. |
-| `risk` | An identified uncertainty requiring monitoring or mitigation. |
+Do not add metadata tables, Project option identifiers, issue lifecycle rules,
+epic membership or seal policy, Pull Request lifecycle rules, or Git operation
+policy to this document.
 
-## Labels
+## Removal Condition
 
-Apply the applicable component label to each Issue or Pull Request. Add the
-general-purpose labels only when their defined condition applies; they do not
-replace a native issue type.
-
-### Component Labels
-
-| Label | Apply when the Issue or Pull Request affects |
-| --- | --- |
-| `server core` | The Weavelit Server core. |
-| `database module` | An Application Database component. |
-| `service module` | A Service Module component. |
-| `client module` | A Client Module component. |
-| `log module` | A Log Module component. |
-
-### General-Purpose Labels
-
-| Label | Use |
-| --- | --- |
-| `documentation` | Improvements or additions to documentation. |
-| `duplicate` | The issue or pull request already exists. |
-| `enhancement` | A new feature or request. |
-| `good first issue` | Work suitable for a newcomer. |
-| `help wanted` | The work needs extra attention. |
-| `invalid` | The report does not appear valid. |
-| `question` | Further information is requested. |
-| `wontfix` | The work will not be undertaken. |
-
-## Priority
-
-`Priority` is an organization-level GitHub Issue Field that records the current
-importance assigned to an Issue. Set one of these exact values on each Issue.
-
-| Priority |
-| --- |
-| `urgent` |
-| `high` |
-| `medium` |
-| `low` |
-| `next` |
-
-## Project Status
-
-Set one of these exact `Status` values for each Issue or Pull Request Project
-item.
-
-| Status | Meaning |
-| --- | --- |
-| `backlog` | The item has not been started. |
-| `ready` | The item is ready to be picked up. |
-| `in progress` | The item is actively being worked on. |
-| `In review` | The item is in review. |
-| `done` | The item has been completed. |
-| `blocked` | The item cannot proceed until its blocker is resolved. |
-
-## Milestones
-
-GitHub Milestones are the authoritative source for milestone titles, summaries,
-goals, state, dates, progress, and assigned issues. The repository
-[Milestone Index](../milestones/milestones.md) provides navigation and brief
-summaries only.
-
-Apply the relevant GitHub Milestone to an Issue or Pull Request when it belongs
-to a defined delivery milestone. Leave the milestone unset only when no
-milestone applies.
+Remove this compatibility index after repository and external workflow
+references no longer depend on `docs/plan/project/project-standards.md`. Until
+then, changes may update authority routing or the removal condition only.
 
 ## Related Documents
 
-- [Issue Templates and Issue Index](../issues/issues.md)
 - [Milestone Index](../milestones/milestones.md)
 - [Contributing](../../../CONTRIBUTING.md)

@@ -1,27 +1,29 @@
-# GitHub Planning Standards Agent Guide
+# GitHub Planning Compatibility Agent Guide
 
-This directory records the active GitHub Issue and Pull Request metadata and
-Weavelit GitHub Project workflow values used to plan delivery. It provides a
-stable local reference while GitHub remains the source of truth for the live
-configuration.
+This directory preserves a deprecated compatibility path for GitHub planning
+authority links while focused workflows and live GitHub discovery replace the
+former monolithic standards reference.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns the documented standards for GitHub issue types, shared
-  Issue and Pull Request labels, GitHub Project fields, milestones, and Project
-  status values.
-- It does not own the live GitHub configuration; refresh the reference from the [Weavelit GitHub Project](https://github.com/orgs/JNTRE/projects/1/views/1) and the `JNTRE/weavelit` issue tracker.
-- The sibling `../issues/` directory owns open-issue snapshots, including the metadata values assigned to individual issues.
+- This directory owns only the deprecated planning compatibility index and its
+  removal condition.
+- It does not own workflow policy or live GitHub configuration. GitHub owns
+  Issue, Pull Request, milestone, and Project state and configured values.
+- `.github/jntre/project.yaml` owns the expected repository and Project
+  identity only. The `.github/jntre/issue_templates/` directory owns issue
+  templates.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local workflow, inventory, and documentation-boundary rules for GitHub planning standards.
-- `project-standards.md`: Active GitHub Issue and Pull Request metadata and
-  Project workflow reference.
+- `AGENTS.md`: Local workflow, inventory, and documentation-boundary rules for
+  the GitHub planning compatibility index.
+- `project-standards.md`: Deprecated compatibility index that routes existing
+  links to current GitHub and repository authorities.
 
 ## Usage Guidance
 
@@ -29,12 +31,12 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Refresh type, label, GitHub Project field, milestone, and Project status
-  values from GitHub before changing `project-standards.md`.
-- Preserve the exact configured name and capitalization of each GitHub value in
+- Read live values from GitHub rather than adding them to
   `project-standards.md`.
-- Update `../issues/issues.md` in the same change when a documented metadata change affects its standard record format or displayed values.
-- Record proposed GitHub configuration changes only after they are active in GitHub; do not present a proposal as an active standard.
+- Change `project-standards.md` only to correct authority routing or its removal
+  condition. Do not restore metadata tables or workflow policy.
+- Keep the compatibility page deprecated until its stated removal condition is
+  satisfied.
 
 ## Standards and Conventions
 

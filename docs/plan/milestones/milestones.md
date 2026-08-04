@@ -198,5 +198,4 @@ secure deployment, persistence, provenance, upgrade, and rollback behavior.
 - [Technical Specification](../../spec.md)
 - [Open Questions](../../open-questions.md)
 - [Testing and Validation Policy](../../testing.md)
-- [Issue Index](../issues/issues.md)
-- [GitHub Project Standards](../project/project-standards.md)
+- [GitHub Planning Compatibility Index](../project/project-standards.md)
