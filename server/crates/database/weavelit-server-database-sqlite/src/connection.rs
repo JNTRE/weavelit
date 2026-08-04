@@ -1,5 +1,6 @@
-use std::{fs, io::ErrorKind, path::Path, time::Duration};
+use std::{fs, io::ErrorKind, os::unix::ffi::OsStrExt, path::Path, time::Duration};
 
+use percent_encoding::{AsciiSet, CONTROLS, percent_encode};
 use rusqlite::{Connection, OpenFlags};
 use weavelit_server_database::{DatabaseError, DatabaseInspection, DeploymentIdentifier};
 
@@ -9,6 +10,35 @@ use crate::migrations::apply_pending;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const BUSY_TIMEOUT_MILLISECONDS: i64 = 5_000;
 const EXPECTED_HEALTH_RESULT: i64 = 1;
+const RETAINED_INSPECTION_URI_PATH: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'!')
+    .add(b'"')
+    .add(b'#')
+    .add(b'$')
+    .add(b'%')
+    .add(b'&')
+    .add(b'\'')
+    .add(b'(')
+    .add(b')')
+    .add(b'*')
+    .add(b'+')
+    .add(b',')
+    .add(b':')
+    .add(b';')
+    .add(b'<')
+    .add(b'=')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
 
 /// Non-mutating result of inspecting retained SQLite state.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,8 +76,10 @@ impl SqliteDatabase {
         if retained_wal_exists(path)? {
             return Ok(RetainedSqliteInspection::WalPresent);
         }
-        let connection = Connection::open_with_flags(path, retained_inspection_open_flags())
-            .map_err(|error| map_sqlite_error(error, ErrorContext::Open))?;
+        let uri = retained_inspection_uri(path)?;
+        let connection =
+            Connection::open_with_flags(Path::new(&uri), retained_inspection_open_flags())
+                .map_err(|error| map_sqlite_error(error, ErrorContext::Open))?;
         crate::inspection::inspect_connection(&connection, expected_deployment_identifier)
             .map(RetainedSqliteInspection::Inspected)
     }
@@ -76,6 +108,17 @@ fn retained_inspection_open_flags() -> OpenFlags {
     OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
+        | OpenFlags::SQLITE_OPEN_URI
+}
+
+fn retained_inspection_uri(path: &Path) -> Result<String, DatabaseError> {
+    if !path.is_absolute() {
+        return Err(DatabaseError::ConfigurationInvalid);
+    }
+    Ok(format!(
+        "file:{}?immutable=1",
+        percent_encode(path.as_os_str().as_bytes(), RETAINED_INSPECTION_URI_PATH)
+    ))
 }
 
 fn retained_wal_exists(path: &Path) -> Result<bool, DatabaseError> {

@@ -1,6 +1,6 @@
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -27,6 +27,44 @@ fn state_root() -> (tempfile::TempDir, PathBuf) {
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let canonical = directory.path().canonicalize().unwrap();
     (directory, canonical)
+}
+
+type MetadataSnapshot = (u64, u64, u32, u64, u32, u32, u64, i64, i64, i64, i64);
+type StateRootEntrySnapshot = (PathBuf, MetadataSnapshot, Vec<u8>);
+type StateRootSnapshot = (MetadataSnapshot, Vec<StateRootEntrySnapshot>);
+
+fn metadata_snapshot(metadata: &fs::Metadata) -> MetadataSnapshot {
+    (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.mode(),
+        metadata.nlink(),
+        metadata.uid(),
+        metadata.gid(),
+        metadata.size(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    )
+}
+
+fn state_root_snapshot(path: &Path) -> StateRootSnapshot {
+    let root_metadata = metadata_snapshot(&fs::symlink_metadata(path).unwrap());
+    let mut entries = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let entry_path = entry.path();
+            (
+                PathBuf::from(entry.file_name()),
+                metadata_snapshot(&fs::symlink_metadata(&entry_path).unwrap()),
+                fs::read(entry_path).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    (root_metadata, entries)
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +657,49 @@ fn classify_startup_does_not_mutate_locator_or_database_state() {
         original_locator_generation,
         "locator must not change during classification"
     );
+}
+
+#[test]
+fn retained_wal_mode_database_without_sidecars_preserves_state_and_classifies_checkpoint() {
+    for (workflow, expected_action) in [
+        (WorkflowKind::Init, InterruptedLifecycleAction::RedeployNew),
+        (
+            WorkflowKind::Restore,
+            InterruptedLifecycleAction::RedeployRestore,
+        ),
+    ] {
+        let (_directory, path) = state_root();
+        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        let mut database = store
+            .select_database(
+                &sqlite_catalog(),
+                &sqlite_context(&path),
+                &sqlite_backend(),
+                vec![],
+            )
+            .unwrap();
+        let connection = Connection::open(path.join("application.sqlite3")).unwrap();
+        let journal_mode: String = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+        drop(connection);
+
+        let checkpoint = fake_checkpoint(store.record().deployment_identifier(), workflow);
+        database.create_checkpoint(&checkpoint).unwrap();
+        drop(database);
+        assert!(!path.join("application.sqlite3-wal").exists());
+        assert!(!path.join("application.sqlite3-shm").exists());
+
+        let before = state_root_snapshot(&path);
+        assert_eq!(
+            store
+                .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
+                .unwrap(),
+            LifecycleClassification::Interrupted(expected_action)
+        );
+        assert_eq!(state_root_snapshot(&path), before);
+    }
 }
 
 // ---------------------------------------------------------------------------

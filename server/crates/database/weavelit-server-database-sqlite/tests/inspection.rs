@@ -1,7 +1,7 @@
 use std::{
     fs,
     hash::{DefaultHasher, Hash, Hasher},
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
 };
 
@@ -241,6 +241,60 @@ fn retained_inspection_of_a_missing_database_does_not_create_it() {
     assert!(!path.exists());
     assert!(!path.with_extension("db-wal").exists());
     assert!(!path.with_extension("db-shm").exists());
+}
+
+#[test]
+fn retained_inspection_encodes_uri_metacharacters_in_trusted_paths() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let trusted_root = temporary_directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("trusted ?#% path caf\u{e9}");
+    fs::create_dir(&trusted_root).unwrap();
+    let path = trusted_root.join("application.db");
+    let expected_identifier = identifier(2);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+    insert_state(
+        &path,
+        expected_identifier,
+        "pending",
+        Some("init"),
+        Some(b"uri-metadata"),
+    );
+    assert!(!path.with_extension("db-wal").exists());
+    assert!(!path.with_extension("db-shm").exists());
+
+    let RetainedSqliteInspection::Inspected(DatabaseInspection::Pending(checkpoint)) =
+        SqliteDatabase::inspect_retained(&path, expected_identifier).unwrap()
+    else {
+        panic!("expected retained inspection to read the trusted database");
+    };
+    assert_eq!(checkpoint.workflow(), WorkflowKind::Init);
+    assert_eq!(checkpoint.metadata().as_bytes(), b"uri-metadata");
+}
+
+#[test]
+fn retained_inspection_rejects_a_symbolic_link_database() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let target_path = database_path(&temporary_directory);
+    let expected_identifier = identifier(3);
+    drop(SqliteDatabase::open(&target_path).unwrap());
+    insert_state(
+        &target_path,
+        expected_identifier,
+        "pending",
+        Some("restore"),
+        Some(b"symlink-metadata"),
+    );
+    let linked_path = temporary_directory.path().join("retained-link.db");
+    symlink(&target_path, &linked_path).unwrap();
+
+    assert_eq!(
+        SqliteDatabase::inspect_retained(&linked_path, expected_identifier).unwrap_err(),
+        DatabaseError::Unavailable
+    );
 }
 
 #[test]

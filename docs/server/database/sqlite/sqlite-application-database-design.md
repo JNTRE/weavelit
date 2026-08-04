@@ -169,12 +169,17 @@ The backend does not open, copy, inspect, recover, checkpoint, clean up, or
 otherwise modify the original database, WAL, or shared-memory artifacts in that
 case.
 
-Only when no WAL is present does retained inspection open the same trusted path
-with read-only, `SQLITE_OPEN_NO_MUTEX`, and `SQLITE_OPEN_NOFOLLOW` access. It
 does not configure pragmas or WAL, apply migrations, create files or sidecars,
-checkpoint, recover, clean up, or write. This safe inspection may establish the
-exact Init or Restore interruption action for retained state without WAL
-ambiguity.
+Only when no WAL is present does retained inspection open a private absolute
+`file:` URI for the same trusted path. It percent-encodes every
+non-unreserved path byte while retaining separators and appends the fixed
+`?immutable=1` query. This URI is opened with exactly read-only,
+`SQLITE_OPEN_NO_MUTEX`, `SQLITE_OPEN_NOFOLLOW`, and `SQLITE_OPEN_URI` access;
+the URI flag applies only to retained inspection, not ordinary database opens.
+It does not configure pragmas or WAL, apply migrations, create files or
+sidecars, checkpoint, recover, clean up, or write. This safe inspection may
+establish the exact Init or Restore interruption action for retained state
+without WAL ambiguity.
 
 Before returning a connection, the backend performs and verifies this fixed
 configuration sequence:

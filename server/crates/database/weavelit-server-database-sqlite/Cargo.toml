@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+percent-encoding.workspace = true
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
 sha2 = { version = "=0.11.0", default-features = false }
 weavelit-server-database = { path = "../weavelit-server-database" }
