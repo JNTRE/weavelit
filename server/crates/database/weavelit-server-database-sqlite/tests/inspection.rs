@@ -8,8 +8,8 @@ use std::{
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use weavelit_server_database::{
-    DatabaseError, DatabaseInspection, DeploymentIdentifier, MAX_CHECKPOINT_METADATA_LENGTH,
-    WorkflowKind,
+    CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
+    MAX_CHECKPOINT_METADATA_LENGTH, WorkflowCheckpoint, WorkflowKind,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -395,4 +395,62 @@ fn retained_inspection_is_stable_and_does_not_mutate_database_or_sidecars() {
         directory_snapshot(temporary_directory.path()),
         directory_before
     );
+}
+
+#[test]
+fn retained_inspection_reads_pending_checkpoints_from_wal_without_mutation() {
+    for (workflow, metadata) in [
+        (WorkflowKind::Init, b"init-wal-checkpoint".as_slice()),
+        (WorkflowKind::Restore, b"restore-wal-checkpoint".as_slice()),
+    ] {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let expected_identifier = identifier(match workflow {
+            WorkflowKind::Init => 7,
+            WorkflowKind::Restore => 8,
+        });
+        let workflow_label = match workflow {
+            WorkflowKind::Init => "init",
+            WorkflowKind::Restore => "restore",
+        };
+        drop(SqliteDatabase::open(&path).unwrap());
+
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute(
+                "INSERT INTO weavelit_lifecycle_state \
+                 (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                 VALUES (1, ?1, 'pending', ?2, ?3)",
+                params![
+                    expected_identifier.as_bytes().as_slice(),
+                    workflow_label,
+                    metadata
+                ],
+            )
+            .unwrap();
+
+        let wal_path = path.with_extension("db-wal");
+        let shm_path = path.with_extension("db-shm");
+        assert!(wal_path.exists());
+        assert!(shm_path.exists());
+        let database_before = snapshot(&path);
+        let directory_before = directory_snapshot(temporary_directory.path());
+
+        let expected = WorkflowCheckpoint::new(
+            expected_identifier,
+            workflow,
+            CheckpointMetadata::from_bytes(metadata).unwrap(),
+        );
+        assert_eq!(
+            SqliteDatabase::inspect_retained(&path, expected_identifier).unwrap(),
+            DatabaseInspection::Pending(expected)
+        );
+        assert_eq!(snapshot(&path), database_before);
+        assert_eq!(
+            directory_snapshot(temporary_directory.path()),
+            directory_before
+        );
+
+        drop(writer);
+    }
 }

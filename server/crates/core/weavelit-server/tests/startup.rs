@@ -14,10 +14,7 @@ use weavelit_server::{
     StartupError, StartupOutcome, classify_restricted_startup, sqlite_catalog,
     validate_trusted_https_listener,
 };
-use weavelit_server_lifecycle::{
-    BackendIdentifier, CheckpointMetadata, DeploymentIdentifier, LifecycleStore,
-    TrustedBackendContext, WorkflowCheckpoint, WorkflowKind,
-};
+use weavelit_server_lifecycle::{BackendIdentifier, LifecycleStore, TrustedBackendContext};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,7 +35,9 @@ fn root_snapshot(path: &Path) -> Vec<(PathBuf, u32, u32, u32, u64, u64, u64)> {
             let metadata = entry.metadata().unwrap();
             let contents = fs::read(entry.path()).unwrap();
             let mut hasher = DefaultHasher::new();
-            contents.hash(&mut hasher);
+            if entry.file_name() != "application.sqlite3-shm" {
+                contents.hash(&mut hasher);
+            }
             (
                 PathBuf::from(entry.file_name()),
                 metadata.permissions().mode(),
@@ -86,14 +85,6 @@ fn context(root: &std::path::Path) -> TrustedBackendContext {
 
 fn sqlite() -> BackendIdentifier {
     BackendIdentifier::new("sqlite").unwrap()
-}
-
-fn checkpoint(dep_id: DeploymentIdentifier, kind: WorkflowKind) -> WorkflowCheckpoint {
-    WorkflowCheckpoint::new(
-        dep_id,
-        kind,
-        CheckpointMetadata::from_bytes(b"meta".as_slice()).unwrap(),
-    )
 }
 
 fn tls_material() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -475,52 +466,64 @@ fn restart_with_selected_database_classifies_as_uninitialized_with_database() {
 #[test]
 fn retained_init_checkpoint_reports_redeploy_new_without_mutation_or_bind() {
     let (_dir, path) = state_root();
+    let writer;
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        store
+        let database = store
             .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
             .unwrap();
         let dep_id = store.record().deployment_identifier();
-        let mut db = store
-            .reopen_selected_database(&sqlite_catalog(), &context(&path))
+        drop(database);
+        writer = Connection::open(path.join("application.sqlite3")).unwrap();
+        writer
+            .execute(
+                "INSERT INTO weavelit_lifecycle_state \
+                 (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                 VALUES (1, ?1, 'pending', 'init', ?2)",
+                params![dep_id.as_bytes().as_slice(), b"meta"],
+            )
             .unwrap();
-        db.create_checkpoint(&checkpoint(dep_id, WorkflowKind::Init))
-            .unwrap();
-        drop(db);
     }
+    assert!(path.join("application.sqlite3-wal").exists());
     assert_interrupted_startup(&path, "operator_redeploy_new");
+    drop(writer);
 }
 
 #[test]
 fn retained_restore_checkpoint_reports_redeploy_restore_without_mutation_or_bind() {
     let (_dir, path) = state_root();
+    let writer;
     {
         let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        store
+        let database = store
             .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
             .unwrap();
         let dep_id = store.record().deployment_identifier();
-        let mut db = store
-            .reopen_selected_database(&sqlite_catalog(), &context(&path))
+        drop(database);
+        writer = Connection::open(path.join("application.sqlite3")).unwrap();
+        writer
+            .execute(
+                "INSERT INTO weavelit_lifecycle_state \
+                 (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                 VALUES (1, ?1, 'pending', 'restore', ?2)",
+                params![dep_id.as_bytes().as_slice(), b"meta"],
+            )
             .unwrap();
-        db.create_checkpoint(&checkpoint(dep_id, WorkflowKind::Restore))
-            .unwrap();
-        drop(db);
     }
+    assert!(path.join("application.sqlite3-wal").exists());
     assert_interrupted_startup(&path, "operator_redeploy_restore");
+    drop(writer);
 }
 
 #[test]
 fn retained_initialized_database_reports_redeploy_required_without_mutation_or_bind() {
     let (_dir, path) = state_root();
-    let deployment_identifier;
-    {
-        let mut store = LifecycleStore::open_or_create(&path).unwrap();
-        deployment_identifier = store.record().deployment_identifier();
-        store
-            .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
-            .unwrap();
-    }
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let deployment_identifier = store.record().deployment_identifier();
+    store
+        .select_database(&sqlite_catalog(), &context(&path), &sqlite(), vec![])
+        .unwrap();
+    drop(store);
     let database = Connection::open(path.join("application.sqlite3")).unwrap();
     database
         .execute(
@@ -530,9 +533,9 @@ fn retained_initialized_database_reports_redeploy_required_without_mutation_or_b
             params![deployment_identifier.as_bytes().as_slice()],
         )
         .unwrap();
-    drop(database);
 
     assert_interrupted_startup(&path, "operator_redeploy_required");
+    drop(database);
 }
 
 // ---------------------------------------------------------------------------

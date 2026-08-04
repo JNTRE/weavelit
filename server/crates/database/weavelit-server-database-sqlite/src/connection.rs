@@ -1,4 +1,4 @@
-use std::{fmt::Write, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 
 use rusqlite::{Connection, OpenFlags};
 use weavelit_server_database::DatabaseError;
@@ -34,8 +34,7 @@ impl SqliteDatabase {
         path: &Path,
         expected_deployment_identifier: weavelit_server_database::DeploymentIdentifier,
     ) -> Result<weavelit_server_database::DatabaseInspection, DatabaseError> {
-        let uri = retained_inspection_uri(path)?;
-        let connection = Connection::open_with_flags(uri, retained_inspection_open_flags())
+        let connection = Connection::open_with_flags(path, retained_inspection_open_flags())
             .map_err(|error| map_sqlite_error(error, ErrorContext::Open))?;
         crate::inspection::inspect_connection(&connection, expected_deployment_identifier)
     }
@@ -64,21 +63,6 @@ fn retained_inspection_open_flags() -> OpenFlags {
     OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
-        | OpenFlags::SQLITE_OPEN_URI
-}
-
-fn retained_inspection_uri(path: &Path) -> Result<String, DatabaseError> {
-    let path = path.to_str().ok_or(DatabaseError::ConfigurationInvalid)?;
-    let mut uri = String::from("file:");
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_') {
-            uri.push(char::from(byte));
-        } else {
-            write!(&mut uri, "%{byte:02X}").map_err(|_| DatabaseError::ConfigurationInvalid)?;
-        }
-    }
-    uri.push_str("?immutable=1");
-    Ok(uri)
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), DatabaseError> {

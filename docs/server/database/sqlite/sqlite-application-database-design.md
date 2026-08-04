@@ -161,6 +161,12 @@ symbolic link in the supplied database path. The lifecycle boundary must supply
 a symlink-free path beneath the protected Server state directory; protection of
 those parent directories remains a Server deployment responsibility.
 
+Retained inspection opens the same trusted path with read-only,
+`SQLITE_OPEN_NO_MUTEX`, and `SQLITE_OPEN_NOFOLLOW` access. It uses normal SQLite
+read behavior to classify committed state present in existing WAL and shared-memory
+sidecars, without configuring pragmas or WAL, applying migrations, creating files
+or sidecars, checkpointing, recovery, cleanup, or writes.
+
 Before returning a connection, the backend performs and verifies this fixed
 configuration sequence:
 
