@@ -627,35 +627,6 @@ impl fmt::Debug for DurableAcknowledgement {
     }
 }
 
-/// Test-only trusted values for isolated compiled-in destination tests.
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub mod test_support {
-    use super::{
-        CompleteLogRecord, DurableAcknowledgement, RECORD_ID_LENGTH, TrustedLogModuleContext,
-        TrustedRecordIssuer,
-    };
-    use std::path::PathBuf;
-
-    /// Creates a trusted context for an isolated destination test.
-    pub fn trusted_context(
-        local_root: PathBuf,
-        deployment_identity: [u8; RECORD_ID_LENGTH],
-    ) -> TrustedLogModuleContext {
-        TrustedLogModuleContext::new(local_root, deployment_identity)
-    }
-
-    /// Creates a record issuer for an isolated destination test.
-    pub const fn record_issuer() -> TrustedRecordIssuer {
-        TrustedRecordIssuer::new()
-    }
-
-    /// Creates the acknowledgement capability for an isolated destination test.
-    pub fn acknowledgement_for(record: &CompleteLogRecord) -> DurableAcknowledgement {
-        DurableAcknowledgement::for_record(record)
-    }
-}
-
 /// Destination contract for capability validation and durable record handling only.
 pub trait LogDestination: Send + Sync {
     /// Durably commits the record and returns its exact acknowledgement capability.
@@ -1572,6 +1543,31 @@ mod tests {
             String::from_utf8_lossy(&permitted.stderr)
         );
 
+        let removed_feature = std::process::Command::new(env!("CARGO"))
+            .arg("check")
+            .arg("--offline")
+            .arg("--quiet")
+            .arg("--manifest-path")
+            .arg(fixture_root.join("removed-test-support/Cargo.toml"))
+            .arg("--features")
+            .arg("enable-removed-test-support")
+            .env("CARGO_TARGET_DIR", &target_root)
+            .output()
+            .expect("removed test-support feature fixture must run");
+        let diagnostics = String::from_utf8_lossy(&removed_feature.stderr);
+        assert!(
+            !removed_feature.status.success(),
+            "removed test-support feature fixture unexpectedly compiled"
+        );
+        assert!(
+            diagnostics.contains("test-support"),
+            "compiler diagnostics must identify test-support: {diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("does not have that feature"),
+            "compiler diagnostics must report the removed feature: {diagnostics}"
+        );
+
         for (binary, rejected_operation, rejection_reason) in [
             ("issuer", "TrustedRecordIssuer::new", "private"),
             (
@@ -1619,7 +1615,11 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&target_root);
-        for fixture in ["permitted-module", "forbidden-authority"] {
+        for fixture in [
+            "permitted-module",
+            "forbidden-authority",
+            "removed-test-support",
+        ] {
             let _ = std::fs::remove_file(fixture_root.join(fixture).join("Cargo.lock"));
         }
     }

@@ -49,11 +49,12 @@ cannot mint a record identity or trusted context, construct an acknowledgement,
 turn factory context into trusted context to configure a catalog destination,
 or inject a configured dispatch. A validated catalog without the Server-retained
 trusted context has no configured destination or delivery authority. Isolated
-destination tests use a dev-only contract test-support feature; normal module
-dependency graphs do not enable that feature or depend on Server or lifecycle
-crates. External-consumer compile fixtures prove both the permitted registration
-surface and rejection of issuer, context, acknowledgement, direct dispatch, and
-catalog-mediated destination-configuration attempts.
+SQLite destination tests construct only private SQLite-owned persistence inputs;
+normal module dependency graphs contain no authority-minting test feature and do
+not depend on Server or lifecycle crates. External-consumer compile fixtures prove
+both the permitted registration surface and rejection of issuer, context,
+acknowledgement, direct dispatch, and catalog-mediated destination-configuration
+attempts.
 
 Server Audit constructs and pre-redacts Audit records; Server Observability
 constructs and pre-redacts System records, including Init and Restore completion

@@ -11,4 +11,3 @@ weavelit-server-log = { path = "../../../core/weavelit-server-log" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
-weavelit-server-log = { path = "../../../core/weavelit-server-log", features = ["test-support"] }

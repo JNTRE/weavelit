@@ -275,14 +275,8 @@ impl SqliteLogDestination {
                 .map_err(|_| LogDestinationError::Unavailable)?;
         }
     }
-}
 
-impl LogDestination for SqliteLogDestination {
-    fn deliver(
-        &self,
-        record: &CompleteLogRecord,
-        acknowledgement: DurableAcknowledgement,
-    ) -> Result<DurableAcknowledgement, LogDestinationError> {
+    fn deliver_persisted(&self, record: &PersistedLogRecord) -> Result<(), LogDestinationError> {
         let mut connection = self
             .connection
             .lock()
@@ -300,8 +294,65 @@ impl LogDestination for SqliteLogDestination {
 
         transaction
             .commit()
-            .map_err(|_| LogDestinationError::Unavailable)?;
+            .map_err(|_| LogDestinationError::Unavailable)
+    }
+}
+
+impl LogDestination for SqliteLogDestination {
+    fn deliver(
+        &self,
+        record: &CompleteLogRecord,
+        acknowledgement: DurableAcknowledgement,
+    ) -> Result<DurableAcknowledgement, LogDestinationError> {
+        let record = PersistedLogRecord::from(record);
+        self.deliver_persisted(&record)?;
         Ok(acknowledgement)
+    }
+}
+
+enum PersistedLogRecord {
+    System {
+        record_id: [u8; 16],
+        event_time: u64,
+        result: weavelit_server_log::LogResult,
+        correlation_id: Box<str>,
+        classification: Box<str>,
+        detail: Box<str>,
+    },
+    Audit {
+        record_id: [u8; 16],
+        event_time: u64,
+        result: weavelit_server_log::LogResult,
+        correlation_id: Box<str>,
+        principal: Box<str>,
+        action: Box<str>,
+        target: Box<str>,
+        detail: Box<str>,
+    },
+}
+
+impl From<&CompleteLogRecord> for PersistedLogRecord {
+    fn from(record: &CompleteLogRecord) -> Self {
+        match record.persistence_view() {
+            LogRecordPersistenceView::System(view) => Self::System {
+                record_id: *view.record_id().as_bytes(),
+                event_time: view.event_time().unix_milliseconds(),
+                result: view.result(),
+                correlation_id: view.correlation_id().as_str().into(),
+                classification: view.body().classification().into(),
+                detail: view.body().detail().into(),
+            },
+            LogRecordPersistenceView::Audit(view) => Self::Audit {
+                record_id: *view.record_id().as_bytes(),
+                event_time: view.event_time().unix_milliseconds(),
+                result: view.result(),
+                correlation_id: view.correlation_id().as_str().into(),
+                principal: view.body().principal().into(),
+                action: view.body().action().into(),
+                target: view.body().target().into(),
+                detail: view.body().detail().into(),
+            },
+        }
     }
 }
 
@@ -548,11 +599,18 @@ fn checksum(bytes: &[u8]) -> [u8; 32] {
 
 fn record_match(
     transaction: &Transaction<'_>,
-    record: &CompleteLogRecord,
+    record: &PersistedLogRecord,
 ) -> Result<RecordMatch, LogDestinationError> {
-    let record_id = record.record_id().as_bytes().as_slice();
-    match record.persistence_view() {
-        LogRecordPersistenceView::System(view) => {
+    match record {
+        PersistedLogRecord::System {
+            record_id,
+            event_time,
+            result,
+            correlation_id,
+            classification,
+            detail,
+        } => {
+            let record_id = record_id.as_slice();
             let same_type = transaction
                 .query_row(
                     "SELECT event_time_milliseconds, result, correlation_id, classification, detail \
@@ -576,11 +634,11 @@ fn record_match(
                 (Some(row), false)
                     if row
                         == (
-                            view.event_time().unix_milliseconds().to_string(),
-                            result_value(view.result()),
-                            view.correlation_id().as_str().to_owned(),
-                            view.body().classification().to_owned(),
-                            view.body().detail().to_owned(),
+                            event_time.to_string(),
+                            result_value(*result),
+                            correlation_id.to_string(),
+                            classification.to_string(),
+                            detail.to_string(),
                         ) =>
                 {
                     Ok(RecordMatch::Exact)
@@ -590,7 +648,17 @@ fn record_match(
                 (None, true) => Ok(RecordMatch::Conflicting),
             }
         }
-        LogRecordPersistenceView::Audit(view) => {
+        PersistedLogRecord::Audit {
+            record_id,
+            event_time,
+            result,
+            correlation_id,
+            principal,
+            action,
+            target,
+            detail,
+        } => {
+            let record_id = record_id.as_slice();
             let same_type = transaction
                 .query_row(
                     "SELECT event_time_milliseconds, result, correlation_id, principal, action, target, detail \
@@ -616,13 +684,13 @@ fn record_match(
                 (Some(row), false)
                     if row
                         == (
-                            view.event_time().unix_milliseconds().to_string(),
-                            result_value(view.result()),
-                            view.correlation_id().as_str().to_owned(),
-                            view.body().principal().to_owned(),
-                            view.body().action().to_owned(),
-                            view.body().target().to_owned(),
-                            view.body().detail().to_owned(),
+                            event_time.to_string(),
+                            result_value(*result),
+                            correlation_id.to_string(),
+                            principal.to_string(),
+                            action.to_string(),
+                            target.to_string(),
+                            detail.to_string(),
                         ) =>
                 {
                     Ok(RecordMatch::Exact)
@@ -651,35 +719,51 @@ fn record_exists(
 
 fn insert_record(
     transaction: &Transaction<'_>,
-    record: &CompleteLogRecord,
+    record: &PersistedLogRecord,
 ) -> Result<(), LogDestinationError> {
-    let inserted = match record.persistence_view() {
-        LogRecordPersistenceView::System(view) => transaction.execute(
+    let inserted = match record {
+        PersistedLogRecord::System {
+            record_id,
+            event_time,
+            result,
+            correlation_id,
+            classification,
+            detail,
+        } => transaction.execute(
             "INSERT INTO weavelit_log_system_records \
              (record_id, event_time_milliseconds, result, correlation_id, classification, detail) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
-                view.record_id().as_bytes().as_slice(),
-                view.event_time().unix_milliseconds().to_string(),
-                result_value(view.result()),
-                view.correlation_id().as_str(),
-                view.body().classification(),
-                view.body().detail(),
+                record_id.as_slice(),
+                event_time.to_string(),
+                result_value(*result),
+                correlation_id.as_ref(),
+                classification.as_ref(),
+                detail.as_ref(),
             ],
         ),
-        LogRecordPersistenceView::Audit(view) => transaction.execute(
+        PersistedLogRecord::Audit {
+            record_id,
+            event_time,
+            result,
+            correlation_id,
+            principal,
+            action,
+            target,
+            detail,
+        } => transaction.execute(
             "INSERT INTO weavelit_log_audit_records \
              (record_id, event_time_milliseconds, result, correlation_id, principal, action, target, detail) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                view.record_id().as_bytes().as_slice(),
-                view.event_time().unix_milliseconds().to_string(),
-                result_value(view.result()),
-                view.correlation_id().as_str(),
-                view.body().principal(),
-                view.body().action(),
-                view.body().target(),
-                view.body().detail(),
+                record_id.as_slice(),
+                event_time.to_string(),
+                result_value(*result),
+                correlation_id.as_ref(),
+                principal.as_ref(),
+                action.as_ref(),
+                target.as_ref(),
+                detail.as_ref(),
             ],
         ),
     }
@@ -705,22 +789,56 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     use rusqlite::Connection;
-    use weavelit_server_log::{
-        AuditLogBody, CompleteLogRecord, CorrelationId, EventTime, LogDestination,
-        LogDestinationError, LogModuleCatalog, LogModuleIdentifier, LogResult, SystemLogBody,
-        TrustedLogModuleContext, test_support,
+    use weavelit_server_log::{LogDestinationError, LogResult};
+
+    use super::{
+        MIGRATIONS, PersistedLogRecord, SqliteLogDestination as ProductionDestination, checksum,
+        trusted_open_flags,
     };
 
-    use super::{MIGRATIONS, SqliteLogDestination, checksum, registration, trusted_open_flags};
+    struct TestDestinationInputs {
+        local_root: std::path::PathBuf,
+        deployment_identity: [u8; 16],
+    }
+
+    impl TestDestinationInputs {
+        fn new(local_root: std::path::PathBuf, deployment_identity: [u8; 16]) -> Self {
+            Self {
+                local_root,
+                deployment_identity,
+            }
+        }
+
+        fn local_root(&self) -> &std::path::Path {
+            &self.local_root
+        }
+    }
+
+    struct SqliteLogDestination;
+
+    impl SqliteLogDestination {
+        fn open(
+            context: &TestDestinationInputs,
+        ) -> Result<ProductionDestination, LogDestinationError> {
+            ProductionDestination::open_with_inputs(
+                context.local_root(),
+                &context.deployment_identity,
+            )
+        }
+    }
 
     fn context(
         temporary_directory: &tempfile::TempDir,
         deployment_identity: [u8; 16],
-    ) -> TrustedLogModuleContext {
-        test_support::trusted_context(
+    ) -> TestDestinationInputs {
+        TestDestinationInputs::new(
             temporary_directory.path().canonicalize().unwrap(),
             deployment_identity,
         )
+    }
+
+    fn open(context: &TestDestinationInputs) -> Result<ProductionDestination, LogDestinationError> {
+        SqliteLogDestination::open(context)
     }
 
     fn database_path(temporary_directory: &tempfile::TempDir) -> std::path::PathBuf {
@@ -731,7 +849,7 @@ mod tests {
     fn descriptor_context(
         root: &std::path::Path,
         deployment_identity: [u8; 16],
-    ) -> (fs::File, TrustedLogModuleContext) {
+    ) -> (fs::File, TestDestinationInputs) {
         use std::os::fd::AsRawFd;
 
         let descriptor = fs::File::open(root).unwrap();
@@ -739,7 +857,7 @@ mod tests {
             std::path::PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
         (
             descriptor,
-            test_support::trusted_context(descriptor_root, deployment_identity),
+            TestDestinationInputs::new(descriptor_root, deployment_identity),
         )
     }
 
@@ -823,55 +941,51 @@ mod tests {
         temporary_directory: &tempfile::TempDir,
         deployment_identity: [u8; 16],
     ) {
-        drop(
-            SqliteLogDestination::open(&context(temporary_directory, deployment_identity)).unwrap(),
-        );
+        drop(open(&context(temporary_directory, deployment_identity)).unwrap());
     }
 
     fn assert_integrity_failure_without_mutation(
         temporary_directory: &tempfile::TempDir,
-        context: &TrustedLogModuleContext,
+        context: &TestDestinationInputs,
     ) {
         let before = database_snapshot(temporary_directory);
         assert!(matches!(
-            SqliteLogDestination::open(context),
+            open(context),
             Err(LogDestinationError::IntegrityFailure)
         ));
         assert_eq!(database_snapshot(temporary_directory), before);
         assert_eq!(journal_mode(temporary_directory), "wal");
     }
 
-    fn system_record(record_id: [u8; 16], detail: &str) -> CompleteLogRecord {
-        let record_id = test_support::record_issuer().issue(record_id).unwrap();
-        CompleteLogRecord::system(
+    fn system_record(record_id: [u8; 16], detail: &str) -> PersistedLogRecord {
+        PersistedLogRecord::System {
             record_id,
-            EventTime::from_unix_milliseconds(u64::MAX),
-            LogResult::Success,
-            CorrelationId::new("system-correlation").unwrap(),
-            SystemLogBody::new("lifecycle", detail).unwrap(),
-        )
-        .unwrap()
+            event_time: u64::MAX,
+            result: LogResult::Success,
+            correlation_id: "system-correlation".into(),
+            classification: "lifecycle".into(),
+            detail: detail.into(),
+        }
     }
 
-    fn audit_record(record_id: [u8; 16]) -> CompleteLogRecord {
-        let record_id = test_support::record_issuer().issue(record_id).unwrap();
-        CompleteLogRecord::audit(
+    fn audit_record(record_id: [u8; 16]) -> PersistedLogRecord {
+        PersistedLogRecord::Audit {
             record_id,
-            EventTime::from_unix_milliseconds(42),
-            LogResult::Failure,
-            CorrelationId::new("audit-correlation").unwrap(),
-            AuditLogBody::new("operator", "init", "deployment", "pre-redacted").unwrap(),
-        )
-        .unwrap()
+            event_time: 42,
+            result: LogResult::Failure,
+            correlation_id: "audit-correlation".into(),
+            principal: "operator".into(),
+            action: "init".into(),
+            target: "deployment".into(),
+            detail: "pre-redacted".into(),
+        }
     }
 
     fn deliver(
-        destination: &SqliteLogDestination,
-        record: &CompleteLogRecord,
+        destination: &ProductionDestination,
+        record: &PersistedLogRecord,
     ) -> Result<(), LogDestinationError> {
-        destination
-            .deliver(record, test_support::acknowledgement_for(record))
-            .map(|_| ())
+        destination.deliver_persisted(record)
     }
 
     #[test]
@@ -968,7 +1082,7 @@ mod tests {
         let temporary_directory = tempfile::tempdir().unwrap();
         let original_root = temporary_directory.path().join("state-root");
         fs::create_dir(&original_root).unwrap();
-        let initial_context = test_support::trusted_context(original_root.clone(), [7; 16]);
+        let initial_context = TestDestinationInputs::new(original_root.clone(), [7; 16]);
         let destination = SqliteLogDestination::open(&initial_context).unwrap();
         deliver(
             &destination,
@@ -1038,7 +1152,7 @@ mod tests {
     fn unavailable_descriptor_root_returns_a_payload_free_error() {
         let unavailable_root =
             std::path::PathBuf::from("/proc/self/fd/2147483647/descriptor-root-secret");
-        let context = test_support::trusted_context(unavailable_root.clone(), [7; 16]);
+        let context = TestDestinationInputs::new(unavailable_root.clone(), [7; 16]);
 
         let error = match SqliteLogDestination::open(&context) {
             Err(error) => error,
@@ -1081,17 +1195,15 @@ mod tests {
     }
 
     #[test]
-    fn registration_persists_complete_system_and_audit_records_separately() {
+    fn destination_persists_complete_system_and_audit_records_separately() {
         let temporary_directory = tempfile::tempdir().unwrap();
         let context = context(&temporary_directory, [7; 16]);
-        let catalog = LogModuleCatalog::new(vec![registration()]).unwrap();
-        let identifier = LogModuleIdentifier::new("sqlite").unwrap();
-        let destination = catalog.create_destination(&identifier, &context).unwrap();
+        let destination = open(&context).unwrap();
         let system = system_record([1; 16], "pre-redacted-system-detail");
         let audit = audit_record([2; 16]);
 
-        destination.deliver(&system).unwrap();
-        destination.deliver(&audit).unwrap();
+        deliver(&destination, &system).unwrap();
+        deliver(&destination, &audit).unwrap();
         drop(destination);
 
         let connection = Connection::open(database_path(&temporary_directory)).unwrap();
@@ -1117,33 +1229,28 @@ mod tests {
     }
 
     #[test]
-    fn registration_persists_records_at_the_byte_boundaries() {
+    fn destination_persists_records_at_the_byte_boundaries() {
         let temporary_directory = tempfile::tempdir().unwrap();
         let context = context(&temporary_directory, [7; 16]);
-        let destination = SqliteLogDestination::open(&context).unwrap();
-        let issuer = test_support::record_issuer();
-        let system = CompleteLogRecord::system(
-            issuer.issue([1; 16]).unwrap(),
-            EventTime::from_unix_milliseconds(1),
-            LogResult::Success,
-            CorrelationId::new("c".repeat(64)).unwrap(),
-            SystemLogBody::new("s".repeat(128), "d".repeat(4 * 1024)).unwrap(),
-        )
-        .unwrap();
-        let audit = CompleteLogRecord::audit(
-            issuer.issue([2; 16]).unwrap(),
-            EventTime::from_unix_milliseconds(1),
-            LogResult::Success,
-            CorrelationId::new("c".repeat(64)).unwrap(),
-            AuditLogBody::new(
-                "p".repeat(256),
-                "a".repeat(128),
-                "t".repeat(1024),
-                "d".repeat(4 * 1024),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let destination = open(&context).unwrap();
+        let system = PersistedLogRecord::System {
+            record_id: [1; 16],
+            event_time: 1,
+            result: LogResult::Success,
+            correlation_id: "c".repeat(64).into(),
+            classification: "s".repeat(128).into(),
+            detail: "d".repeat(4 * 1024).into(),
+        };
+        let audit = PersistedLogRecord::Audit {
+            record_id: [2; 16],
+            event_time: 1,
+            result: LogResult::Success,
+            correlation_id: "c".repeat(64).into(),
+            principal: "p".repeat(256).into(),
+            action: "a".repeat(128).into(),
+            target: "t".repeat(1024).into(),
+            detail: "d".repeat(4 * 1024).into(),
+        };
 
         deliver(&destination, &system).unwrap();
         deliver(&destination, &audit).unwrap();
@@ -1485,7 +1592,7 @@ mod tests {
         let temporary_directory = tempfile::tempdir().unwrap();
         let unavailable_root = temporary_directory.path().join("not-a-directory");
         fs::write(&unavailable_root, "not-a-directory").unwrap();
-        let unavailable_context = test_support::trusted_context(unavailable_root.clone(), [7; 16]);
+        let unavailable_context = TestDestinationInputs::new(unavailable_root.clone(), [7; 16]);
         let unavailable = match SqliteLogDestination::open(&unavailable_context) {
             Err(error) => error,
             Ok(_) => panic!("a file cannot be a destination root"),
