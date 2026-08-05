@@ -24,6 +24,8 @@ Apply instructions in this order:
 
 - `AGENTS.md`: Canonical repository-wide agent routing and standards.
 - `.github/`: GitHub-specific repository metadata, including the Copilot compatibility shim.
+- `.github/jntre/project.yaml`: Minimal tracked repository and GitHub Project binding for
+  JNTRE workflow operations; it does not duplicate live GitHub configuration.
 - `.github/copilot-instructions.md`: Compatibility shim that defers to this guide.
 - `.gitignore`: Git ignore rules for local macOS, build, backup, and workspace artifacts.
 - `.dockerignore`: Docker build-context exclusions for the dev container image build.

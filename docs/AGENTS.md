@@ -27,7 +27,9 @@ Use this section as the source of truth for what assets belong in this directory
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Technical Specification, Glossary, or an architecture decision record.
-- `plan/`: Delivery-planning documentation, including navigation to authoritative GitHub Issues and Milestones and the GitHub Project standards.
+- `plan/`: Delivery-planning documentation, including navigation to
+  authoritative GitHub Issues and Milestones and the transitional GitHub
+  planning compatibility index.
 - `security-model.md`: Protected assets, trust assumptions, cross-cutting security invariants, and approved security profiles supporting the Technical Specification.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.

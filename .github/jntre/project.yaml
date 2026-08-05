@@ -1,0 +1,6 @@
+schema: jntre-project-profile/v1
+repository: JNTRE/weavelit
+project:
+  owner: JNTRE
+  number: 1
+  title: Weavelit
