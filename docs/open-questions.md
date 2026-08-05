@@ -53,8 +53,7 @@ What additional group-granted permission types, if any, are needed beyond
 access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 **[Service Modules](glossary.md#applications-and-interfaces)**, named
 **[Operations](glossary.md#applications-and-interfaces)**, and the Server
-Administration Permission? Which group-grant changes require additional
-confirmation or reauthentication?
+Administration Permission?
 
 ### 6. Client Module plane and Pre-Operational Surface schema
 
@@ -90,16 +89,22 @@ What wire format and compatibility policy apply to later
 **[Restore](glossary.md#states-and-requests)** contracts, results, errors,
 pagination, idempotency keys, and Server/Weavelit CLI version compatibility?
 
-### 9. Application Database backup and Restore
+### 9. Application Database backup format and staging
 
 The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
 SQLite and is selected through the shared pre-operational contract before
 either **[Init](glossary.md#states-and-requests)** or
 **[Restore](glossary.md#states-and-requests)**; Weavelit does not support
-in-place database migration. What versioned backup format, cryptographic
-envelope, recovery-key format, compatibility window, and normal-request
-artifact-staging policy apply? Which additional fields, if any, identify the
-backup format without exposing backup contents?
+in-place database migration. The recovery-key cryptographic profile, Init
+proof mechanism, and Milestone 1 no-rotation boundary are settled in the
+[Security Model](security-model.md#recovery-key-security-profile) and the
+[Recovery Key Profile Decision](server/lifecycle/recovery-key-profile-decision.md).
+What versioned backup-format envelope and framing apply, and what
+compatibility window governs a backup created by an older or newer Server
+version? What normal-request artifact-staging policy governs a submitted
+backup before validation completes? Which additional non-secret fields, if
+any, must identify the backup format without exposing backup contents or
+linking artifacts by recovery key?
 
 ### 10. Secrets and provider credential management
 

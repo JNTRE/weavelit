@@ -109,19 +109,78 @@ The security model protects:
 ## Password And Session Security Profile
 
 Local **[Human User](glossary.md#identities-and-access)** passwords must be
-stored only with a modern adaptive
-password-hashing algorithm from a maintained implementation. Passwords must
-never be stored in plaintext or reversibly encrypted. The approved algorithm
-and minimum protection profile belong to this security model once selected;
-the Authentication Design owns the library, encoded representation, parameter
-application, verification flow, and migration mechanics.
+stored only as a password verifier produced by Argon2id version 19 with
+parameters no weaker than a memory cost of 65536 KiB, a time cost of 3, and a
+parallelism degree of 1. Each verifier must use a unique cryptographically
+random 16-byte salt and produce a 32-byte output. A deployer-supplied
+configuration must not lower this baseline. Passwords must never be stored in
+plaintext or reversibly encrypted.
+
+Every password verifier record must carry an explicit version, and Server-owned
+authentication logic must reject an unrecognized or non-allowlisted verifier
+version before it drives Argon2id resource allocation. Verification must run in
+constant time regardless of whether the submitted password is correct, and an
+authentication attempt for an unknown Human User must perform one bounded dummy
+verification and return the same generic authentication result as a known
+Human User's failed attempt. The Authentication Design owns the concrete
+verifier record representation, maintained library selection, and
+verification control flow that satisfy this profile.
+
+A supported older verifier profile must be upgraded to the current profile only
+atomically and only immediately after a successful authentication; the Server
+must not rehash following a failed attempt and must not rehash during
+**[Restore](glossary.md#states-and-requests)**. **[Init](glossary.md#states-and-requests)**
+must create a Human User's first verifier at the current profile, and a
+supported older profile carried by a restored Application Database remains
+usable and upgrades on that Human User's next successful authentication.
 
 Password creation, change, reset, storage, hashing, and verification must occur
 only in Server-owned authentication logic. Client applications and
 **[Client Modules](glossary.md#applications-and-interfaces)** may request or
 transport these workflows, but they must not persist passwords or password
-verifiers or implement independent password hashing or verification. Browser
-sessions must use secure, Server-managed session handling.
+verifiers or implement independent password hashing or verification.
+
+A session is a random opaque bearer token for which the Server stores only a
+verifier and never the token itself. Browser sessions must use secure,
+Server-managed session handling. A session's
+idle expiry is 30 minutes, its absolute expiry is 12 hours fixed at issuance,
+and reauthentication does not extend that absolute expiry. A fresh-authentication
+window remains valid for 15 minutes after reauthentication.
+
+The Server must revoke every session belonging to the affected Human User after
+a password change or reset, activating or deactivating the Human User's
+account, an MFA enrollment, replacement, removal, or reset, an MFA requirement
+change, or an **[MFA Module](glossary.md#applications-and-interfaces)**
+enablement change affecting an existing enrollment; the existing Restore and
+MFA Module-disablement invalidation requirements remain in force. Logout
+revokes only the current session, and an
+**[Administrator](glossary.md#identities-and-access)** may revoke every session
+belonging to another Human User. Reactivating a deactivated Human User must
+never revive a prior session, and per-request authorization must make a grant
+change effective immediately without relying on a cached grant.
+
+Reauthentication requires the Human User's current password and every
+enrolled, enabled MFA factor; a password alone is sufficient only when the
+Human User has no enrolled factor, including the first Administrator created
+during Init. The Server must require fresh authentication before it performs:
+a password change; an Administrator-initiated password reset; an MFA
+enrollment, replacement, removal, reset, or requirement change, or a relevant
+MFA Module enablement change; activating or deactivating a Human User;
+granting or removing the
+**[Server Administration Permission](glossary.md#identities-and-access)** or
+**[Administrators Group](glossary.md#identities-and-access)** membership; an
+**[Automation Identity](glossary.md#identities-and-access)** credential issue,
+rotation, or revocation, a scope change, or a
+**[Responsible Owner](glossary.md#identities-and-access)** reassignment; and
+an Application Database backup creation or download.
+
+This profile approves only the password-verifier, session, revocation, and
+reauthentication requirements above. It does not itself approve a new MFA
+method, an authorization rule, client presentation or transport,
+**[External Authentication](glossary.md#identities-and-access)**, an
+Automation Identity credential policy, code, a dependency selection, a
+production implementation, or a change to the
+[Technical Specification](spec.md).
 
 ## Multifactor Authentication Security Profile
 
@@ -259,6 +318,55 @@ and decrypt them only when required to open the selected database. A
 client-supplied value must never cause the Server to read an unrelated local
 file as connection material.
 
+## Recovery Key Security Profile
+
+This profile defines the currently approved backup recovery-key cryptographic
+material, delivery, and authenticity properties introduced by the Secret And
+Key Material Security Profile above. The accepted
+[Recovery Key Profile Decision](server/lifecycle/recovery-key-profile-decision.md)
+preserves the rejected alternatives and reversal boundary for this choice; this
+section is the current-policy authority.
+
+The approved recovery-key profile is HPKE (RFC 9180) base mode with
+DHKEM(X25519, HKDF-SHA-256) (KEM `0x0020`), HKDF-SHA-256 (KDF `0x0001`), and
+ChaCha20-Poly1305 (AEAD `0x0003`). A version 1 public recovery-key document is
+structured JSON carrying a public kind, a fixed profile identifier, format
+version `1`, and an RFC 8037 X25519 public JWK. A version 1 private document
+carries the matching fixed fields, a private kind, and the JWK `d` value, and
+must include or match the public `x` value where required for validation. Both
+`x` and `d` must be canonical unpadded Base64url and must decode to exactly 32
+bytes. Key-document processing must bound input size, use structured parsing,
+and reject duplicate, unknown, missing, unsupported, mismatched `d`/`x`,
+wrong-length, noncanonical, low-order, and trailing-content input.
+
+**[Init](glossary.md#states-and-requests)** delivers the private document
+exactly once as a compact UTF-8 copyable text artifact. The Server never
+redisplays, logs, stages, backs up, or persists it; safeguarding it outside
+Weavelit remains the responsibility of the person completing Init. The Init
+proof mechanism that demonstrates possession of this key without persisting it
+is defined in the [Server Init Design](server/lifecycle/init/init-design.md).
+
+Every backup wraps a fresh 32-byte data-encryption key to the retained recovery
+public key using HPKE, with `info` and authenticated associated data derived
+from the complete canonical security header, and the recovery-key identifier
+appears only inside authenticated ciphertext rather than cleartext header
+metadata. This profile's approved authenticity property is AEAD integrity and
+confidentiality only: it detects tampering but does not prove Weavelit Server
+origin, because no origin-signing key is selected for this profile. A
+component must not state or imply Server-origin authenticity for a decrypted
+backup. The [Server Restore Design](server/lifecycle/restore/restore-design.md)
+and [Application Database Design](server/database/application-database-design.md)
+own the concrete wrapping, header, and validation mechanics that satisfy this
+profile.
+
+Milestone 1 has no recovery-key rotation workflow. **[Restore](glossary.md#states-and-requests)**
+preserves the existing authenticated recovery public key, and a compatible
+existing or future backup uses the same externally retained private key. This
+is a deliberately limited current scope rather than a permanent ban; rotation
+requires a later custody, old-backup, and migration decision recorded in
+[Open Questions](open-questions.md). The recovery key is never an application
+identity, host-authority proof, authorization grant, or at-rest key.
+
 ## Backup Input Security Profile
 
 The Server must treat every submitted backup as untrusted even when the supplied
@@ -336,6 +444,7 @@ requests.
 - [Technical Specification](spec.md)
 - [Glossary](glossary.md)
 - [Lifecycle Anchor Protection And Serialization Profile](server/lifecycle/lifecycle-anchor-profile-decision.md)
+- [Recovery Key Profile Decision](server/lifecycle/recovery-key-profile-decision.md)
 - [Authentication Design](server/authentication/authentication-design.md)
 - [Authorization Design](server/authorization/authorization-design.md)
 - [Automation Identity Design](server/automation-identities/automation-identity-design.md)

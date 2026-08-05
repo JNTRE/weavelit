@@ -19,6 +19,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server lifecycle design.
 - `lifecycle-anchor-profile-decision.md`: Accepted architecture decision for trusted state-root configuration, anchor serialization and protection, at-rest key custody, and replay limits.
 - `lifecycle-design.md`: Shared pre-operational startup classification, deployment-record and database-locator persistence, database selection, workflow arbitration, concurrency, and sealing design.
+- `recovery-key-profile-decision.md`: Accepted architecture decision for the approved recovery-key cryptographic profile, Init proof binding, and Milestone 1 no-rotation boundary; the Security Model remains the current-policy authority.
 - `init/`: Server-owned fresh-state Init contract and implementation design.
 - `restore/`: Server-owned Restore contract and implementation design.
 

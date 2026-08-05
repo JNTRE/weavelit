@@ -81,11 +81,16 @@ outside Server domain constraints.
 
 The private recovery key is accepted only to authenticate and decrypt the
 submitted backup. It is not an application identity, proof of host authority,
-or authorization for another action. The Restore crate verifies that it matches
-the artifact's recovery public key, retains only the corresponding public key
-for future backups, and keeps the private key, unwrapped data key, and plaintext
-only in bounded transient memory. Sensitive buffers are cleared through the
-selected maintained cryptographic facilities when no longer needed.
+or authorization for another action. The Restore crate derives the recovery
+public key from the supplied private key's `d` value under the approved
+[Recovery Key Security Profile](../../../security-model.md#recovery-key-security-profile),
+verifies it against the artifact's authenticated inner public-key data, retains
+only the corresponding public key for future backups, and keeps the private
+key, unwrapped data key, and plaintext only in bounded transient memory.
+Sensitive buffers are cleared through the selected maintained cryptographic
+facilities when no longer needed. Milestone 1 has no recovery-key rotation
+workflow; Restore preserves the existing authenticated recovery public key
+rather than accepting a replacement.
 
 If staging is required, the Server may persist only the encrypted artifact in
 bounded protected temporary storage. It never persists the private recovery
@@ -101,10 +106,15 @@ Restore validation minimizes exposure to attacker-controlled work. After
 lifecycle eligibility and transfer bounds are enforced, the Restore crate:
 
 1. minimally parses the bounded outer envelope to identify its format version
-   and declared cryptographic parameters;
-2. rejects unsupported or out-of-policy parameters before cryptographic work;
-3. authenticates and decrypts the envelope with the supplied recovery key under
-   configured cryptographic-work limits;
+   and declared crypto profile;
+2. rejects an unsupported or out-of-policy crypto profile and a malformed
+   supplied recovery-key document before cryptographic work;
+3. derives the recovery public key from the supplied private key's `d` value,
+   authenticates and decrypts the envelope's wrapped data-encryption key and
+   payload under the approved
+   [Recovery Key Security Profile](../../../security-model.md#recovery-key-security-profile),
+   and validates the decrypted contents against the authenticated inner
+   public-key data before either value is trusted;
 4. bounds any decompression and plaintext size before parsing the authenticated
    structured contents; and
 5. validates Server and source-backend compatibility, internal references,
@@ -112,8 +122,15 @@ lifecycle eligibility and transfer bounds are enforced, the Restore crate:
 
 A failure releases transient resources without continuing to later stages,
 leaves the selected database without application state, and returns only a
-stable, redacted error. The exact envelope, key format, algorithms, and concrete
-bounds remain the decisions recorded in Open Questions.
+stable, redacted error. An unsupported or unrecognized crypto profile returns
+`backup_incompatible`; a malformed recovery-key document returns
+`recovery_key_invalid`; a valid-looking wrong key, tampering, or another HPKE
+authentication failure returns one redacted, non-oracular `backup_invalid`
+result that does not reveal which stage failed. The recovery-key cryptographic
+profile is settled in the Security Model and the
+[Recovery Key Profile Decision](../recovery-key-profile-decision.md); the exact
+backup envelope, framing, and concrete bounds remain the decisions recorded in
+Open Questions.
 
 A valid backup supplies the application-owned state required for operation,
 including account records, password verifiers, Groups and grants, enabled
@@ -227,6 +244,7 @@ the complete Restore story and fail-closed interrupted-workflow behavior.
 - [Restore User Story](../../user-stories/restore-user-story.md)
 - [Technical Specification](../../../spec.md)
 - [Security Model](../../../security-model.md)
+- [Recovery Key Profile Decision](../recovery-key-profile-decision.md)
 - [Open Questions](../../../open-questions.md)
 - [Glossary](../../../glossary.md)
 - [Server Architecture Design](../../server-architecture-design.md)

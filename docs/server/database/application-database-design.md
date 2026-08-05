@@ -203,10 +203,18 @@ An **[Administrator](../../glossary.md#identities-and-access)** with the
 **[Server Administration Permission](../../glossary.md#identities-and-access)**
 can create and download an encrypted, versioned Application Database backup
 through server-administration functions. For each backup, the Server creates a
-fresh data-encryption key, encrypts the recovery contents with it, and protects
-that data-encryption key with the persisted recovery public key. The Server
-does not require, receive, store, or redisplay the private recovery key during
-backup creation.
+fresh 32-byte data-encryption key, encrypts the recovery contents with it, and
+seals that data-encryption key to the persisted recovery public key using HPKE
+under the approved
+[Recovery Key Security Profile](../../security-model.md#recovery-key-security-profile).
+The wrapping `info` and the payload's authenticated associated data both derive
+from the complete canonical security header, binding the product,
+backup-format version, crypto profile, payload profile, framing, and declared
+bounds; the recovery-key identifier appears only inside authenticated
+ciphertext, never in cleartext header metadata. The Server does not require,
+receive, store, or redisplay the private recovery key during backup creation.
+The exact backup envelope, framing, and versioned format remain open and are
+tracked in [Open Questions](../../open-questions.md).
 
 A backup includes the application configuration and state needed to restore
 operational status, including local accounts, password verifiers, Groups and
@@ -230,8 +238,11 @@ The restore operation verifies the expected deployment identifier and eligible
 Restore checkpoint before replacing application state. The Restore crate
 invalidates restored sessions, re-encrypts reversibly encrypted data using the
 replacement Server's own at-rest key material, preserves only the matching
-public recovery key, and verifies the process-level durable acknowledgement for
-the Restore-result System Log defined in the [Technical Specification](../../spec.md#logging-and-accountability).
+public recovery key consistent with Milestone 1's no recovery-key-rotation
+policy in the
+[Recovery Key Security Profile](../../security-model.md#recovery-key-security-profile),
+and verifies the process-level durable acknowledgement for the Restore-result
+System Log defined in the [Technical Specification](../../spec.md#logging-and-accountability).
 The lifecycle crate seals the deployment record `Initialized` after the atomic
 database commit and before normal routes become available. A failure after the
 database commit fails closed and is classified as retained partial state without
@@ -243,6 +254,7 @@ backend.
 
 - [Technical Specification](../../spec.md)
 - [Security Model](../../security-model.md)
+- [Recovery Key Profile Decision](../lifecycle/recovery-key-profile-decision.md)
 - [Open Questions](../../open-questions.md)
 - [Glossary](../../glossary.md)
 - [Server Architecture Design](../server-architecture-design.md)
