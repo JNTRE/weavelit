@@ -40,7 +40,7 @@ None
 - [ ] The PR profile, target branch, title, and issue reference or closure semantics are correct.
 - [ ] Required labels, GitHub Project membership and fields, milestone or confirmed absence, and authoritative assignee state are applied.
 - [ ] The finalized-head marker is the exact full current head SHA.
-- [ ] The current-head change is focused, and its commits and diff were reviewed.
+- [ ] The change at the current head is focused, and its commits and diff were reviewed.
 - [ ] Relevant documentation and feature specifications are current, or the Documentation section explains why no update is needed.
 - [ ] Relevant local validation ran, and the Verification section accurately records results and any unavailable checks.
 - [ ] Required reviews, conversations, checks, scans, approvals, branch currency, and mergeability are complete and clean for the current head.
