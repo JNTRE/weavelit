@@ -34,4 +34,4 @@ component labels, Priority, milestone, Project status, and parent epic.
 
 ## Related Documents
 
-- [GitHub Planning Compatibility Index](../../../docs/plan/project/project-standards.md)
+- [GitHub Planning Compatibility Index](../project-standards.md)
