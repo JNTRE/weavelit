@@ -61,7 +61,6 @@ container stop, rebuild, and restart boundaries.
 ## Related Documents
 
 - [Testing and Validation Policy](../../testing.md)
-- [Milestone 1](../../plan/milestones/milestones.md#milestone-1-core-server-application)
 - [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md)
 - [Server Init Design](../../server/lifecycle/init/init-design.md)
 - [Server Restore Design](../../server/lifecycle/restore/restore-design.md)

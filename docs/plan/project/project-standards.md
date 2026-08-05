@@ -23,8 +23,8 @@ workflow policy, and new policy must not be added here.
   commit messages, and contribution flow.
 - `.github/pull_request_template.md` defines the required Pull Request body and
   final checklist shape.
-- GitHub Milestones own their live delivery records; the
-  [Milestone Index](../milestones/milestones.md) provides navigation only.
+- GitHub Milestones are the sole live and navigation authority for milestone
+  records.
 
 ## Compatibility Rules
 
@@ -46,5 +46,4 @@ then, changes may update authority routing or the removal condition only.
 
 ## Related Documents
 
-- [Milestone Index](../milestones/milestones.md)
 - [Contributing](../../../CONTRIBUTING.md)
