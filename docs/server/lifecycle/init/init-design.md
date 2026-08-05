@@ -141,6 +141,43 @@ initialized before the requesting client proves possession of the private key:
    gate, load the committed application state, and enable normal authenticated
    operation in the same process.
 
+### Proof Transcript And Checkpoint Fields
+
+Recovery-key preparation follows the approved
+[Recovery Key Security Profile](../../../security-model.md#recovery-key-security-profile)
+and its [Recovery Key Profile Decision](../recovery-key-profile-decision.md).
+The Init crate generates a 32-byte random nonce `N` and the recovery pair
+`(sk_R, pk_R)`, then computes the checkpoint binding
+
+```text
+B = SHA-256("weavelit/init-checkpoint/v1" || deployment_identifier || profile_identifier || pk_R || N)
+```
+
+using this exact fixed-length field order with no separators: the ASCII domain
+label, the 16-byte deployment identifier, the fixed profile identifier defined
+by the Security Model, the 32-byte X25519 public key, and the 32-byte nonce.
+The Init crate then runs HPKE `SetupBaseS` to `pk_R` with info
+`"weavelit/init-proof/v1" || B`, producing an encapsulated key `enc`, and
+derives the 32-byte expected proof through HPKE Export with context
+`"weavelit/init-confirm/v1" || B`.
+
+The Init checkpoint persists only the profile identifier, public key, nonce,
+and `enc`; the expected proof exists only in zeroizing process memory and is
+never persisted. Init returns the private document, nonce, binding, and `enc`
+to the client once; the client runs `SetupBaseR` and submits only the
+canonical Base64url-encoded proof. Before the final commit, the Init crate
+reopens and validates the trusted checkpoint and compares the submitted proof
+to the expected proof in constant time. This proves decryption capability
+associated with the checkpoint only; it is not proof of durable storage,
+application identity, host control, or authorization, and it fails across a
+different deployment or a regenerated checkpoint.
+
+Checkpoint state is one-time and is never retried or resumed after an
+interruption. Every transcript value used to compute `B`, `enc`, and the
+expected proof is discarded or zeroized on process exit, and a new Init on a
+new deployment always regenerates the nonce, key pair, and binding rather than
+reusing a prior checkpoint's values.
+
 Proof of possession confirms that the requesting client retained the delivered
 key long enough to finalize Init; safeguarding the downloaded private key
 outside Weavelit remains the responsibility of the person completing Init. The
@@ -222,6 +259,7 @@ delivery.
 - [Init User Story](../../user-stories/init-user-story.md)
 - [Technical Specification](../../../spec.md)
 - [Security Model](../../../security-model.md)
+- [Recovery Key Profile Decision](../recovery-key-profile-decision.md)
 - [Server Architecture Design](../../server-architecture-design.md)
 - [Server Lifecycle Design](../lifecycle-design.md)
 - [Application Database Design](../../database/application-database-design.md)
