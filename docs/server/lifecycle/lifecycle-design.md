@@ -132,12 +132,23 @@ opens `lifecycle.lock` without following links and obtains a non-blocking
 exclusive lock before inventorying or inspecting another child. The lock is
 held for the process lifetime. Contention therefore fails as `LockContended`
 even when another process has retained a temporary, unknown, or otherwise
-invalid child. A newly created lock with no other entry is a fresh bootstrap;
+invalid child. A failure of the advisory-lock operation itself, rather than
+contention with another holder, fails as `Persistence` so that an unavailable
+state-root filesystem is not reported as another instance holding the root. A
+newly created lock with no other entry is a fresh bootstrap;
 an existing lock with no other entry, or a newly created lock with any retained
 entry, fails closed after lock acquisition. A second Server process using the
 same root exits before binding HTTPS. The pinned Rust standard library's
 `File::try_lock` supplies this process lock; no third-party lock dependency is
 required.
+
+Releasing the root releases the advisory lock explicitly rather than relying on
+descriptor closure, on both the successful and the fail-closed acquisition path.
+An advisory lock belongs to the open file description, so closing one descriptor
+leaves the lock held until every duplicate is closed. A concurrently forked
+child transiently duplicates every open descriptor until it executes its own
+image, so an implicit release would otherwise leave the root observably in use
+after its owner released it.
 
 Before creating a managed file, the process sets an owner-only `0077` umask.
 Every managed child must be a regular non-symlink file owned by the effective

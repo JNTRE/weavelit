@@ -3,6 +3,11 @@ use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -89,6 +94,40 @@ fn process_lifetime_lock_rejects_a_second_store() {
     let (_directory, path) = state_root();
     let _store = LifecycleStore::open_or_create(&path).unwrap();
     expect_open_error(&path, LifecycleError::LockContended);
+}
+
+#[test]
+fn lock_release_is_unaffected_by_a_concurrently_forked_child_process() {
+    let (_directory, path) = state_root();
+    let stop = Arc::new(AtomicBool::new(false));
+    let spawner = {
+        let stop = Arc::clone(&stop);
+        // A fork duplicates every descriptor, so a child spawned by another
+        // thread transiently shares this root's lock until it execs.
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let _ = Command::new("/bin/true")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        })
+    };
+
+    let result = std::panic::catch_unwind(|| {
+        for iteration in 0..200 {
+            drop(LifecycleStore::open_or_create(&path).unwrap());
+            LifecycleStore::open_or_create(&path).unwrap_or_else(|error| {
+                panic!("reopen {iteration} must not observe stale contention: {error}")
+            });
+        }
+    });
+    stop.store(true, Ordering::Relaxed);
+    spawner.join().unwrap();
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
 }
 
 #[test]
