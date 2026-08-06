@@ -1,6 +1,6 @@
 # Web UI Application Design
 
-This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, and the pre-operational status presentation states. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, and the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser. This document does not restate either contract.
+This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, and the Application Database selection control. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, and the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser. This document does not restate any of those contracts.
 
 ## Build Toolchain
 
@@ -87,8 +87,9 @@ The application has a single root component, `ApplicationShell`, mounted into
 `#weavelit-root` by `main.tsx`. It deliberately has no router, no
 state-management library, and no CSS framework: its only production
 dependencies are `react` and `react-dom`, and `application.css` is
-hand-authored. This reflects the current absence of any client-side route or
-selection control; a later normal-operation experience revisits this shell.
+hand-authored. This reflects the current absence of any client-side route and
+the single control the pre-operational experience offers; a later
+normal-operation experience revisits this shell.
 
 ## Status Presentation States
 
@@ -109,19 +110,62 @@ payload, status text, or transport diagnostic. The client ignores unknown
 additive JSON fields consistent with the versioned `/api/v1/` compatibility
 policy, but treats a missing or wrongly typed documented field
 (`lifecycle` or `database_selected`) as a failure rather than guessing a
-default. No presentation state renders a selection control; introducing one is
-tracked separately from this design.
+default.
 
-## Same-Origin Status Request
+## Application Database Selection Control
 
-The application issues exactly one outbound request kind: a same-origin
-`GET /api/v1/status` with `Accept: application/json`, `credentials: omit`,
-`cache: no-store`, and `redirect: error`. It sends no other request, uses no
-credentials, and performs no cross-origin call.
+The shell offers exactly one control, and only in the Unselected status state.
+The control selects SQLite, the single **[Application Database](../../glossary.md#applications-and-interfaces)**
+backend this milestone supports, so it is a single labelled action rather than a
+backend picker. It is presented in a titled region carrying a
+`data-selection-state` attribute for testability, containing a heading, a short
+description of what selecting SQLite does, and an action button whose accessible
+name is fixed so it does not change between states.
+
+The control renders exactly three states:
+
+| State | Condition | Presentation |
+| --- | --- | --- |
+| Idle | No submission is in flight and none has failed since the last attempt. | The action is enabled and no failure message is present. |
+| Submitting | A selection request is in flight. | The action is disabled, so a repeated activation cannot issue a second selection. |
+| Failed | The selection request did not return a valid success projection. | The action is enabled again and a fixed failure message is presented in an assertive live region. |
+
+The failure message is fixed and redacted. The selection route deliberately
+returns no detail that distinguishes which check failed, so the application
+surfaces no server error code, no HTTP status number, and no transport
+diagnostic; every failure cause presents identically. This follows the same
+precedent as the status failure state.
+
+On success, the response body carries the authoritative status projection. The
+application applies that projection directly to the displayed status and issues
+no follow-up status request, because a second request would spend a shared
+rate-limit budget to re-read a value the Server already returned. Applying the
+projection moves the status to Selected, which withdraws the control: once a
+database is selected the shell never offers to select again, and a repeat
+selection is refused by the Server regardless.
+
+## Same-Origin Requests
+
+The application issues exactly two outbound request kinds, both same-origin,
+both with `credentials: omit`, `cache: no-store`, and `redirect: error`:
+
+- `GET /api/v1/status` with `Accept: application/json`; and
+- `PUT /api/v1/application-database` with `Accept: application/json`, an
+  unparameterized `Content-Type: application/json`, the required
+  `X-Weavelit-CSRF` header, and the fixed request body the
+  [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
+  defines.
+
+The application never sets `Host` or `Origin`. Both are forbidden header names
+that the browser populates itself on a same-origin request, and a same-origin
+request satisfies the route's precondition without client involvement. The
+application sends no other request, uses no credentials, and performs no
+cross-origin call.
 
 ## Related Documents
 
 - [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
+- [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
 - [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md)
 - [Web UI Agent Guide](AGENTS.md)
 - [Testing and Validation Policy](../../testing.md)

@@ -28,7 +28,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `package-lock.json`: Fully resolved npm dependency lock for reproducible installs.
 - `playwright.config.ts`: Playwright runner configuration for the browser smoke test.
 - `scripts/`: Build-output validation and build content manifest scripts run by the Server quality gate, and their Node test-runner tests.
-- `src/`: TypeScript and React application source and its unit tests.
+- `src/`: TypeScript and React application source and its unit tests, including the status and Application Database selection transport clients, the deployment status hook, and the application shell.
 - `tsconfig.json`: TypeScript compiler configuration for the application and its tests.
 - `vite.config.ts`: Vite build, deterministic output-naming, and Vitest configuration.
 

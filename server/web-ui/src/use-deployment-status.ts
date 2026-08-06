@@ -11,12 +11,14 @@ export type StatusViewState =
 /**
  * Tracks the current status projection and exposes an explicit reload.
  *
- * Status is treated as mutable: `reload` re-requests it, and a superseded
+ * Status is treated as mutable: `reload` re-requests it, `applyStatus` adopts a
+ * projection a state-changing response already returned, and a superseded
  * in-flight request never overwrites a newer result.
  */
 export function useDeploymentStatus(): {
   state: StatusViewState;
   reload: () => void;
+  applyStatus: (status: PreOperationalStatus) => void;
 } {
   const [state, setState] = useState<StatusViewState>({ kind: 'loading' });
   const latestRequest = useRef(0);
@@ -48,9 +50,17 @@ export function useDeploymentStatus(): {
     );
   }, []);
 
+  const applyStatus = useCallback((status: PreOperationalStatus): void => {
+    // Supersede any in-flight status request: this projection is newer.
+    latestRequest.current += 1;
+    if (mounted.current) {
+      setState({ kind: 'available', status });
+    }
+  }, []);
+
   useEffect(() => {
     reload();
   }, [reload]);
 
-  return { state, reload };
+  return { state, reload, applyStatus };
 }

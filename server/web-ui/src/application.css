@@ -31,3 +31,38 @@ body {
   margin: 0;
   padding: 1rem;
 }
+
+.shell__selection {
+  border: 1px solid currentColor;
+  border-radius: 0.375rem;
+  margin: 1.5rem 0 0;
+  padding: 1rem;
+}
+
+.shell__selection-title {
+  font-size: 1.125rem;
+  margin: 0;
+}
+
+.shell__selection-description {
+  margin: 0.5rem 0 1rem;
+}
+
+.shell__selection-action {
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.5rem 1rem;
+}
+
+.shell__selection-action:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.shell__selection-failure {
+  margin: 1rem 0 0;
+}
