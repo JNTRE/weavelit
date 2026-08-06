@@ -21,7 +21,8 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and Web UI Client Module crate-boundary rules.
 - `Cargo.toml`: Compiled-in Web UI Client Module package manifest.
-- `src/lib.rs`: Pre-operational status request translation and contract tests.
+- `build.rs`: Fail-closed check that the generated Web UI production assets embedded by this crate exist before compilation.
+- `src/lib.rs`: Pre-operational status request translation, the compile-time Web UI asset allowlist and its delivery routes, and contract tests.
 
 ## Usage Guidance
 

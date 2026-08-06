@@ -9,3 +9,4 @@ axum.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }
