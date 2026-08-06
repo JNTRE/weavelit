@@ -14,7 +14,7 @@ use std::{
 
 use axum::{
     Router,
-    body::Body,
+    body::{Body, Bytes, to_bytes},
     extract::Request,
     http::{
         HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
@@ -22,7 +22,6 @@ use axum::{
     },
     response::Response,
 };
-use http_body_util::BodyExt;
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use rustls::{
     ServerConfig,
@@ -65,6 +64,17 @@ const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_HEAD_BYTES: usize = MAX_REQUEST_TARGET_BYTES + MAX_REQUEST_HEADER_BYTES + 128;
 const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
 const RATE_LIMIT_BURST: u32 = 5;
+const MAX_JSON_BODY_BYTES: usize = 128;
+const MAX_HTML_BODY_BYTES: usize = 16 * 1024;
+const MAX_JAVASCRIPT_BODY_BYTES: usize = 256 * 1024;
+const MAX_CSS_BODY_BYTES: usize = 64 * 1024;
+const ASSET_SECURITY_HEADERS: &str = concat!(
+    "Content-Security-Policy: default-src 'none'; base-uri 'none'; object-src 'none'; ",
+    "frame-ancestors 'none'; form-action 'none'; script-src 'self'; style-src 'self'; ",
+    "connect-src 'self'\r\n",
+    "X-Content-Type-Options: nosniff\r\n",
+    "Cache-Control: no-store\r\n",
+);
 
 #[derive(Clone, Copy)]
 struct ConnectionTimeouts {
@@ -124,18 +134,70 @@ impl RateLimiter {
     }
 }
 
-#[derive(Clone, Copy)]
-struct FixedResponse {
+/// Closed set of response shapes the restricted listener may emit.
+///
+/// The profile alone selects the media type, the security header block, and the
+/// body bound. Nothing is taken from the request, a file extension, or the body
+/// contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseProfile {
+    Json,
+    Html,
+    JavaScript,
+    Css,
+}
+
+impl ResponseProfile {
+    const fn media_type(self) -> &'static str {
+        match self {
+            Self::Json => "application/json; charset=utf-8",
+            Self::Html => "text/html; charset=utf-8",
+            Self::JavaScript => "text/javascript; charset=utf-8",
+            Self::Css => "text/css; charset=utf-8",
+        }
+    }
+
+    const fn max_body_bytes(self) -> usize {
+        match self {
+            Self::Json => MAX_JSON_BODY_BYTES,
+            Self::Html => MAX_HTML_BODY_BYTES,
+            Self::JavaScript => MAX_JAVASCRIPT_BODY_BYTES,
+            Self::Css => MAX_CSS_BODY_BYTES,
+        }
+    }
+
+    const fn security_headers(self) -> &'static str {
+        match self {
+            Self::Json => "",
+            Self::Html | Self::JavaScript | Self::Css => ASSET_SECURITY_HEADERS,
+        }
+    }
+
+    fn from_media_type(value: &HeaderValue) -> Option<Self> {
+        match value.as_bytes() {
+            b"application/json; charset=utf-8" => Some(Self::Json),
+            b"text/html; charset=utf-8" => Some(Self::Html),
+            b"text/javascript; charset=utf-8" => Some(Self::JavaScript),
+            b"text/css; charset=utf-8" => Some(Self::Css),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BoundedResponse {
     status: StatusCode,
-    body: &'static str,
+    profile: ResponseProfile,
+    body: Bytes,
     allow_get: bool,
 }
 
-impl FixedResponse {
-    const fn new(status: StatusCode, body: &'static str) -> Self {
+impl BoundedResponse {
+    fn json(status: StatusCode, body: &'static str) -> Self {
         Self {
             status,
-            body,
+            profile: ResponseProfile::Json,
+            body: Bytes::from_static(body.as_bytes()),
             allow_get: false,
         }
     }
@@ -691,7 +753,7 @@ async fn serve_normal_connection_with_timeouts(
     .await;
     let _ = timeout(
         timeouts.processing,
-        write_fixed_response(&mut tls_stream, response),
+        write_bounded_response(&mut tls_stream, response),
     )
     .await;
 }
@@ -718,7 +780,7 @@ async fn serve_rejection_connection_with_timeouts(
     };
     let _ = timeout(
         response_timeout,
-        write_fixed_response(&mut tls_stream, service_unavailable_response()),
+        write_bounded_response(&mut tls_stream, service_unavailable_response()),
     )
     .await;
 }
@@ -729,7 +791,7 @@ async fn process_restricted_request<S>(
     router: Router,
     rate_limiter: Arc<RateLimiter>,
     request_read_timeout: Duration,
-) -> FixedResponse
+) -> BoundedResponse
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -752,7 +814,7 @@ where
         .oneshot(request)
         .await
         .expect("restricted router response is infallible");
-    fixed_response_from_axum(response).await
+    bounded_response_from_axum(response).await
 }
 
 #[derive(Debug)]
@@ -925,7 +987,7 @@ where
     }
 }
 
-fn response_for_request_read_error(error: RequestReadError) -> FixedResponse {
+fn response_for_request_read_error(error: RequestReadError) -> BoundedResponse {
     match error {
         RequestReadError::TimedOut => request_timeout_response(),
         RequestReadError::TargetTooLong => {
@@ -985,42 +1047,70 @@ fn parse_http_request(
     Ok(request)
 }
 
-async fn fixed_response_from_axum(response: Response) -> FixedResponse {
+async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
     let status = response.status();
     let allow_get = response
         .headers()
         .get(ALLOW)
         .is_some_and(|value| value == "GET");
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("restricted router body must be collectable")
-        .to_bytes();
-    let body = match body.as_ref() {
-        b"{\"error\":\"bad_request\"}" => "{\"error\":\"bad_request\"}",
-        b"{\"error\":\"method_not_allowed\"}" => "{\"error\":\"method_not_allowed\"}",
-        b"{\"error\":\"not_found\"}" => "{\"error\":\"not_found\"}",
-        b"{\"error\":\"request_header_fields_too_large\"}" => {
-            "{\"error\":\"request_header_fields_too_large\"}"
-        }
-        b"{\"error\":\"uri_too_long\"}" => "{\"error\":\"uri_too_long\"}",
-        b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}" => {
-            "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
-        }
-        b"{\"lifecycle\":\"uninitialized\",\"database_selected\":true}" => {
-            "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}"
-        }
-        _ => "{\"error\":\"gateway_timeout\"}",
+    let Some(profile) = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(ResponseProfile::from_media_type)
+    else {
+        return redacted_response(status, allow_get);
     };
-    FixedResponse {
+    let Ok(body) = to_bytes(response.into_body(), profile.max_body_bytes()).await else {
+        return redacted_response(status, allow_get);
+    };
+    if profile == ResponseProfile::Json {
+        let Some(body) = fixed_json_body(&body) else {
+            return redacted_response(status, allow_get);
+        };
+        return BoundedResponse {
+            status,
+            profile,
+            body: Bytes::from_static(body.as_bytes()),
+            allow_get,
+        };
+    }
+    BoundedResponse {
         status,
+        profile,
         body,
         allow_get,
     }
 }
 
-async fn write_fixed_response<S>(stream: &mut S, response: FixedResponse) -> std::io::Result<()>
+fn fixed_json_body(body: &[u8]) -> Option<&'static str> {
+    match body {
+        b"{\"error\":\"bad_request\"}" => Some("{\"error\":\"bad_request\"}"),
+        b"{\"error\":\"method_not_allowed\"}" => Some("{\"error\":\"method_not_allowed\"}"),
+        b"{\"error\":\"not_found\"}" => Some("{\"error\":\"not_found\"}"),
+        b"{\"error\":\"request_header_fields_too_large\"}" => {
+            Some("{\"error\":\"request_header_fields_too_large\"}")
+        }
+        b"{\"error\":\"uri_too_long\"}" => Some("{\"error\":\"uri_too_long\"}"),
+        b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}" => {
+            Some("{\"lifecycle\":\"uninitialized\",\"database_selected\":false}")
+        }
+        b"{\"lifecycle\":\"uninitialized\",\"database_selected\":true}" => {
+            Some("{\"lifecycle\":\"uninitialized\",\"database_selected\":true}")
+        }
+        _ => None,
+    }
+}
+
+/// Replaces an unknown, unbounded, or otherwise invalid module response with the
+/// fixed redacted body while preserving the observed status framing.
+fn redacted_response(status: StatusCode, allow_get: bool) -> BoundedResponse {
+    BoundedResponse {
+        allow_get,
+        ..BoundedResponse::json(status, "{\"error\":\"gateway_timeout\"}")
+    }
+}
+
+async fn write_bounded_response<S>(stream: &mut S, response: BoundedResponse) -> std::io::Result<()>
 where
     S: AsyncWrite + Unpin,
 {
@@ -1029,19 +1119,21 @@ where
     } else {
         ""
     };
-    let wire = format!(
-        "HTTP/1.1 {} \r\nContent-Type: application/json; charset=utf-8\r\n{}\r\n{}",
+    let head = format!(
+        "HTTP/1.1 {} \r\nContent-Type: {}\r\n{}{}\r\n",
         response.status.as_u16(),
+        response.profile.media_type(),
         allow,
-        response.body,
+        response.profile.security_headers(),
     );
-    stream.write_all(wire.as_bytes()).await?;
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(&response.body).await?;
     stream.shutdown().await
 }
 
-async fn processing_response<F>(processing_timeout: Duration, processing: F) -> FixedResponse
+async fn processing_response<F>(processing_timeout: Duration, processing: F) -> BoundedResponse
 where
-    F: Future<Output = FixedResponse>,
+    F: Future<Output = BoundedResponse>,
 {
     match timeout(processing_timeout, processing).await {
         Ok(response) => response,
@@ -1049,40 +1141,42 @@ where
     }
 }
 
-fn json_fixed_response(status: StatusCode, body: &'static str) -> FixedResponse {
-    FixedResponse::new(status, body)
+fn json_fixed_response(status: StatusCode, body: &'static str) -> BoundedResponse {
+    BoundedResponse::json(status, body)
 }
 
-fn service_unavailable_response() -> FixedResponse {
+fn service_unavailable_response() -> BoundedResponse {
     json_fixed_response(
         StatusCode::SERVICE_UNAVAILABLE,
         "{\"error\":\"service_unavailable\"}",
     )
 }
 
-fn method_not_allowed_response() -> FixedResponse {
-    FixedResponse {
-        status: StatusCode::METHOD_NOT_ALLOWED,
-        body: "{\"error\":\"method_not_allowed\"}",
+fn method_not_allowed_response() -> BoundedResponse {
+    BoundedResponse {
         allow_get: true,
+        ..BoundedResponse::json(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{\"error\":\"method_not_allowed\"}",
+        )
     }
 }
 
-fn request_timeout_response() -> FixedResponse {
+fn request_timeout_response() -> BoundedResponse {
     json_fixed_response(
         StatusCode::REQUEST_TIMEOUT,
         "{\"error\":\"request_timeout\"}",
     )
 }
 
-fn gateway_timeout_response() -> FixedResponse {
+fn gateway_timeout_response() -> BoundedResponse {
     json_fixed_response(
         StatusCode::GATEWAY_TIMEOUT,
         "{\"error\":\"gateway_timeout\"}",
     )
 }
 
-fn rate_limited_response() -> FixedResponse {
+fn rate_limited_response() -> BoundedResponse {
     json_fixed_response(
         StatusCode::TOO_MANY_REQUESTS,
         "{\"error\":\"rate_limited\"}",
@@ -1092,16 +1186,24 @@ fn rate_limited_response() -> FixedResponse {
 fn restricted_routes(outcome: StartupOutcome) -> Router {
     let router = Router::new().fallback(not_found);
     match outcome {
-        StartupOutcome::UninitializedWithoutDatabase => router.route(
-            "/api/v1/status",
-            weavelit_module_client_webui::preoperational_status_route(false),
-        ),
-        StartupOutcome::UninitializedWithDatabase => router.route(
-            "/api/v1/status",
-            weavelit_module_client_webui::preoperational_status_route(true),
-        ),
+        StartupOutcome::UninitializedWithoutDatabase => preoperational_routes(router, false),
+        StartupOutcome::UninitializedWithDatabase => preoperational_routes(router, true),
         StartupOutcome::InitializationPending(_) => router,
     }
+}
+
+/// Composes the Web UI Client Module's declared pre-operational surface.
+///
+/// The module owns its asset inventory and route paths; the core only mounts
+/// them. Every mounted path is exact, so an unknown target, including any
+/// `/api/` target, falls through to the fixed not-found response.
+fn preoperational_routes(router: Router, database_selected: bool) -> Router {
+    router
+        .route(
+            "/api/v1/status",
+            weavelit_module_client_webui::preoperational_status_route(database_selected),
+        )
+        .merge(weavelit_module_client_webui::embedded_asset_routes())
 }
 
 async fn not_found() -> Response {
@@ -1269,12 +1371,13 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        ConnectionSlots, ConnectionTimeouts, FixedResponse, REQUEST_PROCESSING_TIMEOUT,
-        REQUEST_READ_TIMEOUT, RateLimiter, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
-        gateway_timeout_response, parse_http_request, processing_response,
-        raw_header_section_bytes, read_http_request, read_http_request_with_timeout,
-        request_timeout_response, restricted_routes, serve_normal_connection_with_timeouts,
-        serve_rejection_connection_with_timeouts, serve_restricted_https_listener,
+        ASSET_SECURITY_HEADERS, BoundedResponse, ConnectionSlots, ConnectionTimeouts,
+        REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT, RateLimiter, ResponseProfile,
+        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, gateway_timeout_response, parse_http_request,
+        processing_response, raw_header_section_bytes, read_http_request,
+        read_http_request_with_timeout, request_timeout_response, restricted_routes,
+        serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
+        serve_restricted_https_listener,
     };
 
     async fn response_body(response: axum::response::Response) -> String {
@@ -1394,6 +1497,143 @@ mod tests {
         .unwrap();
         assert_eq!(pending.status(), StatusCode::NOT_FOUND);
         assert_eq!(response_body(pending).await, "{\"error\":\"not_found\"}");
+    }
+
+    fn generated_asset_bytes(relative: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../web-ui/dist")
+                .join(relative),
+        )
+        .unwrap()
+    }
+
+    const EMBEDDED_ASSETS: [(&str, &str, &str); 3] = [
+        ("/", "index.html", "text/html; charset=utf-8"),
+        (
+            "/assets/application.js",
+            "assets/application.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/assets/application.css",
+            "assets/application.css",
+            "text/css; charset=utf-8",
+        ),
+    ];
+
+    #[tokio::test]
+    async fn uninitialized_routes_mount_the_web_ui_asset_allowlist() {
+        for outcome in [
+            StartupOutcome::UninitializedWithoutDatabase,
+            StartupOutcome::UninitializedWithDatabase,
+        ] {
+            for (target, relative, media_type) in EMBEDDED_ASSETS {
+                let response = restricted_routes(outcome)
+                    .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{target}");
+                assert_eq!(
+                    response.headers().get("content-type").unwrap(),
+                    media_type,
+                    "{target}"
+                );
+                let body = axum::body::to_bytes(response.into_body(), 256 * 1024)
+                    .await
+                    .unwrap();
+                assert_eq!(body.as_ref(), generated_asset_bytes(relative), "{target}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn asset_security_headers_match_the_module_and_the_wire_profile() {
+        let response = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        for (name, wire_name) in [
+            ("content-security-policy", "Content-Security-Policy"),
+            ("x-content-type-options", "X-Content-Type-Options"),
+            ("cache-control", "Cache-Control"),
+        ] {
+            let value = response.headers().get(name).unwrap().to_str().unwrap();
+            assert!(
+                ASSET_SECURITY_HEADERS.contains(&format!("{wire_name}: {value}\r\n")),
+                "{name}"
+            );
+        }
+        assert_eq!(ResponseProfile::Json.security_headers(), "");
+    }
+
+    #[tokio::test]
+    async fn asset_routes_never_shadow_api_targets_or_unknown_targets() {
+        let status = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        assert_eq!(
+            status.headers().get("content-type").unwrap(),
+            "application/json; charset=utf-8"
+        );
+        assert!(!status.headers().contains_key("content-security-policy"));
+        assert_eq!(
+            response_body(status).await,
+            "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+        );
+
+        for target in [
+            "/api/",
+            "/api/v1/",
+            "/api/v1/status/",
+            "/api/v1/Status",
+            "/api/v1/assets/application.js",
+            "/api/v1/unknown",
+            "/index.html",
+            "/assets/",
+            "/assets/application.js/",
+            "/ASSETS/application.js",
+            "/assets/%61pplication.js",
+            "/assets/../assets/application.js",
+            "/../assets/application.js",
+            "/assets/application.js.map",
+        ] {
+            let response = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "application/json; charset=utf-8",
+                "{target}"
+            );
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn asset_routes_are_absent_outside_the_uninitialized_gates() {
+        for (target, _, _) in EMBEDDED_ASSETS {
+            let response = restricted_routes(StartupOutcome::InitializationPending(
+                weavelit_server_lifecycle::WorkflowKind::Init,
+            ))
+            .oneshot(Request::get(target).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
     }
 
     #[test]
@@ -2621,6 +2861,209 @@ mod tests {
         assert_eq!(maximum_response_bytes, 119);
     }
 
+    #[tokio::test]
+    async fn direct_tls_delivers_embedded_assets_with_fixed_security_headers() {
+        let (server_config, client_config) = tls_configs();
+        for (target, relative, media_type) in EMBEDDED_ASSETS {
+            let response = direct_tls_response(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                format!("GET {target} HTTP/1.1\r\n\r\n").as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            let head = format!(
+                "HTTP/1.1 200 \r\nContent-Type: {media_type}\r\n{ASSET_SECURITY_HEADERS}\r\n"
+            );
+            let body = generated_asset_bytes(relative);
+            assert!(response.starts_with(head.as_bytes()), "{target}");
+            assert_eq!(response.len(), head.len() + body.len(), "{target}");
+            assert_eq!(&response[head.len()..], body.as_slice(), "{target}");
+            let head = std::str::from_utf8(&response[..head.len()]).unwrap();
+            assert!(!head.contains("Allow:"), "{target}");
+            assert!(!head.contains("Content-Length:"), "{target}");
+            for forbidden in [
+                "Access-Control",
+                "Set-Cookie",
+                "Content-Encoding",
+                "Server:",
+                "Vary:",
+            ] {
+                assert!(!head.contains(forbidden), "{target}: {forbidden}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_tls_asset_paths_reject_non_get_methods_and_unknown_targets() {
+        let (server_config, client_config) = tls_configs();
+        for (target, _, _) in EMBEDDED_ASSETS {
+            let rejected = direct_tls_response(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                format!("POST {target} HTTP/1.1\r\n\r\n").as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_fixed_tls_response(&rejected, 405, "{\"error\":\"method_not_allowed\"}", true);
+        }
+
+        let unknown = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /assets/../assets/application.js HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(&unknown, 404, "{\"error\":\"not_found\"}", false);
+
+        let gated = direct_tls_response(
+            restricted_routes(StartupOutcome::InitializationPending(
+                weavelit_server_lifecycle::WorkflowKind::Init,
+            )),
+            server_config,
+            client_config,
+            b"GET / HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(&gated, 404, "{\"error\":\"not_found\"}", false);
+    }
+
+    #[tokio::test]
+    async fn direct_tls_bounds_and_redacts_module_response_bodies() {
+        let (server_config, client_config) = tls_configs();
+        let html_router = |byte_length: usize| {
+            Router::new().route(
+                "/bounded",
+                any(move || async move {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "text/html; charset=utf-8")
+                        .body(Body::from(vec![b'a'; byte_length]))
+                        .unwrap()
+                }),
+            )
+        };
+
+        let at_limit = direct_tls_response(
+            html_router(super::MAX_HTML_BODY_BYTES),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /bounded HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        let head = format!(
+            "HTTP/1.1 200 \r\nContent-Type: text/html; charset=utf-8\r\n{ASSET_SECURITY_HEADERS}\r\n"
+        );
+        assert_eq!(at_limit.len(), head.len() + super::MAX_HTML_BODY_BYTES);
+
+        let over_limit = direct_tls_response(
+            html_router(super::MAX_HTML_BODY_BYTES + 1),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /bounded HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(&over_limit, 200, "{\"error\":\"gateway_timeout\"}", false);
+
+        for media_type in ["text/plain; charset=utf-8", "application/octet-stream"] {
+            let unknown_media_type = direct_tls_response(
+                Router::new().route(
+                    "/bounded",
+                    any(move || async move {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", media_type)
+                            .body(Body::from("secret"))
+                            .unwrap()
+                    }),
+                ),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                b"GET /bounded HTTP/1.1\r\n\r\n",
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_fixed_tls_response(
+                &unknown_media_type,
+                200,
+                "{\"error\":\"gateway_timeout\"}",
+                false,
+            );
+        }
+
+        let unknown_json = direct_tls_response(
+            Router::new().route(
+                "/bounded",
+                any(|| async {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json; charset=utf-8")
+                        .body(Body::from("{\"secret\":true}"))
+                        .unwrap()
+                }),
+            ),
+            server_config,
+            client_config,
+            b"GET /bounded HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(&unknown_json, 200, "{\"error\":\"gateway_timeout\"}", false);
+    }
+
+    #[tokio::test]
+    async fn direct_tls_listener_never_answers_a_cleartext_request() {
+        let (server_config, _client_config) = tls_configs();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, source) = listener.accept().await.unwrap();
+            serve_normal_connection_with_timeouts(
+                stream,
+                source.ip(),
+                TlsAcceptor::from(server_config),
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::new(RateLimiter::new()),
+                ConnectionTimeouts {
+                    handshake: TLS_HANDSHAKE_TIMEOUT,
+                    request_read: REQUEST_READ_TIMEOUT,
+                    processing: REQUEST_PROCESSING_TIMEOUT,
+                },
+            )
+            .await;
+        });
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response).await;
+        server.await.unwrap();
+        assert!(!response.starts_with(b"HTTP/"), "{response:?}");
+        assert!(
+            !response
+                .windows(b"<!doctype".len())
+                .any(|window| window.eq_ignore_ascii_case(b"<!doctype")),
+            "{response:?}"
+        );
+    }
+
     #[test]
     fn rate_limiter_allows_burst_five_then_refills_at_twenty_per_minute() {
         let limiter = RateLimiter::new();
@@ -2645,12 +3088,12 @@ mod tests {
             super::RequestHeadRead::Incomplete(super::RequestReadError::TimedOut)
         ));
 
-        let response = processing_response(Duration::ZERO, pending::<FixedResponse>()).await;
+        let response = processing_response(Duration::ZERO, pending::<BoundedResponse>()).await;
         assert_eq!(response.status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(response.body, gateway_timeout_response().body);
         assert_eq!(
-            request_timeout_response().body,
-            "{\"error\":\"request_timeout\"}"
+            request_timeout_response().body.as_ref(),
+            b"{\"error\":\"request_timeout\"}"
         );
     }
 }
