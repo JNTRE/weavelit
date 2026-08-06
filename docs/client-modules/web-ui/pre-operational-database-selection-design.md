@@ -55,7 +55,7 @@ database-selection capability, so no equivalent route exists on its surface.
 The sole route is:
 
 ```http
-PUT /api/v1/database
+PUT /api/v1/application-database
 ```
 
 `PUT` expresses the operation's idempotent intent: the request declares the

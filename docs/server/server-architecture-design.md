@@ -181,15 +181,33 @@ provider and permits TLS 1.2 and TLS 1.3. The runtime does not create a second
 listener or a cleartext fallback.
 
 The compiled-in `weavelit-module-client-webui` crate owns translation of the
-Web UI pre-operational status request and response contract and delivery of its
-compile-time embedded browser asset allowlist. The runtime mounts those routes
+Web UI pre-operational status request and Application Database selection request
+and response contracts and delivery of its compile-time embedded browser asset
+allowlist. The runtime mounts those routes
 only when the Server-owned lifecycle gate permits it and retains ownership of
 direct TLS, listener composition, raw request parsing, resource limits, and
 lifecycle classification. The module cannot independently compose a route or
 listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
 defines the status contract and resource limits; the
+[Web UI Pre-Operational Database Selection Surface](../client-modules/web-ui/pre-operational-database-selection-design.md)
+defines the selection contract; the
 [Embedded Asset Delivery Design](../client-modules/web-ui/embedded-asset-delivery-design.md)
 defines the asset allowlist, media types, security headers, and body bounds.
+
+The runtime composes every mounted pre-operational route over one shared
+lifecycle authority. Startup constructs a single workflow arbiter over the
+opened lifecycle store, together with the shared backend catalog and trusted
+backend context, and hands each route a reference to that same instance. The
+module holds no lifecycle state: the status route calls a Server-supplied source
+that reads the projection live on every request, and the selection route
+delegates its decision to a Server-supplied commit hook that returns the
+projection observed under the same exclusive mutation permit that committed the
+selection. A status read therefore cannot report a value captured at startup or
+disagree with a completed selection. A future Init workflow must reuse this same
+arbiter; composing a second one would defeat serialization between selection and
+Init. The expected same-origin authority passed to the selection route is the
+socket address the listener actually bound, never a request header or a
+certificate subject alternative name.
 
 The implementation selects minimal features and exact crates.io versions for
 Axum, Hyper, Tokio, and their required adapters under the dependency policy
@@ -418,7 +436,7 @@ package. Internal workspace members are not exceptions.
   exposes a listener in this validation boundary. Focused tests cover valid,
   invalid-address, missing, unreadable, symbolic-link, malformed, mismatched,
   and process-level pre-lifecycle failures. `cargo test --locked -p
-  weavelit-server --test startup` passes all 12 tests; the locked feature graph
+  weavelit-server --test startup` passes all 23 tests; the locked feature graph
   contains only the selected Rustls provider capabilities.
 
 #### HTTPS Runtime Composition
@@ -431,12 +449,12 @@ handling.
 
 | Package | Exact version and minimal features | Owner and purpose | Maintenance, license, and advisory evidence |
 | --- | --- | --- | --- |
-| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the restricted status and embedded-asset routes; `weavelit-module-client-webui` translates the status request and JSON response and each embedded asset into its profile-bounded response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
+| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the restricted status, Application Database selection, and embedded-asset routes; `weavelit-module-client-webui` translates the status and selection requests and JSON responses and each embedded asset into its profile-bounded response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
 | `http-body-util` | `=0.1.4`; defaults enabled | `weavelit-server`; collects each Axum route response before direct TLS emission, bounded by its `ResponseProfile` body limit (128 B JSON, 16 KiB HTML, 256 KiB JavaScript, 64 KiB CSS) rather than a single fixed size | Hyperium; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, with request-body buffering bounded separately to 1 KiB and permitted only for `PUT` | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio` | `=1.53.1`; defaults disabled; `io-util`, `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, TLS-stream I/O, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio-rustls` | `=0.26.4`; defaults disabled | `weavelit-server`; asynchronous stream adapter for the already-approved Rustls configuration | Rustls; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
-| `tower` | `=0.5.3`; defaults disabled; `util` | `weavelit-server`; invokes the Axum route service for the status and embedded-asset routes after bounded request-head validation | Tower; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tower` | `=0.5.3`; defaults disabled; `util` | `weavelit-server`; invokes the Axum route service for the status, selection, and embedded-asset routes after bounded request-head validation | Tower; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 
 These packages do not enable HTTP/2, compression, CORS, cookie, form, JSON,
 query, tracing, client, proxy, or alternate TLS-provider features. The locked

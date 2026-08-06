@@ -53,6 +53,17 @@ been selected. It reflects the current lifecycle projection rather than a value
 fixed at startup, so it becomes `true` within the same pre-operational session
 once a selection succeeds through the
 [Web UI Pre-Operational Database Selection Surface](pre-operational-database-selection-design.md).
+
+Every request sources that projection live from the Server-owned lifecycle
+mutation authority, under the same exclusive permit that commits a selection.
+The status route and the selection route share one authority, so a status read
+issued after a successful selection cannot disagree with the projection that
+selection returned. Startup classification chooses whether the route is mounted;
+it never supplies the reported value. When the lifecycle authority cannot be
+read, the route responds `503 Service Unavailable` with
+`{"error":"service_unavailable"}` rather than reporting a stale or guessed
+projection.
+
 The response must not reveal database kind or configuration, deployment
 identifiers, host information, filesystem information, diagnostics, health
 detail, or another lifecycle detail.
@@ -79,6 +90,7 @@ diagnostic information.
 | Request target over 2 KiB | `414 URI Too Long`, `{"error":"uri_too_long"}` |
 | Request headers over 8 KiB | `431 Request Header Fields Too Large`, `{"error":"request_header_fields_too_large"}` |
 | Per-source rate exceeded | `429 Too Many Requests`, `{"error":"rate_limited"}` |
+| Live lifecycle projection unreadable | `503 Service Unavailable`, `{"error":"service_unavailable"}` |
 | Normal connection or handler capacity exhausted while the rejection lane is free | `503 Service Unavailable`, `{"error":"service_unavailable"}` |
 | Normal connection or handler capacity exhausted while the rejection lane is occupied | Transport-level rejection with no HTTP response |
 | Request read exceeds 5 seconds | `408 Request Timeout`, `{"error":"request_timeout"}` |
@@ -150,8 +162,11 @@ Implementation must provide HTTP contract and direct-TLS process tests for both
 `database_selected` values; every lifecycle availability boundary; accepted and
 rejected `Accept` values; each listed rejection; the network, rate, concurrency,
 and timeout limits; absence of CORS, cookies, normal routes, and a cleartext
-listener; response-size bounds; and redaction. The Server quality gate remains
-`make -C server check`.
+listener; response-size bounds; and redaction. Implementation must also prove
+the projection is live by observing, in one process, that a status read issued
+after a successful Application Database selection reports
+`database_selected: true`. The Server quality gate remains `make -C server
+check`.
 
 ## Related Documents
 

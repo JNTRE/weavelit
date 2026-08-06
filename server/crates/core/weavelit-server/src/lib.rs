@@ -39,12 +39,15 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
+use weavelit_module_client_webui::{
+    DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource, SelectionCommit,
+};
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
-    ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendRegistration,
-    DatabaseError, DeploymentIdentifier, InterruptedLifecycleAction, LifecycleClassification,
-    LifecycleError, LifecycleStore, RetainedDatabaseInspection, TrustedBackendContext,
-    ValidatedConnectionSettings, WorkflowKind,
+    ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
+    BackendRegistration, DatabaseError, DeploymentIdentifier, InterruptedLifecycleAction,
+    LifecycleClassification, LifecycleError, LifecycleStore, RetainedDatabaseInspection,
+    TrustedBackendContext, ValidatedConnectionSettings, WorkflowArbiter, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
 
@@ -53,6 +56,9 @@ const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
 const TLS_CERTIFICATE_PATH_ENV: &str = "WEAVELIT_TLS_CERTIFICATE_PATH";
 const TLS_PRIVATE_KEY_PATH_ENV: &str = "WEAVELIT_TLS_PRIVATE_KEY_PATH";
 const APPLICATION_DATABASE_FILE: &str = "application.sqlite3";
+/// The sole pre-operational route that may change lifecycle state.
+const APPLICATION_DATABASE_ROUTE: &str = "/api/v1/application-database";
+const STATUS_ROUTE: &str = "/api/v1/status";
 const MAX_TLS_MATERIAL_BYTES: u64 = 1024 * 1024;
 const MAX_NORMAL_CONNECTIONS: usize = 15;
 const MAX_REJECTION_CONNECTIONS: usize = 1;
@@ -554,7 +560,7 @@ pub enum StartupOutcome {
 pub struct RestrictedStartup {
     outcome: StartupOutcome,
     log_catalog: LogModuleCatalog,
-    _store: LifecycleStore,
+    composition: PreoperationalComposition,
 }
 
 impl RestrictedStartup {
@@ -566,6 +572,48 @@ impl RestrictedStartup {
     /// Returns the compiled-in Log Module catalog retained for process lifetime.
     pub const fn log_catalog(&self) -> &LogModuleCatalog {
         &self.log_catalog
+    }
+}
+
+/// Shared lifecycle composition every mounted pre-operational route observes.
+///
+/// Cloning shares the same `WorkflowArbiter`, so the status route and the
+/// selection route read and mutate one serialized lifecycle authority. A future
+/// Init workflow must reuse this same arbiter, or selection and Init would no
+/// longer serialize against each other.
+#[derive(Clone)]
+struct PreoperationalComposition {
+    outcome: StartupOutcome,
+    arbiter: Arc<WorkflowArbiter>,
+    catalog: Arc<BackendCatalog>,
+    context: Arc<TrustedBackendContext>,
+}
+
+impl PreoperationalComposition {
+    /// Returns a source that reads the projection live under the arbiter permit.
+    fn projection_source(&self) -> ProjectionSource {
+        let arbiter = Arc::clone(&self.arbiter);
+        Arc::new(move || arbiter.projection().ok())
+    }
+
+    /// Returns the commit hook the selection route delegates its decision to.
+    ///
+    /// The returned projection is the one the arbiter observed under the same
+    /// permit that committed the selection, so a later status read agrees with
+    /// it. The opened database is dropped here; this milestone exposes no
+    /// operational path that would use it.
+    fn selection_commit(&self) -> SelectionCommit {
+        let arbiter = Arc::clone(&self.arbiter);
+        let catalog = Arc::clone(&self.catalog);
+        let context = Arc::clone(&self.context);
+        Arc::new(move |backend| {
+            let identifier = BackendIdentifier::new(backend.identifier())
+                .map_err(|_| DatabaseSelectionRejection::BadRequest)?;
+            arbiter
+                .select_database(&catalog, &context, &identifier, Vec::new())
+                .map(|(_database, projection)| projection)
+                .map_err(|error| DatabaseSelectionRejection::from_selection_failure(error.kind()))
+        })
     }
 }
 
@@ -682,9 +730,12 @@ pub async fn run_restricted_https_listener(
     let tcp_listener = TcpListener::bind(listener.address())
         .await
         .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-    let result =
-        serve_restricted_https_listener(tcp_listener, listener.tls_config(), startup.outcome())
-            .await;
+    let result = serve_restricted_https_listener(
+        tcp_listener,
+        listener.tls_config(),
+        startup.composition.clone(),
+    )
+    .await;
     drop(startup);
     result
 }
@@ -692,9 +743,14 @@ pub async fn run_restricted_https_listener(
 async fn serve_restricted_https_listener(
     tcp_listener: TcpListener,
     tls_config: Arc<ServerConfig>,
-    outcome: StartupOutcome,
+    composition: PreoperationalComposition,
 ) -> Result<(), StartupError> {
-    let router = restricted_routes(outcome);
+    // The expected request origin is the address actually bound, never a value
+    // taken from a request header or a certificate subject alternative name.
+    let bound_address = tcp_listener
+        .local_addr()
+        .map_err(|_| StartupError::HttpsListenerUnavailable)?;
+    let router = restricted_routes(&composition, bound_address);
     let tls_acceptor = TlsAcceptor::from(tls_config);
     let slots = ConnectionSlots::new();
     let rate_limiter = Arc::new(RateLimiter::new());
@@ -1320,11 +1376,13 @@ fn rate_limited_response() -> BoundedResponse {
     )
 }
 
-fn restricted_routes(outcome: StartupOutcome) -> Router {
+fn restricted_routes(composition: &PreoperationalComposition, listener: SocketAddr) -> Router {
     let router = Router::new().fallback(not_found);
-    match outcome {
-        StartupOutcome::UninitializedWithoutDatabase => preoperational_routes(router, false),
-        StartupOutcome::UninitializedWithDatabase => preoperational_routes(router, true),
+    match composition.outcome {
+        StartupOutcome::UninitializedWithoutDatabase
+        | StartupOutcome::UninitializedWithDatabase => {
+            preoperational_routes(router, composition, listener)
+        }
         StartupOutcome::InitializationPending(_) => router,
     }
 }
@@ -1332,13 +1390,27 @@ fn restricted_routes(outcome: StartupOutcome) -> Router {
 /// Composes the Web UI Client Module's declared pre-operational surface.
 ///
 /// The module owns its asset inventory and route paths; the core only mounts
-/// them. Every mounted path is exact, so an unknown target, including any
-/// `/api/` target, falls through to the fixed not-found response.
-fn preoperational_routes(router: Router, database_selected: bool) -> Router {
+/// them and supplies the trusted lifecycle authority behind them. Every mounted
+/// path is exact, so an unknown target, including any `/api/` target, falls
+/// through to the fixed not-found response.
+fn preoperational_routes(
+    router: Router,
+    composition: &PreoperationalComposition,
+    listener: SocketAddr,
+) -> Router {
     router
         .route(
-            "/api/v1/status",
-            weavelit_module_client_webui::preoperational_status_route(database_selected),
+            STATUS_ROUTE,
+            weavelit_module_client_webui::preoperational_status_route(
+                composition.projection_source(),
+            ),
+        )
+        .route(
+            APPLICATION_DATABASE_ROUTE,
+            weavelit_module_client_webui::database_selection_route(
+                ExpectedOrigin::from_listener(listener),
+                composition.selection_commit(),
+            ),
         )
         .merge(weavelit_module_client_webui::embedded_asset_routes())
 }
@@ -1440,8 +1512,10 @@ fn map_classification_error(error: LifecycleError) -> StartupError {
 pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartup, StartupError> {
     let store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
 
-    let catalog = sqlite_catalog();
-    let context = TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE));
+    let catalog = Arc::new(sqlite_catalog());
+    let context = Arc::new(TrustedBackendContext::new(
+        state_root.join(APPLICATION_DATABASE_FILE),
+    ));
 
     let classification = store
         .classify_startup(&catalog, &context)
@@ -1479,13 +1553,28 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
     Ok(RestrictedStartup {
         outcome,
         log_catalog: sqlite_log_catalog(),
-        _store: store,
+        // The arbiter takes ownership of the store, so it also retains the
+        // process-lifetime state-root lock.
+        composition: PreoperationalComposition {
+            outcome,
+            arbiter: Arc::new(WorkflowArbiter::new(store)),
+            catalog,
+            context,
+        },
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{future::pending, sync::Arc, time::Duration};
+    use std::{
+        ffi::OsString,
+        future::pending,
+        net::SocketAddr,
+        os::unix::fs::{MetadataExt, PermissionsExt},
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::Duration,
+    };
 
     use axum::{
         Router,
@@ -1507,19 +1596,139 @@ mod tests {
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
     use weavelit_module_client_webui::DatabaseSelectionRejection;
-    use weavelit_server_lifecycle::LifecycleProjection;
+    use weavelit_server_lifecycle::{
+        BackendIdentifier, LifecycleProjection, LifecycleStore, TrustedBackendContext,
+    };
 
     use super::{
-        ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse, ConnectionSlots,
-        ConnectionTimeouts, MAX_REQUEST_BODY_BYTES, RATE_LIMIT_BURST,
+        APPLICATION_DATABASE_FILE, APPLICATION_DATABASE_ROUTE, ASSET_SECURITY_HEADERS,
+        AllowedMethod, BoundedResponse, ConnectionSlots, ConnectionTimeouts,
+        MAX_REQUEST_BODY_BYTES, PreoperationalComposition, RATE_LIMIT_BURST,
         RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
-        RateLimiter, RequestHeadRead, RequestReadError, ResponseProfile, StartupOutcome,
-        TLS_HANDSHAKE_TIMEOUT, bounded_response_from_axum, gateway_timeout_response,
-        parse_http_request, processing_response, raw_header_section_bytes, read_http_request,
-        read_http_request_with_timeout, request_timeout_response, restricted_routes,
+        RateLimiter, RequestHeadRead, RequestReadError, ResponseProfile, RestrictedStartup,
+        StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, bounded_response_from_axum,
+        classify_restricted_startup, gateway_timeout_response, parse_http_request,
+        processing_response, raw_header_section_bytes, read_http_request,
+        read_http_request_with_timeout, request_timeout_response,
         serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
-        serve_restricted_https_listener,
+        sqlite_catalog,
     };
+
+    /// Listener authority used by router-level tests that bind no socket.
+    const UNBOUND_LISTENER: &str = "127.0.0.1:8443";
+
+    /// The exact accepted Application Database selection body.
+    const SELECTION_BODY: &str = "{\"backend\":\"sqlite\",\"settings\":{}}";
+
+    const SELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}";
+    const UNSELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}";
+
+    /// A restricted surface composed over a real lifecycle arbiter.
+    ///
+    /// Every route the surface mounts shares one `WorkflowArbiter`, so a
+    /// committed selection is immediately observable through the status route.
+    struct Surface {
+        /// Retained so the state root outlives every request the surface serves.
+        _root: tempfile::TempDir,
+        state_root: PathBuf,
+        startup: RestrictedStartup,
+    }
+
+    impl Surface {
+        fn new(outcome: StartupOutcome) -> Self {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let state_root = root.path().canonicalize().unwrap();
+            if outcome == StartupOutcome::UninitializedWithDatabase {
+                let mut store = LifecycleStore::open_or_create(&state_root).unwrap();
+                store
+                    .select_database(
+                        &sqlite_catalog(),
+                        &TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE)),
+                        &BackendIdentifier::new("sqlite").unwrap(),
+                        Vec::new(),
+                    )
+                    .unwrap();
+            }
+            let mut startup = classify_restricted_startup(&state_root).unwrap();
+            // A pending classification cannot be produced from a fresh state
+            // root, and the gate under test is route mounting, not lifecycle
+            // classification.
+            startup.outcome = outcome;
+            startup.composition.outcome = outcome;
+            Self {
+                _root: root,
+                state_root,
+                startup,
+            }
+        }
+
+        fn composition(&self) -> PreoperationalComposition {
+            self.startup.composition.clone()
+        }
+
+        fn routes(&self) -> Router {
+            self.routes_for(UNBOUND_LISTENER.parse().unwrap())
+        }
+
+        fn routes_for(&self, listener: SocketAddr) -> Router {
+            super::restricted_routes(&self.startup.composition, listener)
+        }
+
+        /// Snapshots the lifecycle record and every locator file by name, bytes,
+        /// and modification time.
+        fn anchor_snapshot(&self) -> Vec<(OsString, Vec<u8>, i64, i64)> {
+            anchor_snapshot(&self.state_root)
+        }
+    }
+
+    fn anchor_snapshot(state_root: &Path) -> Vec<(OsString, Vec<u8>, i64, i64)> {
+        let mut entries = std::fs::read_dir(state_root)
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                let name_text = name.to_string_lossy().into_owned();
+                if name_text != "deployment-record.json"
+                    && !name_text.starts_with("database-locator-")
+                {
+                    return None;
+                }
+                let metadata = entry.metadata().unwrap();
+                Some((
+                    name,
+                    std::fs::read(entry.path()).unwrap(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+    }
+
+    /// Builds restricted routes over a real lifecycle arbiter.
+    ///
+    /// The temporary state root is removed before this returns. The arbiter
+    /// keeps its open descriptors and the live status projection is read from
+    /// in-memory lifecycle state, so every read-only route behaves exactly as it
+    /// does in a running Server. A test that commits a selection must use
+    /// [`Surface`] directly, which keeps its state root alive.
+    fn restricted_routes(outcome: StartupOutcome) -> Router {
+        Surface::new(outcome).routes()
+    }
+
+    /// Serves the restricted listener over a surface whose state root is removed
+    /// before serving begins; the read-only routes these callers exercise are
+    /// unaffected.
+    async fn serve_restricted_https_listener(
+        tcp_listener: TcpListener,
+        tls_config: Arc<ServerConfig>,
+        outcome: StartupOutcome,
+    ) -> Result<(), StartupError> {
+        let composition = Surface::new(outcome).composition();
+        super::serve_restricted_https_listener(tcp_listener, tls_config, composition).await
+    }
 
     async fn response_body(response: axum::response::Response) -> String {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -3516,6 +3725,575 @@ mod tests {
                 .any(|window| window.eq_ignore_ascii_case(b"<!doctype")),
             "{response:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Application Database selection route
+    // -----------------------------------------------------------------------
+
+    /// Builds a selection wire request, substituting the real bound authority.
+    fn selection_wire(method: &str, headers: &str, body: &str, authority: SocketAddr) -> Vec<u8> {
+        let headers = headers.replace("{authority}", &authority.to_string());
+        format!("{method} {APPLICATION_DATABASE_ROUTE} HTTP/1.1\r\n{headers}\r\n{body}")
+            .into_bytes()
+    }
+
+    /// The header block a compliant same-origin browser request carries.
+    fn valid_selection_headers(body_length: usize) -> String {
+        format!(
+            "Host: {{authority}}\r\nOrigin: https://{{authority}}\r\nX-Weavelit-CSRF: 1\r\n\
+             Content-Type: application/json\r\nContent-Length: {body_length}\r\n"
+        )
+    }
+
+    /// Serves one direct-TLS request against routes composed for the address the
+    /// listener actually bound, so the expected origin is the real authority.
+    async fn direct_tls_bound_response(
+        surface: &Surface,
+        bind: &str,
+        configs: &(Arc<ServerConfig>, Arc<ClientConfig>),
+        request_read_timeout: Duration,
+        build: impl FnOnce(SocketAddr) -> Vec<u8>,
+    ) -> Vec<u8> {
+        let listener = TcpListener::bind(bind).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = surface.routes_for(address);
+        let request = build(address);
+        let server_config = Arc::clone(&configs.0);
+        let server = tokio::spawn(async move {
+            let (stream, source) = listener.accept().await.unwrap();
+            serve_normal_connection_with_timeouts(
+                stream,
+                source.ip(),
+                TlsAcceptor::from(server_config),
+                router,
+                Arc::new(RateLimiter::new()),
+                ConnectionTimeouts {
+                    handshake: TLS_HANDSHAKE_TIMEOUT,
+                    request_read: request_read_timeout,
+                    processing: REQUEST_PROCESSING_TIMEOUT,
+                },
+            )
+            .await;
+        });
+        let response = tls_exchange(address, Arc::clone(&configs.1), &request).await;
+        server.await.unwrap();
+        response
+    }
+
+    async fn tls_exchange(
+        address: SocketAddr,
+        client_config: Arc<ClientConfig>,
+        request: &[u8],
+    ) -> Vec<u8> {
+        let mut client = tls_client(address, client_config).await;
+        if !request.is_empty() {
+            client.write_all(request).await.unwrap();
+        }
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("direct TLS response must complete with close_notify");
+        response
+    }
+
+    async fn direct_tls_selection(
+        surface: &Surface,
+        configs: &(Arc<ServerConfig>, Arc<ClientConfig>),
+        method: &str,
+        headers: &str,
+        body: &str,
+    ) -> Vec<u8> {
+        let headers = headers.to_owned();
+        let body = body.to_owned();
+        direct_tls_bound_response(
+            surface,
+            "127.0.0.1:0",
+            configs,
+            REQUEST_READ_TIMEOUT,
+            move |address| selection_wire(method, &headers, &body, address),
+        )
+        .await
+    }
+
+    /// Performs one valid selection and returns the wire response.
+    async fn direct_tls_valid_selection(
+        surface: &Surface,
+        configs: &(Arc<ServerConfig>, Arc<ClientConfig>),
+    ) -> Vec<u8> {
+        direct_tls_selection(
+            surface,
+            configs,
+            "PUT",
+            &valid_selection_headers(SELECTION_BODY.len()),
+            SELECTION_BODY,
+        )
+        .await
+    }
+
+    #[test]
+    fn selection_body_length_matches_the_documented_contract() {
+        assert_eq!(SELECTION_BODY.len(), 34);
+        assert_eq!(
+            MAX_REQUEST_BODY_BYTES,
+            weavelit_module_client_webui::MAX_DATABASE_SELECTION_BODY_BYTES
+        );
+    }
+
+    /// A successful selection must be observable by a later status read served
+    /// by the same process, listener, and arbiter.
+    #[tokio::test]
+    async fn selection_is_visible_to_a_later_status_read_on_the_same_listener() {
+        let (server_config, client_config) = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(super::serve_restricted_https_listener(
+            listener,
+            server_config,
+            surface.composition(),
+        ));
+
+        let before = tls_exchange(
+            address,
+            Arc::clone(&client_config),
+            b"GET /api/v1/status HTTP/1.1\r\n\r\n",
+        )
+        .await;
+        assert_fixed_tls_response(&before, 200, UNSELECTED_STATUS, None);
+
+        let selection = tls_exchange(
+            address,
+            Arc::clone(&client_config),
+            &selection_wire(
+                "PUT",
+                &valid_selection_headers(SELECTION_BODY.len()),
+                SELECTION_BODY,
+                address,
+            ),
+        )
+        .await;
+        assert_fixed_tls_response(&selection, 200, SELECTED_STATUS, None);
+
+        let after = tls_exchange(
+            address,
+            client_config,
+            b"GET /api/v1/status HTTP/1.1\r\n\r\n",
+        )
+        .await;
+        assert_fixed_tls_response(&after, 200, SELECTED_STATUS, None);
+
+        server.abort();
+    }
+
+    /// The status route and the selection route must observe one arbiter even
+    /// when each request is served by a separately composed router.
+    #[tokio::test]
+    async fn selection_and_status_routes_share_one_arbiter_across_routers() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+
+        let selection = direct_tls_valid_selection(&surface, &configs).await;
+        assert_fixed_tls_response(&selection, 200, SELECTED_STATUS, None);
+
+        let status = surface
+            .routes()
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        assert_eq!(response_body(status).await, SELECTED_STATUS);
+
+        // The durable projection agrees with what the routes reported.
+        assert!(
+            surface
+                .startup
+                .composition
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected()
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_selection_replay_changes_no_locator_generation_or_bytes() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+
+        let first = direct_tls_valid_selection(&surface, &configs).await;
+        assert_fixed_tls_response(&first, 200, SELECTED_STATUS, None);
+        let committed = surface.anchor_snapshot();
+        assert!(
+            committed
+                .iter()
+                .any(|(name, ..)| name.to_string_lossy().starts_with("database-locator-")),
+            "the first selection must publish a locator"
+        );
+
+        let replay = direct_tls_valid_selection(&surface, &configs).await;
+        assert_fixed_tls_response(&replay, 200, SELECTED_STATUS, None);
+        assert_eq!(
+            surface.anchor_snapshot(),
+            committed,
+            "an exact replay must not rotate or rewrite the locator"
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_method_matrix_advertises_its_own_allow_value() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+
+        for method in ["GET", "POST", "DELETE"] {
+            let response = direct_tls_selection(
+                &surface,
+                &configs,
+                method,
+                &valid_selection_headers(0).replace("Content-Length: 0\r\n", ""),
+                "",
+            )
+            .await;
+            assert_fixed_tls_response(
+                &response,
+                405,
+                "{\"error\":\"method_not_allowed\"}",
+                Some(AllowedMethod::Put),
+            );
+        }
+
+        // A `PUT` must declare a body, so the status route's own `405` is only
+        // reachable through an explicitly empty one.
+        let status = direct_tls_bound_response(
+            &surface,
+            "127.0.0.1:0",
+            &configs,
+            REQUEST_READ_TIMEOUT,
+            |_| b"PUT /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        )
+        .await;
+        assert_fixed_tls_response(
+            &status,
+            405,
+            "{\"error\":\"method_not_allowed\"}",
+            Some(AllowedMethod::Get),
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_accepts_a_body_at_the_limit_and_rejects_bad_framing() {
+        let configs = tls_configs();
+
+        let padded = format!(
+            "{SELECTION_BODY}{}",
+            " ".repeat(MAX_REQUEST_BODY_BYTES - SELECTION_BODY.len())
+        );
+        assert_eq!(padded.len(), MAX_REQUEST_BODY_BYTES);
+        let at_limit = direct_tls_selection(
+            &Surface::new(StartupOutcome::UninitializedWithoutDatabase),
+            &configs,
+            "PUT",
+            &valid_selection_headers(padded.len()),
+            &padded,
+        )
+        .await;
+        assert_fixed_tls_response(&at_limit, 200, SELECTED_STATUS, None);
+
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let over_limit = format!(
+            "{SELECTION_BODY}{}",
+            " ".repeat(MAX_REQUEST_BODY_BYTES + 1 - SELECTION_BODY.len())
+        );
+        for (name, headers, body) in [
+            (
+                "body over the limit",
+                valid_selection_headers(over_limit.len()),
+                over_limit.as_str(),
+            ),
+            (
+                "missing content length",
+                valid_selection_headers(SELECTION_BODY.len())
+                    .replace(&format!("Content-Length: {}\r\n", SELECTION_BODY.len()), ""),
+                SELECTION_BODY,
+            ),
+            (
+                "non-canonical content length",
+                valid_selection_headers(SELECTION_BODY.len())
+                    .replace("Content-Length: 34\r\n", "Content-Length: 034\r\n"),
+                SELECTION_BODY,
+            ),
+            (
+                "duplicate content length",
+                format!(
+                    "{}Content-Length: 34\r\n",
+                    valid_selection_headers(SELECTION_BODY.len())
+                ),
+                SELECTION_BODY,
+            ),
+            (
+                "chunked transfer encoding",
+                format!(
+                    "{}Transfer-Encoding: chunked\r\n",
+                    valid_selection_headers(SELECTION_BODY.len())
+                ),
+                SELECTION_BODY,
+            ),
+        ] {
+            let response = direct_tls_selection(&surface, &configs, "PUT", &headers, body).await;
+            assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", None);
+            assert!(
+                !surface
+                    .startup
+                    .composition
+                    .arbiter
+                    .projection()
+                    .unwrap()
+                    .database_selected(),
+                "{name} must not commit a selection"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_route_media_matrix_accepts_only_the_documented_types() {
+        let configs = tls_configs();
+        let valid = valid_selection_headers(SELECTION_BODY.len());
+
+        for accept in ["", "Accept: application/json\r\n"] {
+            let response = direct_tls_selection(
+                &Surface::new(StartupOutcome::UninitializedWithoutDatabase),
+                &configs,
+                "PUT",
+                &format!("{valid}{accept}"),
+                SELECTION_BODY,
+            )
+            .await;
+            assert_fixed_tls_response(&response, 200, SELECTED_STATUS, None);
+        }
+
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        for headers in [
+            valid.replace(
+                "Content-Type: application/json\r\n",
+                "Content-Type: application/json; charset=utf-8\r\n",
+            ),
+            valid.replace("Content-Type: application/json\r\n", ""),
+            format!("{valid}Content-Type: application/json\r\n"),
+            format!("{valid}Accept: text/html\r\n"),
+            format!("{valid}Accept: application/json\r\nAccept: application/json\r\n"),
+        ] {
+            let response =
+                direct_tls_selection(&surface, &configs, "PUT", &headers, SELECTION_BODY).await;
+            assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", None);
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_route_denies_every_failed_origin_or_csrf_precondition() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let valid = valid_selection_headers(SELECTION_BODY.len());
+
+        for headers in [
+            valid.replace("Origin: https://{authority}\r\n", ""),
+            format!("{valid}Origin: https://{{authority}}\r\n"),
+            valid.replace(
+                "Origin: https://{authority}\r\n",
+                "Origin: https://127.0.0.1:1\r\n",
+            ),
+            valid.replace(
+                "Origin: https://{authority}\r\n",
+                "Origin: http://{authority}\r\n",
+            ),
+            valid.replace("Origin: https://{authority}\r\n", "Origin: null\r\n"),
+            valid.replace("Host: {authority}\r\n", ""),
+            format!("{valid}Host: {{authority}}\r\n"),
+            valid.replace("Host: {authority}\r\n", "Host: localhost\r\n"),
+            valid.replace("X-Weavelit-CSRF: 1\r\n", ""),
+            valid.replace("X-Weavelit-CSRF: 1\r\n", "X-Weavelit-CSRF: 0\r\n"),
+            format!("{valid}X-Weavelit-CSRF: 1\r\n"),
+        ] {
+            let response =
+                direct_tls_selection(&surface, &configs, "PUT", &headers, SELECTION_BODY).await;
+            assert_fixed_tls_response(
+                &response,
+                403,
+                "{\"error\":\"request_origin_denied\"}",
+                None,
+            );
+        }
+        assert!(
+            !surface
+                .startup
+                .composition
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected()
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_accepts_ipv6_literals_and_default_port_normalization() {
+        let configs = tls_configs();
+
+        let ipv6 = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let headers = valid_selection_headers(SELECTION_BODY.len());
+        let response = direct_tls_bound_response(
+            &ipv6,
+            "[::1]:0",
+            &configs,
+            REQUEST_READ_TIMEOUT,
+            |address| selection_wire("PUT", &headers, SELECTION_BODY, address),
+        )
+        .await;
+        assert_fixed_tls_response(&response, 200, SELECTED_STATUS, None);
+
+        // Port 443 cannot be bound by a test, so the expected origin is composed
+        // for it directly while the socket stays on an ephemeral port.
+        for authority in ["127.0.0.1", "127.0.0.1:443"] {
+            let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+            let router = surface.routes_for("127.0.0.1:443".parse().unwrap());
+            let headers =
+                valid_selection_headers(SELECTION_BODY.len()).replace("{authority}", authority);
+            let response = direct_tls_response(
+                router,
+                Arc::clone(&configs.0),
+                Arc::clone(&configs.1),
+                &format!(
+                    "PUT {APPLICATION_DATABASE_ROUTE} HTTP/1.1\r\n{headers}\r\n{SELECTION_BODY}"
+                )
+                .into_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_fixed_tls_response(&response, 200, SELECTED_STATUS, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_route_rejects_every_schema_deviation() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+
+        for body in [
+            "",
+            "{}",
+            "{\"backend\":\"sqlite\"}",
+            "{\"backend\":\"sqlite\",\"settings\":{},\"extra\":1}",
+            "{\"backend\":\"sqlite\",\"settings\":{\"path\":\"/etc\"}}",
+            "{\"backend\":\"sqlite\",\"backend\":\"sqlite\",\"settings\":{}}",
+            "{\"backend\":1,\"settings\":{}}",
+            "{\"backend\":\"SQLITE\",\"settings\":{}}",
+            "{\"backend\":\"postgres\",\"settings\":{}}",
+            "{\"backend\":\"sqlite\",\"settings\":[]}",
+            "{\"backend\":\"sqlite\",\"settings\":{}}trailing",
+            "{\"backend\":\"sqlite\",\"settings\":{}}{}",
+        ] {
+            let response = direct_tls_selection(
+                &surface,
+                &configs,
+                "PUT",
+                &valid_selection_headers(body.len()),
+                body,
+            )
+            .await;
+            assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", None);
+        }
+        assert!(
+            !surface
+                .startup
+                .composition
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected()
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_read_timeout_returns_the_fixed_response() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let headers = valid_selection_headers(SELECTION_BODY.len());
+
+        let response = direct_tls_bound_response(
+            &surface,
+            "127.0.0.1:0",
+            &configs,
+            Duration::from_millis(50),
+            |address| {
+                // A declared body that never arrives must not restart the budget.
+                selection_wire("PUT", &headers, "{\"backend\":", address)
+            },
+        )
+        .await;
+        assert_fixed_tls_response(&response, 408, "{\"error\":\"request_timeout\"}", None);
+        assert!(
+            !surface
+                .startup
+                .composition
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected()
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_is_mounted_under_both_uninitialized_gates_only() {
+        for outcome in [
+            StartupOutcome::UninitializedWithoutDatabase,
+            StartupOutcome::UninitializedWithDatabase,
+        ] {
+            let response = restricted_routes(outcome)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(APPLICATION_DATABASE_ROUTE)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{outcome:?}"
+            );
+            assert_eq!(response.headers().get("allow").unwrap(), "PUT");
+        }
+
+        let gated = restricted_routes(StartupOutcome::InitializationPending(
+            weavelit_server_lifecycle::WorkflowKind::Init,
+        ))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(APPLICATION_DATABASE_ROUTE)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(gated.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_body(gated).await, "{\"error\":\"not_found\"}");
+    }
+
+    /// A retained database already satisfies the selection, so the live status
+    /// route must report it before any request in this session.
+    #[tokio::test]
+    async fn a_retained_selection_is_reported_live_at_first_status_read() {
+        let surface = Surface::new(StartupOutcome::UninitializedWithDatabase);
+        let response = surface
+            .routes()
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_body(response).await, SELECTED_STATUS);
     }
 
     #[test]

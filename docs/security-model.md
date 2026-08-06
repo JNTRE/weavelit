@@ -72,9 +72,32 @@ is reachable only from IPv4 and IPv6 loopback through the deployment network
 boundary; the Server has no allowlist configuration channel. Its status route
 enforces the request, connection, handler, handshake, rate, timeout, response,
 and parsing bounds defined in the [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
-It accepts no request body, performs no decompression or cryptographic work, and
-does not mutate state. It sends no CORS headers, supports no credentials or
-cookies, and has no CSRF flow. The runtime rejects a configured non-loopback
+It accepts no request body and performs no decompression or cryptographic work.
+
+The surface exposes exactly one unauthenticated state-changing route,
+`PUT /api/v1/application-database`, defined by the
+[Web UI Pre-Operational Database Selection Surface](client-modules/web-ui/pre-operational-database-selection-design.md).
+Because the surface has no identity to authenticate before an
+**[Application Database](glossary.md#applications-and-interfaces)** exists, that
+route is protected by loopback reachability plus a same-origin trust gate rather
+than by a credential. It requires exactly one `Origin` header whose scheme is
+`https` and whose authority equals exactly one `Host` header, both matching the
+authority the Server itself bound, and exactly one `X-Weavelit-CSRF: 1` header
+that a cross-site form or navigation cannot set. The expected authority is
+derived only from the listener socket address the Server actually bound; it is
+never taken from a request header, a forwarding header, or a certificate subject
+alternative name, so an attacker-controlled value cannot widen it. Every failed
+precondition is a fixed `403` with no diagnostic detail.
+
+The route accepts only a bounded `application/json` body of at most 1 KiB with
+exactly one canonical `Content-Length`, rejects chunked framing, and rejects any
+schema deviation before it reaches the lifecycle authority. Its mutation is
+serialized against every other lifecycle workflow through one exclusive
+Server-owned mutation permit, and an exact replay is idempotent: it neither
+rotates nor rewrites the stored database locator. The surface still sends no
+CORS headers, supports no credentials or cookies, sets no cookie, and answers no
+preflight; the trust gate is enforced entirely on the Server. The runtime
+rejects a configured non-loopback
 listener address and binds one direct TLS listener only after validated TLS
 material and trusted lifecycle classification; it does not create a cleartext
 HTTP fallback or an alternate listener. A route-composition, TLS-listener, or

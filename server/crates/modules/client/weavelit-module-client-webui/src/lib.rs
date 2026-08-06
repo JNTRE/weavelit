@@ -6,10 +6,11 @@
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 
 use axum::{
     Router,
-    body::{Body, Bytes},
+    body::{Body, Bytes, to_bytes},
     extract::Request,
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
@@ -24,9 +25,64 @@ use axum::{
 use serde::Deserialize;
 use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
 
-/// Returns the Web UI Client Module route for the current status projection.
-pub fn preoperational_status_route(database_selected: bool) -> MethodRouter {
-    any(move |request| status_response(request, database_selected))
+/// Live lifecycle projection source the Server core supplies to a mounted route.
+///
+/// The module holds no lifecycle state of its own; it calls this once per
+/// request, so a response never reports a value captured at startup. `None`
+/// means the trusted lifecycle boundary could not be read.
+pub type ProjectionSource = Arc<dyn Fn() -> Option<LifecycleProjection> + Send + Sync>;
+
+/// Server-core commit hook for a validated Application Database selection.
+///
+/// The module is not the selection authority: it hands the validated backend to
+/// this hook, which owns the lifecycle mutation and returns the projection
+/// observed under the same mutation permit.
+pub type SelectionCommit = Arc<
+    dyn Fn(SelectedBackend) -> Result<LifecycleProjection, DatabaseSelectionRejection>
+        + Send
+        + Sync,
+>;
+
+/// Returns the Web UI Client Module route for the live status projection.
+pub fn preoperational_status_route(projection: ProjectionSource) -> MethodRouter {
+    any(move |request| status_response(request, Arc::clone(&projection)))
+}
+
+/// Returns the Web UI Client Module route for Application Database selection.
+///
+/// The route validates the method, same-origin and CSRF preconditions, media
+/// types, and request schema, then delegates the decision to `commit`.
+pub fn database_selection_route(
+    expected_origin: ExpectedOrigin,
+    commit: SelectionCommit,
+) -> MethodRouter {
+    any(move |request| {
+        database_selection_route_response(request, expected_origin, Arc::clone(&commit))
+    })
+}
+
+async fn database_selection_route_response(
+    request: Request,
+    expected_origin: ExpectedOrigin,
+    commit: SelectionCommit,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    if let Err(rejection) =
+        validate_database_selection_request(&parts.method, &parts.headers, expected_origin)
+    {
+        return rejection.response();
+    }
+    let Ok(body) = to_bytes(body, MAX_DATABASE_SELECTION_BODY_BYTES).await else {
+        return DatabaseSelectionRejection::BadRequest.response();
+    };
+    let selection = match DatabaseSelectionRequest::from_json(&body) {
+        Ok(selection) => selection,
+        Err(rejection) => return rejection.response(),
+    };
+    match commit(selection.backend()) {
+        Ok(projection) => database_selection_response(&projection),
+        Err(rejection) => rejection.response(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -199,12 +255,16 @@ impl DatabaseSelectionRejection {
 
 /// Returns the success response for a completed database selection.
 pub fn database_selection_response(projection: &LifecycleProjection) -> Response {
-    let body = if projection.database_selected() {
+    json_response_body(StatusCode::OK, projection_body(projection))
+}
+
+/// Returns the single projection body shape both pre-operational routes emit.
+const fn projection_body(projection: &LifecycleProjection) -> &'static str {
+    if projection.database_selected() {
         "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}"
     } else {
         "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
-    };
-    json_response_body(StatusCode::OK, body)
+    }
 }
 
 /// The single authority a state-changing request must target.
@@ -469,7 +529,7 @@ async fn asset_response(request: Request, asset: EmbeddedAsset) -> Response {
         .expect("fixed Web UI asset responses must be valid")
 }
 
-async fn status_response(request: Request, database_selected: bool) -> Response {
+async fn status_response(request: Request, projection: ProjectionSource) -> Response {
     let (parts, _body) = request.into_parts();
     if parts.method != Method::GET {
         return json_response_with_allow(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
@@ -478,12 +538,10 @@ async fn status_response(request: Request, database_selected: bool) -> Response 
         return json_response(StatusCode::BAD_REQUEST, "bad_request");
     }
 
-    let body = if database_selected {
-        "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}"
-    } else {
-        "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+    let Some(projection) = projection() else {
+        return json_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable");
     };
-    json_response_body(StatusCode::OK, body)
+    json_response_body(StatusCode::OK, projection_body(&projection))
 }
 
 fn has_request_body(headers: &HeaderMap) -> bool {
@@ -521,6 +579,7 @@ fn json_response(status: StatusCode, error: &'static str) -> Response {
     let body = match error {
         "bad_request" => "{\"error\":\"bad_request\"}",
         "method_not_allowed" => "{\"error\":\"method_not_allowed\"}",
+        "service_unavailable" => "{\"error\":\"service_unavailable\"}",
         _ => unreachable!("all Web UI status errors use fixed codes"),
     };
     json_response_body(status, body)
@@ -542,16 +601,29 @@ fn json_response_body(status: StatusCode, body: &'static str) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode},
+        response::Response,
     };
     use tower::ServiceExt;
+    use weavelit_server_lifecycle::LifecycleProjection;
 
     use super::{
-        ASSET_CONTENT_SECURITY_POLICY, EMBEDDED_ASSETS, EmbeddedAsset, embedded_asset_routes,
-        status_response,
+        ASSET_CONTENT_SECURITY_POLICY, EMBEDDED_ASSETS, EmbeddedAsset, ProjectionSource,
+        embedded_asset_routes,
     };
+
+    /// Builds a projection source; `None` models an unreadable lifecycle boundary.
+    fn projection_source(database_selected: Option<bool>) -> ProjectionSource {
+        Arc::new(move || database_selected.map(LifecycleProjection::new))
+    }
+
+    async fn status_response(request: Request<Body>, database_selected: bool) -> Response {
+        super::status_response(request, projection_source(Some(database_selected))).await
+    }
 
     const FORBIDDEN_RESPONSE_HEADERS: [&str; 7] = [
         "access-control-allow-origin",
@@ -741,6 +813,24 @@ mod tests {
         assert_eq!(
             response_body(accepted_media_type).await,
             "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_translation_reports_an_unreadable_projection_as_unavailable() {
+        let response = super::status_response(
+            Request::get("/api/v1/status").body(Body::empty()).unwrap(),
+            projection_source(None),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(
+            response_body(response).await,
+            "{\"error\":\"service_unavailable\"}"
         );
     }
 
