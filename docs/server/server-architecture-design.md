@@ -198,6 +198,47 @@ is added. A package upgrade is a deliberate dependency change that repeats the
 version, change, advisory, and validation review; no future version is approved
 by this architecture decision.
 
+### Bounded Request Reading
+
+The runtime reads a request in two stages within a single request-read budget.
+The first stage reads the request head under the existing 2 KiB request-target,
+8 KiB raw-header, and aggregate head bounds. The second stage reads a request
+body only when the head declares one.
+
+Only `PUT` may carry a body. It must declare exactly one canonical decimal
+`Content-Length` of at most 1 KiB. This body allowance is separate from the head
+bounds and never relaxes them. The runtime rejects chunked transfer encoding,
+any `Expect` header, a duplicated or conflicting `Content-Length`, a
+non-numeric, signed, or non-canonical length, a declared length over 1 KiB, a
+stream that ends before the declared length, and bytes beyond the declared
+length. Every other method must declare no body at all, so a `GET` carrying body
+framing is still rejected. Each rejection uses the fixed `400` bad-request
+response.
+
+The 5-second request-read timeout is one budget covering the head and the body
+together; it does not restart when the body begins. The 10-second total
+processing timeout remains outermost and unchanged. Per-source rate admission
+still keys on a completed request head, so a body read that times out is a
+request timeout rather than a consumed quota slot.
+
+A complete request keeps its method and is dispatched, so the mounted route
+decides whether the method is permitted and which method it advertises. Only a
+request line whose oversized method token never yields a bounded target is
+classified before dispatch; that path has no route context and answers with the
+fixed `405` and `Allow: GET`.
+
+### Allowed-Method Representation
+
+A bounded response carries an optional allowed method drawn from a closed
+`AllowedMethod` set of `GET` and `PUT`. The response writer emits the matching
+fixed `Allow` header line, or none when the response has no allowed method. A
+module therefore selects one of these fixed values and can never supply header
+text of its own.
+
+The media type, security headers, and maximum body size continue to derive from
+the response profile alone. They are never taken from a module, request, file
+extension, or body, and the allowed method does not influence any of them.
+
 ## Rust Workspace Dependency Policy
 
 `server/Cargo.toml` is the Server Rust workspace manifest and the authority for
@@ -392,7 +433,7 @@ handling.
 | --- | --- | --- | --- |
 | `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the restricted status and embedded-asset routes; `weavelit-module-client-webui` translates the status request and JSON response and each embedded asset into its profile-bounded response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
 | `http-body-util` | `=0.1.4`; defaults enabled | `weavelit-server`; collects each Axum route response before direct TLS emission, bounded by its `ResponseProfile` body limit (128 B JSON, 16 KiB HTML, 256 KiB JavaScript, 64 KiB CSS) rather than a single fixed size | Hyperium; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
-| `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, without request-body buffering | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, with request-body buffering bounded separately to 1 KiB and permitted only for `PUT` | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio` | `=1.53.1`; defaults disabled; `io-util`, `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, TLS-stream I/O, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio-rustls` | `=0.26.4`; defaults disabled | `weavelit-server`; asynchronous stream adapter for the already-approved Rustls configuration | Rustls; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tower` | `=0.5.3`; defaults disabled; `util` | `weavelit-server`; invokes the Axum route service for the status and embedded-asset routes after bounded request-head validation | Tower; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |

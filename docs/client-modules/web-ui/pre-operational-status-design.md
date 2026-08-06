@@ -103,9 +103,11 @@ per-profile bounds documented in the
 The direct TLS listener sends `close_notify` after each response; the response
 write and TLS close use a bounded timeout.
 
-The route accepts zero request-body bytes and does not buffer a request body,
+The route accepts zero request-body bytes and does not interpret a request body,
 decompress data, perform cryptographic work, start cancellation-sensitive
-background work, or mutate state. The listener jointly permits at most 16 live
+background work, or mutate state. The listener's separate bounded request-body
+allowance applies only to `PUT`, which this route answers with `405` above, so
+no body reaches this contract. The listener jointly permits at most 16 live
 TLS connections or handshakes: at most 15 slots admit normal application
 service work or handlers, and one separate slot is reserved for an overflow
 connection. The overflow connection may complete direct TLS and emit only the

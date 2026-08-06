@@ -18,7 +18,7 @@ use axum::{
     extract::Request,
     http::{
         HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
-        header::{ALLOW, CONTENT_TYPE},
+        header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, EXPECT, TRANSFER_ENCODING},
     },
     response::Response,
 };
@@ -62,6 +62,9 @@ const REQUEST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_REQUEST_TARGET_BYTES: usize = 2 * 1024;
 const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_HEAD_BYTES: usize = MAX_REQUEST_TARGET_BYTES + MAX_REQUEST_HEADER_BYTES + 128;
+/// Separate allowance for the one method that may carry a body; it never
+/// relaxes the target, header, or aggregate head bounds above.
+const MAX_REQUEST_BODY_BYTES: usize = 1024;
 const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
 /// Sized so one source can serve a full Web UI page load, which costs one
 /// document, two asset, and one status request, plus two immediate reloads.
@@ -186,12 +189,39 @@ impl ResponseProfile {
     }
 }
 
+/// Closed set of methods the listener may advertise in an `Allow` header.
+///
+/// A module can only cause one of these fixed header lines to be emitted; it
+/// can never supply header text of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AllowedMethod {
+    Get,
+    Put,
+}
+
+impl AllowedMethod {
+    const fn allow_header(self) -> &'static str {
+        match self {
+            Self::Get => "Allow: GET\r\n",
+            Self::Put => "Allow: PUT\r\n",
+        }
+    }
+
+    fn from_header_value(value: &HeaderValue) -> Option<Self> {
+        match value.as_bytes() {
+            b"GET" => Some(Self::Get),
+            b"PUT" => Some(Self::Put),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct BoundedResponse {
     status: StatusCode,
     profile: ResponseProfile,
     body: Bytes,
-    allow_get: bool,
+    allow: Option<AllowedMethod>,
 }
 
 impl BoundedResponse {
@@ -200,7 +230,7 @@ impl BoundedResponse {
             status,
             profile: ResponseProfile::Json,
             body: Bytes::from_static(body.as_bytes()),
-            allow_get: false,
+            allow: None,
         }
     }
 }
@@ -836,7 +866,8 @@ enum RequestHeadRead {
 #[derive(Clone, Copy)]
 enum RequestLineClassification {
     Get,
-    MethodNotAllowed,
+    Put,
+    OtherMethod,
     Invalid,
 }
 
@@ -883,10 +914,12 @@ impl RequestLineState {
             | Self::Version
             | Self::VersionEnding
             | Self::Invalid => RequestReadError::Invalid,
-            Self::Headers(RequestLineClassification::MethodNotAllowed) => {
+            Self::Headers(RequestLineClassification::OtherMethod) => {
                 RequestReadError::MethodNotAllowed
             }
-            Self::Headers(RequestLineClassification::Get) => RequestReadError::HeadersTooLarge,
+            Self::Headers(RequestLineClassification::Get | RequestLineClassification::Put) => {
+                RequestReadError::HeadersTooLarge
+            }
             Self::Headers(RequestLineClassification::Invalid) => RequestReadError::Invalid,
         }
     }
@@ -921,7 +954,8 @@ fn classify_completed_request_line(bytes: &[u8]) -> RequestLineClassification {
     }
     match Method::from_bytes(method) {
         Ok(method) if method == Method::GET => RequestLineClassification::Get,
-        Ok(_) => RequestLineClassification::MethodNotAllowed,
+        Ok(method) if method == Method::PUT => RequestLineClassification::Put,
+        Ok(_) => RequestLineClassification::OtherMethod,
         Err(_) => RequestLineClassification::Invalid,
     }
 }
@@ -982,11 +1016,112 @@ where
             let request = if target_too_long {
                 Err(RequestReadError::TargetTooLong)
             } else {
-                parse_http_request(&bytes, request_line.completed_classification())
+                match parse_http_request(&bytes, request_line.completed_classification()) {
+                    Ok(request) => read_request_body(stream, request).await,
+                    Err(error) => Err(error),
+                }
             };
             return RequestHeadRead::Completed(Box::new(request));
         }
     }
+}
+
+/// Reads the bounded request body the completed head declared.
+///
+/// This runs inside the caller's single request-read budget, so the head and
+/// body share one deadline and the body never restarts it.
+async fn read_request_body<S>(
+    stream: &mut S,
+    mut request: Request,
+) -> Result<Request, RequestReadError>
+where
+    S: AsyncRead + Unpin,
+{
+    let Some(length) = declared_request_body_length(request.method(), request.headers())? else {
+        return Ok(request);
+    };
+    let mut body = vec![0_u8; length];
+    stream
+        .read_exact(&mut body)
+        .await
+        .map_err(|_| RequestReadError::Invalid)?;
+    if stream_has_pending_bytes(stream).await {
+        return Err(RequestReadError::Invalid);
+    }
+    *request.body_mut() = Body::from(body);
+    Ok(request)
+}
+
+/// Returns the exact number of body bytes a completed head declared.
+///
+/// Only `PUT` may carry a body, and only through exactly one canonical
+/// `Content-Length` within [`MAX_REQUEST_BODY_BYTES`]. Every other method must
+/// declare no body at all. Chunked framing and `Expect` are never supported.
+fn declared_request_body_length(
+    method: &Method,
+    headers: &HeaderMap,
+) -> Result<Option<usize>, RequestReadError> {
+    if headers.contains_key(TRANSFER_ENCODING) || headers.contains_key(EXPECT) {
+        return Err(RequestReadError::Invalid);
+    }
+    if method != Method::PUT {
+        let declares_body = headers
+            .get_all(CONTENT_LENGTH)
+            .iter()
+            .any(|value| content_length_digits(value) != Some(0));
+        return if declares_body {
+            Err(RequestReadError::Invalid)
+        } else {
+            Ok(None)
+        };
+    }
+    let mut lengths = headers.get_all(CONTENT_LENGTH).iter();
+    let (Some(value), None) = (lengths.next(), lengths.next()) else {
+        return Err(RequestReadError::Invalid);
+    };
+    let Some(length) = canonical_content_length(value) else {
+        return Err(RequestReadError::Invalid);
+    };
+    if length > MAX_REQUEST_BODY_BYTES {
+        return Err(RequestReadError::Invalid);
+    }
+    Ok(Some(length))
+}
+
+/// Parses a `Content-Length` that carries only decimal digits.
+fn content_length_digits(value: &HeaderValue) -> Option<usize> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    bytes.iter().try_fold(0_usize, |length, byte| {
+        length
+            .checked_mul(10)?
+            .checked_add(usize::from(*byte - b'0'))
+    })
+}
+
+/// Parses the single canonical decimal `Content-Length` a `PUT` must declare.
+fn canonical_content_length(value: &HeaderValue) -> Option<usize> {
+    if value.as_bytes().len() > 1 && value.as_bytes().starts_with(b"0") {
+        return None;
+    }
+    content_length_digits(value)
+}
+
+/// Reports whether the peer already sent bytes beyond the declared body.
+///
+/// The probe never waits, so it cannot consume the shared read budget; the
+/// connection serves exactly one request and is then closed.
+async fn stream_has_pending_bytes<S>(stream: &mut S) -> bool
+where
+    S: AsyncRead + Unpin,
+{
+    let mut probe = [0_u8; 1];
+    matches!(
+        timeout(Duration::ZERO, stream.read(&mut probe)).await,
+        Ok(Ok(1..))
+    )
 }
 
 fn response_for_request_read_error(error: RequestReadError) -> BoundedResponse {
@@ -1036,10 +1171,9 @@ fn parse_http_request(
         headers.append(name, value);
     }
     match request_line {
-        RequestLineClassification::Get => {}
-        RequestLineClassification::MethodNotAllowed => {
-            return Err(RequestReadError::MethodNotAllowed);
-        }
+        RequestLineClassification::Get
+        | RequestLineClassification::Put
+        | RequestLineClassification::OtherMethod => {}
         RequestLineClassification::Invalid => return Err(RequestReadError::Invalid),
     }
     let mut request = Request::new(Body::empty());
@@ -1051,36 +1185,36 @@ fn parse_http_request(
 
 async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
     let status = response.status();
-    let allow_get = response
+    let allow = response
         .headers()
         .get(ALLOW)
-        .is_some_and(|value| value == "GET");
+        .and_then(AllowedMethod::from_header_value);
     let Some(profile) = response
         .headers()
         .get(CONTENT_TYPE)
         .and_then(ResponseProfile::from_media_type)
     else {
-        return redacted_response(status, allow_get);
+        return redacted_response(status, allow);
     };
     let Ok(body) = to_bytes(response.into_body(), profile.max_body_bytes()).await else {
-        return redacted_response(status, allow_get);
+        return redacted_response(status, allow);
     };
     if profile == ResponseProfile::Json {
         let Some(body) = fixed_json_body(&body) else {
-            return redacted_response(status, allow_get);
+            return redacted_response(status, allow);
         };
         return BoundedResponse {
             status,
             profile,
             body: Bytes::from_static(body.as_bytes()),
-            allow_get,
+            allow,
         };
     }
     BoundedResponse {
         status,
         profile,
         body,
-        allow_get,
+        allow,
     }
 }
 
@@ -1110,9 +1244,9 @@ fn fixed_json_body(body: &[u8]) -> Option<&'static str> {
 
 /// Replaces an unknown, unbounded, or otherwise invalid module response with the
 /// fixed redacted body while preserving the observed status framing.
-fn redacted_response(status: StatusCode, allow_get: bool) -> BoundedResponse {
+fn redacted_response(status: StatusCode, allow: Option<AllowedMethod>) -> BoundedResponse {
     BoundedResponse {
-        allow_get,
+        allow,
         ..BoundedResponse::json(status, "{\"error\":\"gateway_timeout\"}")
     }
 }
@@ -1121,11 +1255,7 @@ async fn write_bounded_response<S>(stream: &mut S, response: BoundedResponse) ->
 where
     S: AsyncWrite + Unpin,
 {
-    let allow = if response.allow_get {
-        "Allow: GET\r\n"
-    } else {
-        ""
-    };
+    let allow = response.allow.map_or("", AllowedMethod::allow_header);
     let head = format!(
         "HTTP/1.1 {} \r\nContent-Type: {}\r\n{}{}\r\n",
         response.status.as_u16(),
@@ -1161,7 +1291,7 @@ fn service_unavailable_response() -> BoundedResponse {
 
 fn method_not_allowed_response() -> BoundedResponse {
     BoundedResponse {
-        allow_get: true,
+        allow: Some(AllowedMethod::Get),
         ..BoundedResponse::json(
             StatusCode::METHOD_NOT_ALLOWED,
             "{\"error\":\"method_not_allowed\"}",
@@ -1380,11 +1510,12 @@ mod tests {
     use weavelit_server_lifecycle::LifecycleProjection;
 
     use super::{
-        ASSET_SECURITY_HEADERS, BoundedResponse, ConnectionSlots, ConnectionTimeouts,
-        RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT,
-        REQUEST_READ_TIMEOUT, RateLimiter, ResponseProfile, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
-        bounded_response_from_axum, gateway_timeout_response, parse_http_request,
-        processing_response, raw_header_section_bytes, read_http_request,
+        ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse, ConnectionSlots,
+        ConnectionTimeouts, MAX_REQUEST_BODY_BYTES, RATE_LIMIT_BURST,
+        RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
+        RateLimiter, RequestHeadRead, RequestReadError, ResponseProfile, StartupOutcome,
+        TLS_HANDSHAKE_TIMEOUT, bounded_response_from_axum, gateway_timeout_response,
+        parse_http_request, processing_response, raw_header_section_bytes, read_http_request,
         read_http_request_with_timeout, request_timeout_response, restricted_routes,
         serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
         serve_restricted_https_listener,
@@ -1410,16 +1541,44 @@ mod tests {
         client.shutdown().await.unwrap();
         match read_http_request(&mut server).await {
             Ok(_) => RequestHeadResult::Accepted,
-            Err(super::RequestReadError::Invalid) => RequestHeadResult::Invalid,
-            Err(super::RequestReadError::MethodNotAllowed) => RequestHeadResult::MethodNotAllowed,
-            Err(super::RequestReadError::TargetTooLong) => RequestHeadResult::TargetTooLong,
-            Err(super::RequestReadError::HeadersTooLarge) => RequestHeadResult::HeadersTooLarge,
-            Err(super::RequestReadError::TimedOut) => panic!("reader test must not time out"),
+            Err(error) => head_result(error),
         }
     }
 
-    fn assert_fixed_tls_response(response: &[u8], status: u16, body: &str, allow_get: bool) {
-        let allow = if allow_get { "Allow: GET\r\n" } else { "" };
+    /// Reads a complete request and returns the body bytes it accepted.
+    async fn read_request_with_body(bytes: &[u8]) -> Result<Vec<u8>, RequestHeadResult> {
+        let (mut client, mut server) = tokio::io::duplex(bytes.len().max(1));
+        client.write_all(bytes).await.unwrap();
+        client.shutdown().await.unwrap();
+        match read_http_request(&mut server).await {
+            Ok(request) => Ok(request
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec()),
+            Err(error) => Err(head_result(error)),
+        }
+    }
+
+    fn head_result(error: RequestReadError) -> RequestHeadResult {
+        match error {
+            RequestReadError::Invalid => RequestHeadResult::Invalid,
+            RequestReadError::MethodNotAllowed => RequestHeadResult::MethodNotAllowed,
+            RequestReadError::TargetTooLong => RequestHeadResult::TargetTooLong,
+            RequestReadError::HeadersTooLarge => RequestHeadResult::HeadersTooLarge,
+            RequestReadError::TimedOut => panic!("reader test must not time out"),
+        }
+    }
+
+    fn assert_fixed_tls_response(
+        response: &[u8],
+        status: u16,
+        body: &str,
+        allow: Option<AllowedMethod>,
+    ) {
+        let allow = allow.map_or("", AllowedMethod::allow_header);
         assert_eq!(
             response,
             format!(
@@ -1736,9 +1895,9 @@ mod tests {
                 RequestHeadResult::Invalid,
             ),
             (
-                "valid non-GET method",
+                "valid non-GET method is left to the route",
                 "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
-                RequestHeadResult::MethodNotAllowed,
+                RequestHeadResult::Accepted,
             ),
             (
                 "invalid method",
@@ -1800,6 +1959,196 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn request_body_reader_bounds_put_bodies_and_rejects_other_framing() {
+        let at_limit = "a".repeat(MAX_REQUEST_BODY_BYTES);
+        let over_limit = "a".repeat(MAX_REQUEST_BODY_BYTES + 1);
+
+        assert_eq!(
+            read_request_with_body(
+                format!(
+                    "PUT /api/v1/database HTTP/1.1\r\nContent-Length: {MAX_REQUEST_BODY_BYTES}\r\n\r\n{at_limit}"
+                )
+                .as_bytes()
+            )
+            .await,
+            Ok(at_limit.clone().into_bytes()),
+            "PUT body at the one KiB limit"
+        );
+        assert_eq!(
+            read_request_with_body(b"PUT /api/v1/database HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+                .await,
+            Ok(Vec::new()),
+            "PUT declaring an empty body"
+        );
+
+        for (name, request) in [
+            (
+                "body one byte over the limit",
+                format!(
+                    "PUT /api/v1/database HTTP/1.1\r\nContent-Length: {}\r\n\r\n{over_limit}",
+                    MAX_REQUEST_BODY_BYTES + 1
+                ),
+            ),
+            (
+                "no Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\n\r\n".to_owned(),
+            ),
+            (
+                "duplicate Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 4\r\n\r\nbody"
+                    .to_owned(),
+            ),
+            (
+                "conflicting Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\nbody"
+                    .to_owned(),
+            ),
+            (
+                "non-numeric Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: four\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "negative Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: -4\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "plus-prefixed Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: +4\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "non-canonical Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 04\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "chunked transfer encoding",
+                "PUT /api/v1/database HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+                    .to_owned(),
+            ),
+            (
+                "expect continue",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\nExpect: 100-continue\r\n\r\nbody"
+                    .to_owned(),
+            ),
+            (
+                "stream ends before the declared length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 8\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "more bytes than declared",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody-extra".to_owned(),
+            ),
+            (
+                "GET carrying a declared body",
+                "GET /api/v1/status HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "GET carrying chunked framing",
+                "GET /api/v1/status HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+                    .to_owned(),
+            ),
+        ] {
+            assert_eq!(
+                read_request_with_body(request.as_bytes()).await,
+                Err(RequestHeadResult::Invalid),
+                "{name}"
+            );
+        }
+    }
+
+    /// The head arrives at 400 ms and the body at 700 ms. A 500 ms budget shared
+    /// by both expires, while a budget restarted at the body would not.
+    #[tokio::test]
+    async fn request_read_timeout_covers_the_head_and_body_as_one_budget() {
+        let schedule = |budget: Duration| async move {
+            let (mut client, mut server) = tokio::io::duplex(256);
+            let writer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                client
+                    .write_all(b"PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\n\r\n")
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                client.write_all(b"body").await.unwrap();
+                std::future::pending::<()>().await;
+            });
+            let outcome = read_http_request_with_timeout(&mut server, budget).await;
+            writer.abort();
+            outcome
+        };
+
+        assert!(matches!(
+            schedule(Duration::from_millis(500)).await,
+            RequestHeadRead::Incomplete(RequestReadError::TimedOut)
+        ));
+        assert!(matches!(
+            schedule(Duration::from_millis(1_500)).await,
+            RequestHeadRead::Completed(result) if result.is_ok()
+        ));
+    }
+
+    #[tokio::test]
+    async fn direct_tls_emits_the_allow_header_the_route_selected() {
+        let (server_config, client_config) = tls_configs();
+
+        let put_only_route = direct_tls_response(
+            Router::new().route(
+                "/api/v1/database",
+                any(|| async { DatabaseSelectionRejection::MethodNotAllowed.response() }),
+            ),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /api/v1/database HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(
+            &put_only_route,
+            405,
+            "{\"error\":\"method_not_allowed\"}",
+            Some(AllowedMethod::Put),
+        );
+
+        let get_only_route = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"PUT /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(
+            &get_only_route,
+            405,
+            "{\"error\":\"method_not_allowed\"}",
+            Some(AllowedMethod::Get),
+        );
+
+        // An oversized method token never yields a bounded target, so this early
+        // fallback answers without any route context.
+        let early_fallback = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            server_config,
+            client_config,
+            format!(
+                "{} /api/v1/status HTTP/1.1\r\n\r\n",
+                "P".repeat(super::MAX_REQUEST_HEAD_BYTES + 1)
+            )
+            .as_bytes(),
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(
+            &early_fallback,
+            405,
+            "{\"error\":\"method_not_allowed\"}",
+            Some(AllowedMethod::Get),
+        );
     }
 
     #[test]
@@ -1992,27 +2341,27 @@ mod tests {
             "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
         );
 
-        for (name, request, status, body, allow_get) in [
+        for (name, request, status, body, allow) in [
             (
                 "valid GET",
                 "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 200,
                 "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
-                false,
+                None,
             ),
             (
                 "valid non-GET",
                 "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 405,
                 "{\"error\":\"method_not_allowed\"}",
-                true,
+                Some(AllowedMethod::Get),
             ),
             (
                 "invalid method",
                 "GE(T /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 400,
                 "{\"error\":\"bad_request\"}",
-                false,
+                None,
             ),
             (
                 "target over two KiB before malformed content",
@@ -2022,21 +2371,21 @@ mod tests {
                 ),
                 414,
                 "{\"error\":\"uri_too_long\"}",
-                false,
+                None,
             ),
             (
                 "headers over eight KiB",
                 oversized_headers,
                 431,
                 "{\"error\":\"request_header_fields_too_large\"}",
-                false,
+                None,
             ),
             (
                 "more than sixty-four headers",
                 many_headers,
                 200,
                 "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
-                false,
+                None,
             ),
         ] {
             let response = direct_tls_response(
@@ -2048,7 +2397,7 @@ mod tests {
                 REQUEST_PROCESSING_TIMEOUT,
             )
             .await;
-            assert_fixed_tls_response(&response, status, body, allow_get);
+            assert_fixed_tls_response(&response, status, body, allow);
             assert!(response.len() <= 128, "{name}");
         }
     }
@@ -2248,6 +2597,24 @@ mod tests {
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+            (
+                format!(
+                    "PUT /api/v1/status HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+                    super::MAX_REQUEST_BODY_BYTES + 1
+                ),
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+            (
+                "PUT /api/v1/status HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+            (
+                "PUT /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 b"HTTP/1.1 400 \r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
@@ -2460,7 +2827,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
             .await
             .expect("LF-only request head must not wait for the read timeout");
-        assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", false);
+        assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", None);
 
         server.abort();
     }
@@ -2550,41 +2917,41 @@ mod tests {
             "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
         );
 
-        for (name, request, fixed_status, fixed_body, allow_get) in [
+        for (name, request, fixed_status, fixed_body, allow) in [
             (
                 "valid POST",
                 "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 405,
                 "{\"error\":\"method_not_allowed\"}",
-                true,
+                Some(AllowedMethod::Get),
             ),
             (
                 "malformed head",
                 "GET /api/v1/status HTTP/1.1\r\nnot-a-header\r\n\r\n".to_owned(),
                 400,
                 "{\"error\":\"bad_request\"}",
-                false,
+                None,
             ),
             (
                 "oversized target",
                 oversized_target,
                 414,
                 "{\"error\":\"uri_too_long\"}",
-                false,
+                None,
             ),
             (
                 "oversized headers",
                 oversized_headers,
                 431,
                 "{\"error\":\"request_header_fields_too_large\"}",
-                false,
+                None,
             ),
             (
                 "valid GET",
                 "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 200,
                 "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
-                false,
+                None,
             ),
         ] {
             let rate_limiter = Arc::new(RateLimiter::new());
@@ -2599,7 +2966,7 @@ mod tests {
                     REQUEST_PROCESSING_TIMEOUT,
                 )
                 .await;
-                assert_fixed_tls_response(&response, fixed_status, fixed_body, allow_get);
+                assert_fixed_tls_response(&response, fixed_status, fixed_body, allow);
             }
 
             let response = direct_tls_response_with_rate_limiter(
@@ -2612,7 +2979,7 @@ mod tests {
                 REQUEST_PROCESSING_TIMEOUT,
             )
             .await;
-            assert_fixed_tls_response(&response, 429, "{\"error\":\"rate_limited\"}", false);
+            assert_fixed_tls_response(&response, 429, "{\"error\":\"rate_limited\"}", None);
             assert!(response.len() <= 128, "{name}");
         }
     }
@@ -2663,7 +3030,7 @@ mod tests {
                 )
                 .await
             };
-            assert_fixed_tls_response(&response, status, body, false);
+            assert_fixed_tls_response(&response, status, body, None);
 
             for _ in 0..RATE_LIMIT_BURST {
                 let response = direct_tls_response_with_rate_limiter(
@@ -2957,7 +3324,12 @@ mod tests {
                 REQUEST_PROCESSING_TIMEOUT,
             )
             .await;
-            assert_fixed_tls_response(&rejected, 405, "{\"error\":\"method_not_allowed\"}", true);
+            assert_fixed_tls_response(
+                &rejected,
+                405,
+                "{\"error\":\"method_not_allowed\"}",
+                Some(AllowedMethod::Get),
+            );
         }
 
         let unknown = direct_tls_response(
@@ -2969,7 +3341,7 @@ mod tests {
             REQUEST_PROCESSING_TIMEOUT,
         )
         .await;
-        assert_fixed_tls_response(&unknown, 404, "{\"error\":\"not_found\"}", false);
+        assert_fixed_tls_response(&unknown, 404, "{\"error\":\"not_found\"}", None);
 
         let gated = direct_tls_response(
             restricted_routes(StartupOutcome::InitializationPending(
@@ -2982,7 +3354,7 @@ mod tests {
             REQUEST_PROCESSING_TIMEOUT,
         )
         .await;
-        assert_fixed_tls_response(&gated, 404, "{\"error\":\"not_found\"}", false);
+        assert_fixed_tls_response(&gated, 404, "{\"error\":\"not_found\"}", None);
     }
 
     #[tokio::test]
@@ -3024,7 +3396,7 @@ mod tests {
             REQUEST_PROCESSING_TIMEOUT,
         )
         .await;
-        assert_fixed_tls_response(&over_limit, 200, "{\"error\":\"gateway_timeout\"}", false);
+        assert_fixed_tls_response(&over_limit, 200, "{\"error\":\"gateway_timeout\"}", None);
 
         for media_type in ["text/plain; charset=utf-8", "application/octet-stream"] {
             let unknown_media_type = direct_tls_response(
@@ -3049,7 +3421,7 @@ mod tests {
                 &unknown_media_type,
                 200,
                 "{\"error\":\"gateway_timeout\"}",
-                false,
+                None,
             );
         }
 
@@ -3071,7 +3443,7 @@ mod tests {
             REQUEST_PROCESSING_TIMEOUT,
         )
         .await;
-        assert_fixed_tls_response(&unknown_json, 200, "{\"error\":\"gateway_timeout\"}", false);
+        assert_fixed_tls_response(&unknown_json, 200, "{\"error\":\"gateway_timeout\"}", None);
     }
 
     /// Every database-selection body the Web UI Client Module can emit must be
