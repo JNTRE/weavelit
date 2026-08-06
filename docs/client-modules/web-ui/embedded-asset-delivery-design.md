@@ -19,17 +19,32 @@ is compiled into the binary. A request for any other path, including a
 traversal-like or `/api/`-prefixed path, never reaches this allowlist and
 cannot expose an arbitrary file.
 
-## Build-Time Availability
+## Build-Time Availability And Freshness
 
 `build.rs` fails the Rust build with an actionable diagnostic when
 `server/web-ui/dist/` or any of its three expected files is absent. It invokes
-no package manager and performs no network access; it only reports the missing
+no package manager and performs no network access; it only reports the failing
 files and the command that produces them. Generated build output is
 deliberately not committed to version control, so a fresh checkout must build
 the Web UI application before the Rust workspace can compile this crate.
-`make -C server check` builds the frontend before it runs the Rust gates, and
-the [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
-owns that build and its own output validation.
+
+Presence alone is not sufficient. A developer who builds the Web UI once, edits
+its source, and then runs `cargo build` directly would otherwise embed stale
+bytes with no signal. To close that path, the Web UI production build writes
+`dist/build-manifest.json` recording the SHA-256 hash of every declared bundle
+input and of each generated asset, and `build.rs` re-hashes both sets at compile
+time. It fails closed on a missing, malformed, or non-object manifest, an
+unrecognized format version or field, an added or removed bundle input, or any
+hash mismatch. It also emits a `cargo:rerun-if-changed` entry for every bundle
+input, the `src/` directory, the manifest, and the three generated assets, so
+Cargo re-runs the check after a source edit rather than reusing a cached build.
+
+The manifest is build metadata only. It is never embedded, never added to the
+asset allowlist, and never reachable by any route, and this crate never writes
+it. The [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
+owns the manifest format, the bundle-input inventory rule, and its own output
+validation. `make -C server check` builds the frontend and writes the manifest
+before it runs the Rust gates.
 
 ## Size Bounds
 

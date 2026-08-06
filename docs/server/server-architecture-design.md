@@ -268,8 +268,12 @@ package. Internal workspace members are not exceptions.
 
 - **Source and version:** crates.io `=0.11.0`.
 - **Owner and behavior:** `weavelit-server-database-sqlite` uses SHA-256 to bind
-  each immutable embedded migration file to its migration-ledger entry. The
-  standard library and existing approved dependencies do not provide SHA-256.
+  each immutable embedded migration file to its migration-ledger entry.
+  `weavelit-module-client-webui` uses it as a build-dependency only, to re-hash
+  the Web UI bundle inputs and generated assets at compile time and fail closed
+  on a stale embedded bundle; it is not linked into that crate's runtime code.
+  The standard library and existing approved dependencies do not provide
+  SHA-256.
 - **Features:** default features are disabled and no optional features are
   enabled. Allocation, object-identifier, and zeroization features are absent;
   the locked graph contains only the digest primitives and CPU-feature support
@@ -500,9 +504,12 @@ every dependency-resolution change.
 
 - **Source and version:** crates.io `=1.0.151`.
 - **Owner and behavior:** `weavelit-server-lifecycle` parses and emits the
-  bounded, versioned UTF-8 JSON anchor formats through typed Serde models. The
-  standard library does not provide a JSON parser, and ad hoc string parsing is
-  prohibited for the security-sensitive formats.
+  bounded, versioned UTF-8 JSON anchor formats through typed Serde models.
+  `weavelit-module-client-webui` uses it as a build-dependency only, to parse
+  the Web UI build content manifest strictly at compile time; it is not linked
+  into that crate's runtime code. The standard library does not provide a JSON
+  parser, and ad hoc string parsing is prohibited for the security-sensitive
+  formats.
 - **Features:** default features are disabled and only `std` is enabled.
   Arbitrary-precision numbers, float round-trip, order preservation, raw values,
   and unbounded-depth parsing are excluded.

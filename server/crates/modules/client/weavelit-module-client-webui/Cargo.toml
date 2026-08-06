@@ -7,6 +7,15 @@ publish = false
 [dependencies]
 axum.workspace = true
 
+# Build metadata only: the build script re-hashes the Web UI bundle inputs and
+# generated assets to prove the embedded output is current. Neither dependency
+# is linked into the crate's runtime code.
+[build-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+sha2 = { version = "=0.11.0", default-features = false }
+
 [dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+sha2 = { version = "=0.11.0", default-features = false }
 tokio.workspace = true
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }

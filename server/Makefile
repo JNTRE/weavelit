@@ -1,7 +1,7 @@
 NPM ?= npm
 WEB_UI_DIR := web-ui
 
-.PHONY: check check-web-ui check-rust web-ui-install web-ui-typecheck web-ui-test web-ui-build web-ui-verify web-ui-browser-install web-ui-browser-test
+.PHONY: check check-web-ui check-rust web-ui-install web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify web-ui-browser-install web-ui-browser-test
 
 # The browser smoke test drives the release binary produced by `check-rust`, so
 # the stages of this gate must not be reordered or run concurrently.
@@ -9,7 +9,7 @@ WEB_UI_DIR := web-ui
 
 check: check-web-ui check-rust web-ui-browser-test
 
-check-web-ui: web-ui-install web-ui-typecheck web-ui-test web-ui-build web-ui-verify
+check-web-ui: web-ui-install web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify
 
 web-ui-install:
 	cd $(WEB_UI_DIR) && $(NPM) ci
@@ -20,7 +20,11 @@ web-ui-typecheck:
 web-ui-test:
 	cd $(WEB_UI_DIR) && $(NPM) run test
 
-# `vite build` empties the output directory, so this target is always a clean build.
+web-ui-script-test:
+	cd $(WEB_UI_DIR) && $(NPM) run test:scripts
+
+# `vite build` empties the output directory, so this target is always a clean
+# build; it then writes the build content manifest for that exact output.
 web-ui-build:
 	cd $(WEB_UI_DIR) && $(NPM) run build
 

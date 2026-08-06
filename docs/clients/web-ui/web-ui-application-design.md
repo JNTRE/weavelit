@@ -45,6 +45,42 @@ sizes for information only; the Server serves these assets without
 compression, so raw bytes are the enforced budget. `make -C server check` runs
 this validator as part of its Web UI gate before the Rust workspace gates.
 
+## Build Content Manifest
+
+The production build writes `dist/build-manifest.json` immediately after a clean
+Vite build. It is build metadata, not a fourth generated asset: `dist/` is not
+committed, the manifest is excluded from the generated-output inventory check,
+and the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md)
+never embeds or serves it.
+
+The manifest is strict JSON with exactly three fields: a `format_version`
+integer, an `inputs` object, and an `assets` object. Each object maps a `/`-separated
+relative path to that file's lowercase SHA-256 hex digest, with keys sorted so
+the same tree always produces the same file. `format_version` is `1`; any other
+value is rejected rather than interpreted.
+
+A **bundle input** is a file that can change the production bundle. The
+inventory is exactly:
+
+- `index.html`, the Vite entry document;
+- every file under `src/` except a test-only file, meaning any name ending in
+  `.test.ts` or `.test.tsx` and `test-setup.ts`; and
+- `vite.config.ts`, `tsconfig.json`, `package.json`, and `package-lock.json`,
+  the build, compiler, and resolved-dependency configuration.
+
+Test-only sources, `browser-tests/`, `playwright.config.ts`, and `scripts/` are
+excluded because none of them reaches the production bundle; including them
+would make editing a unit test fail an otherwise correct Rust build. A missing
+configuration input is a failure rather than a silently shortened inventory.
+
+The validator has two modes. `--write` validates the bundle and then writes the
+manifest, and runs only as the second half of `npm run build`, immediately after
+Vite empties and repopulates `dist/`. `--check` validates the bundle and
+re-verifies the manifest against the current inputs and outputs, and is what
+`npm run verify:build` runs. Check mode never writes, repairs, or refreshes the
+manifest: if it could, re-running verification would bless a stale build and
+defeat the freshness guarantee.
+
 ## Application Shell
 
 The application has a single root component, `ApplicationShell`, mounted into

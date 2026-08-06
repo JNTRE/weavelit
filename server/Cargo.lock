@@ -1119,6 +1119,8 @@ name = "weavelit-module-client-webui"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "serde_json",
+ "sha2",
  "tokio",
  "tower",
 ]

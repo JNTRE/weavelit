@@ -14,8 +14,9 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit && tsc --noEmit --project browser-tests/tsconfig.json",
     "test": "vitest run",
-    "build": "vite build",
-    "verify:build": "node scripts/verify-build-output.mjs",
+    "test:scripts": "node --test \"scripts/*.test.mjs\"",
+    "build": "vite build && node scripts/verify-build-output.mjs --write",
+    "verify:build": "node scripts/verify-build-output.mjs --check",
     "test:browser": "playwright test"
   },
   "dependencies": {

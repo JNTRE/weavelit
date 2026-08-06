@@ -80,13 +80,25 @@ check` runs it automatically.
 
 `make -C server check` runs the Web UI gate before the Rust commands above, in
 this order: a locked `npm ci` install, a TypeScript typecheck, the Web UI unit
-tests, a clean production build, and a build-output inventory check that fails
-on a missing, renamed, extra, or oversized generated asset and reports raw and
-gzip bundle sizes. Raw sizes are the enforced budget because the Server serves
-these assets without compression. The Node and npm releases are pinned by
-`server/web-ui/.node-version` and `server/web-ui/package.json`, and every
-frontend dependency is pinned to an exact version and locked by
-`server/web-ui/package-lock.json`.
+tests, the Node test-runner suite for the build-output validator scripts, a
+clean production build that also writes the build content manifest, and a
+build-output check that fails on a missing, renamed, extra, or oversized
+generated asset, re-verifies the manifest against the current bundle inputs and
+generated assets, and reports raw and gzip bundle sizes. Raw sizes are the
+enforced budget because the Server serves these assets without compression. The
+Node and npm releases are pinned by `server/web-ui/.node-version` and
+`server/web-ui/package.json`, and every frontend dependency is pinned to an
+exact version and locked by `server/web-ui/package-lock.json`.
+
+The build content manifest has two test surfaces, one per consumer, because a
+silent mismatch between the writer and the verifier would reintroduce the stale
+embedded asset it exists to prevent. The Node suite covers manifest write mode,
+check mode, and the requirement that check mode never repairs a stale manifest.
+The Web UI Client Module's `tests/build_manifest.rs` compiles the build script's
+verification module directly and covers a valid manifest, a missing, malformed,
+non-object, or wrongly versioned manifest, an unrecognized field, a non-digest
+entry, a source-hash mismatch, an asset-hash mismatch, an added or removed
+bundle input, and the rebuild-trigger inventory.
 
 `cargo fmt` and Clippy are quality gates, not substitutes for tests. The
 repository's shared VS Code settings run rustfmt on Rust-file saves and cause
