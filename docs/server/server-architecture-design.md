@@ -181,12 +181,15 @@ provider and permits TLS 1.2 and TLS 1.3. The runtime does not create a second
 listener or a cleartext fallback.
 
 The compiled-in `weavelit-module-client-webui` crate owns translation of the
-Web UI pre-operational status request and response contract. The runtime mounts
-that route only when the Server-owned lifecycle gate permits it and retains
-ownership of direct TLS, listener composition, raw request parsing, resource
-limits, and lifecycle classification. The module cannot independently compose a
-route or listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
-defines its public contract and resource limits.
+Web UI pre-operational status request and response contract and delivery of its
+compile-time embedded browser asset allowlist. The runtime mounts those routes
+only when the Server-owned lifecycle gate permits it and retains ownership of
+direct TLS, listener composition, raw request parsing, resource limits, and
+lifecycle classification. The module cannot independently compose a route or
+listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
+defines the status contract and resource limits; the
+[Embedded Asset Delivery Design](../client-modules/web-ui/embedded-asset-delivery-design.md)
+defines the asset allowlist, media types, security headers, and body bounds.
 
 The implementation selects minimal features and exact crates.io versions for
 Axum, Hyper, Tokio, and their required adapters under the dependency policy

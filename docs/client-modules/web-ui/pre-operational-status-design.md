@@ -1,9 +1,14 @@
 # Web UI Pre-Operational Status Surface
 
-This document defines the Web UI **[Client Module](../../glossary.md#applications-and-interfaces)** transport contract for the Milestone 1 pre-operational status surface. It owns the route, public results, rejection behavior, and compatibility policy. The [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md) owns trusted lifecycle classification and route availability; the [Security Model](../../security-model.md) owns the cross-cutting security profile.
+This document defines the Web UI **[Client Module](../../glossary.md#applications-and-interfaces)** transport contract for the Milestone 1 pre-operational status surface. It owns the route, public results, rejection behavior, and compatibility policy for `GET /api/v1/status`. The [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md) owns trusted lifecycle classification and route availability; the [Security Model](../../security-model.md) owns the cross-cutting security profile.
 
 This surface does not implement Init, Restore, Application Database selection,
-normal client functions, or a Web UI application experience.
+or normal client functions. It does not own the same Client Module's embedded
+Web UI asset delivery, which the
+[Embedded Asset Delivery Design](embedded-asset-delivery-design.md) owns, or the
+Web UI application's presentation and client-side behavior, which the
+[Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
+owns.
 
 ## Ownership And Capability
 
@@ -128,6 +133,8 @@ listener; response-size bounds; and redaction. The Server quality gate remains
 
 ## Related Documents
 
+- [Embedded Asset Delivery Design](embedded-asset-delivery-design.md)
+- [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
 - [Technical Specification](../../spec.md)
 - [Security Model](../../security-model.md)
 - [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md)

@@ -16,6 +16,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Web UI Client Module.
 - `pre-operational-status-design.md`: Versioned status-only pre-operational transport contract and Web UI Client Module boundary for Milestone 1.
+- `embedded-asset-delivery-design.md`: Compile-time embedded asset allowlist, MIME types, security headers, body bounds, and path-rejection behavior for the Web UI Client Module.
 
 ## Usage Guidance
 
