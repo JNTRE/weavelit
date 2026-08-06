@@ -1,9 +1,13 @@
 NPM ?= npm
 WEB_UI_DIR := web-ui
 
-.PHONY: check check-web-ui check-rust web-ui-install web-ui-typecheck web-ui-test web-ui-build web-ui-verify
+.PHONY: check check-web-ui check-rust web-ui-install web-ui-typecheck web-ui-test web-ui-build web-ui-verify web-ui-browser-install web-ui-browser-test
 
-check: check-web-ui check-rust
+# The browser smoke test drives the release binary produced by `check-rust`, so
+# the stages of this gate must not be reordered or run concurrently.
+.NOTPARALLEL:
+
+check: check-web-ui check-rust web-ui-browser-test
 
 check-web-ui: web-ui-install web-ui-typecheck web-ui-test web-ui-build web-ui-verify
 
@@ -22,6 +26,15 @@ web-ui-build:
 
 web-ui-verify:
 	cd $(WEB_UI_DIR) && $(NPM) run verify:build
+
+# Installs only the pinned Chromium build. Its shared libraries come from the
+# development container image or the CI runner, which own root-level packages.
+web-ui-browser-install:
+	cd $(WEB_UI_DIR) && $(NPM) exec -- playwright install chromium
+
+# Runs after `check-rust` because the smoke test drives the release binary.
+web-ui-browser-test: web-ui-browser-install
+	cd $(WEB_UI_DIR) && $(NPM) run test:browser
 
 check-rust:
 	cargo fmt --all -- --check

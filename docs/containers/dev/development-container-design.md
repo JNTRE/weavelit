@@ -20,6 +20,11 @@ The development image must:
   checksums for the build architecture, so the image can run the Web UI
   install, typecheck, unit-test, production-build, and bundle-inventory stages
   of `make check`;
+- install the Playwright Chromium build keyed to the `@playwright/test` release
+  resolved by `server/web-ui/package-lock.json`, together with the Ubuntu shared
+  libraries that browser requires and the `openssl` command the browser test
+  fixture uses to generate short-lived TLS material, so the image can run the
+  Web UI browser smoke test stage of `make check`;
 - provide `git` and the GitHub CLI (`gh`) for repository workflows; GitHub
   authentication must be supplied at runtime through persistent configuration
   outside the image and never embedded in the image;
@@ -63,10 +68,10 @@ container and confirm that source, state, and secret mounts follow this design.
 Validation must also confirm that the named state-root volume persists across
 container stop, rebuild, and restart boundaries.
 
-Browser-based end-to-end validation is not yet part of the image contract. The
-change that introduces the Web UI browser smoke test must add pinned Playwright
-browser binaries and their Ubuntu system dependencies to this image and record
-that support here.
+Browser-based end-to-end validation is part of the image contract. The image
+installs the pinned Chromium build as the non-root development user, so
+`make check` runs the Web UI browser smoke test against the release Server
+binary without installing root-level packages during validation.
 
 ## Related Documents
 

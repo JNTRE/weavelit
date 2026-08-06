@@ -2,3 +2,5 @@
 *
 !server/rust-toolchain.toml
 !server/web-ui/.node-version
+!server/web-ui/package.json
+!server/web-ui/package-lock.json

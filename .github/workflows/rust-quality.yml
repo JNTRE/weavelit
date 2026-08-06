@@ -35,6 +35,13 @@ jobs:
         run: |
           node --version
           npm --version
+      - name: Install Playwright Chromium and its system dependencies
+        # `make check` reinstalls the same cached Chromium build; this step adds
+        # the root-level Ubuntu packages the browser needs, which the gate cannot
+        # install itself.
+        run: |
+          playwright_version="$(node -e "process.stdout.write(require('./web-ui/package.json').devDependencies['@playwright/test'])")"
+          npx --yes "@playwright/test@${playwright_version}" install --with-deps chromium
       - name: Install pinned Rust toolchain
         # Keep this version synchronized with server/rust-toolchain.toml for deterministic CI.
         run: rustup toolchain install 1.97.0 --profile minimal --component clippy --component rustfmt
