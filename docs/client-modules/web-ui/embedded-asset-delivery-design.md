@@ -87,6 +87,15 @@ content-derived ones, the response disables caching instead of relying on a
 changing name to invalidate a stale copy. Asset responses send no CORS header,
 support no credentials or cookies, and are never compressed.
 
+## Response Framing
+
+Asset responses use the same connection-close framing as the
+[Web UI Pre-Operational Status Surface](pre-operational-status-design.md#rejections-and-bounds):
+no `Content-Length` header and no HTTP reason phrase. The direct TLS listener
+sends `close_notify` after each asset response, and the response write and TLS
+close use a bounded timeout, identically to the status and fixed error
+responses served by the same listener.
+
 ## Lifecycle Availability
 
 The Server runtime mounts these asset routes only after trusted lifecycle

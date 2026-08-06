@@ -86,9 +86,14 @@ rejections, incomplete EOF, and request-read timeouts do not consume quota.
 
 Responses use connection-close framing without a `Content-Length` header and omit
 the optional HTTP reason phrase. This preserves the documented status codes,
-JSON bodies, media type, and `Allow: GET` behavior while keeping every response
-within the 128-byte limit. The direct TLS listener sends `close_notify` after
-each fixed response; the response write and TLS close use a bounded timeout.
+JSON bodies, media type, and `Allow: GET` behavior while keeping every fixed
+status or error response on this route within the 128-byte limit. The same
+connection-close, no-`Content-Length`, no-reason-phrase framing also applies to
+the embedded asset responses served by the same module, which use the larger
+per-profile bounds documented in the
+[Embedded Asset Delivery Design](embedded-asset-delivery-design.md#size-bounds).
+The direct TLS listener sends `close_notify` after each response; the response
+write and TLS close use a bounded timeout.
 
 The route accepts zero request-body bytes and does not buffer a request body,
 decompress data, perform cryptographic work, start cancellation-sensitive
@@ -105,7 +110,10 @@ source covers the whole listener: the status route and every embedded asset
 route draw from the same per-source budget, so a single browser page load
 consumes one slot for the document, one for each asset, and one for the status
 request. The burst therefore admits a full page load plus two immediate
-reloads. Every response is fixed and no larger than 128 bytes.
+reloads. This route's own success and error responses are fixed and no larger
+than 128 bytes; the embedded asset routes sharing this budget return larger,
+profile-bounded bodies as documented in the
+[Embedded Asset Delivery Design](embedded-asset-delivery-design.md#size-bounds).
 
 ## Network And Browser Exposure
 
