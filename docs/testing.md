@@ -52,7 +52,7 @@ persisted state, emitted audit events, and provider requests over assertions on
 private functions or internal call order. Each defect fix includes a regression
 test that fails before the fix and passes after it.
 
-## Rust Quality Gates
+## Server Quality Gates
 
 All Rust code uses the repository's Rust 1.97 stable toolchain. Once the Cargo
 workspace is introduced, it must commit a `rust-toolchain.toml` that pins the
@@ -77,6 +77,16 @@ cargo build --locked --workspace --release
 Crate-local tests are included through their workspace member's Cargo targets.
 A dedicated Server test crate must be a workspace member so `make -C server
 check` runs it automatically.
+
+`make -C server check` runs the Web UI gate before the Rust commands above, in
+this order: a locked `npm ci` install, a TypeScript typecheck, the Web UI unit
+tests, a clean production build, and a build-output inventory check that fails
+on a missing, renamed, extra, or oversized generated asset and reports raw and
+gzip bundle sizes. Raw sizes are the enforced budget because the Server serves
+these assets without compression. The Node and npm releases are pinned by
+`server/web-ui/.node-version` and `server/web-ui/package.json`, and every
+frontend dependency is pinned to an exact version and locked by
+`server/web-ui/package-lock.json`.
 
 `cargo fmt` and Clippy are quality gates, not substitutes for tests. The
 repository's shared VS Code settings run rustfmt on Rust-file saves and cause

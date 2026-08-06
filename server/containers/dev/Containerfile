@@ -13,11 +13,43 @@ RUN apt-get update \
 		gh \
 		git \
 		make \
+		xz-utils \
 		build-essential \
 		pkg-config \
 		libssl-dev \
 		libsqlite3-dev \
 	&& rm -rf /var/lib/apt/lists/*
+
+# Web UI toolchain. The Node release is read from server/web-ui/.node-version so
+# the image, CI, and local development stay on one pinned version; npm ships with
+# that Node release and is pinned by the `engines` field in
+# server/web-ui/package.json.
+#
+# Playwright browsers and their system libraries are not installed here yet. The
+# change that adds the Web UI browser smoke test must add pinned browser binaries
+# and the matching Ubuntu dependency set to this image.
+COPY server/web-ui/.node-version /tmp/node-version
+
+RUN set -eux; \
+	node_version="$(tr -d '[:space:]' < /tmp/node-version)"; \
+	case "$(dpkg --print-architecture)" in \
+		amd64) node_arch=x64 ;; \
+		arm64) node_arch=arm64 ;; \
+		*) echo "unsupported architecture for the pinned Node toolchain" >&2; exit 1 ;; \
+	esac; \
+	tarball="node-v${node_version}-linux-${node_arch}.tar.xz"; \
+	cd /tmp; \
+	curl --proto '=https' --tlsv1.2 -fsSLO "https://nodejs.org/dist/v${node_version}/${tarball}"; \
+	curl --proto '=https' --tlsv1.2 -fsSLO "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt"; \
+	sha256sum --check --strict --ignore-missing SHASUMS256.txt; \
+	mkdir -p /usr/local/lib/nodejs; \
+	tar -xJf "${tarball}" -C /usr/local/lib/nodejs --strip-components=1; \
+	rm -f "${tarball}" SHASUMS256.txt /tmp/node-version; \
+	ln -s /usr/local/lib/nodejs/bin/node /usr/local/bin/node; \
+	ln -s /usr/local/lib/nodejs/bin/npm /usr/local/bin/npm; \
+	ln -s /usr/local/lib/nodejs/bin/npx /usr/local/bin/npx; \
+	node --version; \
+	npm --version
 
 RUN groupadd --gid 10001 weavelit \
 	&& useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash weavelit

@@ -25,6 +25,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install pinned Node toolchain
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: server/web-ui/.node-version
+          cache: npm
+          cache-dependency-path: server/web-ui/package-lock.json
+      - name: Show selected Node toolchain
+        run: |
+          node --version
+          npm --version
       - name: Install pinned Rust toolchain
         # Keep this version synchronized with server/rust-toolchain.toml for deterministic CI.
         run: rustup toolchain install 1.97.0 --profile minimal --component clippy --component rustfmt

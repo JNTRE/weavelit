@@ -23,7 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `Cargo.toml`: Rust workspace manifest for Server package crates.
 - `containers/`: Development and production Containerfiles for the Server.
 - `crates/`: Rust crate locations for the Server, Application Database contract and backends, and compiled-in modules.
-- `Makefile`: Standard local and CI entry point for Server Rust quality gates.
+- `Makefile`: Standard local and CI entry point for the Server Web UI and Rust quality gates.
 - `packaging/`: Release packaging assets for the Server package; `packaging/deb/` owns Debian-specific files.
 - `rust-toolchain.toml`: Pinned Rust toolchain and required quality-gate components.
 - `tests/`: Server-focused integration and end-to-end tests.

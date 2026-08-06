@@ -3,5 +3,7 @@
 .DS_Store
 target/
 **/target/
+**/node_modules/
+web-ui/dist/
 **/*.rs.bk
 **/*.pdb

@@ -15,12 +15,17 @@ The development image must:
 - target Ubuntu 26.04 LTS (`linux/amd64` and `linux/arm64`) and use a pinned multi-arch manifest digest;
 - install the Rust version and quality-gate components declared by
   `server/rust-toolchain.toml`;
+- install the Node.js runtime and bundled npm release declared by
+  `server/web-ui/.node-version`, verified against the published upstream
+  checksums for the build architecture, so the image can run the Web UI
+  install, typecheck, unit-test, production-build, and bundle-inventory stages
+  of `make check`;
 - provide `git` and the GitHub CLI (`gh`) for repository workflows; GitHub
   authentication must be supplied at runtime through persistent configuration
   outside the image and never embedded in the image;
 - run as a non-root development user;
-- use a mounted Server source tree and run `make check` for the complete Rust
-  quality-gate suite;
+- use a mounted Server source tree and run `make check` for the complete Web UI
+  and Rust quality-gate suite;
 - keep non-secret development configuration outside the image and receive it
   through environment variables;
 - persist the Server-owned deployment record and
@@ -57,6 +62,11 @@ Milestone 1 local validation. Its validation must run `make check` inside the
 container and confirm that source, state, and secret mounts follow this design.
 Validation must also confirm that the named state-root volume persists across
 container stop, rebuild, and restart boundaries.
+
+Browser-based end-to-end validation is not yet part of the image contract. The
+change that introduces the Web UI browser smoke test must add pinned Playwright
+browser binaries and their Ubuntu system dependencies to this image and record
+that support here.
 
 ## Related Documents
 
