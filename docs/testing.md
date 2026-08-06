@@ -90,6 +90,21 @@ Node and npm releases are pinned by `server/web-ui/.node-version` and
 `server/web-ui/package.json`, and every frontend dependency is pinned to an
 exact version and locked by `server/web-ui/package-lock.json`.
 
+After the Rust commands, `make -C server check` installs the pinned Chromium
+build and runs the Playwright suite in `server/web-ui/browser-tests/` against
+the release Server binary over its real direct-TLS listener. That suite covers
+the pre-operational status page load and the complete Application Database
+selection outcome: an operator selects SQLite through the Web UI control, the
+displayed status changes to selected within the same process, the Server is
+terminated with `SIGTERM` and its exit is awaited and asserted rather than
+assumed, and a second Server generation is started against the identical state
+root and listener port, where the reloaded page still reports the selected
+database. The Server installs no signal handler, so this exercises termination
+and restart rather than an orderly application shutdown; a successful restart is
+also evidence that the terminated process released the state-root lock and the
+listening socket. Each generation asserts the exact set of requests it served,
+which keeps the scenario inside the listener's per-source request-rate budget.
+
 The build content manifest has two test surfaces, one per consumer, because a
 silent mismatch between the writer and the verifier would reintroduce the stale
 embedded asset it exists to prevent. The Node suite covers manifest write mode,
