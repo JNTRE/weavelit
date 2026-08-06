@@ -63,7 +63,9 @@ const MAX_REQUEST_TARGET_BYTES: usize = 2 * 1024;
 const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_HEAD_BYTES: usize = MAX_REQUEST_TARGET_BYTES + MAX_REQUEST_HEADER_BYTES + 128;
 const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
-const RATE_LIMIT_BURST: u32 = 5;
+/// Sized so one source can serve a full Web UI page load, which costs one
+/// document, two asset, and one status request, plus two immediate reloads.
+const RATE_LIMIT_BURST: u32 = 12;
 const MAX_JSON_BODY_BYTES: usize = 128;
 const MAX_HTML_BODY_BYTES: usize = 16 * 1024;
 const MAX_JAVASCRIPT_BODY_BYTES: usize = 256 * 1024;
@@ -1372,12 +1374,12 @@ mod tests {
 
     use super::{
         ASSET_SECURITY_HEADERS, BoundedResponse, ConnectionSlots, ConnectionTimeouts,
-        REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT, RateLimiter, ResponseProfile,
-        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, gateway_timeout_response, parse_http_request,
-        processing_response, raw_header_section_bytes, read_http_request,
-        read_http_request_with_timeout, request_timeout_response, restricted_routes,
-        serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
-        serve_restricted_https_listener,
+        RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT,
+        REQUEST_READ_TIMEOUT, RateLimiter, ResponseProfile, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
+        gateway_timeout_response, parse_http_request, processing_response,
+        raw_header_section_bytes, read_http_request, read_http_request_with_timeout,
+        request_timeout_response, restricted_routes, serve_normal_connection_with_timeouts,
+        serve_rejection_connection_with_timeouts, serve_restricted_https_listener,
     };
 
     async fn response_body(response: axum::response::Response) -> String {
@@ -2466,7 +2468,7 @@ mod tests {
             StartupOutcome::UninitializedWithoutDatabase,
         ));
 
-        for _ in 0..5 {
+        for _ in 0..RATE_LIMIT_BURST {
             let mut client = tls_client(address, Arc::clone(&client_config)).await;
             client
                 .write_all(b"GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
@@ -2486,6 +2488,44 @@ mod tests {
         let _ = client.read_to_end(&mut response).await;
         assert!(response.starts_with(b"HTTP/1.1 429 \r\n"));
         assert!(response.ends_with(b"{\"error\":\"rate_limited\"}"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rate_limit_admits_two_consecutive_web_ui_page_loads() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (server_config, client_config) = tls_configs();
+        let server = tokio::spawn(serve_restricted_https_listener(
+            listener,
+            server_config,
+            StartupOutcome::UninitializedWithoutDatabase,
+        ));
+
+        for load in 0..2 {
+            for target in [
+                "/",
+                "/assets/application.js",
+                "/assets/application.css",
+                "/api/v1/status",
+            ] {
+                let mut client = tls_client(address, Arc::clone(&client_config)).await;
+                client
+                    .write_all(
+                        format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                let mut response = Vec::new();
+                let _ = client.read_to_end(&mut response).await;
+                assert!(
+                    response.starts_with(b"HTTP/1.1 200 \r\n"),
+                    "load {load} of {target} was not admitted: {:?}",
+                    String::from_utf8_lossy(&response[..response.len().min(64)])
+                );
+            }
+        }
 
         server.abort();
     }
@@ -2540,7 +2580,7 @@ mod tests {
             ),
         ] {
             let rate_limiter = Arc::new(RateLimiter::new());
-            for _ in 0..5 {
+            for _ in 0..RATE_LIMIT_BURST {
                 let response = direct_tls_response_with_rate_limiter(
                     restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
                     Arc::clone(&server_config),
@@ -2617,7 +2657,7 @@ mod tests {
             };
             assert_fixed_tls_response(&response, status, body, false);
 
-            for _ in 0..5 {
+            for _ in 0..RATE_LIMIT_BURST {
                 let response = direct_tls_response_with_rate_limiter(
                     restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
                     Arc::clone(&server_config),
@@ -2670,7 +2710,7 @@ mod tests {
         let rate_limiter = Arc::new(RateLimiter::new());
         let source = "127.0.0.1".parse().unwrap();
         let now = std::time::Instant::now();
-        for _ in 0..5 {
+        for _ in 0..RATE_LIMIT_BURST {
             assert!(rate_limiter.allows(source, now));
         }
 
@@ -3065,15 +3105,16 @@ mod tests {
     }
 
     #[test]
-    fn rate_limiter_allows_burst_five_then_refills_at_twenty_per_minute() {
+    fn rate_limiter_allows_the_configured_burst_then_refills_at_the_sustained_rate() {
         let limiter = RateLimiter::new();
         let source = "127.0.0.1".parse().unwrap();
         let now = std::time::Instant::now();
-        for _ in 0..5 {
+        for _ in 0..RATE_LIMIT_BURST {
             assert!(limiter.allows(source, now));
         }
         assert!(!limiter.allows(source, now));
-        assert!(limiter.allows(source, now + Duration::from_secs(3)));
+        let refill = Duration::from_secs(60 / u64::from(RATE_LIMIT_REQUESTS_PER_MINUTE));
+        assert!(limiter.allows(source, now + refill));
     }
 
     #[tokio::test]

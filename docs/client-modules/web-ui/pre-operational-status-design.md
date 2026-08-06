@@ -100,8 +100,12 @@ fixed `503` response above; it never dispatches an application route or state
 work. Further overflow is transport-rejected without an HTTP response. The
 request-read and total-processing bounds also apply to the rejection path, and
 every slot releases deterministically when its connection ends. Each source may
-make 20 route requests per minute with a burst of 5. Every response is fixed
-and no larger than 128 bytes.
+make 20 route requests per minute with a burst of 12. One token bucket per
+source covers the whole listener: the status route and every embedded asset
+route draw from the same per-source budget, so a single browser page load
+consumes one slot for the document, one for each asset, and one for the status
+request. The burst therefore admits a full page load plus two immediate
+reloads. Every response is fixed and no larger than 128 bytes.
 
 ## Network And Browser Exposure
 
