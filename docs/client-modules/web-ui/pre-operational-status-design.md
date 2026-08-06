@@ -2,9 +2,11 @@
 
 This document defines the Web UI **[Client Module](../../glossary.md#applications-and-interfaces)** transport contract for the Milestone 1 pre-operational status surface. It owns the route, public results, rejection behavior, and compatibility policy for `GET /api/v1/status`. The [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md) owns trusted lifecycle classification and route availability; the [Security Model](../../security-model.md) owns the cross-cutting security profile.
 
-This surface does not implement Init, Restore, Application Database selection,
-or normal client functions. It does not own the same Client Module's embedded
-Web UI asset delivery, which the
+This surface does not implement Init, Restore, or normal client functions. It
+does not own the Application Database selection transport contract, which the
+[Web UI Pre-Operational Database Selection Surface](pre-operational-database-selection-design.md)
+owns. It does not own the same Client Module's embedded Web UI asset delivery,
+which the
 [Embedded Asset Delivery Design](embedded-asset-delivery-design.md) owns, or the
 Web UI application's presentation and client-side behavior, which the
 [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
@@ -15,10 +17,12 @@ owns.
 The compiled-in Web UI Client Module provides one transport-only
 **[Pre-Operational Surface](../../glossary.md#applications-and-interfaces)** in
 Milestone 1. It maps the Server-owned lifecycle status projection to the
-contract below. The Server runtime owns direct TLS, listener and route
-composition, and lifecycle gating; the lifecycle boundary owns the typed status
-value. This module declares no User Plane or Administration Plane in this
-foundation.
+contract below, and separately exposes the Application Database selection
+capability defined by the
+[Web UI Pre-Operational Database Selection Surface](pre-operational-database-selection-design.md).
+The Server runtime owns direct TLS, listener and route composition, and
+lifecycle gating; the lifecycle boundary owns the typed status value. This
+module declares no User Plane or Administration Plane in this foundation.
 
 The **[Weavelit CLI](../../glossary.md#applications-and-interfaces)** has no
 pre-operational status surface. A later decision is required before any Init,
@@ -45,9 +49,13 @@ has exactly this shape:
 `lifecycle` is always the literal string `uninitialized`.
 `database_selected` reports only whether an
 **[Application Database](../../glossary.md#applications-and-interfaces)** has
-been selected. The response must not reveal database kind or configuration,
-deployment identifiers, host information, filesystem information, diagnostics,
-health detail, or another lifecycle detail.
+been selected. It reflects the current lifecycle projection rather than a value
+fixed at startup, so it becomes `true` within the same pre-operational session
+once a selection succeeds through the
+[Web UI Pre-Operational Database Selection Surface](pre-operational-database-selection-design.md).
+The response must not reveal database kind or configuration, deployment
+identifiers, host information, filesystem information, diagnostics, health
+detail, or another lifecycle detail.
 
 ## Lifecycle Availability
 
@@ -145,6 +153,7 @@ listener; response-size bounds; and redaction. The Server quality gate remains
 
 ## Related Documents
 
+- [Web UI Pre-Operational Database Selection Surface](pre-operational-database-selection-design.md)
 - [Embedded Asset Delivery Design](embedded-asset-delivery-design.md)
 - [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
 - [Technical Specification](../../spec.md)

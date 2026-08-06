@@ -6,6 +6,9 @@ publish = false
 
 [dependencies]
 axum.workspace = true
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+weavelit-server-lifecycle = { path = "../../../core/weavelit-server-lifecycle" }
 
 # Build metadata only: the build script re-hashes the Web UI bundle inputs and
 # generated assets to prove the embedded output is current. Neither dependency

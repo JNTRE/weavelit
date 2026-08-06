@@ -118,9 +118,12 @@ by Client Modules. Each Pre-Operational Surface MUST expose only the restricted
 status, Init, and Restore contracts corresponding to capabilities explicitly
 declared by its Client Module. Pre-Operational Surfaces MUST remain distinct
 from the User Plane and Administration Plane, and normal application functions
-MUST remain unavailable in this state. Milestone 1 declares only the Web UI
-Client Module's status capability; its exact contract is defined by the
-[Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
+MUST remain unavailable in this state. The Web UI Client Module declares the
+status and Application Database selection capabilities; their exact contracts
+are defined by the
+[Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md)
+and the
+[Web UI Pre-Operational Database Selection Surface](client-modules/web-ui/pre-operational-database-selection-design.md).
 Network reachability MUST be limited through TLS, firewall, and other deployment
 network controls. During normal operation, client authentication is additionally
 REQUIRED. While the Server is uninitialized, the deployer is responsible for

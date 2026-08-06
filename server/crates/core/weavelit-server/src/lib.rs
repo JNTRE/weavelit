@@ -1087,11 +1087,16 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
 fn fixed_json_body(body: &[u8]) -> Option<&'static str> {
     match body {
         b"{\"error\":\"bad_request\"}" => Some("{\"error\":\"bad_request\"}"),
+        b"{\"error\":\"database_selection_not_allowed\"}" => {
+            Some("{\"error\":\"database_selection_not_allowed\"}")
+        }
         b"{\"error\":\"method_not_allowed\"}" => Some("{\"error\":\"method_not_allowed\"}"),
         b"{\"error\":\"not_found\"}" => Some("{\"error\":\"not_found\"}"),
         b"{\"error\":\"request_header_fields_too_large\"}" => {
             Some("{\"error\":\"request_header_fields_too_large\"}")
         }
+        b"{\"error\":\"request_origin_denied\"}" => Some("{\"error\":\"request_origin_denied\"}"),
+        b"{\"error\":\"service_unavailable\"}" => Some("{\"error\":\"service_unavailable\"}"),
         b"{\"error\":\"uri_too_long\"}" => Some("{\"error\":\"uri_too_long\"}"),
         b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}" => {
             Some("{\"lifecycle\":\"uninitialized\",\"database_selected\":false}")
@@ -1371,15 +1376,18 @@ mod tests {
     };
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
+    use weavelit_module_client_webui::DatabaseSelectionRejection;
+    use weavelit_server_lifecycle::LifecycleProjection;
 
     use super::{
         ASSET_SECURITY_HEADERS, BoundedResponse, ConnectionSlots, ConnectionTimeouts,
         RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT,
         REQUEST_READ_TIMEOUT, RateLimiter, ResponseProfile, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
-        gateway_timeout_response, parse_http_request, processing_response,
-        raw_header_section_bytes, read_http_request, read_http_request_with_timeout,
-        request_timeout_response, restricted_routes, serve_normal_connection_with_timeouts,
-        serve_rejection_connection_with_timeouts, serve_restricted_https_listener,
+        bounded_response_from_axum, gateway_timeout_response, parse_http_request,
+        processing_response, raw_header_section_bytes, read_http_request,
+        read_http_request_with_timeout, request_timeout_response, restricted_routes,
+        serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
+        serve_restricted_https_listener,
     };
 
     async fn response_body(response: axum::response::Response) -> String {
@@ -3064,6 +3072,40 @@ mod tests {
         )
         .await;
         assert_fixed_tls_response(&unknown_json, 200, "{\"error\":\"gateway_timeout\"}", false);
+    }
+
+    /// Every database-selection body the Web UI Client Module can emit must be
+    /// in the fixed-JSON allowlist, or the bounding step silently replaces it
+    /// with the redacted gateway-timeout body.
+    #[tokio::test]
+    async fn database_selection_bodies_survive_the_fixed_json_allowlist() {
+        let success = weavelit_module_client_webui::database_selection_response(
+            &LifecycleProjection::new(true),
+        );
+        let bounded = bounded_response_from_axum(success).await;
+        assert_eq!(bounded.status, StatusCode::OK);
+        assert_eq!(
+            bounded.body.as_ref(),
+            b"{\"lifecycle\":\"uninitialized\",\"database_selected\":true}".as_slice()
+        );
+
+        for rejection in [
+            DatabaseSelectionRejection::BadRequest,
+            DatabaseSelectionRejection::RequestOriginDenied,
+            DatabaseSelectionRejection::MethodNotAllowed,
+            DatabaseSelectionRejection::DatabaseSelectionNotAllowed,
+            DatabaseSelectionRejection::ServiceUnavailable,
+        ] {
+            let expected = rejection.body();
+            let bounded = bounded_response_from_axum(rejection.response()).await;
+            assert_eq!(bounded.status, rejection.status(), "{rejection:?}");
+            assert_eq!(bounded.profile, ResponseProfile::Json, "{rejection:?}");
+            assert_eq!(
+                bounded.body.as_ref(),
+                expected.as_bytes(),
+                "{rejection:?} was redacted instead of returned"
+            );
+        }
     }
 
     #[tokio::test]
