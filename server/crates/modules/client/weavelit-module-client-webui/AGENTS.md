@@ -23,7 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `Cargo.toml`: Compiled-in Web UI Client Module package manifest.
 - `build.rs`: Fail-closed check that the generated Web UI production assets embedded by this crate exist and are current before compilation.
 - `build_manifest.rs`: Bundle-input inventory, SHA-256 hashing, and strict build content manifest verification used by `build.rs`.
-- `src/lib.rs`: Pre-operational status request translation, the compile-time Web UI asset allowlist and its delivery routes, and contract tests.
+- `src/lib.rs`: Pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the compile-time Web UI asset allowlist and its delivery routes, and contract tests.
 - `tests/build_manifest.rs`: Tests for the build-time asset freshness verification.
 
 ## Usage Guidance
