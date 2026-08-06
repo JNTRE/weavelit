@@ -20,6 +20,15 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and Server Web UI source-boundary rules.
+- `.node-version`: Pinned Node.js release used by local development, the development container, and CI.
+- `.npmrc`: npm client settings that force exact version pinning and engine enforcement.
+- `index.html`: Vite entry document for the single-page application.
+- `package.json`: Web UI manifest, exact dependency pins, and build, test, and validation scripts.
+- `package-lock.json`: Fully resolved npm dependency lock for reproducible installs.
+- `scripts/`: Build-output validation scripts run by the Server quality gate.
+- `src/`: TypeScript and React application source and its unit tests.
+- `tsconfig.json`: TypeScript compiler configuration for the application and its tests.
+- `vite.config.ts`: Vite build, deterministic output-naming, and Vitest configuration.
 
 ## Usage Guidance
 
