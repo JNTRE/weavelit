@@ -600,6 +600,24 @@ pub enum LifecycleClassification {
     Initialized,
 }
 
+/// Transport-neutral live lifecycle view observed under the mutation permit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LifecycleProjection {
+    database_selected: bool,
+}
+
+impl LifecycleProjection {
+    /// Creates a projection from observed lifecycle state.
+    pub const fn new(database_selected: bool) -> Self {
+        Self { database_selected }
+    }
+
+    /// Returns whether an Application Database is currently selected.
+    pub const fn database_selected(&self) -> bool {
+        self.database_selected
+    }
+}
+
 /// Redacted operator action required for verified retained lifecycle work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InterruptedLifecycleAction {

@@ -195,6 +195,37 @@ pub enum SelectionError {
     Lifecycle(LifecycleError),
 }
 
+/// Caller-visible family of a database-selection failure.
+///
+/// Transport boundaries map each family to their own outcome; this crate stays
+/// transport-neutral and only classifies the condition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectionFailureKind {
+    /// The submitted backend or connection values were invalid.
+    RequestInvalid,
+    /// Current lifecycle state no longer permits the requested selection.
+    Conflict,
+    /// A backend, integrity, persistence, or serialization failure prevented selection.
+    Unavailable,
+}
+
+impl SelectionError {
+    /// Returns the caller-visible family this failure belongs to.
+    pub const fn kind(&self) -> SelectionFailureKind {
+        match self {
+            Self::Open(BackendOpenError::ConnectionInvalid(_)) => {
+                SelectionFailureKind::RequestInvalid
+            }
+            Self::NotAllowed | Self::CandidateIneligible | Self::ReplacementIneligible => {
+                SelectionFailureKind::Conflict
+            }
+            Self::Open(BackendOpenError::Factory(_)) | Self::Lifecycle(_) => {
+                SelectionFailureKind::Unavailable
+            }
+        }
+    }
+}
+
 impl fmt::Display for SelectionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
