@@ -5,11 +5,11 @@
  */
 
 /** The only path this application requests. */
-export const STATUS_PATH = '/api/v1/status';
+export const STATUS_PATH = "/api/v1/status";
 
 /** The documented pre-operational status projection. */
 export interface PreOperationalStatus {
-  readonly lifecycle: 'uninitialized';
+  readonly lifecycle: "uninitialized";
   readonly databaseSelected: boolean;
 }
 
@@ -21,8 +21,8 @@ export interface PreOperationalStatus {
  */
 export class StatusUnavailableError extends Error {
   constructor() {
-    super('status_unavailable');
-    this.name = 'StatusUnavailableError';
+    super("status_unavailable");
+    this.name = "StatusUnavailableError";
   }
 }
 
@@ -34,18 +34,18 @@ export class StatusUnavailableError extends Error {
  * ignored, as the versioned contract permits additive changes in `/api/v1/`.
  */
 export function parsePreOperationalStatus(payload: unknown): PreOperationalStatus | null {
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     return null;
   }
   const candidate = payload as Record<string, unknown>;
-  if (candidate['lifecycle'] !== 'uninitialized') {
+  if (candidate.lifecycle !== "uninitialized") {
     return null;
   }
-  const databaseSelected = candidate['database_selected'];
-  if (typeof databaseSelected !== 'boolean') {
+  const databaseSelected = candidate.database_selected;
+  if (typeof databaseSelected !== "boolean") {
     return null;
   }
-  return { lifecycle: 'uninitialized', databaseSelected };
+  return { lifecycle: "uninitialized", databaseSelected };
 }
 
 /**
@@ -60,11 +60,11 @@ export async function fetchPreOperationalStatus(
   let response: Response;
   try {
     response = await fetch(STATUS_PATH, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      credentials: 'omit',
-      cache: 'no-store',
-      redirect: 'error',
+      method: "GET",
+      headers: { Accept: "application/json" },
+      credentials: "omit",
+      cache: "no-store",
+      redirect: "error",
       ...(signal ? { signal } : {}),
     });
   } catch {

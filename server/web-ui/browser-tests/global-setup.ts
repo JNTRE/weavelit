@@ -1,5 +1,5 @@
-import { accessSync, constants, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { accessSync, constants, rmSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   createFixtureRoot,
@@ -11,7 +11,7 @@ import {
   waitForServerReady,
   writeFixtureState,
   type ServerSpawnConfiguration,
-} from './fixture-support';
+} from "./fixture-support";
 
 export default async function globalSetup(): Promise<void> {
   const binary = releaseBinaryPath();
@@ -20,13 +20,13 @@ export default async function globalSetup(): Promise<void> {
   } catch {
     throw new Error(
       `The release Server binary is missing at ${binary}. ` +
-        'Run `cargo build --locked --workspace --release` before the browser smoke test.',
+        "Run `cargo build --locked --workspace --release` before the browser smoke test.",
     );
   }
 
   const fixtureRoot = createFixtureRoot();
-  const stdoutPath = join(fixtureRoot, 'server-stdout.log');
-  const stderrPath = join(fixtureRoot, 'server-stderr.log');
+  const stdoutPath = join(fixtureRoot, "server-stdout.log");
+  const stderrPath = join(fixtureRoot, "server-stderr.log");
 
   try {
     const { certificatePath, privateKeyPath } = generateTlsMaterial(fixtureRoot);
@@ -46,7 +46,7 @@ export default async function globalSetup(): Promise<void> {
     try {
       await waitForServerReady(server, configuration);
     } catch (error) {
-      server.kill('SIGKILL');
+      server.kill("SIGKILL");
       throw error;
     }
 

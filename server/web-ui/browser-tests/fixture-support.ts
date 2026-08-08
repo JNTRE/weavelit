@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
   createWriteStream,
@@ -7,12 +7,12 @@ import {
   readFileSync,
   realpathSync,
   writeFileSync,
-} from 'node:fs';
-import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { connect as connectTls } from 'node:tls';
-import { fileURLToPath } from 'node:url';
+} from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { connect as connectTls } from "node:tls";
+import { fileURLToPath } from "node:url";
 
 const READY_TIMEOUT_MS = 20_000;
 const READY_POLL_INTERVAL_MS = 100;
@@ -28,17 +28,20 @@ export interface FixtureState {
 }
 
 /** Environment variable carrying the handoff record path into the worker processes. */
-export const FIXTURE_STATE_ENV = 'WEAVELIT_BROWSER_FIXTURE_STATE';
+export const FIXTURE_STATE_ENV = "WEAVELIT_BROWSER_FIXTURE_STATE";
 
-const webUiDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const webUiDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Absolute path of the release Server binary the smoke test exercises. */
 export function releaseBinaryPath(): string {
-  return process.env['WEAVELIT_SERVER_BINARY'] ?? resolve(webUiDirectory, '../target/release/weavelit-server');
+  return (
+    process.env["WEAVELIT_SERVER_BINARY"] ??
+    resolve(webUiDirectory, "../target/release/weavelit-server")
+  );
 }
 
 /** Creates the isolated fixture directory tree with owner-only permissions. */
-export function createFixtureRoot(prefix = 'weavelit-browser-smoke-'): string {
+export function createFixtureRoot(prefix = "weavelit-browser-smoke-"): string {
   const created = mkdtempSync(join(realpathSync(tmpdir()), prefix));
   // The Server rejects TLS material reached through a symlinked path component.
   const fixtureRoot = realpathSync(created);
@@ -57,30 +60,30 @@ export function generateTlsMaterial(fixtureRoot: string): {
   certificatePath: string;
   privateKeyPath: string;
 } {
-  const certificatePath = join(fixtureRoot, 'certificate.pem');
-  const privateKeyPath = join(fixtureRoot, 'private-key.pem');
+  const certificatePath = join(fixtureRoot, "certificate.pem");
+  const privateKeyPath = join(fixtureRoot, "private-key.pem");
 
   execFileSync(
-    'openssl',
+    "openssl",
     [
-      'req',
-      '-x509',
-      '-newkey',
-      'rsa:2048',
-      '-sha256',
-      '-days',
-      '1',
-      '-noenc',
-      '-subj',
-      '/CN=localhost',
-      '-addext',
-      'subjectAltName=DNS:localhost,IP:127.0.0.1',
-      '-keyout',
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-sha256",
+      "-days",
+      "1",
+      "-noenc",
+      "-subj",
+      "/CN=localhost",
+      "-addext",
+      "subjectAltName=DNS:localhost,IP:127.0.0.1",
+      "-keyout",
       privateKeyPath,
-      '-out',
+      "-out",
       certificatePath,
     ],
-    { stdio: ['ignore', 'ignore', 'pipe'] },
+    { stdio: ["ignore", "ignore", "pipe"] },
   );
 
   chmodSync(privateKeyPath, 0o600);
@@ -90,7 +93,7 @@ export function generateTlsMaterial(fixtureRoot: string): {
 
 /** Creates the isolated, empty state root the Server classifies at startup. */
 export function createStateRoot(fixtureRoot: string): string {
-  const stateRoot = join(fixtureRoot, 'state-root');
+  const stateRoot = join(fixtureRoot, "state-root");
   mkdirSync(stateRoot, { mode: 0o700 });
   chmodSync(stateRoot, 0o700);
   return stateRoot;
@@ -102,12 +105,12 @@ export function readFixtureState(): FixtureState {
   if (path === undefined) {
     throw new Error(`${FIXTURE_STATE_ENV} is not set; the browser fixture did not start`);
   }
-  return JSON.parse(readFileSync(path, 'utf8')) as FixtureState;
+  return JSON.parse(readFileSync(path, "utf8")) as FixtureState;
 }
 
 /** Writes the handoff record and publishes its path to the worker processes. */
 export function writeFixtureState(fixtureRoot: string, state: FixtureState): string {
-  const path = join(fixtureRoot, 'fixture-state.json');
+  const path = join(fixtureRoot, "fixture-state.json");
   writeFileSync(path, JSON.stringify(state), { mode: 0o600 });
   process.env[FIXTURE_STATE_ENV] = path;
   return path;
@@ -124,11 +127,11 @@ export async function delay(milliseconds: number): Promise<void> {
 export async function reserveLoopbackPort(): Promise<number> {
   return new Promise<number>((resolvePort, rejectPort) => {
     const probe = createServer();
-    probe.once('error', rejectPort);
-    probe.listen(0, '127.0.0.1', () => {
+    probe.once("error", rejectPort);
+    probe.listen(0, "127.0.0.1", () => {
       const address = probe.address();
-      if (address === null || typeof address === 'string') {
-        probe.close(() => rejectPort(new Error('could not reserve a loopback port')));
+      if (address === null || typeof address === "string") {
+        probe.close(() => rejectPort(new Error("could not reserve a loopback port")));
         return;
       }
       const { port } = address;
@@ -181,15 +184,15 @@ export function spawnServer(configuration: ServerSpawnConfiguration): RunningSer
       WEAVELIT_TLS_PRIVATE_KEY_PATH: configuration.privateKeyPath,
       WEAVELIT_STATE_ROOT: configuration.stateRoot,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ["ignore", "pipe", "pipe"],
   });
   // Appending keeps every generation's output across a restart.
-  child.stdout.pipe(createWriteStream(configuration.stdoutPath, { flags: 'a' }));
-  child.stderr.pipe(createWriteStream(configuration.stderrPath, { flags: 'a' }));
+  child.stdout.pipe(createWriteStream(configuration.stdoutPath, { flags: "a" }));
+  child.stderr.pipe(createWriteStream(configuration.stderrPath, { flags: "a" }));
 
   let exit: ServerExit | null = null;
   const exited = new Promise<ServerExit>((resolveExit) => {
-    child.once('exit', (code, signal) => {
+    child.once("exit", (code, signal) => {
       const observed = { code, signal };
       exit = observed;
       resolveExit(observed);
@@ -212,7 +215,7 @@ export function spawnServer(configuration: ServerSpawnConfiguration): RunningSer
 }
 
 function parseListenerAddress(listenerAddress: string): { host: string; port: number } {
-  const separator = listenerAddress.lastIndexOf(':');
+  const separator = listenerAddress.lastIndexOf(":");
   return {
     host: listenerAddress.slice(0, separator),
     port: Number(listenerAddress.slice(separator + 1)),
@@ -234,8 +237,8 @@ async function acceptsTlsConnections(listenerAddress: string): Promise<boolean> 
       socket.destroy();
       resolveProbe(accepted);
     };
-    socket.once('secureConnect', () => settle(true));
-    socket.once('error', () => settle(false));
+    socket.once("secureConnect", () => settle(true));
+    socket.once("error", () => settle(false));
   });
 }
 
@@ -243,14 +246,14 @@ async function acceptsTlsConnections(listenerAddress: string): Promise<boolean> 
 export function serverDiagnostics(configuration: ServerSpawnConfiguration): string {
   const read = (path: string): string => {
     try {
-      return readFileSync(path, 'utf8').trim();
+      return readFileSync(path, "utf8").trim();
     } catch {
-      return '<unreadable>';
+      return "<unreadable>";
     }
   };
   return (
-    `\n  Server stderr: ${read(configuration.stderrPath) || '<empty>'}` +
-    `\n  Server stdout: ${read(configuration.stdoutPath) || '<empty>'}`
+    `\n  Server stderr: ${read(configuration.stderrPath) || "<empty>"}` +
+    `\n  Server stdout: ${read(configuration.stdoutPath) || "<empty>"}`
   );
 }
 
@@ -298,7 +301,7 @@ export async function terminateServer(server: RunningServer): Promise<ServerExit
   if (already !== null) {
     return already;
   }
-  server.kill('SIGTERM');
+  server.kill("SIGTERM");
   let timer: NodeJS.Timeout | undefined;
   const expiry = new Promise<never>((_resolveNever, rejectExpiry) => {
     timer = setTimeout(() => {

@@ -1,7 +1,7 @@
 NPM ?= npm
 WEB_UI_DIR := web-ui
 
-.PHONY: check check-web-ui check-rust web-ui-install web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify web-ui-browser-install web-ui-browser-test
+.PHONY: check check-web-ui check-rust web-ui-install web-ui-format web-ui-lint web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify web-ui-browser-install web-ui-browser-test
 
 # The browser smoke test drives the release binary produced by `check-rust`, so
 # the stages of this gate must not be reordered or run concurrently.
@@ -9,7 +9,13 @@ WEB_UI_DIR := web-ui
 
 check: check-web-ui check-rust web-ui-browser-test
 
-check-web-ui: web-ui-install web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify
+check-web-ui: web-ui-install web-ui-format web-ui-lint web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify
+
+web-ui-format:
+	cd $(WEB_UI_DIR) && $(NPM) run format:check
+
+web-ui-lint:
+	cd $(WEB_UI_DIR) && $(NPM) run lint
 
 web-ui-install:
 	cd $(WEB_UI_DIR) && $(NPM) ci

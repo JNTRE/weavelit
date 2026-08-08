@@ -6,10 +6,10 @@
  * `docs/client-modules/web-ui/pre-operational-database-selection-design.md`.
  */
 
-import { parsePreOperationalStatus, type PreOperationalStatus } from './weavelit-init-status';
+import { parsePreOperationalStatus, type PreOperationalStatus } from "./weavelit-init-status";
 
 /** The selection route this application requests. */
-export const DATABASE_SELECTION_PATH = '/api/v1/application-database';
+export const DATABASE_SELECTION_PATH = "/api/v1/application-database";
 
 /**
  * The exact request body the route accepts.
@@ -28,8 +28,8 @@ export const SQLITE_SELECTION_BODY = '{"backend":"sqlite","settings":{}}';
  */
 export class DatabaseSelectionFailedError extends Error {
   constructor() {
-    super('database_selection_failed');
-    this.name = 'DatabaseSelectionFailedError';
+    super("database_selection_failed");
+    this.name = "DatabaseSelectionFailedError";
   }
 }
 
@@ -44,7 +44,7 @@ export class DatabaseSelectionFailedError extends Error {
  */
 export function parseDatabaseSelectionResult(payload: unknown): PreOperationalStatus | null {
   const status = parsePreOperationalStatus(payload);
-  if (status === null || !status.databaseSelected) {
+  if (!status?.databaseSelected) {
     return null;
   }
   return status;
@@ -65,16 +65,16 @@ export async function selectSqliteDatabase(signal?: AbortSignal): Promise<PreOpe
   let response: Response;
   try {
     response = await fetch(DATABASE_SELECTION_PATH, {
-      method: 'PUT',
+      method: "PUT",
       headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'X-Weavelit-CSRF': '1',
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Weavelit-CSRF": "1",
       },
       body: SQLITE_SELECTION_BODY,
-      credentials: 'omit',
-      cache: 'no-store',
-      redirect: 'error',
+      credentials: "omit",
+      cache: "no-store",
+      redirect: "error",
       ...(signal ? { signal } : {}),
     });
   } catch {

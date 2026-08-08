@@ -14,21 +14,21 @@
 //            inputs and outputs. This mode never writes the manifest, so a
 //            stale build can never be blessed by re-running verification.
 
-import { createHash } from 'node:crypto';
-import { gzipSync } from 'node:zlib';
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join, posix, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, posix, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const KIB = 1024;
 
-export const MANIFEST_FILE_NAME = 'build-manifest.json';
+export const MANIFEST_FILE_NAME = "build-manifest.json";
 export const MANIFEST_FORMAT_VERSION = 1;
 
 export const EXPECTED_ASSETS = new Map([
-  ['index.html', 16 * KIB],
-  ['assets/weavelit-application.js', 256 * KIB],
-  ['assets/weavelit-application.css', 64 * KIB],
+  ["index.html", 16 * KIB],
+  ["assets/weavelit-application.js", 256 * KIB],
+  ["assets/weavelit-application.css", 64 * KIB],
 ]);
 
 const COMBINED_LIMIT = 336 * KIB;
@@ -39,19 +39,19 @@ const COMBINED_LIMIT = 336 * KIB;
 // reach the production bundle, and including them would make editing a unit
 // test fail an otherwise correct Rust build.
 const CONFIGURATION_INPUTS = [
-  'index.html',
-  'package-lock.json',
-  'package.json',
-  'tsconfig.json',
-  'vite.config.ts',
+  "index.html",
+  "package-lock.json",
+  "package.json",
+  "tsconfig.json",
+  "vite.config.ts",
 ];
 
-const SOURCE_DIRECTORY = 'src';
+const SOURCE_DIRECTORY = "src";
 
-const TEST_ONLY_SUFFIXES = ['.test.ts', '.test.tsx'];
-const TEST_ONLY_NAMES = ['test-setup.ts'];
+const TEST_ONLY_SUFFIXES = [".test.ts", ".test.tsx"];
+const TEST_ONLY_NAMES = ["test-setup.ts"];
 
-const webUiRootDefault = fileURLToPath(new URL('..', import.meta.url));
+const webUiRootDefault = fileURLToPath(new URL("..", import.meta.url));
 
 function toPosix(value) {
   return value.split(sep).join(posix.sep);
@@ -69,7 +69,9 @@ function listFiles(directory) {
 
 function isTestOnly(relativePath) {
   const name = relativePath.slice(relativePath.lastIndexOf(posix.sep) + 1);
-  return TEST_ONLY_SUFFIXES.some((suffix) => name.endsWith(suffix)) || TEST_ONLY_NAMES.includes(name);
+  return (
+    TEST_ONLY_SUFFIXES.some((suffix) => name.endsWith(suffix)) || TEST_ONLY_NAMES.includes(name)
+  );
 }
 
 /** Returns the deterministic, sorted list of bundle input paths, relative to the Web UI root. */
@@ -90,7 +92,7 @@ export function collectInputInventory(webUiRoot) {
 }
 
 function hashFile(path) {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 function hashInto(baseDirectory, names) {
@@ -126,7 +128,9 @@ function compareHashes(label, recorded, actual, failures) {
     if (!Object.hasOwn(recorded, name)) {
       failures.push(`Build content manifest has no recorded ${label}: ${name}`);
     } else if (recorded[name] !== actual[name]) {
-      failures.push(`Build content manifest ${label} hash does not match the current file: ${name}`);
+      failures.push(
+        `Build content manifest ${label} hash does not match the current file: ${name}`,
+      );
     }
   }
   for (const name of Object.keys(recorded)) {
@@ -146,12 +150,12 @@ export function checkManifest(webUiRoot, distDirectory) {
   const failures = [];
   let recorded;
   try {
-    recorded = JSON.parse(readFileSync(manifestPath(distDirectory), 'utf8'));
+    recorded = JSON.parse(readFileSync(manifestPath(distDirectory), "utf8"));
   } catch (error) {
     return [`Build content manifest is missing or unreadable: ${error.message}`];
   }
-  if (recorded === null || typeof recorded !== 'object' || Array.isArray(recorded)) {
-    return ['Build content manifest is not a JSON object.'];
+  if (recorded === null || typeof recorded !== "object" || Array.isArray(recorded)) {
+    return ["Build content manifest is not a JSON object."];
   }
   if (recorded.format_version !== MANIFEST_FORMAT_VERSION) {
     return [
@@ -160,14 +164,14 @@ export function checkManifest(webUiRoot, distDirectory) {
   }
 
   const current = buildManifest(webUiRoot, distDirectory);
-  for (const section of ['inputs', 'assets']) {
+  for (const section of ["inputs", "assets"]) {
     const value = recorded[section];
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
       failures.push(`Build content manifest section is missing or not an object: ${section}`);
       continue;
     }
     compareHashes(
-      section === 'inputs' ? 'bundle input' : 'generated asset',
+      section === "inputs" ? "bundle input" : "generated asset",
       value,
       current[section],
       failures,
@@ -200,8 +204,10 @@ export function validateBundle(distDirectory, log = console.log) {
   let combinedRaw = 0;
   let combinedGzip = 0;
 
-  log('Weavelit Web UI production bundle report');
-  log(`  ${'asset'.padEnd(24)} ${'raw'.padStart(21)} ${'gzip'.padStart(21)} ${'limit'.padStart(21)}`);
+  log("Weavelit Web UI production bundle report");
+  log(
+    `  ${"asset".padEnd(24)} ${"raw".padStart(21)} ${"gzip".padStart(21)} ${"limit".padStart(21)}`,
+  );
 
   for (const [name, limit] of EXPECTED_ASSETS) {
     if (!actual.includes(name)) {
@@ -219,10 +225,12 @@ export function validateBundle(distDirectory, log = console.log) {
   }
 
   log(
-    `  ${'combined'.padEnd(24)} ${formatBytes(combinedRaw)} ${formatBytes(combinedGzip)} ${formatBytes(COMBINED_LIMIT)}`,
+    `  ${"combined".padEnd(24)} ${formatBytes(combinedRaw)} ${formatBytes(combinedGzip)} ${formatBytes(COMBINED_LIMIT)}`,
   );
   if (combinedRaw > COMBINED_LIMIT) {
-    failures.push(`Combined build output exceeds its raw size limit: ${combinedRaw} B > ${COMBINED_LIMIT} B`);
+    failures.push(
+      `Combined build output exceeds its raw size limit: ${combinedRaw} B > ${COMBINED_LIMIT} B`,
+    );
   }
 
   return failures;
@@ -231,34 +239,34 @@ export function validateBundle(distDirectory, log = console.log) {
 export function run(
   argv,
   webUiRoot = webUiRootDefault,
-  distDirectory = join(webUiRoot, 'dist'),
+  distDirectory = join(webUiRoot, "dist"),
   output = { log: console.log, error: console.error },
 ) {
-  const mode = argv.find((argument) => argument === '--write' || argument === '--check');
+  const mode = argv.find((argument) => argument === "--write" || argument === "--check");
   if (mode === undefined) {
-    output.error('Usage: verify-build-output.mjs (--write | --check)');
+    output.error("Usage: verify-build-output.mjs (--write | --check)");
     return 2;
   }
 
   const failures = validateBundle(distDirectory, output.log);
-  if (failures.length === 0 && mode === '--check') {
+  if (failures.length === 0 && mode === "--check") {
     failures.push(...checkManifest(webUiRoot, distDirectory));
   }
 
   if (failures.length > 0) {
-    output.error('\nProduction bundle validation failed:');
+    output.error("\nProduction bundle validation failed:");
     for (const failure of failures) {
       output.error(`  - ${failure}`);
     }
-    output.error('\nRebuild the Web UI before continuing:\n  make -C server check-web-ui');
+    output.error("\nRebuild the Web UI before continuing:\n  make -C server check-web-ui");
     return 1;
   }
 
-  if (mode === '--write') {
+  if (mode === "--write") {
     writeManifest(webUiRoot, distDirectory);
     output.log(`\nWrote the build content manifest: ${MANIFEST_FILE_NAME}`);
   }
-  output.log('\nProduction bundle validation passed.');
+  output.log("\nProduction bundle validation passed.");
   return 0;
 }
 

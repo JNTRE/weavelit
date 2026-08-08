@@ -1,6 +1,6 @@
-import { rmSync } from 'node:fs';
+import { rmSync } from "node:fs";
 
-import { readFixtureState } from './fixture-support';
+import { readFixtureState } from "./fixture-support";
 
 const TERMINATION_GRACE_MS = 2_000;
 const TERMINATION_POLL_INTERVAL_MS = 50;
@@ -30,7 +30,7 @@ export default async function globalTeardown(): Promise<void> {
 
   if (state.serverPid > 0 && isRunning(state.serverPid)) {
     try {
-      process.kill(state.serverPid, 'SIGTERM');
+      process.kill(state.serverPid, "SIGTERM");
     } catch {
       // The process already exited between the check and the signal.
     }
@@ -40,7 +40,7 @@ export default async function globalTeardown(): Promise<void> {
     }
     if (isRunning(state.serverPid)) {
       try {
-        process.kill(state.serverPid, 'SIGKILL');
+        process.kill(state.serverPid, "SIGKILL");
       } catch {
         // The process exited while the grace period was elapsing.
       }

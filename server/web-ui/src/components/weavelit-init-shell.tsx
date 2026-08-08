@@ -1,29 +1,32 @@
-import { useCallback, useState, type JSX } from 'react';
+import { useCallback, useState, type JSX } from "react";
 
-import { selectSqliteDatabase } from '../api/weavelit-init-database-selection';
-import { useDeploymentStatus, type StatusViewState } from '../hooks/weavelit-init-deployment-status';
+import { selectSqliteDatabase } from "../api/weavelit-init-database-selection";
+import {
+  useDeploymentStatus,
+  type StatusViewState,
+} from "../hooks/weavelit-init-deployment-status";
 
-const LOADING_MESSAGE = 'Checking the deployment status.';
-const SELECTED_MESSAGE = 'An Application Database is selected for this deployment.';
-const UNSELECTED_MESSAGE = 'No Application Database is selected for this deployment.';
-const UNAVAILABLE_MESSAGE = 'The deployment status is unavailable.';
+const LOADING_MESSAGE = "Checking the deployment status.";
+const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
+const UNSELECTED_MESSAGE = "No Application Database is selected for this deployment.";
+const UNAVAILABLE_MESSAGE = "The deployment status is unavailable.";
 
-const SELECTION_HEADING = 'Application Database';
+const SELECTION_HEADING = "Application Database";
 const SELECTION_DESCRIPTION =
-  'Select SQLite to store this deployment in a Server-managed SQLite database.';
-const SELECTION_ACTION_LABEL = 'Select SQLite';
-const SELECTION_FAILED_MESSAGE = 'The Application Database was not selected. Try again.';
+  "Select SQLite to store this deployment in a Server-managed SQLite database.";
+const SELECTION_ACTION_LABEL = "Select SQLite";
+const SELECTION_FAILED_MESSAGE = "The Application Database was not selected. Try again.";
 
 /** Presentation state of an Application Database selection submission. */
-type SelectionViewState = 'idle' | 'submitting' | 'failed';
+type SelectionViewState = "idle" | "submitting" | "failed";
 
 function statusMessage(state: StatusViewState): string {
   switch (state.kind) {
-    case 'loading':
+    case "loading":
       return LOADING_MESSAGE;
-    case 'available':
+    case "available":
       return state.status.databaseSelected ? SELECTED_MESSAGE : UNSELECTED_MESSAGE;
-    case 'unavailable':
+    case "unavailable":
       return UNAVAILABLE_MESSAGE;
   }
 }
@@ -31,24 +34,24 @@ function statusMessage(state: StatusViewState): string {
 /** Root application shell for the restricted pre-operational Web UI. */
 export function ApplicationShell(): JSX.Element {
   const { state, applyStatus } = useDeploymentStatus();
-  const [selection, setSelection] = useState<SelectionViewState>('idle');
+  const [selection, setSelection] = useState<SelectionViewState>("idle");
 
   const submit = useCallback(() => {
-    setSelection('submitting');
+    setSelection("submitting");
     void selectSqliteDatabase().then(
       (status) => {
-        setSelection('idle');
+        setSelection("idle");
         // The response carries the authoritative projection, so the shell
         // adopts it instead of issuing a second status request.
         applyStatus(status);
       },
       () => {
-        setSelection('failed');
+        setSelection("failed");
       },
     );
   }, [applyStatus]);
 
-  const offerSelection = state.kind === 'available' && !state.status.databaseSelected;
+  const offerSelection = state.kind === "available" && !state.status.databaseSelected;
 
   return (
     <main className="shell">
@@ -65,11 +68,11 @@ export function ApplicationShell(): JSX.Element {
             type="button"
             className="shell__selection-action"
             onClick={submit}
-            disabled={selection === 'submitting'}
+            disabled={selection === "submitting"}
           >
             {SELECTION_ACTION_LABEL}
           </button>
-          {selection === 'failed' ? (
+          {selection === "failed" ? (
             <p className="shell__selection-failure" role="alert">
               {SELECTION_FAILED_MESSAGE}
             </p>
@@ -79,4 +82,3 @@ export function ApplicationShell(): JSX.Element {
     </main>
   );
 }
-

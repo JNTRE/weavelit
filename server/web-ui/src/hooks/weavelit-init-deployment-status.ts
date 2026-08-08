@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchPreOperationalStatus, type PreOperationalStatus } from '../api/weavelit-init-status';
+import { fetchPreOperationalStatus, type PreOperationalStatus } from "../api/weavelit-init-status";
 
 /** Presentation state of the pre-operational status request. */
 export type StatusViewState =
-  | { readonly kind: 'loading' }
-  | { readonly kind: 'available'; readonly status: PreOperationalStatus }
-  | { readonly kind: 'unavailable' };
+  | { readonly kind: "loading" }
+  | { readonly kind: "available"; readonly status: PreOperationalStatus }
+  | { readonly kind: "unavailable" };
 
 /**
  * Tracks the current status projection and exposes an explicit reload.
@@ -20,7 +20,7 @@ export function useDeploymentStatus(): {
   reload: () => void;
   applyStatus: (status: PreOperationalStatus) => void;
 } {
-  const [state, setState] = useState<StatusViewState>({ kind: 'loading' });
+  const [state, setState] = useState<StatusViewState>({ kind: "loading" });
   const latestRequest = useRef(0);
   const mounted = useRef(true);
 
@@ -34,7 +34,7 @@ export function useDeploymentStatus(): {
   const reload = useCallback(() => {
     latestRequest.current += 1;
     const request = latestRequest.current;
-    setState({ kind: 'loading' });
+    setState({ kind: "loading" });
     const apply = (next: StatusViewState): void => {
       if (mounted.current && request === latestRequest.current) {
         setState(next);
@@ -42,10 +42,10 @@ export function useDeploymentStatus(): {
     };
     void fetchPreOperationalStatus().then(
       (status) => {
-        apply({ kind: 'available', status });
+        apply({ kind: "available", status });
       },
       () => {
-        apply({ kind: 'unavailable' });
+        apply({ kind: "unavailable" });
       },
     );
   }, []);
@@ -54,13 +54,29 @@ export function useDeploymentStatus(): {
     // Supersede any in-flight status request: this projection is newer.
     latestRequest.current += 1;
     if (mounted.current) {
-      setState({ kind: 'available', status });
+      setState({ kind: "available", status });
     }
   }, []);
 
+  // Initial mount: the hook starts in { kind: "loading" } state (useState
+  // initializer), so no synchronous setState is needed here.
   useEffect(() => {
-    reload();
-  }, [reload]);
+    latestRequest.current += 1;
+    const request = latestRequest.current;
+    const apply = (next: StatusViewState): void => {
+      if (mounted.current && request === latestRequest.current) {
+        setState(next);
+      }
+    };
+    void fetchPreOperationalStatus().then(
+      (status) => {
+        apply({ kind: "available", status });
+      },
+      () => {
+        apply({ kind: "unavailable" });
+      },
+    );
+  }, []);
 
   return { state, reload, applyStatus };
 }

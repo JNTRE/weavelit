@@ -1,16 +1,16 @@
-import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vitest/config';
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vitest/config";
 
 // The production build emits fixed, unhashed names because the Web UI Client
 // Module embeds an exact compile-time allowlist of generated assets.
 export default defineConfig({
-  root: '.',
-  base: '/',
+  root: ".",
+  base: "/",
   publicDir: false,
   plugins: [react()],
   build: {
-    outDir: 'dist',
-    assetsDir: 'assets',
+    outDir: "dist",
+    assetsDir: "assets",
     emptyOutDir: true,
     sourcemap: false,
     cssCodeSplit: false,
@@ -19,21 +19,21 @@ export default defineConfig({
     ssrManifest: false,
     modulePreload: { polyfill: false },
     rollupOptions: {
-      input: 'index.html',
+      input: "index.html",
       output: {
         codeSplitting: false,
-        entryFileNames: 'assets/weavelit-application.js',
-        chunkFileNames: 'assets/weavelit-application.js',
-        assetFileNames: 'assets/weavelit-application.[ext]',
+        entryFileNames: "assets/weavelit-application.js",
+        chunkFileNames: "assets/weavelit-application.js",
+        assetFileNames: "assets/weavelit-application.[ext]",
       },
     },
   },
   test: {
-    environment: 'jsdom',
+    environment: "jsdom",
     globals: false,
     css: false,
     restoreMocks: true,
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
-    setupFiles: ['./src/test-setup.ts'],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    setupFiles: ["./src/test-setup.ts"],
   },
 });
