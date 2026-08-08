@@ -51,14 +51,18 @@ The repository-level `.devcontainer/devcontainer.json` must reference this
 Containerfile, mount the source tree at `/workspace`, declare named Docker
 volumes for the state root path exposed through `WEAVELIT_STATE_ROOT` and the
 GitHub CLI configuration path `/home/weavelit/.config/gh`, and require
-`rust-lang.rust-analyzer` as the minimum VS Code extension. The named GitHub
-CLI configuration volume preserves runtime-only authentication across Dev
-Container rebuilds and restarts; credentials must not appear in the repository,
-image, build arguments, or environment files. Both volume roots must be
-initialized with mode `0700` and use the host UID and GID on Linux, where Dev
-Containers synchronizes the `weavelit` account to keep bind mounts writable;
-on non-Linux hosts they must retain the image account ownership of
-`10001:10001`.
+`rust-lang.rust-analyzer` as the minimum VS Code extension. It must use host
+networking (`--network=host`) so the Server's configured HTTPS port is directly
+reachable from the development host's browser and other applications. On Linux
+hosts, this works seamlessly with VS Code Dev Containers. It does not expose
+the listener to other devices on the local network; the Server's
+trusted-listener policy permits only loopback addresses. The named GitHub CLI
+configuration volume preserves runtime-only authentication across Dev Container
+rebuilds and restarts; credentials must not appear in the repository, image,
+build arguments, or environment files. Both volume roots must be initialized
+with mode `0700` and use the host UID and GID on Linux, where Dev Containers
+synchronizes the `weavelit` account to keep bind mounts writable; on
+non-Linux hosts they must retain the image account ownership of `10001:10001`.
 
 ## Validation
 
