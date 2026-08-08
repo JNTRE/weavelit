@@ -1,6 +1,6 @@
 # Issue Templates Agent Guide
 
-This `.github/jntre/issue_templates/` directory defines the Markdown bodies
+This `docs/project/issue_templates/` directory defines the Markdown bodies
 that agents copy into temporary files before creating Weavelit GitHub issues
 through `gh issue create`. Each file corresponds to one native GitHub issue
 type and preserves a reviewable issue structure without relying on GitHub Issue
@@ -13,7 +13,7 @@ Use this section to understand what this directory owns, what it does not own, a
 - This directory owns the Markdown body structure and native-type instructions for agent-created GitHub issues.
 - It does not own live issue metadata such as labels, `Priority`, milestones,
   Project status, or issue relationships. GitHub owns those values, and the
-  [GitHub Planning Compatibility Index](../../../docs/plan/project/project-standards.md)
+  [GitHub Planning Compatibility Index](../project-standards.md)
   routes legacy references to current authorities.
 - This guide applies only to the template files in this directory. Use GitHub
   directly to discover or inspect the issues created from them.
@@ -51,7 +51,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Name each file `<native-type>-template.md` using the lowercase native issue type shown in its hidden `Native type` instruction.
 - Keep each template's hidden creation instructions before the copied `##` body sections.
 - Keep the `## Related Documents` section at the end of each template and link
-  it to [GitHub Planning Compatibility Index](../../../docs/plan/project/project-standards.md).
+  it to [GitHub Planning Compatibility Index](../project-standards.md).
 - Do not place live issue assignments or Project values in a template body; apply them after issue creation through the documented GitHub workflow.
 - Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
 - Every change must include an update to its relevant documentation under `docs/` in the same change.

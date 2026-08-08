@@ -12,7 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - `docs/` owns the canonical product and architecture documentation for Weavelit.
 - This guide covers documentation workflow and document boundaries, not implementation-specific rules that do not yet exist in this repository.
-- Child guides in `client-modules/`, `clients/`, `containers/`, `log-modules/`, `mfa-modules/`, `plan/`, `server/`, and `service-modules/` own their respective connection, client-application, container-image, log-storage and delivery, MFA-method, planning, server-design, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
+- Child guides in `client-modules/`, `clients/`, `containers/`, `log-modules/`, `mfa-modules/`, `project/`, `server/`, and `service-modules/` own their respective connection, client-application, container-image, log-storage and delivery, MFA-method, planning, server-design, and provider-integration documentation boundaries; read the nearest applicable guide before editing.
 
 ## Asset Inventory
 
@@ -27,9 +27,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
 - `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Technical Specification, Glossary, or an architecture decision record.
-- `plan/`: Delivery-planning documentation, including navigation to
-  authoritative GitHub Issues and Milestones and the transitional GitHub
-  planning compatibility index.
+- `project/`: Delivery-planning documentation, the GitHub Project binding file (`project.yaml`), and agent-authored issue templates (`issue_templates/`); follow `project/AGENTS.md` for changes within it.
 - `security-model.md`: Protected assets, trust assumptions, cross-cutting security invariants, and approved security profiles supporting the Technical Specification.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.
 - `service-modules/`: Documentation for **[Service Modules](glossary.md#applications-and-interfaces)** and their service-specific implementations, including Zendesk.
