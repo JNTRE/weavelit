@@ -1,8 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { ApplicationShell } from './application-shell';
-import './application.css';
+import { ApplicationShell } from './components/weavelit-init-shell';
+import './styles/weavelit-application.css';
 
 const container = document.getElementById('weavelit-root');
 if (container === null) {

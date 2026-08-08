@@ -22,9 +22,9 @@ export default defineConfig({
       input: 'index.html',
       output: {
         codeSplitting: false,
-        entryFileNames: 'assets/application.js',
-        chunkFileNames: 'assets/application.js',
-        assetFileNames: 'assets/application.[ext]',
+        entryFileNames: 'assets/weavelit-application.js',
+        chunkFileNames: 'assets/weavelit-application.js',
+        assetFileNames: 'assets/weavelit-application.[ext]',
       },
     },
   },

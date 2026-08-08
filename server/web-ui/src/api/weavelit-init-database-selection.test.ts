@@ -5,7 +5,7 @@ import {
   SQLITE_SELECTION_BODY,
   parseDatabaseSelectionResult,
   selectSqliteDatabase,
-} from './database-selection-client';
+} from './weavelit-init-database-selection';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

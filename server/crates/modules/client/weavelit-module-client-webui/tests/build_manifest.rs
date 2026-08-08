@@ -38,6 +38,7 @@ impl WebUi {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("dist/assets")).expect("temporary dist directory");
         fs::create_dir_all(root.join("src/nested")).expect("temporary source directory");
+        fs::create_dir_all(root.join("src/styles")).expect("temporary styles directory");
 
         let web_ui = Self { root };
         web_ui.write("index.html", "<!doctype html>");
@@ -46,13 +47,16 @@ impl WebUi {
         web_ui.write("tsconfig.json", "{\"compilerOptions\":{}}");
         web_ui.write("vite.config.ts", "export default {};");
         web_ui.write("src/main.tsx", "export const main = 1;");
-        web_ui.write("src/application.css", ":root { color: black; }");
+        web_ui.write(
+            "src/styles/weavelit-application.css",
+            ":root { color: black; }",
+        );
         web_ui.write("src/nested/helper.ts", "export const helper = 1;");
         web_ui.write("src/main.test.tsx", "test-only");
         web_ui.write("src/test-setup.ts", "test-only");
         web_ui.write("dist/index.html", "<!doctype html>built");
-        web_ui.write("dist/assets/application.js", "console.log(1);");
-        web_ui.write("dist/assets/application.css", "body{}");
+        web_ui.write("dist/assets/weavelit-application.js", "console.log(1);");
+        web_ui.write("dist/assets/weavelit-application.css", "body{}");
         web_ui.write_manifest();
         web_ui
     }
@@ -115,9 +119,9 @@ fn input_inventory_is_sorted_and_excludes_test_only_sources() {
             "index.html",
             "package-lock.json",
             "package.json",
-            "src/application.css",
             "src/main.tsx",
             "src/nested/helper.ts",
+            "src/styles/weavelit-application.css",
             "tsconfig.json",
             "vite.config.ts",
         ]
@@ -206,10 +210,12 @@ fn an_edited_test_only_source_still_verifies() {
 #[test]
 fn a_corrupted_generated_asset_fails_closed() {
     let web_ui = WebUi::fresh();
-    web_ui.write("dist/assets/application.js", "console.log(2);");
+    web_ui.write("dist/assets/weavelit-application.js", "console.log(2);");
     assert_eq!(
         failures(&web_ui),
-        vec!["the generated asset `assets/application.js` changed after the Web UI was built"]
+        vec![
+            "the generated asset `assets/weavelit-application.js` changed after the Web UI was built"
+        ]
     );
 }
 
@@ -273,7 +279,7 @@ fn every_bundle_input_and_generated_asset_triggers_a_rebuild() {
         web_ui.path("vite.config.ts"),
         web_ui.path("package-lock.json"),
         web_ui.path("dist").join(MANIFEST_FILE_NAME),
-        web_ui.path("dist/assets/application.js"),
+        web_ui.path("dist/assets/weavelit-application.js"),
     ] {
         assert!(watched.contains(&expected), "{expected:?} is not watched");
     }

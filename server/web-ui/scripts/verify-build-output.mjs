@@ -27,8 +27,8 @@ export const MANIFEST_FORMAT_VERSION = 1;
 
 export const EXPECTED_ASSETS = new Map([
   ['index.html', 16 * KIB],
-  ['assets/application.js', 256 * KIB],
-  ['assets/application.css', 64 * KIB],
+  ['assets/weavelit-application.js', 256 * KIB],
+  ['assets/weavelit-application.css', 64 * KIB],
 ]);
 
 const COMBINED_LIMIT = 336 * KIB;

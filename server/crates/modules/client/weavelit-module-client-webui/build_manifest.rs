@@ -25,8 +25,8 @@ pub const MANIFEST_FORMAT_VERSION: u64 = 1;
 
 /// The generated browser assets this crate embeds, relative to `dist/`.
 pub const GENERATED_ASSETS: [&str; 3] = [
-    "assets/application.css",
-    "assets/application.js",
+    "assets/weavelit-application.css",
+    "assets/weavelit-application.js",
     "index.html",
 ];
 

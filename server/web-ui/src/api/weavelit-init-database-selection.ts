@@ -6,7 +6,7 @@
  * `docs/client-modules/web-ui/pre-operational-database-selection-design.md`.
  */
 
-import { parsePreOperationalStatus, type PreOperationalStatus } from './status-client';
+import { parsePreOperationalStatus, type PreOperationalStatus } from './weavelit-init-status';
 
 /** The selection route this application requests. */
 export const DATABASE_SELECTION_PATH = '/api/v1/application-database';

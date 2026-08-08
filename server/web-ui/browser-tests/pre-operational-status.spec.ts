@@ -5,8 +5,8 @@ import { readFixtureState } from './fixture-support';
 /** The exact assets the page is expected to request, with their required media types. */
 const EXPECTED_ASSETS = [
   { path: '/', mediaType: 'text/html; charset=utf-8' },
-  { path: '/assets/application.js', mediaType: 'text/javascript; charset=utf-8' },
-  { path: '/assets/application.css', mediaType: 'text/css; charset=utf-8' },
+  { path: '/assets/weavelit-application.js', mediaType: 'text/javascript; charset=utf-8' },
+  { path: '/assets/weavelit-application.css', mediaType: 'text/css; charset=utf-8' },
 ] as const;
 
 const ASSET_CONTENT_SECURITY_POLICY =

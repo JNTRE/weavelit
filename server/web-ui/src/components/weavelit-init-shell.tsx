@@ -1,7 +1,7 @@
 import { useCallback, useState, type JSX } from 'react';
 
-import { selectSqliteDatabase } from './database-selection-client';
-import { useDeploymentStatus, type StatusViewState } from './use-deployment-status';
+import { selectSqliteDatabase } from '../api/weavelit-init-database-selection';
+import { useDeploymentStatus, type StatusViewState } from '../hooks/weavelit-init-deployment-status';
 
 const LOADING_MESSAGE = 'Checking the deployment status.';
 const SELECTED_MESSAGE = 'An Application Database is selected for this deployment.';

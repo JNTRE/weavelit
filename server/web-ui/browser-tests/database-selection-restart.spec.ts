@@ -31,8 +31,8 @@ const SELECTION_PATH = '/api/v1/application-database';
  */
 const PAGE_LOAD_RESPONSES = [
   '200 /',
-  '200 /assets/application.js',
-  '200 /assets/application.css',
+  '200 /assets/weavelit-application.js',
+  '200 /assets/weavelit-application.css',
   '200 /api/v1/status',
 ] as const;
 

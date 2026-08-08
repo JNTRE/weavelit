@@ -1889,13 +1889,13 @@ mod tests {
     const EMBEDDED_ASSETS: [(&str, &str, &str); 3] = [
         ("/", "index.html", "text/html; charset=utf-8"),
         (
-            "/assets/application.js",
-            "assets/application.js",
+            "/assets/weavelit-application.js",
+            "assets/weavelit-application.js",
             "text/javascript; charset=utf-8",
         ),
         (
-            "/assets/application.css",
-            "assets/application.css",
+            "/assets/weavelit-application.css",
+            "assets/weavelit-application.css",
             "text/css; charset=utf-8",
         ),
     ];
@@ -1967,16 +1967,16 @@ mod tests {
             "/api/v1/",
             "/api/v1/status/",
             "/api/v1/Status",
-            "/api/v1/assets/application.js",
+            "/api/v1/assets/weavelit-application.js",
             "/api/v1/unknown",
             "/index.html",
             "/assets/",
-            "/assets/application.js/",
-            "/ASSETS/application.js",
-            "/assets/%61pplication.js",
-            "/assets/../assets/application.js",
-            "/../assets/application.js",
-            "/assets/application.js.map",
+            "/assets/weavelit-application.js/",
+            "/ASSETS/weavelit-application.js",
+            "/assets/%77eavelit-application.js",
+            "/assets/../assets/weavelit-application.js",
+            "/../assets/weavelit-application.js",
+            "/assets/weavelit-application.js.map",
         ] {
             let response = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
                 .oneshot(Request::get(target).body(Body::empty()).unwrap())
@@ -3090,8 +3090,8 @@ mod tests {
         for load in 0..2 {
             for target in [
                 "/",
-                "/assets/application.js",
-                "/assets/application.css",
+                "/assets/weavelit-application.js",
+                "/assets/weavelit-application.css",
                 "/api/v1/status",
             ] {
                 let mut client = tls_client(address, Arc::clone(&client_config)).await;
@@ -3545,7 +3545,7 @@ mod tests {
             restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
             Arc::clone(&server_config),
             Arc::clone(&client_config),
-            b"GET /assets/../assets/application.js HTTP/1.1\r\n\r\n",
+            b"GET /assets/../assets/weavelit-application.js HTTP/1.1\r\n\r\n",
             REQUEST_READ_TIMEOUT,
             REQUEST_PROCESSING_TIMEOUT,
         )

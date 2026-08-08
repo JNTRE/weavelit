@@ -430,11 +430,11 @@ const INDEX_HTML: &[u8] = include_bytes!(concat!(
 ));
 const APPLICATION_JAVASCRIPT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../../../web-ui/dist/assets/application.js"
+    "/../../../../web-ui/dist/assets/weavelit-application.js"
 ));
 const APPLICATION_CSS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../../../web-ui/dist/assets/application.css"
+    "/../../../../web-ui/dist/assets/weavelit-application.css"
 ));
 
 const _: () = assert!(
@@ -468,8 +468,8 @@ impl EmbeddedAsset {
     const fn path(self) -> &'static str {
         match self {
             Self::Document => "/",
-            Self::Script => "/assets/application.js",
-            Self::Stylesheet => "/assets/application.css",
+            Self::Script => "/assets/weavelit-application.js",
+            Self::Stylesheet => "/assets/weavelit-application.css",
         }
     }
 
@@ -638,8 +638,8 @@ mod tests {
     fn generated_asset_bytes(asset: EmbeddedAsset) -> Vec<u8> {
         let relative = match asset {
             EmbeddedAsset::Document => "index.html",
-            EmbeddedAsset::Script => "assets/application.js",
-            EmbeddedAsset::Stylesheet => "assets/application.css",
+            EmbeddedAsset::Script => "assets/weavelit-application.js",
+            EmbeddedAsset::Stylesheet => "assets/weavelit-application.css",
         };
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../../web-ui/dist")
@@ -701,7 +701,11 @@ mod tests {
     async fn asset_routes_expose_exactly_the_compile_time_allowlist() {
         assert_eq!(
             EMBEDDED_ASSETS.map(EmbeddedAsset::path),
-            ["/", "/assets/application.js", "/assets/application.css"]
+            [
+                "/",
+                "/assets/weavelit-application.js",
+                "/assets/weavelit-application.css"
+            ]
         );
     }
 
@@ -757,16 +761,16 @@ mod tests {
         for target in [
             "/index.html",
             "/assets/",
-            "/assets/application.js/",
-            "/assets/Application.js",
-            "/ASSETS/application.js",
-            "/assets/%61pplication.js",
-            "/assets/application%2Ejs",
-            "/assets/../assets/application.js",
-            "/../assets/application.js",
-            "/assets/..%2Fapplication.js",
-            "/%2E%2E/assets/application.js",
-            "/assets/application.js.map",
+            "/assets/weavelit-application.js/",
+            "/assets/Weavelit-Application.js",
+            "/ASSETS/weavelit-application.js",
+            "/assets/%77eavelit-application.js",
+            "/assets/weavelit-application%2Ejs",
+            "/assets/../assets/weavelit-application.js",
+            "/../assets/weavelit-application.js",
+            "/assets/..%2Fweavelit-application.js",
+            "/%2E%2E/assets/weavelit-application.js",
+            "/assets/weavelit-application.js.map",
             "/api/v1/status",
             "/api/",
             "//",

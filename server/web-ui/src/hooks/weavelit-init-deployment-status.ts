@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { fetchPreOperationalStatus, type PreOperationalStatus } from './status-client';
+import { fetchPreOperationalStatus, type PreOperationalStatus } from '../api/weavelit-init-status';
 
 /** Presentation state of the pre-operational status request. */
 export type StatusViewState =

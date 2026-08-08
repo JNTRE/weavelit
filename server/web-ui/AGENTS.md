@@ -28,7 +28,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `package-lock.json`: Fully resolved npm dependency lock for reproducible installs.
 - `playwright.config.ts`: Playwright runner configuration for the browser tests.
 - `scripts/`: Build-output validation and build content manifest scripts run by the Server quality gate, and their Node test-runner tests.
-- `src/`: TypeScript and React application source and its unit tests, including the status and Application Database selection transport clients, the deployment status hook, and the application shell.
+- `src/`: TypeScript and React application source and its unit tests, organized into `api/` (status and Application Database selection transport clients), `components/` (application shell), `hooks/` (deployment status hook), and `styles/` (application stylesheet), following the `weavelit-<phase>-<component>` file-naming convention.
 - `tsconfig.json`: TypeScript compiler configuration for the application and its tests.
 - `vite.config.ts`: Vite build, deterministic output-naming, and Vitest configuration.
 

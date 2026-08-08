@@ -35,6 +35,8 @@ function createWebUi() {
   mkdirSync(join(dist, 'assets'), { recursive: true });
   mkdirSync(join(root, 'src', 'nested'), { recursive: true });
 
+  mkdirSync(join(root, 'src', 'styles'), { recursive: true });
+
   writeFileSync(join(root, 'index.html'), '<!doctype html><div id="weavelit-root"></div>');
   writeFileSync(join(root, 'package.json'), '{"name":"fixture"}');
   writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
@@ -42,15 +44,15 @@ function createWebUi() {
   writeFileSync(join(root, 'vite.config.ts'), 'export default {};');
 
   writeFileSync(join(root, 'src', 'main.tsx'), 'export const main = 1;');
-  writeFileSync(join(root, 'src', 'application.css'), ':root { color: black; }');
+  writeFileSync(join(root, 'src', 'styles', 'weavelit-application.css'), ':root { color: black; }');
   writeFileSync(join(root, 'src', 'nested', 'helper.ts'), 'export const helper = 1;');
   writeFileSync(join(root, 'src', 'main.test.tsx'), 'test-only');
   writeFileSync(join(root, 'src', 'nested', 'helper.test.ts'), 'test-only');
   writeFileSync(join(root, 'src', 'test-setup.ts'), 'test-only');
 
   writeFileSync(join(dist, 'index.html'), '<!doctype html>built');
-  writeFileSync(join(dist, 'assets', 'application.js'), 'console.log(1);');
-  writeFileSync(join(dist, 'assets', 'application.css'), 'body{}');
+  writeFileSync(join(dist, 'assets', 'weavelit-application.js'), 'console.log(1);');
+  writeFileSync(join(dist, 'assets', 'weavelit-application.css'), 'body{}');
 
   return { root, dist };
 }
@@ -63,9 +65,9 @@ test('the input inventory is deterministic and excludes test-only sources', () =
     'index.html',
     'package-lock.json',
     'package.json',
-    'src/application.css',
     'src/main.tsx',
     'src/nested/helper.ts',
+    'src/styles/weavelit-application.css',
     'tsconfig.json',
     'vite.config.ts',
   ]);
@@ -79,8 +81,8 @@ test('write mode records the format version, inputs, and generated assets', () =
   strictEqual(manifest.format_version, MANIFEST_FORMAT_VERSION);
   deepStrictEqual(Object.keys(manifest.inputs), collectInputInventory(root));
   deepStrictEqual(Object.keys(manifest.assets), [
-    'assets/application.css',
-    'assets/application.js',
+    'assets/weavelit-application.css',
+    'assets/weavelit-application.js',
     'index.html',
   ]);
   for (const digest of Object.values(manifest.assets)) {
@@ -129,10 +131,10 @@ test('check mode reports an added and a removed bundle input', () => {
 test('check mode reports a corrupted generated asset', () => {
   const { root, dist } = createWebUi();
   writeManifest(root, dist);
-  writeFileSync(join(dist, 'assets', 'application.js'), 'console.log(2);');
+  writeFileSync(join(dist, 'assets', 'weavelit-application.js'), 'console.log(2);');
 
   deepStrictEqual(checkManifest(root, dist), [
-    'Build content manifest generated asset hash does not match the current file: assets/application.js',
+    'Build content manifest generated asset hash does not match the current file: assets/weavelit-application.js',
   ]);
 });
 

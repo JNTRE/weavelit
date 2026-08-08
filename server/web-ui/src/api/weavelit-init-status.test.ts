@@ -4,7 +4,7 @@ import {
   STATUS_PATH,
   fetchPreOperationalStatus,
   parsePreOperationalStatus,
-} from './status-client';
+} from './weavelit-init-status';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
