@@ -13,7 +13,7 @@ locked by a committed `package-lock.json`:
 | npm | 11.17.0 |
 | React and React DOM | 19.2.8 |
 | Vite | 8.2.0 |
-| TypeScript | 7.0.2 |
+| TypeScript | 6.0.3 (planned upgrade to 7 tracked in #117) |
 | Vitest | 4.1.10 |
 | `@playwright/test` | 1.62.1 |
 
@@ -27,7 +27,7 @@ range.
 ## Generated Production Output
 
 A clean production build emits exactly three unhashed files: `dist/index.html`,
-`dist/assets/application.js`, and `dist/assets/application.css`. The build
+`dist/assets/weavelit-application.js`, and `dist/assets/weavelit-application.css`. The build
 produces no source maps, no code-split chunks, and no other emitted file.
 
 Content hashing is deliberately disabled in the build configuration because the
@@ -86,7 +86,7 @@ defeat the freshness guarantee.
 The application has a single root component, `ApplicationShell`, mounted into
 `#weavelit-root` by `main.tsx`. It deliberately has no router, no
 state-management library, and no CSS framework: its only production
-dependencies are `react` and `react-dom`, and `application.css` is
+dependencies are `react` and `react-dom`, and `weavelit-application.css` is
 hand-authored. This reflects the current absence of any client-side route and
 the single control the pre-operational experience offers; a later
 normal-operation experience revisits this shell.

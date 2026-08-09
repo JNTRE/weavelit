@@ -11,8 +11,8 @@ no wildcard, prefix, manifest-generated, or fallback route:
 | Route | Embedded file | Media type |
 | --- | --- | --- |
 | `/` | `dist/index.html` | `text/html; charset=utf-8` |
-| `/assets/application.js` | `dist/assets/application.js` | `text/javascript; charset=utf-8` |
-| `/assets/application.css` | `dist/assets/application.css` | `text/css; charset=utf-8` |
+| `/assets/weavelit-application.js` | `dist/assets/weavelit-application.js` | `text/javascript; charset=utf-8` |
+| `/assets/weavelit-application.css` | `dist/assets/weavelit-application.css` | `text/css; charset=utf-8` |
 
 The module performs no filesystem read at runtime; every byte it can ever serve
 is compiled into the binary. A request for any other path, including a
@@ -60,8 +60,8 @@ change bypassed the compile-time assertion.
 | Asset | Bound | Built size |
 | --- | --- | --- |
 | `index.html` | 16 KiB | 452 B |
-| `assets/application.js` | 256 KiB | 191,481 B |
-| `assets/application.css` | 64 KiB | 488 B |
+| `assets/weavelit-application.js` | 256 KiB | 191,481 B |
+| `assets/weavelit-application.css` | 64 KiB | 488 B |
 
 Built sizes vary by change and are reported by the build's bundle-size
 validator; the bounds above are fixed.
