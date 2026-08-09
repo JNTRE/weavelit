@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::{
@@ -30,7 +31,9 @@ use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
 /// The module holds no lifecycle state of its own; it calls this once per
 /// request, so a response never reports a value captured at startup. `None`
 /// means the trusted lifecycle boundary could not be read.
-pub type ProjectionSource = Arc<dyn Fn() -> Option<LifecycleProjection> + Send + Sync>;
+pub type ProjectionSource = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Option<LifecycleProjection>> + Send>> + Send + Sync,
+>;
 
 /// Server-core commit hook for a validated Application Database selection.
 ///
@@ -38,8 +41,13 @@ pub type ProjectionSource = Arc<dyn Fn() -> Option<LifecycleProjection> + Send +
 /// this hook, which owns the lifecycle mutation and returns the projection
 /// observed under the same mutation permit.
 pub type SelectionCommit = Arc<
-    dyn Fn(SelectedBackend) -> Result<LifecycleProjection, DatabaseSelectionRejection>
-        + Send
+    dyn Fn(
+            SelectedBackend,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<LifecycleProjection, DatabaseSelectionRejection>> + Send,
+            >,
+        > + Send
         + Sync,
 >;
 
@@ -79,7 +87,7 @@ async fn database_selection_route_response(
         Ok(selection) => selection,
         Err(rejection) => return rejection.response(),
     };
-    match commit(selection.backend()) {
+    match commit(selection.backend()).await {
         Ok(projection) => database_selection_response(&projection),
         Err(rejection) => rejection.response(),
     }
@@ -538,7 +546,7 @@ async fn status_response(request: Request, projection: ProjectionSource) -> Resp
         return json_response(StatusCode::BAD_REQUEST, "bad_request");
     }
 
-    let Some(projection) = projection() else {
+    let Some(projection) = projection().await else {
         return json_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable");
     };
     json_response_body(StatusCode::OK, projection_body(&projection))
@@ -618,7 +626,10 @@ mod tests {
 
     /// Builds a projection source; `None` models an unreadable lifecycle boundary.
     fn projection_source(database_selected: Option<bool>) -> ProjectionSource {
-        Arc::new(move || database_selected.map(LifecycleProjection::new))
+        Arc::new(move || {
+            let result = database_selected.map(LifecycleProjection::new);
+            Box::pin(async move { result })
+        })
     }
 
     async fn status_response(request: Request<Body>, database_selected: bool) -> Response {

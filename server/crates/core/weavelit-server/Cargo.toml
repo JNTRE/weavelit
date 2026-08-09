@@ -30,3 +30,4 @@ weavelit-module-log-sqlite = { path = "../../modules/log/weavelit-module-log-sql
 rcgen = "=0.14.8"
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
 tempfile = "=3.27.0"
+tokio = { workspace = true, features = ["test-util"] }

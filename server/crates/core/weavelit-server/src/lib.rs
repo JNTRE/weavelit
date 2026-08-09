@@ -35,19 +35,21 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Semaphore,
+    task,
     time::timeout,
 };
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use weavelit_module_client_webui::{
-    DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource, SelectionCommit,
+    DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource, SelectedBackend, SelectionCommit,
 };
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
     BackendRegistration, DatabaseError, DeploymentIdentifier, InterruptedLifecycleAction,
-    LifecycleClassification, LifecycleError, LifecycleStore, RetainedDatabaseInspection,
-    TrustedBackendContext, ValidatedConnectionSettings, WorkflowArbiter, WorkflowKind,
+    LifecycleClassification, LifecycleError, LifecycleProjection, LifecycleStore,
+    RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
+    WorkflowArbiter, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
 
@@ -476,6 +478,80 @@ fn pem_end_label(line: &[u8]) -> Option<&[u8]> {
 }
 
 // ---------------------------------------------------------------------------
+// Lifecycle adapter
+// ---------------------------------------------------------------------------
+
+/// Runtime-owned single-lane async adapter that moves all blocking arbiter
+/// and SQLite access off the Tokio event-loop thread.
+///
+/// Status projection reads use `spawn_blocking` independently of the mutation
+/// lane so they are never serialized behind an in-progress selection.
+/// Selection mutations acquire a single-permit semaphore before entering
+/// `spawn_blocking`: a mutation that has not yet started when its enclosing
+/// `timeout` fires is cleanly cancelled at the semaphore `await` and never
+/// reaches the blocking pool.  Once a mutation is inside `spawn_blocking` it
+/// runs to completion regardless of the caller's timeout, preventing partial
+/// durable state.
+struct LifecycleAdapter {
+    arbiter: Arc<WorkflowArbiter>,
+    /// Single-permit gate that serializes selection mutations.
+    mutation_lane: Arc<Semaphore>,
+}
+
+impl LifecycleAdapter {
+    fn new(arbiter: Arc<WorkflowArbiter>) -> Self {
+        Self {
+            arbiter,
+            mutation_lane: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    /// Reads the live lifecycle projection on a blocking thread.
+    ///
+    /// Does not compete with the mutation lane, so a concurrent selection does
+    /// not delay the projection read on the event-loop thread.
+    async fn project(&self) -> Option<LifecycleProjection> {
+        let arbiter = Arc::clone(&self.arbiter);
+        task::spawn_blocking(move || arbiter.projection().ok())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Runs the database selection in the single mutation lane.
+    ///
+    /// Awaits the lane semaphore before entering `spawn_blocking`.  If the
+    /// caller's enclosing `timeout` fires while waiting for the semaphore, the
+    /// future is cancelled here and no blocking work starts.  Once the
+    /// semaphore is acquired and `spawn_blocking` begins, the selection runs to
+    /// completion regardless of any external cancellation.
+    async fn select(
+        &self,
+        backend: SelectedBackend,
+        catalog: Arc<BackendCatalog>,
+        context: Arc<TrustedBackendContext>,
+    ) -> Result<LifecycleProjection, DatabaseSelectionRejection> {
+        let permit = Arc::clone(&self.mutation_lane)
+            .acquire_owned()
+            .await
+            .map_err(|_| DatabaseSelectionRejection::ServiceUnavailable)?;
+
+        let arbiter = Arc::clone(&self.arbiter);
+        task::spawn_blocking(move || {
+            let _permit = permit;
+            let identifier = BackendIdentifier::new(backend.identifier())
+                .map_err(|_| DatabaseSelectionRejection::BadRequest)?;
+            arbiter
+                .select_database(&catalog, &context, &identifier, Vec::new())
+                .map(|(_database, projection)| projection)
+                .map_err(|error| DatabaseSelectionRejection::from_selection_failure(error.kind()))
+        })
+        .await
+        .map_err(|_| DatabaseSelectionRejection::ServiceUnavailable)?
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SQLite backend factory
 // ---------------------------------------------------------------------------
 
@@ -584,16 +660,19 @@ impl RestrictedStartup {
 #[derive(Clone)]
 struct PreoperationalComposition {
     outcome: StartupOutcome,
-    arbiter: Arc<WorkflowArbiter>,
+    adapter: Arc<LifecycleAdapter>,
     catalog: Arc<BackendCatalog>,
     context: Arc<TrustedBackendContext>,
 }
 
 impl PreoperationalComposition {
-    /// Returns a source that reads the projection live under the arbiter permit.
+    /// Returns a source that reads the projection asynchronously through the adapter.
     fn projection_source(&self) -> ProjectionSource {
-        let arbiter = Arc::clone(&self.arbiter);
-        Arc::new(move || arbiter.projection().ok())
+        let adapter = Arc::clone(&self.adapter);
+        Arc::new(move || {
+            let adapter = Arc::clone(&adapter);
+            Box::pin(async move { adapter.project().await })
+        })
     }
 
     /// Returns the commit hook the selection route delegates its decision to.
@@ -603,16 +682,14 @@ impl PreoperationalComposition {
     /// it. The opened database is dropped here; this milestone exposes no
     /// operational path that would use it.
     fn selection_commit(&self) -> SelectionCommit {
-        let arbiter = Arc::clone(&self.arbiter);
+        let adapter = Arc::clone(&self.adapter);
         let catalog = Arc::clone(&self.catalog);
         let context = Arc::clone(&self.context);
         Arc::new(move |backend| {
-            let identifier = BackendIdentifier::new(backend.identifier())
-                .map_err(|_| DatabaseSelectionRejection::BadRequest)?;
-            arbiter
-                .select_database(&catalog, &context, &identifier, Vec::new())
-                .map(|(_database, projection)| projection)
-                .map_err(|error| DatabaseSelectionRejection::from_selection_failure(error.kind()))
+            let adapter = Arc::clone(&adapter);
+            let catalog = Arc::clone(&catalog);
+            let context = Arc::clone(&context);
+            Box::pin(async move { adapter.select(backend, catalog, context).await })
         })
     }
 }
@@ -1550,6 +1627,7 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
             return Err(StartupError::StateCombinationInvalid);
         }
     };
+    let arbiter = Arc::new(WorkflowArbiter::new(store));
     Ok(RestrictedStartup {
         outcome,
         log_catalog: sqlite_log_catalog(),
@@ -1557,7 +1635,7 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
         // process-lifetime state-root lock.
         composition: PreoperationalComposition {
             outcome,
-            arbiter: Arc::new(WorkflowArbiter::new(store)),
+            adapter: Arc::new(LifecycleAdapter::new(arbiter)),
             catalog,
             context,
         },
@@ -3910,6 +3988,7 @@ mod tests {
             surface
                 .startup
                 .composition
+                .adapter
                 .arbiter
                 .projection()
                 .unwrap()
@@ -4046,6 +4125,7 @@ mod tests {
                 !surface
                     .startup
                     .composition
+                    .adapter
                     .arbiter
                     .projection()
                     .unwrap()
@@ -4127,6 +4207,7 @@ mod tests {
             !surface
                 .startup
                 .composition
+                .adapter
                 .arbiter
                 .projection()
                 .unwrap()
@@ -4206,6 +4287,7 @@ mod tests {
             !surface
                 .startup
                 .composition
+                .adapter
                 .arbiter
                 .projection()
                 .unwrap()
@@ -4235,6 +4317,7 @@ mod tests {
             !surface
                 .startup
                 .composition
+                .adapter
                 .arbiter
                 .projection()
                 .unwrap()
@@ -4327,6 +4410,209 @@ mod tests {
         assert_eq!(
             request_timeout_response().body.as_ref(),
             b"{\"error\":\"request_timeout\"}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lifecycle adapter: blocking I/O isolation and timeout correctness
+    // -----------------------------------------------------------------------
+
+    /// Projection reads must not compete with the mutation semaphore; even while
+    /// the single mutation permit is held, `project()` must complete.
+    #[tokio::test]
+    async fn adapter_projection_does_not_wait_for_mutation_lane() {
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let adapter = &surface.startup.composition.adapter;
+
+        // Hold the single mutation permit so any select() would block.
+        let _permit = Arc::clone(&adapter.mutation_lane)
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        // project() is independent of the mutation lane and must complete.
+        let projection = adapter.project().await;
+        assert!(projection.is_some());
+    }
+
+    /// A selection future that is cancelled while awaiting the mutation
+    /// semaphore must not commit any durable state.
+    #[tokio::test]
+    async fn adapter_selection_cancelled_at_semaphore_does_not_commit() {
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let adapter = Arc::clone(&surface.startup.composition.adapter);
+        let catalog = Arc::clone(&surface.startup.composition.catalog);
+        let context = Arc::clone(&surface.startup.composition.context);
+
+        // Hold the mutation permit so select() blocks at acquire_owned().
+        let permit = Arc::clone(&adapter.mutation_lane)
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            adapter
+                .select(
+                    weavelit_module_client_webui::SelectedBackend::Sqlite,
+                    catalog,
+                    context,
+                )
+                .await
+        });
+        // Yield so the spawned task reaches the semaphore await.
+        tokio::task::yield_now().await;
+
+        // Abort cancels the future while it is pending at acquire_owned();
+        // spawn_blocking is never entered, so no selection is committed.
+        handle.abort();
+        let _ = handle.await;
+
+        drop(permit);
+
+        assert!(
+            !surface
+                .startup
+                .composition
+                .adapter
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected(),
+            "cancelled selection must not commit durable state"
+        );
+    }
+
+    /// A `tokio::time::timeout` around a selection that is blocked at the
+    /// mutation semaphore must fire correctly because the selection future is
+    /// a normal async future that yields at the semaphore, not a blocking call.
+    #[tokio::test]
+    async fn adapter_selection_timeout_fires_when_mutation_lane_is_full() {
+        tokio::time::pause();
+
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let adapter = Arc::clone(&surface.startup.composition.adapter);
+        let catalog = Arc::clone(&surface.startup.composition.catalog);
+        let context = Arc::clone(&surface.startup.composition.context);
+
+        // Hold the mutation lane so select() is always blocked at the semaphore.
+        let _permit = Arc::clone(&adapter.mutation_lane)
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        let timeout_duration = Duration::from_secs(10);
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                timeout_duration,
+                adapter.select(
+                    weavelit_module_client_webui::SelectedBackend::Sqlite,
+                    catalog,
+                    context,
+                ),
+            )
+            .await
+        });
+
+        // Let the task reach the semaphore await before advancing time.
+        tokio::task::yield_now().await;
+        tokio::time::advance(timeout_duration + Duration::from_nanos(1)).await;
+
+        let result = task.await.unwrap();
+        assert!(
+            result.is_err(),
+            "timeout must fire before spawn_blocking starts"
+        );
+
+        // spawn_blocking was never entered, so no selection was committed.
+        assert!(
+            !surface
+                .startup
+                .composition
+                .adapter
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected(),
+            "timed-out selection must not commit durable state"
+        );
+    }
+
+    /// A commit that has entered `spawn_blocking` must run to completion even
+    /// when the Tokio task that spawned it is aborted, leaving no partial state.
+    #[tokio::test]
+    async fn started_blocking_commit_completes_after_outer_task_is_aborted() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let committed = Arc::new(AtomicBool::new(false));
+        let started_gate = Arc::new(Barrier::new(2));
+        let finish_gate = Arc::new(Barrier::new(2));
+
+        let committed_clone = Arc::clone(&committed);
+        let started_gate_clone = Arc::clone(&started_gate);
+        let finish_gate_clone = Arc::clone(&finish_gate);
+
+        // A SelectionCommit that signals when spawn_blocking has started, then
+        // waits for the test to signal completion.  This simulates a durable
+        // write that must not be interrupted once it begins.
+        let commit: weavelit_module_client_webui::SelectionCommit = Arc::new(move |_backend| {
+            let committed = Arc::clone(&committed_clone);
+            let started_gate = Arc::clone(&started_gate_clone);
+            let finish_gate = Arc::clone(&finish_gate_clone);
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    started_gate.wait(); // signal: spawn_blocking has started
+                    finish_gate.wait(); // wait for test to say "go"
+                    committed.store(true, Ordering::SeqCst);
+                    Ok(weavelit_server_lifecycle::LifecycleProjection::new(true))
+                })
+                .await
+                .map_err(|_| DatabaseSelectionRejection::ServiceUnavailable)?
+            })
+        });
+
+        let expected_origin = weavelit_module_client_webui::ExpectedOrigin::from_listener(
+            UNBOUND_LISTENER.parse().unwrap(),
+        );
+        let router = Router::new().route(
+            APPLICATION_DATABASE_ROUTE,
+            weavelit_module_client_webui::database_selection_route(expected_origin, commit),
+        );
+
+        let request = Request::builder()
+            .method("PUT")
+            .uri(APPLICATION_DATABASE_ROUTE)
+            .header("host", UNBOUND_LISTENER)
+            .header("origin", format!("https://{UNBOUND_LISTENER}"))
+            .header("x-weavelit-csrf", "1")
+            .header("content-type", "application/json")
+            .header("content-length", SELECTION_BODY.len().to_string())
+            .body(Body::from(SELECTION_BODY))
+            .unwrap();
+
+        let task = tokio::spawn(async move { router.oneshot(request).await });
+
+        // Wait for the barrier that signals spawn_blocking has started.
+        let gate = Arc::clone(&started_gate);
+        tokio::task::spawn_blocking(move || gate.wait())
+            .await
+            .unwrap();
+
+        // Abort the outer task (simulates REQUEST_PROCESSING_TIMEOUT firing
+        // after spawn_blocking has already begun).  The running spawn_blocking
+        // task is unaffected.
+        task.abort();
+        let _ = task.await;
+
+        // Release the blocking work.
+        let gate = Arc::clone(&finish_gate);
+        tokio::task::spawn_blocking(move || gate.wait())
+            .await
+            .unwrap();
+
+        assert!(
+            committed.load(Ordering::SeqCst),
+            "spawn_blocking must complete even after the outer task is aborted"
         );
     }
 }
