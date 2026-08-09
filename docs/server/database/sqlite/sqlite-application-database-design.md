@@ -57,12 +57,13 @@ its ledger entry run in one SQLite transaction. An unknown, missing, or
 checksum-mismatched applied migration is an integrity or compatibility failure:
 the backend changes nothing and refuses to report readiness.
 
-The initial registry contains `0001_create_migration_ledger.sql` and
-`0002_create_lifecycle_state.sql`. Each entry has a one-based sequence, the
-filename without `.sql` as its identifier, and SQL embedded through
-`include_str!`. `sha2 = "=0.11.0"` computes a 32-byte SHA-256 digest directly
-over the exact embedded UTF-8 file bytes with default features disabled. The
-ledger stores the digest as a 32-byte BLOB and rejects updates or deletes.
+The initial registry contains `0001_create_migration_ledger.sql`,
+`0002_create_lifecycle_state.sql`, and `0003_create_application_state.sql`. Each
+entry has a one-based sequence, the filename without `.sql` as its identifier,
+and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
+SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
+features disabled. The ledger stores the digest as a 32-byte BLOB and rejects
+updates or deletes.
 
 Migration application repeats one `BEGIN IMMEDIATE` transaction at a time. The
 transaction validates that ledger rows form the exact contiguous prefix of the
@@ -104,6 +105,42 @@ metadata to be absent. Every malformed or contradictory persisted combination
 returns `IntegrityFailure`. Inspection emits no diagnostics and returns only
 payload-free storage-neutral errors.
 
+## Application State Schema
+
+`0003_create_application_state.sql` creates one `STRICT` table for each
+normalized state type defined by the shared
+[Application Database Design](../application-database-design.md):
+`weavelit_configuration`, `weavelit_protected_secret`, `weavelit_account`,
+`weavelit_password_verifier`, `weavelit_group`, `weavelit_group_membership`,
+`weavelit_group_grant`, `weavelit_mfa_factor`, `weavelit_service_connection`,
+`weavelit_recovery_public_key`, `weavelit_log_module_configuration`,
+`weavelit_log_module_setting`, `weavelit_log_assignment`, and
+`weavelit_completion_obligation`. The migration creates no session table, no Log
+Module destination-data or log-record table, and no Log Module credential
+column, so excluded data has no place to be written.
+
+Each table restates the contract's bounds as SQL `CHECK` constraints so durable
+data cannot drift from the typed contract: 16-byte nonzero identifier BLOBs,
+byte-length ranges measured with `length(CAST(value AS BLOB))`, `0` or `1`
+boolean integers, and closed sets for the grant kind, log type, and workflow
+discriminator. Foreign keys bind verifiers, memberships, grants, MFA factors,
+log settings, and log assignments to their owning rows. The recovery public key
+and the completion obligation each use a singleton row. Protected values and
+protected credentials are stored as opaque BLOBs; the backend never inspects,
+derives, or transforms them.
+
+Group grants encode their kind in `grant_kind` and their subject in
+`grant_value`. A `server_administration` grant carries no subject and requires
+an empty value; every other kind requires a bounded non-empty value. Log module
+assignment stores the log type as its own primary key, so SQLite itself allows
+at most one row for each of the System Log and the Audit Log.
+
+Reads decode every row through the shared contract's checked constructors and
+rebuild the aggregate through `ApplicationState`. Any invalid identifier,
+out-of-bounds text, unknown discriminator, missing singleton, duplicate row,
+dangling reference, or disabled log assignment returns `IntegrityFailure`
+without returning the offending value.
+
 ## Checkpoint Transactions
 
 `SqliteDatabase` implements the complete `ApplicationDatabase` contract after
@@ -122,6 +159,22 @@ returns `IntegrityFailure` before mutation. SQL parameters bind identifiers and
 metadata as BLOBs and workflow as a fixed internal string. Driver payloads,
 SQL, paths, identifiers, and metadata are never included in returned errors or
 ordinary diagnostics.
+
+Checkpoint replacement runs in one `BEGIN IMMEDIATE` transaction. Under that
+write lock it re-inspects lifecycle state against the expected deployment
+identifier, requires the persisted pending checkpoint to equal the supplied
+checkpoint exactly, writes every state row, inserts the unacknowledged
+completion obligation, and updates the singleton lifecycle row to initialized
+with no workflow or checkpoint metadata. The whole replacement therefore
+commits or rolls back as one unit, and the second attempt sees initialized
+state and returns `AlreadyInitialized`.
+
+Acknowledgement runs in its own immediate transaction. It requires initialized
+state for the expected deployment and updates the obligation row only while it
+is unacknowledged and its persisted record identifier matches; otherwise it
+returns `InvalidState` without writing. Loading initialized state runs one read
+transaction, decodes every state table, and reports the outstanding
+acknowledgement flag alongside the aggregate.
 
 Real-SQLite tests use separate stale backend instances to prove serialized
 rechecking and test-only table triggers to force insert failures. The trigger
@@ -224,6 +277,14 @@ and WAL sidecar files automatically. They cover successful and idempotent
 migrations, restart persistence, migration and write rollback, invalid
 configuration, unavailable storage, incompatible migration history, and error
 and diagnostic redaction.
+
+Application-state tests additionally cover a full round trip of every state type
+across reopen, one-time checkpoint replacement, mismatched-checkpoint and
+mismatched-deployment rejection without writing state, complete rollback of a
+partially written replacement, malformed persisted state, one-time obligation
+acknowledgement, and an explicit assertion over the installed `weavelit_*`
+tables and columns that no session, log-record, or Log Module credential
+storage exists.
 
 The MVP scope does not defer quality obligations: every selected behavior has
 its required security, diagnostics, safe failure, and automated test evidence

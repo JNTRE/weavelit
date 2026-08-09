@@ -32,6 +32,6 @@ pub use persistence::{
     AnchorLoadState, LifecycleStore, LocatorPersistencePermit, RecordPersistencePermit,
 };
 pub use weavelit_server_database::{
-    ApplicationDatabase, CheckpointMetadata, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, WorkflowCheckpoint, WorkflowKind,
+    ApplicationDatabase, ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, InitializedState, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };

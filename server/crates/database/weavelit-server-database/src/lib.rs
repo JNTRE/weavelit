@@ -2,6 +2,21 @@
 
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
+mod state;
+
+pub use state::{
+    Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
+    CompletionObligation, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
+    CorrelationIdentifier, Description, Group, GroupGrant, GroupGrantRecord, GroupMembership,
+    InitializedState, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
+    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
+    MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH,
+    MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
+    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier,
+    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
+    StateIdentifier,
+};
+
 use std::{error::Error as StdError, fmt};
 
 /// Number of bytes in a deployment identifier.
@@ -147,6 +162,26 @@ pub trait ApplicationDatabase: Send {
 
     /// Atomically creates a checkpoint in an eligible uninitialized database.
     fn create_checkpoint(&mut self, checkpoint: &WorkflowCheckpoint) -> Result<(), DatabaseError>;
+
+    /// Atomically replaces the exact pending checkpoint with complete state once.
+    fn complete_checkpoint(
+        &mut self,
+        checkpoint: &WorkflowCheckpoint,
+        state: &ApplicationState,
+    ) -> Result<(), DatabaseError>;
+
+    /// Loads complete initialized state bound to the expected deployment.
+    fn load_initialized_state(
+        &mut self,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<InitializedState, DatabaseError>;
+
+    /// Marks the persisted completion obligation acknowledged exactly once.
+    fn acknowledge_completion(
+        &mut self,
+        expected_deployment_identifier: DeploymentIdentifier,
+        record_identifier: StateIdentifier,
+    ) -> Result<(), DatabaseError>;
 }
 
 /// Invalid caller-provided value rejected before persistence access.
@@ -156,6 +191,32 @@ pub enum ContractInputError {
     InvalidDeploymentIdentifier,
     /// The encoded checkpoint metadata exceeds the contract limit.
     CheckpointMetadataTooLarge,
+    /// The entity identifier is the reserved all-zero value.
+    InvalidStateIdentifier,
+    /// A required text value is empty.
+    TextEmpty,
+    /// A text value exceeds its contract limit.
+    TextTooLong,
+    /// A text value contains control characters.
+    TextNotPrintable,
+    /// A protected value is empty.
+    ProtectedValueEmpty,
+    /// A protected value exceeds the contract limit.
+    ProtectedValueTooLarge,
+    /// The encoded password verifier is not a bounded PHC string.
+    InvalidPasswordVerifier,
+    /// The encoded recovery public key is not canonical.
+    InvalidRecoveryPublicKey,
+    /// The completion-record event time is negative.
+    InvalidEventTime,
+    /// Two state entries share an identifier or unique key.
+    DuplicateEntry,
+    /// A state entry references an absent entity.
+    UnknownReference,
+    /// A required log type has no assignment.
+    MissingAssignment,
+    /// An assignment references a disabled Log Module configuration.
+    DisabledAssignment,
 }
 
 impl fmt::Display for ContractInputError {
@@ -163,6 +224,19 @@ impl fmt::Display for ContractInputError {
         let message = match self {
             Self::InvalidDeploymentIdentifier => "deployment identifier is invalid",
             Self::CheckpointMetadataTooLarge => "checkpoint metadata is too large",
+            Self::InvalidStateIdentifier => "state identifier is invalid",
+            Self::TextEmpty => "text value is empty",
+            Self::TextTooLong => "text value is too long",
+            Self::TextNotPrintable => "text value is not printable",
+            Self::ProtectedValueEmpty => "protected value is empty",
+            Self::ProtectedValueTooLarge => "protected value is too large",
+            Self::InvalidPasswordVerifier => "password verifier is invalid",
+            Self::InvalidRecoveryPublicKey => "recovery public key is invalid",
+            Self::InvalidEventTime => "completion event time is invalid",
+            Self::DuplicateEntry => "application state contains a duplicate entry",
+            Self::UnknownReference => "application state contains an unknown reference",
+            Self::MissingAssignment => "application state is missing a log assignment",
+            Self::DisabledAssignment => "application state assigns a disabled log module",
         };
         formatter.write_str(message)
     }

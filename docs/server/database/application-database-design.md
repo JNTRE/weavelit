@@ -49,6 +49,8 @@ mechanics. It supports only these capabilities:
    validates a backup artifact or private recovery key.
 5. Load the initialized application-owned state and deployment identifier
    required by Server startup.
+6. Acknowledge the persisted completion obligation of a finished Init or
+   Restore workflow exactly once.
 
 The Rust contract is synchronous and object-safe. `ApplicationDatabase`
 requires a movable backend and takes exclusive mutable access for every call;
@@ -108,10 +110,69 @@ reset. Every later Init or Restore attempt returns the stable
 `AlreadyInitialized` error.
 
 The backend compares the expected deployment identifier on every checkpoint,
-finalization, load, and restore operation. It rejects a mismatch before changing
-state. The identifier is an integrity binding between this database and the
-Server-local deployment record and locator; it is not an authentication
-credential or secret.
+finalization, load, restore, and acknowledgement operation. It rejects a
+mismatch before changing state. The identifier is an integrity binding between
+this database and the Server-local deployment record and locator; it is not an
+authentication credential or secret.
+
+## Application State Model
+
+The contract carries deployment-bound application state as a bounded typed
+aggregate of normalized entities, not as an opaque serialized snapshot. Each
+recoverable state type is a distinct type with its own validated fields, so a
+backend persists it in normalized relational form and the Server can reason
+about, migrate, and integrity-check individual entities. `ApplicationState`
+covers component configuration, protected component secrets, local accounts,
+password verifiers, Groups, Group memberships, Group grants, protected MFA
+factor data, Service Connection credentials, the persisted recovery public key,
+non-secret Log Module configuration and settings, System Log and Audit Log
+assignments, and the workflow completion obligation.
+
+The aggregate has no session, Log Module destination data, or Log Module
+credential member. Active sessions, System Logs and Audit Logs, other Log Module
+destination data, and Log Module authentication or connection credentials
+therefore cannot enter persisted application state through this contract, and a
+backend has no schema in which to record them.
+
+Every text field is bounded, non-empty, and free of control characters. A state
+identifier is an opaque 16-byte value that rejects the reserved all-zero
+representation. A password verifier is a bounded ASCII PHC string, and the
+recovery public key is the canonical lowercase `age1` recipient encoding
+defined by the [Server Restore Design](../lifecycle/restore/restore-design.md).
+
+Reversibly encrypted values are modeled as opaque protected byte payloads. The
+Application Database stores and returns those bytes exactly. It never accepts
+raw key material, derives keys, encrypts, decrypts, interprets, or discloses
+them. The Server-local at-rest key material stays inside lifecycle ownership.
+
+`ApplicationState` is constructed through a checked constructor that orders
+every collection deterministically, rejects duplicate identifiers and duplicate
+unique keys, rejects references to absent accounts, Groups, or Log Module
+configurations, and requires exactly one enabled Log Module assignment for each
+of the System Log and the Audit Log. Rejections use the same redacted
+contract-input errors as other invalid inputs and never echo the rejected
+value. A backend that decodes persisted state through the same constructor
+therefore detects malformed durable state and returns `IntegrityFailure`.
+
+The completion obligation carries the bounded, non-secret System Log fields for
+the workflow-result record required by the
+[Technical Specification](../../spec.md#logging-and-accountability): its record
+identifier, workflow discriminator, classification, correlation identifier, UTC
+Unix millisecond event time, and detail. Checkpoint replacement persists it
+unacknowledged in the same transaction as the state it completes, so an
+interrupted workflow cannot lose its logging obligation. Acknowledgement is a
+separate one-time operation that requires initialized state, the expected
+deployment identifier, and the exact persisted record identifier; a second
+attempt or an unknown record identifier returns `InvalidState`. Loading
+initialized state reports whether the obligation is still outstanding.
+
+Checkpoint replacement is workflow-neutral and serves both the Init and the
+Restore final write. It receives the expected deployment identifier through the
+supplied checkpoint, requires the persisted pending checkpoint to equal that
+checkpoint exactly, and requires the state's completion obligation to name the
+same workflow. A different deployment returns `DeploymentMismatch`, a different
+or absent checkpoint returns `InvalidState`, and initialized state returns
+`AlreadyInitialized`.
 
 The contract initially exposes these storage-neutral error categories:
 

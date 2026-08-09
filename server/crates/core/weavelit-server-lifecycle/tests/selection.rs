@@ -6,7 +6,8 @@ use std::{
 };
 
 use weavelit_server_database::{
-    CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
+    ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
+    InitializedState, StateIdentifier,
 };
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
@@ -134,6 +135,29 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn create_checkpoint(&mut self, _checkpoint: &WorkflowCheckpoint) -> Result<(), DatabaseError> {
         Ok(())
+    }
+
+    fn complete_checkpoint(
+        &mut self,
+        _checkpoint: &WorkflowCheckpoint,
+        _state: &ApplicationState,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::InvalidState)
+    }
+
+    fn load_initialized_state(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<InitializedState, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn acknowledge_completion(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+        _record_identifier: StateIdentifier,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::NotInitialized)
     }
 }
 

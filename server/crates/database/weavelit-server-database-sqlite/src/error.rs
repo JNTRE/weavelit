@@ -3,11 +3,13 @@ use weavelit_server_database::DatabaseError;
 
 pub(super) enum ErrorContext {
     Checkpoint,
+    Completion,
     Open,
     Configure,
     Health,
     Inspect,
     Migration,
+    State,
 }
 
 pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseError {
@@ -17,10 +19,12 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
         _ => match context {
             ErrorContext::Open => DatabaseError::ConfigurationInvalid,
             ErrorContext::Checkpoint
+            | ErrorContext::Completion
             | ErrorContext::Configure
             | ErrorContext::Health
             | ErrorContext::Inspect
-            | ErrorContext::Migration => DatabaseError::IntegrityFailure,
+            | ErrorContext::Migration
+            | ErrorContext::State => DatabaseError::IntegrityFailure,
         },
     }
 }
