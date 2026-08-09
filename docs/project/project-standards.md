@@ -19,7 +19,7 @@ workflow policy, and new policy must not be added here.
 - The Markdown files under `docs/project/issue_templates/` define the body
   shape for agent-created Issues. The resulting GitHub Issue is authoritative
   after creation.
-- [Contributing](../../../CONTRIBUTING.md) defines branch roles, branch naming,
+- [Contributing](../../CONTRIBUTING.md) defines branch roles, branch naming,
   commit messages, and contribution flow.
 - `.github/pull_request_template.md` defines the required Pull Request body and
   final checklist shape.
@@ -46,4 +46,4 @@ then, changes may update authority routing or the removal condition only.
 
 ## Related Documents
 
-- [Contributing](../../../CONTRIBUTING.md)
+- [Contributing](../../CONTRIBUTING.md)
