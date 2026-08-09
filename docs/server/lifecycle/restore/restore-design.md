@@ -74,10 +74,14 @@ The Restore crate treats the artifact as untrusted before and after successful
 decryption. It applies the configured upload, cryptographic-work, structural,
 collection, string, execution-time, concurrency, and any applicable
 decompression bounds before expensive allocation or application-state
-mutation. It parses structured data with the format's maintained parser and
-rejects unknown required fields, duplicate identities, invalid references,
-unsupported versions, unavailable required compiled-in components, and values
-outside Server domain constraints.
+mutation. These bounds enforce the
+[Security Model](../../../security-model.md#backup-input-security-profile)'s
+approved 256 MiB maximum encrypted artifact and authenticated-plaintext size,
+120-second upload deadline, 300-second total request deadline, and single
+concurrent Restore operation. It parses structured data with the format's
+maintained parser and rejects unknown required fields, duplicate identities,
+invalid references, unsupported versions, unavailable required compiled-in
+components, and values outside Server domain constraints.
 
 The private recovery key is accepted only to authenticate and decrypt the
 submitted backup. It is not an application identity, proof of host authority,
@@ -95,25 +99,54 @@ checkpoint exists. An interruption that retains staging state is classified
 fail-closed without automatic cleanup, resumption, or upload retry. Exact
 normal-request staging mechanics remain an open design decision.
 
+## Backup Envelope And Cryptography
+
+The backup artifact begins with a fixed 8-byte magic `WLBKUP\r\n`, a big-endian
+2-byte format-version field of `1`, 2 zero flag bytes, and a big-endian 8-byte
+encrypted-payload-length field. An age v1 stream immediately follows this fixed
+header; format version 1 defines no compression. The Restore crate implements
+the [Security Model](../../../security-model.md#backup-input-security-profile)'s
+approved age v1 X25519 recipient profile: X25519 key agreement with
+HKDF-SHA-256 and ChaCha20-Poly1305 wrap the per-backup data key, HMAC-SHA-256
+authenticates the header, and the age STREAM construction with
+ChaCha20-Poly1305 encrypts the authenticated plaintext. The authenticated
+plaintext repeats `format_version: 1` so the inner content is bound to the
+outer envelope's declared version.
+
+A private recovery key is accepted only in its canonical age Bech32 encoding —
+a lowercase `age1...` public recipient or an uppercase
+`AGE-SECRET-KEY-1...` private identity — and only as exactly one canonical
+line; a key with surrounding content, multiple lines, or non-canonical encoding
+is rejected as `recovery_key_invalid` before decryption. The same canonical
+encoding also carries an encrypted delivery-nonce challenge used to confirm
+proof of possession of a newly generated private key; the Restore crate does
+not perform that challenge and enforces only canonical syntax and
+cryptographic validity when a key is submitted with a backup.
+
 ## Backup Validation And Restored State
 
-Restore validation minimizes exposure to attacker-controlled work. After
-lifecycle eligibility and transfer bounds are enforced, the Restore crate:
+Restore validation follows one fixed order that minimizes exposure to
+attacker-controlled work and performs no state mutation until it is complete:
 
-1. minimally parses the bounded outer envelope to identify its format version
-   and declared cryptographic parameters;
-2. rejects unsupported or out-of-policy parameters before cryptographic work;
-3. authenticates and decrypts the envelope with the supplied recovery key under
-   configured cryptographic-work limits;
-4. bounds any decompression and plaintext size before parsing the authenticated
-   structured contents; and
-5. validates Server and source-backend compatibility, internal references,
-   required components, and all domain semantics.
+1. lifecycle eligibility and the exclusive Restore mutation permit;
+2. configured transfer bounds (artifact size, upload deadline, and total
+   request deadline);
+3. the fixed outer header and its exact declared length;
+4. canonical recovery-key syntax;
+5. age parameter policy, rejecting unsupported or out-of-policy parameters
+   before cryptographic work;
+6. authenticated streaming decryption of the envelope with the supplied
+   recovery key under configured cryptographic-work limits;
+7. authenticated-plaintext size bounds;
+8. the inner `format_version` and Server/source-backend compatibility;
+9. internal references, required components, and domain semantics;
+10. removal of any staged artifact; and
+11. checkpoint creation and atomic replacement, detailed in
+    [Checkpoint, Atomic Restore, And Sealing](#checkpoint-atomic-restore-and-sealing).
 
-A failure releases transient resources without continuing to later stages,
-leaves the selected database without application state, and returns only a
-stable, redacted error. The exact envelope, key format, algorithms, and concrete
-bounds remain the decisions recorded in Open Questions.
+A failure at any step releases transient resources without continuing to a
+later step, leaves the selected database without application state, and
+returns only a stable, redacted error.
 
 A valid backup supplies the application-owned state required for operation,
 including account records, password verifiers, Groups and grants, enabled
@@ -195,11 +228,14 @@ finds the Restore interface unavailable.
 
 Restore failures use the Server's centralized typed error presentation and
 compose the shared lifecycle categories. Restore-specific categories include
-`backup_invalid`, `backup_incompatible`, `recovery_key_invalid`,
-`restore_pending`, and `restore_failed`. Categories do not reveal whether a
-guessed key partially matched, cryptographic internals, backup plaintext,
-account identities, provider credentials, filesystem details, or raw dependency
-errors.
+`recovery_key_invalid` for malformed key syntax; `backup_invalid` for a wrong
+key, an altered artifact, or any other authentication failure, which remain
+indistinguishable from one another; `backup_incompatible` for an unsupported
+format, backend, or component; `restore_pending` for a concurrent or stale
+request; and `restore_failed` for a timeout, storage failure, or other
+internal failure. Categories do not reveal whether a guessed key partially
+matched, cryptographic internals, backup plaintext, account identities,
+provider credentials, filesystem details, or raw dependency errors.
 
 ## Test Evidence
 
@@ -214,6 +250,11 @@ state classification, absence of reconciliation, retry, reset, automatic
 cleanup, recreation, and sealing after interruption, Restore-specific valid-run
 failure classification, concurrency with Init and Restore requests, direct
 invocation after sealing, and rejection before key or artifact processing.
+Fixture-based tests use an immutable raw `.wlitbackup` file, its canonical
+private-key line, the expected decrypted plaintext, and a canonical JSON
+manifest recording each fixture's exact byte lengths and SHA-256 digests.
+Negative fixtures mutate exactly one property of the valid fixture at a time
+so each failure path is independently attributable.
 
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify
