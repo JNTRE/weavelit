@@ -963,7 +963,12 @@ where
     let request = match read_http_request_with_timeout(stream, request_read_timeout).await {
         RequestHeadRead::Completed(request) => {
             if !rate_limiter.allows(source, Instant::now()) {
-                return rate_limited_response();
+                let mut response = rate_limited_response();
+                // RFC 9110 §9.3.2: HEAD responses must not include a message body.
+                if matches!(request.as_ref(), Ok(r) if *r.method() == Method::HEAD) {
+                    response.body = Bytes::new();
+                }
+                return response;
             }
             *request
         }
@@ -3208,6 +3213,51 @@ mod tests {
         assert!(response.ends_with(b"{\"error\":\"rate_limited\"}"));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rate_limit_head_response_has_empty_body() {
+        let (server_config, client_config) = tls_configs();
+        let rate_limiter = Arc::new(RateLimiter::new());
+
+        for _ in 0..RATE_LIMIT_BURST {
+            let response = direct_tls_response_with_rate_limiter(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                Arc::clone(&rate_limiter),
+                b"HEAD /api/v1/status HTTP/1.1\r\n\r\n",
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert!(
+                response.starts_with(b"HTTP/1.1 405 \r\n"),
+                "burst HEAD should be 405, got: {:?}",
+                String::from_utf8_lossy(&response[..response.len().min(64)])
+            );
+            assert_eq!(
+                &response[response.len().saturating_sub(2)..],
+                b"\r\n",
+                "burst HEAD body must be empty"
+            );
+        }
+
+        let response = direct_tls_response_with_rate_limiter(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            rate_limiter,
+            b"HEAD /api/v1/status HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        // 429 status must be present and body must be empty (RFC 9110 §9.3.2).
+        assert_eq!(
+            response,
+            b"HTTP/1.1 429 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n"
+        );
     }
 
     #[tokio::test]
