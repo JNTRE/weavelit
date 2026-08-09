@@ -975,11 +975,17 @@ where
         Err(error) => return response_for_request_read_error(error),
     };
 
+    let is_head = *request.method() == Method::HEAD;
     let response = router
         .oneshot(request)
         .await
         .expect("restricted router response is infallible");
-    bounded_response_from_axum(response).await
+    let mut bounded = bounded_response_from_axum(response).await;
+    // RFC 9110 §9.3.2: HEAD responses must not include a message body.
+    if is_head {
+        bounded.body = Bytes::new();
+    }
+    bounded
 }
 
 #[derive(Debug)]
@@ -2435,6 +2441,56 @@ mod tests {
             405,
             "{\"error\":\"method_not_allowed\"}",
             Some(AllowedMethod::Get),
+        );
+    }
+
+    #[tokio::test]
+    async fn head_request_returns_correct_status_with_empty_body() {
+        use axum::routing::get;
+
+        let (server_config, client_config) = tls_configs();
+
+        // A route defined with axum::routing::get handles HEAD automatically:
+        // the handler runs, the body is stripped by Axum, and our fix must not
+        // re-inject gateway_timeout or any other body.
+        let router = Router::new().route(
+            "/api/v1/status",
+            get(|| async {
+                super::json_response_body(
+                    StatusCode::OK,
+                    "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
+                )
+            }),
+        );
+        let response = direct_tls_response(
+            router,
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"HEAD /api/v1/status HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        // Status and headers must be present; body must be absent per RFC 9110 §9.3.2.
+        assert_eq!(
+            response,
+            b"HTTP/1.1 200 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n"
+        );
+
+        // Confirm the fix also suppresses the body on a HEAD 405 (method rejected by the
+        // mounted route before Axum can auto-handle it).
+        let response_405 = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            server_config,
+            client_config,
+            b"HEAD /api/v1/status HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            response_405,
+            b"HTTP/1.1 405 \r\nContent-Type: application/json; charset=utf-8\r\nAllow: GET\r\n\r\n"
         );
     }
 
