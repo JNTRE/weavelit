@@ -18,15 +18,21 @@ time, result, and correlation identifier. It contains no SQLite, filesystem,
 Application Database, client-wire serialization, query, retention, backup,
 recovery, purge, or remote-credential behavior.
 
-The contract enforces UTF-8 byte limits before it constructs a complete record:
-the correlation identifier is at most 64 bytes; System classification and
-detail are at most 128 bytes and 4 KiB; and Audit principal, action, target,
-and detail are at most 256 bytes, 128 bytes, 1 KiB, and 4 KiB. The correlation
-identifier plus every body field is at most 8 KiB. Empty and oversized values
-are rejected without truncation, hashing, raw source payload retention, or a
-replacement record. Audit and Observability are the only producers of these
-pre-redacted bounded summaries; a logging-required workflow fails if it cannot
-construct one, and a destination receives no unbounded or partial record.
+The contract enforces UTF-8 byte limits before it constructs a complete
+record. Every record carries a nonzero 16-byte random `record_id`, a UTC
+Unix-millisecond `event_time`, a `success` or `failure` `result`, a
+`correlation_id` of 1–64 bytes, and a `classification` of 1–128 bytes that is a
+lowercase dotted identifier. A System record adds a `detail` of 1–4096 bytes;
+an Audit record adds a `principal` of 1–256 bytes with its type, a nullable
+`responsible_owner` of 1–256 bytes that is required for an automation
+principal and forbidden for a human principal, an `action` of 1–128 bytes, a
+`target` of 1–1024 bytes, and its own `detail` of 1–4096 bytes. Every field is
+pre-redacted before construction, and the correlation identifier plus every
+body field is at most 8 KiB combined. Empty and oversized values are rejected
+without truncation, hashing, raw source payload retention, or a replacement
+record. Audit and Observability are the only producers of these pre-redacted
+bounded summaries; a logging-required workflow fails if it cannot construct
+one, and a destination receives no unbounded or partial record.
 
 Its compiled-in catalog validates each registration before invoking its factory
 with trusted Server context. A configured destination accepts only a complete
@@ -78,6 +84,37 @@ identifier with different content is an integrity failure. This provides
 at-least-once attempts and one persisted completion record per identifier for
 the MVP SQLite destination; it does not claim distributed exactly-once delivery
 or select a fan-out policy.
+
+## Event Classification Taxonomy
+
+Every classification is a lowercase dotted identifier that a producer selects
+from its registered values; a destination stores it opaquely and must tolerate
+an additive value registered later. The initial System Log taxonomy is
+`lifecycle.startup`, `lifecycle.init`, `lifecycle.restore`,
+`operational.state`, `configuration.change`, `authentication.failure`,
+`authorization.denial`, `dependency.failure`, `provider.failure`, and
+`internal.error`. The initial Audit Log taxonomy is `lifecycle.backup.created`;
+`authentication.user.created`, `authentication.user.disabled`,
+`authentication.password.changed`, `authentication.password-reset.started`,
+`authentication.mfa.enrolled`, `authentication.mfa.reset`,
+`authentication.mfa-requirement.changed`,
+`authentication.mfa-module-enablement.changed`, and
+`authentication.session.revoked`; `authorization.group.created`,
+`authorization.group-membership.changed`, `authorization.group-grant.changed`,
+and `authorization.automation-scope.changed`;
+`dependency.log-module-configuration.changed` and
+`dependency.service-connection.changed`; `provider.operation.started` and
+`provider.operation.completed`; and `internal.server-configuration.changed`,
+`internal.user-status.changed`, and `internal.log-policy.changed`.
+
+**[Init](../glossary.md#states-and-requests)** and
+**[Restore](../glossary.md#states-and-requests)** completion results remain
+System-only events under `lifecycle.init` and `lifecycle.restore`. A raw
+dependency, provider, authorization, or internal failure is a System event; a
+consequential authenticated action that follows from it may additionally
+produce an Audit event. This taxonomy does not change the Log Module
+non-enrichment boundary: a destination never adds a field to a record it
+receives.
 
 ## MVP SQLite Destination
 
@@ -142,6 +179,13 @@ constraints rebuilds its tables transactionally and copies existing records
 only when they satisfy the new schema. An existing oversized row makes the
 migration fail closed without dropping, altering, or replacing any destination
 record; this MVP defines no data-recovery exception for that incompatibility.
+
+The migration ledger's existing checksummed migrations 1 and 2 remain
+unchanged. Migration 3 transactionally adds a nullable `responsible_owner`
+column to the Audit table; existing rows copy forward with `responsible_owner`
+set to `NULL`, and the conditional requirement — required for an automation
+principal, forbidden for a human principal — is enforced only for records
+created after that migration runs.
 
 ### Descriptor-Relative Candidate Evidence
 

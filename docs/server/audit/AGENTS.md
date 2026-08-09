@@ -10,6 +10,7 @@ Use this section to understand what this directory owns, what it does not own, a
 - It does not own Init or Restore lifecycle-result logging; that belongs in the sibling `../observability/` directory.
 - It does not own operational diagnosis, metrics, or tracing; those belong in the sibling `../observability/` directory.
 - Audit destination retention and backup decisions that remain unsettled belong in `../../open-questions.md`; required pre-redaction follows `../../security-model.md`.
+- The canonical Audit Log record schema, event classification taxonomy, and SQLite migration compatibility are defined in [Log Module Design](../../log-modules/log-module-design.md); this guide does not duplicate that schema.
 
 ## Asset Inventory
 
