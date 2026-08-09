@@ -90,17 +90,6 @@ What wire format and compatibility policy apply to later
 **[Restore](glossary.md#states-and-requests)** contracts, results, errors,
 pagination, idempotency keys, and Server/Weavelit CLI version compatibility?
 
-### 9. Application Database backup and Restore
-
-The MVP **[Application Database](glossary.md#applications-and-interfaces)** is
-SQLite and is selected through the shared pre-operational contract before
-either **[Init](glossary.md#states-and-requests)** or
-**[Restore](glossary.md#states-and-requests)**; Weavelit does not support
-in-place database migration. What versioned backup format, cryptographic
-envelope, recovery-key format, compatibility window, and normal-request
-artifact-staging policy apply? Which additional fields, if any, identify the
-backup format without exposing backup contents?
-
 ### 10. Secrets and provider credential management
 
 Which **[Service Connection](glossary.md#applications-and-interfaces)** type
@@ -179,3 +168,4 @@ appropriate single source of truth after that validation.
 - [Glossary](glossary.md)
 - [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md)
 - [Testing and Validation Policy](testing.md)
+- Backup and Restore protection is settled in the [Server Restore Design](server/lifecycle/restore/restore-design.md) and [Security Model](security-model.md).
