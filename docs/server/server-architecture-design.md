@@ -181,12 +181,33 @@ provider and permits TLS 1.2 and TLS 1.3. The runtime does not create a second
 listener or a cleartext fallback.
 
 The compiled-in `weavelit-module-client-webui` crate owns translation of the
-Web UI pre-operational status request and response contract. The runtime mounts
-that route only when the Server-owned lifecycle gate permits it and retains
-ownership of direct TLS, listener composition, raw request parsing, resource
-limits, and lifecycle classification. The module cannot independently compose a
-route or listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
-defines its public contract and resource limits.
+Web UI pre-operational status request and Application Database selection request
+and response contracts and delivery of its compile-time embedded browser asset
+allowlist. The runtime mounts those routes
+only when the Server-owned lifecycle gate permits it and retains ownership of
+direct TLS, listener composition, raw request parsing, resource limits, and
+lifecycle classification. The module cannot independently compose a route or
+listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
+defines the status contract and resource limits; the
+[Web UI Pre-Operational Database Selection Surface](../client-modules/web-ui/pre-operational-database-selection-design.md)
+defines the selection contract; the
+[Embedded Asset Delivery Design](../client-modules/web-ui/embedded-asset-delivery-design.md)
+defines the asset allowlist, media types, security headers, and body bounds.
+
+The runtime composes every mounted pre-operational route over one shared
+lifecycle authority. Startup constructs a single workflow arbiter over the
+opened lifecycle store, together with the shared backend catalog and trusted
+backend context, and hands each route a reference to that same instance. The
+module holds no lifecycle state: the status route calls a Server-supplied source
+that reads the projection live on every request, and the selection route
+delegates its decision to a Server-supplied commit hook that returns the
+projection observed under the same exclusive mutation permit that committed the
+selection. A status read therefore cannot report a value captured at startup or
+disagree with a completed selection. A future Init workflow must reuse this same
+arbiter; composing a second one would defeat serialization between selection and
+Init. The expected same-origin authority passed to the selection route is the
+socket address the listener actually bound, never a request header or a
+certificate subject alternative name.
 
 The implementation selects minimal features and exact crates.io versions for
 Axum, Hyper, Tokio, and their required adapters under the dependency policy
@@ -194,6 +215,47 @@ below. Each selected package must be maintained and advisory-reviewed before it
 is added. A package upgrade is a deliberate dependency change that repeats the
 version, change, advisory, and validation review; no future version is approved
 by this architecture decision.
+
+### Bounded Request Reading
+
+The runtime reads a request in two stages within a single request-read budget.
+The first stage reads the request head under the existing 2 KiB request-target,
+8 KiB raw-header, and aggregate head bounds. The second stage reads a request
+body only when the head declares one.
+
+Only `PUT` may carry a body. It must declare exactly one canonical decimal
+`Content-Length` of at most 1 KiB. This body allowance is separate from the head
+bounds and never relaxes them. The runtime rejects chunked transfer encoding,
+any `Expect` header, a duplicated or conflicting `Content-Length`, a
+non-numeric, signed, or non-canonical length, a declared length over 1 KiB, a
+stream that ends before the declared length, and bytes beyond the declared
+length. Every other method must declare no body at all, so a `GET` carrying body
+framing is still rejected. Each rejection uses the fixed `400` bad-request
+response.
+
+The 5-second request-read timeout is one budget covering the head and the body
+together; it does not restart when the body begins. The 10-second total
+processing timeout remains outermost and unchanged. Per-source rate admission
+still keys on a completed request head, so a body read that times out is a
+request timeout rather than a consumed quota slot.
+
+A complete request keeps its method and is dispatched, so the mounted route
+decides whether the method is permitted and which method it advertises. Only a
+request line whose oversized method token never yields a bounded target is
+classified before dispatch; that path has no route context and answers with the
+fixed `405` and `Allow: GET`.
+
+### Allowed-Method Representation
+
+A bounded response carries an optional allowed method drawn from a closed
+`AllowedMethod` set of `GET` and `PUT`. The response writer emits the matching
+fixed `Allow` header line, or none when the response has no allowed method. A
+module therefore selects one of these fixed values and can never supply header
+text of its own.
+
+The media type, security headers, and maximum body size continue to derive from
+the response profile alone. They are never taken from a module, request, file
+extension, or body, and the allowed method does not influence any of them.
 
 ## Rust Workspace Dependency Policy
 
@@ -265,8 +327,12 @@ package. Internal workspace members are not exceptions.
 
 - **Source and version:** crates.io `=0.11.0`.
 - **Owner and behavior:** `weavelit-server-database-sqlite` uses SHA-256 to bind
-  each immutable embedded migration file to its migration-ledger entry. The
-  standard library and existing approved dependencies do not provide SHA-256.
+  each immutable embedded migration file to its migration-ledger entry.
+  `weavelit-module-client-webui` uses it as a build-dependency only, to re-hash
+  the Web UI bundle inputs and generated assets at compile time and fail closed
+  on a stale embedded bundle; it is not linked into that crate's runtime code.
+  The standard library and existing approved dependencies do not provide
+  SHA-256.
 - **Features:** default features are disabled and no optional features are
   enabled. Allocation, object-identifier, and zeroization features are absent;
   the locked graph contains only the digest primitives and CPU-feature support
@@ -370,7 +436,7 @@ package. Internal workspace members are not exceptions.
   exposes a listener in this validation boundary. Focused tests cover valid,
   invalid-address, missing, unreadable, symbolic-link, malformed, mismatched,
   and process-level pre-lifecycle failures. `cargo test --locked -p
-  weavelit-server --test startup` passes all 12 tests; the locked feature graph
+  weavelit-server --test startup` passes all 23 tests; the locked feature graph
   contains only the selected Rustls provider capabilities.
 
 #### HTTPS Runtime Composition
@@ -383,12 +449,12 @@ handling.
 
 | Package | Exact version and minimal features | Owner and purpose | Maintenance, license, and advisory evidence |
 | --- | --- | --- | --- |
-| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the fixed restricted route; `weavelit-module-client-webui` translates the status request and JSON response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
-| `http-body-util` | `=0.1.4`; defaults enabled | `weavelit-server`; collects the fixed, sub-128-byte Axum route response before direct TLS emission | Hyperium; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
-| `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, without request-body buffering | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the restricted status, Application Database selection, and embedded-asset routes; `weavelit-module-client-webui` translates the status and selection requests and JSON responses and each embedded asset into its profile-bounded response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
+| `http-body-util` | `=0.1.4`; defaults enabled | `weavelit-server`; collects each Axum route response before direct TLS emission, bounded by its `ResponseProfile` body limit (128 B JSON, 16 KiB HTML, 256 KiB JavaScript, 64 KiB CSS) rather than a single fixed size | Hyperium; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, with request-body buffering bounded separately to 1 KiB and permitted only for `PUT` | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio` | `=1.53.1`; defaults disabled; `io-util`, `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, TLS-stream I/O, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio-rustls` | `=0.26.4`; defaults disabled | `weavelit-server`; asynchronous stream adapter for the already-approved Rustls configuration | Rustls; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
-| `tower` | `=0.5.3`; defaults disabled; `util` | `weavelit-server`; invokes the fixed Axum route service after bounded request-head validation | Tower; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
+| `tower` | `=0.5.3`; defaults disabled; `util` | `weavelit-server`; invokes the Axum route service for the status, selection, and embedded-asset routes after bounded request-head validation | Tower; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 
 These packages do not enable HTTP/2, compression, CORS, cookie, form, JSON,
 query, tracing, client, proxy, or alternate TLS-provider features. The locked
@@ -497,9 +563,12 @@ every dependency-resolution change.
 
 - **Source and version:** crates.io `=1.0.151`.
 - **Owner and behavior:** `weavelit-server-lifecycle` parses and emits the
-  bounded, versioned UTF-8 JSON anchor formats through typed Serde models. The
-  standard library does not provide a JSON parser, and ad hoc string parsing is
-  prohibited for the security-sensitive formats.
+  bounded, versioned UTF-8 JSON anchor formats through typed Serde models.
+  `weavelit-module-client-webui` uses it as a build-dependency only, to parse
+  the Web UI build content manifest strictly at compile time; it is not linked
+  into that crate's runtime code. The standard library does not provide a JSON
+  parser, and ad hoc string parsing is prohibited for the security-sensitive
+  formats.
 - **Features:** default features are disabled and only `std` is enabled.
   Arbitrary-precision numbers, float round-trip, order preservation, raw values,
   and unbounded-depth parsing are excluded.

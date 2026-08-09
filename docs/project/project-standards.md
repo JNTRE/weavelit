@@ -13,13 +13,13 @@ workflow policy, and new policy must not be added here.
   [JNTRE/weavelit repository](https://github.com/JNTRE/weavelit) and
   [Weavelit GitHub Project](https://github.com/orgs/JNTRE/projects/1/views/1)
   before an operation that depends on them.
-- `.github/jntre/project.yaml` binds automation to the expected
+- `docs/project/project.yaml` binds automation to the expected
   repository and Project identity. It is not a snapshot of live metadata or
   workflow policy.
-- The Markdown files under `.github/jntre/issue_templates/` define the body
+- The Markdown files under `docs/project/issue_templates/` define the body
   shape for agent-created Issues. The resulting GitHub Issue is authoritative
   after creation.
-- [Contributing](../../../CONTRIBUTING.md) defines branch roles, branch naming,
+- [Contributing](../../CONTRIBUTING.md) defines branch roles, branch naming,
   commit messages, and contribution flow.
 - `.github/pull_request_template.md` defines the required Pull Request body and
   final checklist shape.
@@ -30,7 +30,7 @@ workflow policy, and new policy must not be added here.
 
 Existing references to this path use it only to locate the current authorities
 above. Agents must discover live GitHub configuration, bind it to
-`.github/jntre/project.yaml`, and apply the active focused workflow
+`docs/project/project.yaml`, and apply the active focused workflow
 before mutating GitHub. They must stop on missing, stale, or ambiguous binding
 or configuration instead of inferring a value from this index.
 
@@ -41,9 +41,9 @@ policy to this document.
 ## Removal Condition
 
 Remove this compatibility index after repository and external workflow
-references no longer depend on `docs/plan/project/project-standards.md`. Until
+references no longer depend on `docs/project/project-standards.md`. Until
 then, changes may update authority routing or the removal condition only.
 
 ## Related Documents
 
-- [Contributing](../../../CONTRIBUTING.md)
+- [Contributing](../../CONTRIBUTING.md)

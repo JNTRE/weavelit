@@ -1,0 +1,78 @@
+/* Weavelit Design System Tokens
+ *
+ * CSS custom properties for design tokens, organized by category.
+ * Naming convention: --ds-<category>-<property>
+ * Use these tokens in components instead of hardcoded values.
+ */
+
+:root {
+  /* Color Tokens - Semantic color palette */
+  --ds-color-text-primary: #1a1a1a;
+  --ds-color-text-secondary: #666666;
+  --ds-color-text-tertiary: #999999;
+  --ds-color-text-disabled: #cccccc;
+
+  --ds-color-background: #ffffff;
+  --ds-color-background-subtle: #f9f9f9;
+  --ds-color-background-hover: #f5f5f5;
+
+  --ds-color-border: #e0e0e0;
+  --ds-color-border-strong: #cccccc;
+
+  --ds-color-accent-primary: #0066cc;
+  --ds-color-accent-primary-hover: #0052a3;
+  --ds-color-accent-secondary: #6b7280;
+
+  --ds-color-status-success: #10b981;
+  --ds-color-status-warning: #f59e0b;
+  --ds-color-status-error: #ef4444;
+  --ds-color-status-info: #3b82f6;
+
+  /* Spacing Tokens - Based on 0.5rem increment system */
+  --ds-space-xs: 0.25rem;
+  --ds-space-sm: 0.5rem;
+  --ds-space-md: 1rem;
+  --ds-space-lg: 1.5rem;
+  --ds-space-xl: 2rem;
+  --ds-space-2xl: 3rem;
+
+  /* Typography Tokens */
+  --ds-font-family-base: system-ui, -apple-system, sans-serif;
+  --ds-font-family-mono: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+
+  --ds-font-size-xs: 0.75rem;
+  --ds-font-size-sm: 0.875rem;
+  --ds-font-size-body: 1rem;
+  --ds-font-size-lg: 1.125rem;
+  --ds-font-size-heading-sm: 1.25rem;
+  --ds-font-size-heading-md: 1.5rem;
+  --ds-font-size-heading-lg: 1.875rem;
+
+  --ds-font-weight-regular: 400;
+  --ds-font-weight-medium: 500;
+  --ds-font-weight-semibold: 600;
+  --ds-font-weight-bold: 700;
+
+  --ds-line-height-tight: 1.2;
+  --ds-line-height-normal: 1.5;
+  --ds-line-height-relaxed: 1.75;
+
+  /* Border Tokens */
+  --ds-radius-none: 0;
+  --ds-radius-sm: 0.25rem;
+  --ds-radius-md: 0.375rem;
+  --ds-radius-lg: 0.5rem;
+  --ds-radius-full: 9999px;
+
+  /* Shadow Tokens */
+  --ds-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --ds-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  --ds-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+
+  /* Transition Tokens */
+  --ds-transition-duration-fast: 150ms;
+  --ds-transition-duration-normal: 300ms;
+  --ds-transition-duration-slow: 500ms;
+
+  --ds-transition-timing: cubic-bezier(0.4, 0, 0.2, 1);
+}

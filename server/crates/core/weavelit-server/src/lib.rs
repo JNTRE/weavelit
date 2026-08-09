@@ -14,15 +14,14 @@ use std::{
 
 use axum::{
     Router,
-    body::Body,
+    body::{Body, Bytes, to_bytes},
     extract::Request,
     http::{
         HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
-        header::{ALLOW, CONTENT_TYPE},
+        header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, EXPECT, TRANSFER_ENCODING},
     },
     response::Response,
 };
-use http_body_util::BodyExt;
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use rustls::{
     ServerConfig,
@@ -36,16 +35,21 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Semaphore,
+    task,
     time::timeout,
 };
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
+use weavelit_module_client_webui::{
+    DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource, SelectedBackend, SelectionCommit,
+};
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
-    ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendRegistration,
-    DatabaseError, DeploymentIdentifier, InterruptedLifecycleAction, LifecycleClassification,
-    LifecycleError, LifecycleStore, RetainedDatabaseInspection, TrustedBackendContext,
-    ValidatedConnectionSettings, WorkflowKind,
+    ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
+    BackendRegistration, DatabaseError, DeploymentIdentifier, InterruptedLifecycleAction,
+    LifecycleClassification, LifecycleError, LifecycleProjection, LifecycleStore,
+    RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
+    WorkflowArbiter, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
 
@@ -54,6 +58,9 @@ const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
 const TLS_CERTIFICATE_PATH_ENV: &str = "WEAVELIT_TLS_CERTIFICATE_PATH";
 const TLS_PRIVATE_KEY_PATH_ENV: &str = "WEAVELIT_TLS_PRIVATE_KEY_PATH";
 const APPLICATION_DATABASE_FILE: &str = "application.sqlite3";
+/// The sole pre-operational route that may change lifecycle state.
+const APPLICATION_DATABASE_ROUTE: &str = "/api/v1/application-database";
+const STATUS_ROUTE: &str = "/api/v1/status";
 const MAX_TLS_MATERIAL_BYTES: u64 = 1024 * 1024;
 const MAX_NORMAL_CONNECTIONS: usize = 15;
 const MAX_REJECTION_CONNECTIONS: usize = 1;
@@ -63,8 +70,24 @@ const REQUEST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_REQUEST_TARGET_BYTES: usize = 2 * 1024;
 const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_HEAD_BYTES: usize = MAX_REQUEST_TARGET_BYTES + MAX_REQUEST_HEADER_BYTES + 128;
+/// Separate allowance for the one method that may carry a body; it never
+/// relaxes the target, header, or aggregate head bounds above.
+const MAX_REQUEST_BODY_BYTES: usize = 1024;
 const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
-const RATE_LIMIT_BURST: u32 = 5;
+/// Sized so one source can serve a full Web UI page load, which costs one
+/// document, two asset, and one status request, plus two immediate reloads.
+const RATE_LIMIT_BURST: u32 = 12;
+const MAX_JSON_BODY_BYTES: usize = 128;
+const MAX_HTML_BODY_BYTES: usize = 16 * 1024;
+const MAX_JAVASCRIPT_BODY_BYTES: usize = 256 * 1024;
+const MAX_CSS_BODY_BYTES: usize = 64 * 1024;
+const ASSET_SECURITY_HEADERS: &str = concat!(
+    "Content-Security-Policy: default-src 'none'; base-uri 'none'; object-src 'none'; ",
+    "frame-ancestors 'none'; form-action 'none'; script-src 'self'; style-src 'self'; ",
+    "connect-src 'self'\r\n",
+    "X-Content-Type-Options: nosniff\r\n",
+    "Cache-Control: no-store\r\n",
+);
 
 #[derive(Clone, Copy)]
 struct ConnectionTimeouts {
@@ -124,19 +147,98 @@ impl RateLimiter {
     }
 }
 
-#[derive(Clone, Copy)]
-struct FixedResponse {
-    status: StatusCode,
-    body: &'static str,
-    allow_get: bool,
+/// Closed set of response shapes the restricted listener may emit.
+///
+/// The profile alone selects the media type, the security header block, and the
+/// body bound. Nothing is taken from the request, a file extension, or the body
+/// contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseProfile {
+    Json,
+    Html,
+    JavaScript,
+    Css,
 }
 
-impl FixedResponse {
-    const fn new(status: StatusCode, body: &'static str) -> Self {
+impl ResponseProfile {
+    const fn media_type(self) -> &'static str {
+        match self {
+            Self::Json => "application/json; charset=utf-8",
+            Self::Html => "text/html; charset=utf-8",
+            Self::JavaScript => "text/javascript; charset=utf-8",
+            Self::Css => "text/css; charset=utf-8",
+        }
+    }
+
+    const fn max_body_bytes(self) -> usize {
+        match self {
+            Self::Json => MAX_JSON_BODY_BYTES,
+            Self::Html => MAX_HTML_BODY_BYTES,
+            Self::JavaScript => MAX_JAVASCRIPT_BODY_BYTES,
+            Self::Css => MAX_CSS_BODY_BYTES,
+        }
+    }
+
+    const fn security_headers(self) -> &'static str {
+        match self {
+            Self::Json => "",
+            Self::Html | Self::JavaScript | Self::Css => ASSET_SECURITY_HEADERS,
+        }
+    }
+
+    fn from_media_type(value: &HeaderValue) -> Option<Self> {
+        match value.as_bytes() {
+            b"application/json; charset=utf-8" => Some(Self::Json),
+            b"text/html; charset=utf-8" => Some(Self::Html),
+            b"text/javascript; charset=utf-8" => Some(Self::JavaScript),
+            b"text/css; charset=utf-8" => Some(Self::Css),
+            _ => None,
+        }
+    }
+}
+
+/// Closed set of methods the listener may advertise in an `Allow` header.
+///
+/// A module can only cause one of these fixed header lines to be emitted; it
+/// can never supply header text of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AllowedMethod {
+    Get,
+    Put,
+}
+
+impl AllowedMethod {
+    const fn allow_header(self) -> &'static str {
+        match self {
+            Self::Get => "Allow: GET\r\n",
+            Self::Put => "Allow: PUT\r\n",
+        }
+    }
+
+    fn from_header_value(value: &HeaderValue) -> Option<Self> {
+        match value.as_bytes() {
+            b"GET" => Some(Self::Get),
+            b"PUT" => Some(Self::Put),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BoundedResponse {
+    status: StatusCode,
+    profile: ResponseProfile,
+    body: Bytes,
+    allow: Option<AllowedMethod>,
+}
+
+impl BoundedResponse {
+    fn json(status: StatusCode, body: &'static str) -> Self {
         Self {
             status,
-            body,
-            allow_get: false,
+            profile: ResponseProfile::Json,
+            body: Bytes::from_static(body.as_bytes()),
+            allow: None,
         }
     }
 }
@@ -376,6 +478,80 @@ fn pem_end_label(line: &[u8]) -> Option<&[u8]> {
 }
 
 // ---------------------------------------------------------------------------
+// Lifecycle adapter
+// ---------------------------------------------------------------------------
+
+/// Runtime-owned single-lane async adapter that moves all blocking arbiter
+/// and SQLite access off the Tokio event-loop thread.
+///
+/// Status projection reads use `spawn_blocking` independently of the mutation
+/// lane so they are never serialized behind an in-progress selection.
+/// Selection mutations acquire a single-permit semaphore before entering
+/// `spawn_blocking`: a mutation that has not yet started when its enclosing
+/// `timeout` fires is cleanly cancelled at the semaphore `await` and never
+/// reaches the blocking pool.  Once a mutation is inside `spawn_blocking` it
+/// runs to completion regardless of the caller's timeout, preventing partial
+/// durable state.
+struct LifecycleAdapter {
+    arbiter: Arc<WorkflowArbiter>,
+    /// Single-permit gate that serializes selection mutations.
+    mutation_lane: Arc<Semaphore>,
+}
+
+impl LifecycleAdapter {
+    fn new(arbiter: Arc<WorkflowArbiter>) -> Self {
+        Self {
+            arbiter,
+            mutation_lane: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    /// Reads the live lifecycle projection on a blocking thread.
+    ///
+    /// Does not compete with the mutation lane, so a concurrent selection does
+    /// not delay the projection read on the event-loop thread.
+    async fn project(&self) -> Option<LifecycleProjection> {
+        let arbiter = Arc::clone(&self.arbiter);
+        task::spawn_blocking(move || arbiter.projection().ok())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Runs the database selection in the single mutation lane.
+    ///
+    /// Awaits the lane semaphore before entering `spawn_blocking`.  If the
+    /// caller's enclosing `timeout` fires while waiting for the semaphore, the
+    /// future is cancelled here and no blocking work starts.  Once the
+    /// semaphore is acquired and `spawn_blocking` begins, the selection runs to
+    /// completion regardless of any external cancellation.
+    async fn select(
+        &self,
+        backend: SelectedBackend,
+        catalog: Arc<BackendCatalog>,
+        context: Arc<TrustedBackendContext>,
+    ) -> Result<LifecycleProjection, DatabaseSelectionRejection> {
+        let permit = Arc::clone(&self.mutation_lane)
+            .acquire_owned()
+            .await
+            .map_err(|_| DatabaseSelectionRejection::ServiceUnavailable)?;
+
+        let arbiter = Arc::clone(&self.arbiter);
+        task::spawn_blocking(move || {
+            let _permit = permit;
+            let identifier = BackendIdentifier::new(backend.identifier())
+                .map_err(|_| DatabaseSelectionRejection::BadRequest)?;
+            arbiter
+                .select_database(&catalog, &context, &identifier, Vec::new())
+                .map(|(_database, projection)| projection)
+                .map_err(|error| DatabaseSelectionRejection::from_selection_failure(error.kind()))
+        })
+        .await
+        .map_err(|_| DatabaseSelectionRejection::ServiceUnavailable)?
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SQLite backend factory
 // ---------------------------------------------------------------------------
 
@@ -460,7 +636,7 @@ pub enum StartupOutcome {
 pub struct RestrictedStartup {
     outcome: StartupOutcome,
     log_catalog: LogModuleCatalog,
-    _store: LifecycleStore,
+    composition: PreoperationalComposition,
 }
 
 impl RestrictedStartup {
@@ -472,6 +648,49 @@ impl RestrictedStartup {
     /// Returns the compiled-in Log Module catalog retained for process lifetime.
     pub const fn log_catalog(&self) -> &LogModuleCatalog {
         &self.log_catalog
+    }
+}
+
+/// Shared lifecycle composition every mounted pre-operational route observes.
+///
+/// Cloning shares the same `WorkflowArbiter`, so the status route and the
+/// selection route read and mutate one serialized lifecycle authority. A future
+/// Init workflow must reuse this same arbiter, or selection and Init would no
+/// longer serialize against each other.
+#[derive(Clone)]
+struct PreoperationalComposition {
+    outcome: StartupOutcome,
+    adapter: Arc<LifecycleAdapter>,
+    catalog: Arc<BackendCatalog>,
+    context: Arc<TrustedBackendContext>,
+}
+
+impl PreoperationalComposition {
+    /// Returns a source that reads the projection asynchronously through the adapter.
+    fn projection_source(&self) -> ProjectionSource {
+        let adapter = Arc::clone(&self.adapter);
+        Arc::new(move || {
+            let adapter = Arc::clone(&adapter);
+            Box::pin(async move { adapter.project().await })
+        })
+    }
+
+    /// Returns the commit hook the selection route delegates its decision to.
+    ///
+    /// The returned projection is the one the arbiter observed under the same
+    /// permit that committed the selection, so a later status read agrees with
+    /// it. The opened database is dropped here; this milestone exposes no
+    /// operational path that would use it.
+    fn selection_commit(&self) -> SelectionCommit {
+        let adapter = Arc::clone(&self.adapter);
+        let catalog = Arc::clone(&self.catalog);
+        let context = Arc::clone(&self.context);
+        Arc::new(move |backend| {
+            let adapter = Arc::clone(&adapter);
+            let catalog = Arc::clone(&catalog);
+            let context = Arc::clone(&context);
+            Box::pin(async move { adapter.select(backend, catalog, context).await })
+        })
     }
 }
 
@@ -588,9 +807,12 @@ pub async fn run_restricted_https_listener(
     let tcp_listener = TcpListener::bind(listener.address())
         .await
         .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-    let result =
-        serve_restricted_https_listener(tcp_listener, listener.tls_config(), startup.outcome())
-            .await;
+    let result = serve_restricted_https_listener(
+        tcp_listener,
+        listener.tls_config(),
+        startup.composition.clone(),
+    )
+    .await;
     drop(startup);
     result
 }
@@ -598,9 +820,14 @@ pub async fn run_restricted_https_listener(
 async fn serve_restricted_https_listener(
     tcp_listener: TcpListener,
     tls_config: Arc<ServerConfig>,
-    outcome: StartupOutcome,
+    composition: PreoperationalComposition,
 ) -> Result<(), StartupError> {
-    let router = restricted_routes(outcome);
+    // The expected request origin is the address actually bound, never a value
+    // taken from a request header or a certificate subject alternative name.
+    let bound_address = tcp_listener
+        .local_addr()
+        .map_err(|_| StartupError::HttpsListenerUnavailable)?;
+    let router = restricted_routes(&composition, bound_address);
     let tls_acceptor = TlsAcceptor::from(tls_config);
     let slots = ConnectionSlots::new();
     let rate_limiter = Arc::new(RateLimiter::new());
@@ -691,7 +918,7 @@ async fn serve_normal_connection_with_timeouts(
     .await;
     let _ = timeout(
         timeouts.processing,
-        write_fixed_response(&mut tls_stream, response),
+        write_bounded_response(&mut tls_stream, response),
     )
     .await;
 }
@@ -718,7 +945,7 @@ async fn serve_rejection_connection_with_timeouts(
     };
     let _ = timeout(
         response_timeout,
-        write_fixed_response(&mut tls_stream, service_unavailable_response()),
+        write_bounded_response(&mut tls_stream, service_unavailable_response()),
     )
     .await;
 }
@@ -729,14 +956,19 @@ async fn process_restricted_request<S>(
     router: Router,
     rate_limiter: Arc<RateLimiter>,
     request_read_timeout: Duration,
-) -> FixedResponse
+) -> BoundedResponse
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let request = match read_http_request_with_timeout(stream, request_read_timeout).await {
         RequestHeadRead::Completed(request) => {
             if !rate_limiter.allows(source, Instant::now()) {
-                return rate_limited_response();
+                let mut response = rate_limited_response();
+                // RFC 9110 §9.3.2: HEAD responses must not include a message body.
+                if matches!(request.as_ref(), Ok(r) if *r.method() == Method::HEAD) {
+                    response.body = Bytes::new();
+                }
+                return response;
             }
             *request
         }
@@ -748,11 +980,17 @@ where
         Err(error) => return response_for_request_read_error(error),
     };
 
+    let is_head = *request.method() == Method::HEAD;
     let response = router
         .oneshot(request)
         .await
         .expect("restricted router response is infallible");
-    fixed_response_from_axum(response).await
+    let mut bounded = bounded_response_from_axum(response).await;
+    // RFC 9110 §9.3.2: HEAD responses must not include a message body.
+    if is_head {
+        bounded.body = Bytes::new();
+    }
+    bounded
 }
 
 #[derive(Debug)]
@@ -772,7 +1010,8 @@ enum RequestHeadRead {
 #[derive(Clone, Copy)]
 enum RequestLineClassification {
     Get,
-    MethodNotAllowed,
+    Put,
+    OtherMethod,
     Invalid,
 }
 
@@ -819,10 +1058,12 @@ impl RequestLineState {
             | Self::Version
             | Self::VersionEnding
             | Self::Invalid => RequestReadError::Invalid,
-            Self::Headers(RequestLineClassification::MethodNotAllowed) => {
+            Self::Headers(RequestLineClassification::OtherMethod) => {
                 RequestReadError::MethodNotAllowed
             }
-            Self::Headers(RequestLineClassification::Get) => RequestReadError::HeadersTooLarge,
+            Self::Headers(RequestLineClassification::Get | RequestLineClassification::Put) => {
+                RequestReadError::HeadersTooLarge
+            }
             Self::Headers(RequestLineClassification::Invalid) => RequestReadError::Invalid,
         }
     }
@@ -857,7 +1098,8 @@ fn classify_completed_request_line(bytes: &[u8]) -> RequestLineClassification {
     }
     match Method::from_bytes(method) {
         Ok(method) if method == Method::GET => RequestLineClassification::Get,
-        Ok(_) => RequestLineClassification::MethodNotAllowed,
+        Ok(method) if method == Method::PUT => RequestLineClassification::Put,
+        Ok(_) => RequestLineClassification::OtherMethod,
         Err(_) => RequestLineClassification::Invalid,
     }
 }
@@ -918,14 +1160,115 @@ where
             let request = if target_too_long {
                 Err(RequestReadError::TargetTooLong)
             } else {
-                parse_http_request(&bytes, request_line.completed_classification())
+                match parse_http_request(&bytes, request_line.completed_classification()) {
+                    Ok(request) => read_request_body(stream, request).await,
+                    Err(error) => Err(error),
+                }
             };
             return RequestHeadRead::Completed(Box::new(request));
         }
     }
 }
 
-fn response_for_request_read_error(error: RequestReadError) -> FixedResponse {
+/// Reads the bounded request body the completed head declared.
+///
+/// This runs inside the caller's single request-read budget, so the head and
+/// body share one deadline and the body never restarts it.
+async fn read_request_body<S>(
+    stream: &mut S,
+    mut request: Request,
+) -> Result<Request, RequestReadError>
+where
+    S: AsyncRead + Unpin,
+{
+    let Some(length) = declared_request_body_length(request.method(), request.headers())? else {
+        return Ok(request);
+    };
+    let mut body = vec![0_u8; length];
+    stream
+        .read_exact(&mut body)
+        .await
+        .map_err(|_| RequestReadError::Invalid)?;
+    if stream_has_pending_bytes(stream).await {
+        return Err(RequestReadError::Invalid);
+    }
+    *request.body_mut() = Body::from(body);
+    Ok(request)
+}
+
+/// Returns the exact number of body bytes a completed head declared.
+///
+/// Only `PUT` may carry a body, and only through exactly one canonical
+/// `Content-Length` within [`MAX_REQUEST_BODY_BYTES`]. Every other method must
+/// declare no body at all. Chunked framing and `Expect` are never supported.
+fn declared_request_body_length(
+    method: &Method,
+    headers: &HeaderMap,
+) -> Result<Option<usize>, RequestReadError> {
+    if headers.contains_key(TRANSFER_ENCODING) || headers.contains_key(EXPECT) {
+        return Err(RequestReadError::Invalid);
+    }
+    if method != Method::PUT {
+        let declares_body = headers
+            .get_all(CONTENT_LENGTH)
+            .iter()
+            .any(|value| content_length_digits(value) != Some(0));
+        return if declares_body {
+            Err(RequestReadError::Invalid)
+        } else {
+            Ok(None)
+        };
+    }
+    let mut lengths = headers.get_all(CONTENT_LENGTH).iter();
+    let (Some(value), None) = (lengths.next(), lengths.next()) else {
+        return Err(RequestReadError::Invalid);
+    };
+    let Some(length) = canonical_content_length(value) else {
+        return Err(RequestReadError::Invalid);
+    };
+    if length > MAX_REQUEST_BODY_BYTES {
+        return Err(RequestReadError::Invalid);
+    }
+    Ok(Some(length))
+}
+
+/// Parses a `Content-Length` that carries only decimal digits.
+fn content_length_digits(value: &HeaderValue) -> Option<usize> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    bytes.iter().try_fold(0_usize, |length, byte| {
+        length
+            .checked_mul(10)?
+            .checked_add(usize::from(*byte - b'0'))
+    })
+}
+
+/// Parses the single canonical decimal `Content-Length` a `PUT` must declare.
+fn canonical_content_length(value: &HeaderValue) -> Option<usize> {
+    if value.as_bytes().len() > 1 && value.as_bytes().starts_with(b"0") {
+        return None;
+    }
+    content_length_digits(value)
+}
+
+/// Reports whether the peer already sent bytes beyond the declared body.
+///
+/// The probe never waits, so it cannot consume the shared read budget; the
+/// connection serves exactly one request and is then closed.
+async fn stream_has_pending_bytes<S>(stream: &mut S) -> bool
+where
+    S: AsyncRead + Unpin,
+{
+    let mut probe = [0_u8; 1];
+    matches!(
+        timeout(Duration::ZERO, stream.read(&mut probe)).await,
+        Ok(Ok(1..))
+    )
+}
+
+fn response_for_request_read_error(error: RequestReadError) -> BoundedResponse {
     match error {
         RequestReadError::TimedOut => request_timeout_response(),
         RequestReadError::TargetTooLong => {
@@ -972,10 +1315,9 @@ fn parse_http_request(
         headers.append(name, value);
     }
     match request_line {
-        RequestLineClassification::Get => {}
-        RequestLineClassification::MethodNotAllowed => {
-            return Err(RequestReadError::MethodNotAllowed);
-        }
+        RequestLineClassification::Get
+        | RequestLineClassification::Put
+        | RequestLineClassification::OtherMethod => {}
         RequestLineClassification::Invalid => return Err(RequestReadError::Invalid),
     }
     let mut request = Request::new(Body::empty());
@@ -985,63 +1327,94 @@ fn parse_http_request(
     Ok(request)
 }
 
-async fn fixed_response_from_axum(response: Response) -> FixedResponse {
+async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
     let status = response.status();
-    let allow_get = response
+    let allow = response
         .headers()
         .get(ALLOW)
-        .is_some_and(|value| value == "GET");
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("restricted router body must be collectable")
-        .to_bytes();
-    let body = match body.as_ref() {
-        b"{\"error\":\"bad_request\"}" => "{\"error\":\"bad_request\"}",
-        b"{\"error\":\"method_not_allowed\"}" => "{\"error\":\"method_not_allowed\"}",
-        b"{\"error\":\"not_found\"}" => "{\"error\":\"not_found\"}",
-        b"{\"error\":\"request_header_fields_too_large\"}" => {
-            "{\"error\":\"request_header_fields_too_large\"}"
-        }
-        b"{\"error\":\"uri_too_long\"}" => "{\"error\":\"uri_too_long\"}",
-        b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}" => {
-            "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
-        }
-        b"{\"lifecycle\":\"uninitialized\",\"database_selected\":true}" => {
-            "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}"
-        }
-        _ => "{\"error\":\"gateway_timeout\"}",
+        .and_then(AllowedMethod::from_header_value);
+    let Some(profile) = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(ResponseProfile::from_media_type)
+    else {
+        return redacted_response(status, allow);
     };
-    FixedResponse {
+    let Ok(body) = to_bytes(response.into_body(), profile.max_body_bytes()).await else {
+        return redacted_response(status, allow);
+    };
+    if profile == ResponseProfile::Json {
+        let Some(body) = fixed_json_body(&body) else {
+            return redacted_response(status, allow);
+        };
+        return BoundedResponse {
+            status,
+            profile,
+            body: Bytes::from_static(body.as_bytes()),
+            allow,
+        };
+    }
+    BoundedResponse {
         status,
+        profile,
         body,
-        allow_get,
+        allow,
     }
 }
 
-async fn write_fixed_response<S>(stream: &mut S, response: FixedResponse) -> std::io::Result<()>
+fn fixed_json_body(body: &[u8]) -> Option<&'static str> {
+    match body {
+        b"{\"error\":\"bad_request\"}" => Some("{\"error\":\"bad_request\"}"),
+        b"{\"error\":\"database_selection_not_allowed\"}" => {
+            Some("{\"error\":\"database_selection_not_allowed\"}")
+        }
+        b"{\"error\":\"method_not_allowed\"}" => Some("{\"error\":\"method_not_allowed\"}"),
+        b"{\"error\":\"not_found\"}" => Some("{\"error\":\"not_found\"}"),
+        b"{\"error\":\"request_header_fields_too_large\"}" => {
+            Some("{\"error\":\"request_header_fields_too_large\"}")
+        }
+        b"{\"error\":\"request_origin_denied\"}" => Some("{\"error\":\"request_origin_denied\"}"),
+        b"{\"error\":\"service_unavailable\"}" => Some("{\"error\":\"service_unavailable\"}"),
+        b"{\"error\":\"uri_too_long\"}" => Some("{\"error\":\"uri_too_long\"}"),
+        b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}" => {
+            Some("{\"lifecycle\":\"uninitialized\",\"database_selected\":false}")
+        }
+        b"{\"lifecycle\":\"uninitialized\",\"database_selected\":true}" => {
+            Some("{\"lifecycle\":\"uninitialized\",\"database_selected\":true}")
+        }
+        _ => None,
+    }
+}
+
+/// Replaces an unknown, unbounded, or otherwise invalid module response with the
+/// fixed redacted body while preserving the observed status framing.
+fn redacted_response(status: StatusCode, allow: Option<AllowedMethod>) -> BoundedResponse {
+    BoundedResponse {
+        allow,
+        ..BoundedResponse::json(status, "{\"error\":\"gateway_timeout\"}")
+    }
+}
+
+async fn write_bounded_response<S>(stream: &mut S, response: BoundedResponse) -> std::io::Result<()>
 where
     S: AsyncWrite + Unpin,
 {
-    let allow = if response.allow_get {
-        "Allow: GET\r\n"
-    } else {
-        ""
-    };
-    let wire = format!(
-        "HTTP/1.1 {} \r\nContent-Type: application/json; charset=utf-8\r\n{}\r\n{}",
+    let allow = response.allow.map_or("", AllowedMethod::allow_header);
+    let head = format!(
+        "HTTP/1.1 {} \r\nContent-Type: {}\r\n{}{}\r\n",
         response.status.as_u16(),
+        response.profile.media_type(),
         allow,
-        response.body,
+        response.profile.security_headers(),
     );
-    stream.write_all(wire.as_bytes()).await?;
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(&response.body).await?;
     stream.shutdown().await
 }
 
-async fn processing_response<F>(processing_timeout: Duration, processing: F) -> FixedResponse
+async fn processing_response<F>(processing_timeout: Duration, processing: F) -> BoundedResponse
 where
-    F: Future<Output = FixedResponse>,
+    F: Future<Output = BoundedResponse>,
 {
     match timeout(processing_timeout, processing).await {
         Ok(response) => response,
@@ -1049,59 +1422,85 @@ where
     }
 }
 
-fn json_fixed_response(status: StatusCode, body: &'static str) -> FixedResponse {
-    FixedResponse::new(status, body)
+fn json_fixed_response(status: StatusCode, body: &'static str) -> BoundedResponse {
+    BoundedResponse::json(status, body)
 }
 
-fn service_unavailable_response() -> FixedResponse {
+fn service_unavailable_response() -> BoundedResponse {
     json_fixed_response(
         StatusCode::SERVICE_UNAVAILABLE,
         "{\"error\":\"service_unavailable\"}",
     )
 }
 
-fn method_not_allowed_response() -> FixedResponse {
-    FixedResponse {
-        status: StatusCode::METHOD_NOT_ALLOWED,
-        body: "{\"error\":\"method_not_allowed\"}",
-        allow_get: true,
+fn method_not_allowed_response() -> BoundedResponse {
+    BoundedResponse {
+        allow: Some(AllowedMethod::Get),
+        ..BoundedResponse::json(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{\"error\":\"method_not_allowed\"}",
+        )
     }
 }
 
-fn request_timeout_response() -> FixedResponse {
+fn request_timeout_response() -> BoundedResponse {
     json_fixed_response(
         StatusCode::REQUEST_TIMEOUT,
         "{\"error\":\"request_timeout\"}",
     )
 }
 
-fn gateway_timeout_response() -> FixedResponse {
+fn gateway_timeout_response() -> BoundedResponse {
     json_fixed_response(
         StatusCode::GATEWAY_TIMEOUT,
         "{\"error\":\"gateway_timeout\"}",
     )
 }
 
-fn rate_limited_response() -> FixedResponse {
+fn rate_limited_response() -> BoundedResponse {
     json_fixed_response(
         StatusCode::TOO_MANY_REQUESTS,
         "{\"error\":\"rate_limited\"}",
     )
 }
 
-fn restricted_routes(outcome: StartupOutcome) -> Router {
+fn restricted_routes(composition: &PreoperationalComposition, listener: SocketAddr) -> Router {
     let router = Router::new().fallback(not_found);
-    match outcome {
-        StartupOutcome::UninitializedWithoutDatabase => router.route(
-            "/api/v1/status",
-            weavelit_module_client_webui::preoperational_status_route(false),
-        ),
-        StartupOutcome::UninitializedWithDatabase => router.route(
-            "/api/v1/status",
-            weavelit_module_client_webui::preoperational_status_route(true),
-        ),
+    match composition.outcome {
+        StartupOutcome::UninitializedWithoutDatabase
+        | StartupOutcome::UninitializedWithDatabase => {
+            preoperational_routes(router, composition, listener)
+        }
         StartupOutcome::InitializationPending(_) => router,
     }
+}
+
+/// Composes the Web UI Client Module's declared pre-operational surface.
+///
+/// The module owns its asset inventory and route paths; the core only mounts
+/// them and supplies the trusted lifecycle authority behind them. Every mounted
+/// path is exact, so an unknown target, including any `/api/` target, falls
+/// through to the fixed not-found response.
+fn preoperational_routes(
+    router: Router,
+    composition: &PreoperationalComposition,
+    listener: SocketAddr,
+) -> Router {
+    router
+        .route(
+            STATUS_ROUTE,
+            weavelit_module_client_webui::preoperational_status_route(
+                composition.projection_source(),
+            ),
+        )
+        .route(
+            APPLICATION_DATABASE_ROUTE,
+            weavelit_module_client_webui::database_selection_route(
+                ExpectedOrigin::from_listener(listener),
+                composition.selection_commit(),
+            ),
+        )
+        .merge(weavelit_module_client_webui::embedded_asset_routes())
 }
 
 async fn not_found() -> Response {
@@ -1201,8 +1600,10 @@ fn map_classification_error(error: LifecycleError) -> StartupError {
 pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartup, StartupError> {
     let store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
 
-    let catalog = sqlite_catalog();
-    let context = TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE));
+    let catalog = Arc::new(sqlite_catalog());
+    let context = Arc::new(TrustedBackendContext::new(
+        state_root.join(APPLICATION_DATABASE_FILE),
+    ));
 
     let classification = store
         .classify_startup(&catalog, &context)
@@ -1237,16 +1638,32 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
             return Err(StartupError::StateCombinationInvalid);
         }
     };
+    let arbiter = Arc::new(WorkflowArbiter::new(store));
     Ok(RestrictedStartup {
         outcome,
         log_catalog: sqlite_log_catalog(),
-        _store: store,
+        // The arbiter takes ownership of the store, so it also retains the
+        // process-lifetime state-root lock.
+        composition: PreoperationalComposition {
+            outcome,
+            adapter: Arc::new(LifecycleAdapter::new(arbiter)),
+            catalog,
+            context,
+        },
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{future::pending, sync::Arc, time::Duration};
+    use std::{
+        ffi::OsString,
+        future::pending,
+        net::SocketAddr,
+        os::unix::fs::{MetadataExt, PermissionsExt},
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::Duration,
+    };
 
     use axum::{
         Router,
@@ -1267,15 +1684,140 @@ mod tests {
     };
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
+    use weavelit_module_client_webui::DatabaseSelectionRejection;
+    use weavelit_server_lifecycle::{
+        BackendIdentifier, LifecycleProjection, LifecycleStore, TrustedBackendContext,
+    };
 
     use super::{
-        ConnectionSlots, ConnectionTimeouts, FixedResponse, REQUEST_PROCESSING_TIMEOUT,
-        REQUEST_READ_TIMEOUT, RateLimiter, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
-        gateway_timeout_response, parse_http_request, processing_response,
-        raw_header_section_bytes, read_http_request, read_http_request_with_timeout,
-        request_timeout_response, restricted_routes, serve_normal_connection_with_timeouts,
-        serve_rejection_connection_with_timeouts, serve_restricted_https_listener,
+        APPLICATION_DATABASE_FILE, APPLICATION_DATABASE_ROUTE, ASSET_SECURITY_HEADERS,
+        AllowedMethod, BoundedResponse, ConnectionSlots, ConnectionTimeouts,
+        MAX_REQUEST_BODY_BYTES, PreoperationalComposition, RATE_LIMIT_BURST,
+        RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
+        RateLimiter, RequestHeadRead, RequestReadError, ResponseProfile, RestrictedStartup,
+        StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, bounded_response_from_axum,
+        classify_restricted_startup, gateway_timeout_response, parse_http_request,
+        processing_response, raw_header_section_bytes, read_http_request,
+        read_http_request_with_timeout, request_timeout_response,
+        serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
+        sqlite_catalog,
     };
+
+    /// Listener authority used by router-level tests that bind no socket.
+    const UNBOUND_LISTENER: &str = "127.0.0.1:8443";
+
+    /// The exact accepted Application Database selection body.
+    const SELECTION_BODY: &str = "{\"backend\":\"sqlite\",\"settings\":{}}";
+
+    const SELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}";
+    const UNSELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}";
+
+    /// A restricted surface composed over a real lifecycle arbiter.
+    ///
+    /// Every route the surface mounts shares one `WorkflowArbiter`, so a
+    /// committed selection is immediately observable through the status route.
+    struct Surface {
+        /// Retained so the state root outlives every request the surface serves.
+        _root: tempfile::TempDir,
+        state_root: PathBuf,
+        startup: RestrictedStartup,
+    }
+
+    impl Surface {
+        fn new(outcome: StartupOutcome) -> Self {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let state_root = root.path().canonicalize().unwrap();
+            if outcome == StartupOutcome::UninitializedWithDatabase {
+                let mut store = LifecycleStore::open_or_create(&state_root).unwrap();
+                store
+                    .select_database(
+                        &sqlite_catalog(),
+                        &TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE)),
+                        &BackendIdentifier::new("sqlite").unwrap(),
+                        Vec::new(),
+                    )
+                    .unwrap();
+            }
+            let mut startup = classify_restricted_startup(&state_root).unwrap();
+            // A pending classification cannot be produced from a fresh state
+            // root, and the gate under test is route mounting, not lifecycle
+            // classification.
+            startup.outcome = outcome;
+            startup.composition.outcome = outcome;
+            Self {
+                _root: root,
+                state_root,
+                startup,
+            }
+        }
+
+        fn composition(&self) -> PreoperationalComposition {
+            self.startup.composition.clone()
+        }
+
+        fn routes(&self) -> Router {
+            self.routes_for(UNBOUND_LISTENER.parse().unwrap())
+        }
+
+        fn routes_for(&self, listener: SocketAddr) -> Router {
+            super::restricted_routes(&self.startup.composition, listener)
+        }
+
+        /// Snapshots the lifecycle record and every locator file by name, bytes,
+        /// and modification time.
+        fn anchor_snapshot(&self) -> Vec<(OsString, Vec<u8>, i64, i64)> {
+            anchor_snapshot(&self.state_root)
+        }
+    }
+
+    fn anchor_snapshot(state_root: &Path) -> Vec<(OsString, Vec<u8>, i64, i64)> {
+        let mut entries = std::fs::read_dir(state_root)
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                let name_text = name.to_string_lossy().into_owned();
+                if name_text != "deployment-record.json"
+                    && !name_text.starts_with("database-locator-")
+                {
+                    return None;
+                }
+                let metadata = entry.metadata().unwrap();
+                Some((
+                    name,
+                    std::fs::read(entry.path()).unwrap(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+    }
+
+    /// Builds restricted routes over a real lifecycle arbiter.
+    ///
+    /// The temporary state root is removed before this returns. The arbiter
+    /// keeps its open descriptors and the live status projection is read from
+    /// in-memory lifecycle state, so every read-only route behaves exactly as it
+    /// does in a running Server. A test that commits a selection must use
+    /// [`Surface`] directly, which keeps its state root alive.
+    fn restricted_routes(outcome: StartupOutcome) -> Router {
+        Surface::new(outcome).routes()
+    }
+
+    /// Serves the restricted listener over a surface whose state root is removed
+    /// before serving begins; the read-only routes these callers exercise are
+    /// unaffected.
+    async fn serve_restricted_https_listener(
+        tcp_listener: TcpListener,
+        tls_config: Arc<ServerConfig>,
+        outcome: StartupOutcome,
+    ) -> Result<(), StartupError> {
+        let composition = Surface::new(outcome).composition();
+        super::serve_restricted_https_listener(tcp_listener, tls_config, composition).await
+    }
 
     async fn response_body(response: axum::response::Response) -> String {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -1297,16 +1839,44 @@ mod tests {
         client.shutdown().await.unwrap();
         match read_http_request(&mut server).await {
             Ok(_) => RequestHeadResult::Accepted,
-            Err(super::RequestReadError::Invalid) => RequestHeadResult::Invalid,
-            Err(super::RequestReadError::MethodNotAllowed) => RequestHeadResult::MethodNotAllowed,
-            Err(super::RequestReadError::TargetTooLong) => RequestHeadResult::TargetTooLong,
-            Err(super::RequestReadError::HeadersTooLarge) => RequestHeadResult::HeadersTooLarge,
-            Err(super::RequestReadError::TimedOut) => panic!("reader test must not time out"),
+            Err(error) => head_result(error),
         }
     }
 
-    fn assert_fixed_tls_response(response: &[u8], status: u16, body: &str, allow_get: bool) {
-        let allow = if allow_get { "Allow: GET\r\n" } else { "" };
+    /// Reads a complete request and returns the body bytes it accepted.
+    async fn read_request_with_body(bytes: &[u8]) -> Result<Vec<u8>, RequestHeadResult> {
+        let (mut client, mut server) = tokio::io::duplex(bytes.len().max(1));
+        client.write_all(bytes).await.unwrap();
+        client.shutdown().await.unwrap();
+        match read_http_request(&mut server).await {
+            Ok(request) => Ok(request
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec()),
+            Err(error) => Err(head_result(error)),
+        }
+    }
+
+    fn head_result(error: RequestReadError) -> RequestHeadResult {
+        match error {
+            RequestReadError::Invalid => RequestHeadResult::Invalid,
+            RequestReadError::MethodNotAllowed => RequestHeadResult::MethodNotAllowed,
+            RequestReadError::TargetTooLong => RequestHeadResult::TargetTooLong,
+            RequestReadError::HeadersTooLarge => RequestHeadResult::HeadersTooLarge,
+            RequestReadError::TimedOut => panic!("reader test must not time out"),
+        }
+    }
+
+    fn assert_fixed_tls_response(
+        response: &[u8],
+        status: u16,
+        body: &str,
+        allow: Option<AllowedMethod>,
+    ) {
+        let allow = allow.map_or("", AllowedMethod::allow_header);
         assert_eq!(
             response,
             format!(
@@ -1394,6 +1964,143 @@ mod tests {
         .unwrap();
         assert_eq!(pending.status(), StatusCode::NOT_FOUND);
         assert_eq!(response_body(pending).await, "{\"error\":\"not_found\"}");
+    }
+
+    fn generated_asset_bytes(relative: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../web-ui/dist")
+                .join(relative),
+        )
+        .unwrap()
+    }
+
+    const EMBEDDED_ASSETS: [(&str, &str, &str); 3] = [
+        ("/", "index.html", "text/html; charset=utf-8"),
+        (
+            "/assets/weavelit-application.js",
+            "assets/weavelit-application.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/assets/weavelit-application.css",
+            "assets/weavelit-application.css",
+            "text/css; charset=utf-8",
+        ),
+    ];
+
+    #[tokio::test]
+    async fn uninitialized_routes_mount_the_web_ui_asset_allowlist() {
+        for outcome in [
+            StartupOutcome::UninitializedWithoutDatabase,
+            StartupOutcome::UninitializedWithDatabase,
+        ] {
+            for (target, relative, media_type) in EMBEDDED_ASSETS {
+                let response = restricted_routes(outcome)
+                    .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{target}");
+                assert_eq!(
+                    response.headers().get("content-type").unwrap(),
+                    media_type,
+                    "{target}"
+                );
+                let body = axum::body::to_bytes(response.into_body(), 256 * 1024)
+                    .await
+                    .unwrap();
+                assert_eq!(body.as_ref(), generated_asset_bytes(relative), "{target}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn asset_security_headers_match_the_module_and_the_wire_profile() {
+        let response = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        for (name, wire_name) in [
+            ("content-security-policy", "Content-Security-Policy"),
+            ("x-content-type-options", "X-Content-Type-Options"),
+            ("cache-control", "Cache-Control"),
+        ] {
+            let value = response.headers().get(name).unwrap().to_str().unwrap();
+            assert!(
+                ASSET_SECURITY_HEADERS.contains(&format!("{wire_name}: {value}\r\n")),
+                "{name}"
+            );
+        }
+        assert_eq!(ResponseProfile::Json.security_headers(), "");
+    }
+
+    #[tokio::test]
+    async fn asset_routes_never_shadow_api_targets_or_unknown_targets() {
+        let status = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        assert_eq!(
+            status.headers().get("content-type").unwrap(),
+            "application/json; charset=utf-8"
+        );
+        assert!(!status.headers().contains_key("content-security-policy"));
+        assert_eq!(
+            response_body(status).await,
+            "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}"
+        );
+
+        for target in [
+            "/api/",
+            "/api/v1/",
+            "/api/v1/status/",
+            "/api/v1/Status",
+            "/api/v1/assets/weavelit-application.js",
+            "/api/v1/unknown",
+            "/index.html",
+            "/assets/",
+            "/assets/weavelit-application.js/",
+            "/ASSETS/weavelit-application.js",
+            "/assets/%77eavelit-application.js",
+            "/assets/../assets/weavelit-application.js",
+            "/../assets/weavelit-application.js",
+            "/assets/weavelit-application.js.map",
+        ] {
+            let response = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "application/json; charset=utf-8",
+                "{target}"
+            );
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn asset_routes_are_absent_outside_the_uninitialized_gates() {
+        for (target, _, _) in EMBEDDED_ASSETS {
+            let response = restricted_routes(StartupOutcome::InitializationPending(
+                weavelit_server_lifecycle::WorkflowKind::Init,
+            ))
+            .oneshot(Request::get(target).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
     }
 
     #[test]
@@ -1486,9 +2193,9 @@ mod tests {
                 RequestHeadResult::Invalid,
             ),
             (
-                "valid non-GET method",
+                "valid non-GET method is left to the route",
                 "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
-                RequestHeadResult::MethodNotAllowed,
+                RequestHeadResult::Accepted,
             ),
             (
                 "invalid method",
@@ -1550,6 +2257,246 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn request_body_reader_bounds_put_bodies_and_rejects_other_framing() {
+        let at_limit = "a".repeat(MAX_REQUEST_BODY_BYTES);
+        let over_limit = "a".repeat(MAX_REQUEST_BODY_BYTES + 1);
+
+        assert_eq!(
+            read_request_with_body(
+                format!(
+                    "PUT /api/v1/database HTTP/1.1\r\nContent-Length: {MAX_REQUEST_BODY_BYTES}\r\n\r\n{at_limit}"
+                )
+                .as_bytes()
+            )
+            .await,
+            Ok(at_limit.clone().into_bytes()),
+            "PUT body at the one KiB limit"
+        );
+        assert_eq!(
+            read_request_with_body(b"PUT /api/v1/database HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+                .await,
+            Ok(Vec::new()),
+            "PUT declaring an empty body"
+        );
+
+        for (name, request) in [
+            (
+                "body one byte over the limit",
+                format!(
+                    "PUT /api/v1/database HTTP/1.1\r\nContent-Length: {}\r\n\r\n{over_limit}",
+                    MAX_REQUEST_BODY_BYTES + 1
+                ),
+            ),
+            (
+                "no Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\n\r\n".to_owned(),
+            ),
+            (
+                "duplicate Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 4\r\n\r\nbody"
+                    .to_owned(),
+            ),
+            (
+                "conflicting Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\nbody"
+                    .to_owned(),
+            ),
+            (
+                "non-numeric Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: four\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "negative Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: -4\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "plus-prefixed Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: +4\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "non-canonical Content-Length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 04\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "chunked transfer encoding",
+                "PUT /api/v1/database HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+                    .to_owned(),
+            ),
+            (
+                "expect continue",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\nExpect: 100-continue\r\n\r\nbody"
+                    .to_owned(),
+            ),
+            (
+                "stream ends before the declared length",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 8\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "more bytes than declared",
+                "PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody-extra".to_owned(),
+            ),
+            (
+                "GET carrying a declared body",
+                "GET /api/v1/status HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody".to_owned(),
+            ),
+            (
+                "GET carrying chunked framing",
+                "GET /api/v1/status HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+                    .to_owned(),
+            ),
+        ] {
+            assert_eq!(
+                read_request_with_body(request.as_bytes()).await,
+                Err(RequestHeadResult::Invalid),
+                "{name}"
+            );
+        }
+    }
+
+    /// The head arrives at 400 ms and the body at 700 ms. A 500 ms budget shared
+    /// by both expires, while a budget restarted at the body would not.
+    #[tokio::test]
+    async fn request_read_timeout_covers_the_head_and_body_as_one_budget() {
+        let schedule = |budget: Duration| async move {
+            let (mut client, mut server) = tokio::io::duplex(256);
+            let writer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                client
+                    .write_all(b"PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\n\r\n")
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                client.write_all(b"body").await.unwrap();
+                std::future::pending::<()>().await;
+            });
+            let outcome = read_http_request_with_timeout(&mut server, budget).await;
+            writer.abort();
+            outcome
+        };
+
+        assert!(matches!(
+            schedule(Duration::from_millis(500)).await,
+            RequestHeadRead::Incomplete(RequestReadError::TimedOut)
+        ));
+        assert!(matches!(
+            schedule(Duration::from_millis(1_500)).await,
+            RequestHeadRead::Completed(result) if result.is_ok()
+        ));
+    }
+
+    #[tokio::test]
+    async fn direct_tls_emits_the_allow_header_the_route_selected() {
+        let (server_config, client_config) = tls_configs();
+
+        let put_only_route = direct_tls_response(
+            Router::new().route(
+                "/api/v1/database",
+                any(|| async { DatabaseSelectionRejection::MethodNotAllowed.response() }),
+            ),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /api/v1/database HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(
+            &put_only_route,
+            405,
+            "{\"error\":\"method_not_allowed\"}",
+            Some(AllowedMethod::Put),
+        );
+
+        let get_only_route = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"PUT /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(
+            &get_only_route,
+            405,
+            "{\"error\":\"method_not_allowed\"}",
+            Some(AllowedMethod::Get),
+        );
+
+        // An oversized method token never yields a bounded target, so this early
+        // fallback answers without any route context.
+        let early_fallback = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            server_config,
+            client_config,
+            format!(
+                "{} /api/v1/status HTTP/1.1\r\n\r\n",
+                "P".repeat(super::MAX_REQUEST_HEAD_BYTES + 1)
+            )
+            .as_bytes(),
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(
+            &early_fallback,
+            405,
+            "{\"error\":\"method_not_allowed\"}",
+            Some(AllowedMethod::Get),
+        );
+    }
+
+    #[tokio::test]
+    async fn head_request_returns_correct_status_with_empty_body() {
+        use axum::routing::get;
+
+        let (server_config, client_config) = tls_configs();
+
+        // A route defined with axum::routing::get handles HEAD automatically:
+        // the handler runs, the body is stripped by Axum, and our fix must not
+        // re-inject gateway_timeout or any other body.
+        let router = Router::new().route(
+            "/api/v1/status",
+            get(|| async {
+                super::json_response_body(
+                    StatusCode::OK,
+                    "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
+                )
+            }),
+        );
+        let response = direct_tls_response(
+            router,
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"HEAD /api/v1/status HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        // Status and headers must be present; body must be absent per RFC 9110 §9.3.2.
+        assert_eq!(
+            response,
+            b"HTTP/1.1 200 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n"
+        );
+
+        // Confirm the fix also suppresses the body on a HEAD 405 (method rejected by the
+        // mounted route before Axum can auto-handle it).
+        let response_405 = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            server_config,
+            client_config,
+            b"HEAD /api/v1/status HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            response_405,
+            b"HTTP/1.1 405 \r\nContent-Type: application/json; charset=utf-8\r\nAllow: GET\r\n\r\n"
+        );
     }
 
     #[test]
@@ -1742,27 +2689,27 @@ mod tests {
             "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
         );
 
-        for (name, request, status, body, allow_get) in [
+        for (name, request, status, body, allow) in [
             (
                 "valid GET",
                 "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 200,
                 "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
-                false,
+                None,
             ),
             (
                 "valid non-GET",
                 "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 405,
                 "{\"error\":\"method_not_allowed\"}",
-                true,
+                Some(AllowedMethod::Get),
             ),
             (
                 "invalid method",
                 "GE(T /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 400,
                 "{\"error\":\"bad_request\"}",
-                false,
+                None,
             ),
             (
                 "target over two KiB before malformed content",
@@ -1772,21 +2719,21 @@ mod tests {
                 ),
                 414,
                 "{\"error\":\"uri_too_long\"}",
-                false,
+                None,
             ),
             (
                 "headers over eight KiB",
                 oversized_headers,
                 431,
                 "{\"error\":\"request_header_fields_too_large\"}",
-                false,
+                None,
             ),
             (
                 "more than sixty-four headers",
                 many_headers,
                 200,
                 "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
-                false,
+                None,
             ),
         ] {
             let response = direct_tls_response(
@@ -1798,7 +2745,7 @@ mod tests {
                 REQUEST_PROCESSING_TIMEOUT,
             )
             .await;
-            assert_fixed_tls_response(&response, status, body, allow_get);
+            assert_fixed_tls_response(&response, status, body, allow);
             assert!(response.len() <= 128, "{name}");
         }
     }
@@ -1998,6 +2945,24 @@ mod tests {
             ),
             (
                 "GET /api/v1/status HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+            (
+                format!(
+                    "PUT /api/v1/status HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+                    super::MAX_REQUEST_BODY_BYTES + 1
+                ),
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+            (
+                "PUT /api/v1/status HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".to_owned(),
+                b"HTTP/1.1 400 \r\n".as_slice(),
+                b"{\"error\":\"bad_request\"}".as_slice(),
+            ),
+            (
+                "PUT /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 b"HTTP/1.1 400 \r\n".as_slice(),
                 b"{\"error\":\"bad_request\"}".as_slice(),
             ),
@@ -2210,7 +3175,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
             .await
             .expect("LF-only request head must not wait for the read timeout");
-        assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", false);
+        assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", None);
 
         server.abort();
     }
@@ -2226,7 +3191,7 @@ mod tests {
             StartupOutcome::UninitializedWithoutDatabase,
         ));
 
-        for _ in 0..5 {
+        for _ in 0..RATE_LIMIT_BURST {
             let mut client = tls_client(address, Arc::clone(&client_config)).await;
             client
                 .write_all(b"GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
@@ -2251,6 +3216,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_tls_rate_limit_head_response_has_empty_body() {
+        let (server_config, client_config) = tls_configs();
+        let rate_limiter = Arc::new(RateLimiter::new());
+
+        for _ in 0..RATE_LIMIT_BURST {
+            let response = direct_tls_response_with_rate_limiter(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                Arc::clone(&rate_limiter),
+                b"HEAD /api/v1/status HTTP/1.1\r\n\r\n",
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert!(
+                response.starts_with(b"HTTP/1.1 405 \r\n"),
+                "burst HEAD should be 405, got: {:?}",
+                String::from_utf8_lossy(&response[..response.len().min(64)])
+            );
+            assert_eq!(
+                &response[response.len().saturating_sub(2)..],
+                b"\r\n",
+                "burst HEAD body must be empty"
+            );
+        }
+
+        let response = direct_tls_response_with_rate_limiter(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            rate_limiter,
+            b"HEAD /api/v1/status HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        // 429 status must be present and body must be empty (RFC 9110 §9.3.2).
+        assert_eq!(
+            response,
+            b"HTTP/1.1 429 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rate_limit_admits_two_consecutive_web_ui_page_loads() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (server_config, client_config) = tls_configs();
+        let server = tokio::spawn(serve_restricted_https_listener(
+            listener,
+            server_config,
+            StartupOutcome::UninitializedWithoutDatabase,
+        ));
+
+        for load in 0..2 {
+            for target in [
+                "/",
+                "/assets/weavelit-application.js",
+                "/assets/weavelit-application.css",
+                "/api/v1/status",
+            ] {
+                let mut client = tls_client(address, Arc::clone(&client_config)).await;
+                client
+                    .write_all(
+                        format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                let mut response = Vec::new();
+                let _ = client.read_to_end(&mut response).await;
+                assert!(
+                    response.starts_with(b"HTTP/1.1 200 \r\n"),
+                    "load {load} of {target} was not admitted: {:?}",
+                    String::from_utf8_lossy(&response[..response.len().min(64)])
+                );
+            }
+        }
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn direct_tls_rate_limit_admits_completed_request_heads_before_fixed_responses() {
         let (server_config, client_config) = tls_configs();
         let oversized_target = format!(
@@ -2262,45 +3310,45 @@ mod tests {
             "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
         );
 
-        for (name, request, fixed_status, fixed_body, allow_get) in [
+        for (name, request, fixed_status, fixed_body, allow) in [
             (
                 "valid POST",
                 "POST /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 405,
                 "{\"error\":\"method_not_allowed\"}",
-                true,
+                Some(AllowedMethod::Get),
             ),
             (
                 "malformed head",
                 "GET /api/v1/status HTTP/1.1\r\nnot-a-header\r\n\r\n".to_owned(),
                 400,
                 "{\"error\":\"bad_request\"}",
-                false,
+                None,
             ),
             (
                 "oversized target",
                 oversized_target,
                 414,
                 "{\"error\":\"uri_too_long\"}",
-                false,
+                None,
             ),
             (
                 "oversized headers",
                 oversized_headers,
                 431,
                 "{\"error\":\"request_header_fields_too_large\"}",
-                false,
+                None,
             ),
             (
                 "valid GET",
                 "GET /api/v1/status HTTP/1.1\r\n\r\n".to_owned(),
                 200,
                 "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
-                false,
+                None,
             ),
         ] {
             let rate_limiter = Arc::new(RateLimiter::new());
-            for _ in 0..5 {
+            for _ in 0..RATE_LIMIT_BURST {
                 let response = direct_tls_response_with_rate_limiter(
                     restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
                     Arc::clone(&server_config),
@@ -2311,7 +3359,7 @@ mod tests {
                     REQUEST_PROCESSING_TIMEOUT,
                 )
                 .await;
-                assert_fixed_tls_response(&response, fixed_status, fixed_body, allow_get);
+                assert_fixed_tls_response(&response, fixed_status, fixed_body, allow);
             }
 
             let response = direct_tls_response_with_rate_limiter(
@@ -2324,7 +3372,7 @@ mod tests {
                 REQUEST_PROCESSING_TIMEOUT,
             )
             .await;
-            assert_fixed_tls_response(&response, 429, "{\"error\":\"rate_limited\"}", false);
+            assert_fixed_tls_response(&response, 429, "{\"error\":\"rate_limited\"}", None);
             assert!(response.len() <= 128, "{name}");
         }
     }
@@ -2375,9 +3423,9 @@ mod tests {
                 )
                 .await
             };
-            assert_fixed_tls_response(&response, status, body, false);
+            assert_fixed_tls_response(&response, status, body, None);
 
-            for _ in 0..5 {
+            for _ in 0..RATE_LIMIT_BURST {
                 let response = direct_tls_response_with_rate_limiter(
                     restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
                     Arc::clone(&server_config),
@@ -2430,7 +3478,7 @@ mod tests {
         let rate_limiter = Arc::new(RateLimiter::new());
         let source = "127.0.0.1".parse().unwrap();
         let now = std::time::Instant::now();
-        for _ in 0..5 {
+        for _ in 0..RATE_LIMIT_BURST {
             assert!(rate_limiter.allows(source, now));
         }
 
@@ -2621,16 +3669,833 @@ mod tests {
         assert_eq!(maximum_response_bytes, 119);
     }
 
+    #[tokio::test]
+    async fn direct_tls_delivers_embedded_assets_with_fixed_security_headers() {
+        let (server_config, client_config) = tls_configs();
+        for (target, relative, media_type) in EMBEDDED_ASSETS {
+            let response = direct_tls_response(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                format!("GET {target} HTTP/1.1\r\n\r\n").as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            let head = format!(
+                "HTTP/1.1 200 \r\nContent-Type: {media_type}\r\n{ASSET_SECURITY_HEADERS}\r\n"
+            );
+            let body = generated_asset_bytes(relative);
+            assert!(response.starts_with(head.as_bytes()), "{target}");
+            assert_eq!(response.len(), head.len() + body.len(), "{target}");
+            assert_eq!(&response[head.len()..], body.as_slice(), "{target}");
+            let head = std::str::from_utf8(&response[..head.len()]).unwrap();
+            assert!(!head.contains("Allow:"), "{target}");
+            assert!(!head.contains("Content-Length:"), "{target}");
+            for forbidden in [
+                "Access-Control",
+                "Set-Cookie",
+                "Content-Encoding",
+                "Server:",
+                "Vary:",
+            ] {
+                assert!(!head.contains(forbidden), "{target}: {forbidden}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_tls_asset_paths_reject_non_get_methods_and_unknown_targets() {
+        let (server_config, client_config) = tls_configs();
+        for (target, _, _) in EMBEDDED_ASSETS {
+            let rejected = direct_tls_response(
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                format!("POST {target} HTTP/1.1\r\n\r\n").as_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_fixed_tls_response(
+                &rejected,
+                405,
+                "{\"error\":\"method_not_allowed\"}",
+                Some(AllowedMethod::Get),
+            );
+        }
+
+        let unknown = direct_tls_response(
+            restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /assets/../assets/weavelit-application.js HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(&unknown, 404, "{\"error\":\"not_found\"}", None);
+
+        let gated = direct_tls_response(
+            restricted_routes(StartupOutcome::InitializationPending(
+                weavelit_server_lifecycle::WorkflowKind::Init,
+            )),
+            server_config,
+            client_config,
+            b"GET / HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(&gated, 404, "{\"error\":\"not_found\"}", None);
+    }
+
+    #[tokio::test]
+    async fn direct_tls_bounds_and_redacts_module_response_bodies() {
+        let (server_config, client_config) = tls_configs();
+        let html_router = |byte_length: usize| {
+            Router::new().route(
+                "/bounded",
+                any(move || async move {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "text/html; charset=utf-8")
+                        .body(Body::from(vec![b'a'; byte_length]))
+                        .unwrap()
+                }),
+            )
+        };
+
+        let at_limit = direct_tls_response(
+            html_router(super::MAX_HTML_BODY_BYTES),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /bounded HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        let head = format!(
+            "HTTP/1.1 200 \r\nContent-Type: text/html; charset=utf-8\r\n{ASSET_SECURITY_HEADERS}\r\n"
+        );
+        assert_eq!(at_limit.len(), head.len() + super::MAX_HTML_BODY_BYTES);
+
+        let over_limit = direct_tls_response(
+            html_router(super::MAX_HTML_BODY_BYTES + 1),
+            Arc::clone(&server_config),
+            Arc::clone(&client_config),
+            b"GET /bounded HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(&over_limit, 200, "{\"error\":\"gateway_timeout\"}", None);
+
+        for media_type in ["text/plain; charset=utf-8", "application/octet-stream"] {
+            let unknown_media_type = direct_tls_response(
+                Router::new().route(
+                    "/bounded",
+                    any(move || async move {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", media_type)
+                            .body(Body::from("secret"))
+                            .unwrap()
+                    }),
+                ),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                b"GET /bounded HTTP/1.1\r\n\r\n",
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_fixed_tls_response(
+                &unknown_media_type,
+                200,
+                "{\"error\":\"gateway_timeout\"}",
+                None,
+            );
+        }
+
+        let unknown_json = direct_tls_response(
+            Router::new().route(
+                "/bounded",
+                any(|| async {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json; charset=utf-8")
+                        .body(Body::from("{\"secret\":true}"))
+                        .unwrap()
+                }),
+            ),
+            server_config,
+            client_config,
+            b"GET /bounded HTTP/1.1\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_fixed_tls_response(&unknown_json, 200, "{\"error\":\"gateway_timeout\"}", None);
+    }
+
+    /// Every database-selection body the Web UI Client Module can emit must be
+    /// in the fixed-JSON allowlist, or the bounding step silently replaces it
+    /// with the redacted gateway-timeout body.
+    #[tokio::test]
+    async fn database_selection_bodies_survive_the_fixed_json_allowlist() {
+        let success = weavelit_module_client_webui::database_selection_response(
+            &LifecycleProjection::new(true),
+        );
+        let bounded = bounded_response_from_axum(success).await;
+        assert_eq!(bounded.status, StatusCode::OK);
+        assert_eq!(
+            bounded.body.as_ref(),
+            b"{\"lifecycle\":\"uninitialized\",\"database_selected\":true}".as_slice()
+        );
+
+        for rejection in [
+            DatabaseSelectionRejection::BadRequest,
+            DatabaseSelectionRejection::RequestOriginDenied,
+            DatabaseSelectionRejection::MethodNotAllowed,
+            DatabaseSelectionRejection::DatabaseSelectionNotAllowed,
+            DatabaseSelectionRejection::ServiceUnavailable,
+        ] {
+            let expected = rejection.body();
+            let bounded = bounded_response_from_axum(rejection.response()).await;
+            assert_eq!(bounded.status, rejection.status(), "{rejection:?}");
+            assert_eq!(bounded.profile, ResponseProfile::Json, "{rejection:?}");
+            assert_eq!(
+                bounded.body.as_ref(),
+                expected.as_bytes(),
+                "{rejection:?} was redacted instead of returned"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_tls_listener_never_answers_a_cleartext_request() {
+        let (server_config, _client_config) = tls_configs();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, source) = listener.accept().await.unwrap();
+            serve_normal_connection_with_timeouts(
+                stream,
+                source.ip(),
+                TlsAcceptor::from(server_config),
+                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                Arc::new(RateLimiter::new()),
+                ConnectionTimeouts {
+                    handshake: TLS_HANDSHAKE_TIMEOUT,
+                    request_read: REQUEST_READ_TIMEOUT,
+                    processing: REQUEST_PROCESSING_TIMEOUT,
+                },
+            )
+            .await;
+        });
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response).await;
+        server.await.unwrap();
+        assert!(!response.starts_with(b"HTTP/"), "{response:?}");
+        assert!(
+            !response
+                .windows(b"<!doctype".len())
+                .any(|window| window.eq_ignore_ascii_case(b"<!doctype")),
+            "{response:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Application Database selection route
+    // -----------------------------------------------------------------------
+
+    /// Builds a selection wire request, substituting the real bound authority.
+    fn selection_wire(method: &str, headers: &str, body: &str, authority: SocketAddr) -> Vec<u8> {
+        let headers = headers.replace("{authority}", &authority.to_string());
+        format!("{method} {APPLICATION_DATABASE_ROUTE} HTTP/1.1\r\n{headers}\r\n{body}")
+            .into_bytes()
+    }
+
+    /// The header block a compliant same-origin browser request carries.
+    fn valid_selection_headers(body_length: usize) -> String {
+        format!(
+            "Host: {{authority}}\r\nOrigin: https://{{authority}}\r\nX-Weavelit-CSRF: 1\r\n\
+             Content-Type: application/json\r\nContent-Length: {body_length}\r\n"
+        )
+    }
+
+    /// Serves one direct-TLS request against routes composed for the address the
+    /// listener actually bound, so the expected origin is the real authority.
+    async fn direct_tls_bound_response(
+        surface: &Surface,
+        bind: &str,
+        configs: &(Arc<ServerConfig>, Arc<ClientConfig>),
+        request_read_timeout: Duration,
+        build: impl FnOnce(SocketAddr) -> Vec<u8>,
+    ) -> Vec<u8> {
+        let listener = TcpListener::bind(bind).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = surface.routes_for(address);
+        let request = build(address);
+        let server_config = Arc::clone(&configs.0);
+        let server = tokio::spawn(async move {
+            let (stream, source) = listener.accept().await.unwrap();
+            serve_normal_connection_with_timeouts(
+                stream,
+                source.ip(),
+                TlsAcceptor::from(server_config),
+                router,
+                Arc::new(RateLimiter::new()),
+                ConnectionTimeouts {
+                    handshake: TLS_HANDSHAKE_TIMEOUT,
+                    request_read: request_read_timeout,
+                    processing: REQUEST_PROCESSING_TIMEOUT,
+                },
+            )
+            .await;
+        });
+        let response = tls_exchange(address, Arc::clone(&configs.1), &request).await;
+        server.await.unwrap();
+        response
+    }
+
+    async fn tls_exchange(
+        address: SocketAddr,
+        client_config: Arc<ClientConfig>,
+        request: &[u8],
+    ) -> Vec<u8> {
+        let mut client = tls_client(address, client_config).await;
+        if !request.is_empty() {
+            client.write_all(request).await.unwrap();
+        }
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("direct TLS response must complete with close_notify");
+        response
+    }
+
+    async fn direct_tls_selection(
+        surface: &Surface,
+        configs: &(Arc<ServerConfig>, Arc<ClientConfig>),
+        method: &str,
+        headers: &str,
+        body: &str,
+    ) -> Vec<u8> {
+        let headers = headers.to_owned();
+        let body = body.to_owned();
+        direct_tls_bound_response(
+            surface,
+            "127.0.0.1:0",
+            configs,
+            REQUEST_READ_TIMEOUT,
+            move |address| selection_wire(method, &headers, &body, address),
+        )
+        .await
+    }
+
+    /// Performs one valid selection and returns the wire response.
+    async fn direct_tls_valid_selection(
+        surface: &Surface,
+        configs: &(Arc<ServerConfig>, Arc<ClientConfig>),
+    ) -> Vec<u8> {
+        direct_tls_selection(
+            surface,
+            configs,
+            "PUT",
+            &valid_selection_headers(SELECTION_BODY.len()),
+            SELECTION_BODY,
+        )
+        .await
+    }
+
     #[test]
-    fn rate_limiter_allows_burst_five_then_refills_at_twenty_per_minute() {
+    fn selection_body_length_matches_the_documented_contract() {
+        assert_eq!(SELECTION_BODY.len(), 34);
+        assert_eq!(
+            MAX_REQUEST_BODY_BYTES,
+            weavelit_module_client_webui::MAX_DATABASE_SELECTION_BODY_BYTES
+        );
+    }
+
+    /// A successful selection must be observable by a later status read served
+    /// by the same process, listener, and arbiter.
+    #[tokio::test]
+    async fn selection_is_visible_to_a_later_status_read_on_the_same_listener() {
+        let (server_config, client_config) = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(super::serve_restricted_https_listener(
+            listener,
+            server_config,
+            surface.composition(),
+        ));
+
+        let before = tls_exchange(
+            address,
+            Arc::clone(&client_config),
+            b"GET /api/v1/status HTTP/1.1\r\n\r\n",
+        )
+        .await;
+        assert_fixed_tls_response(&before, 200, UNSELECTED_STATUS, None);
+
+        let selection = tls_exchange(
+            address,
+            Arc::clone(&client_config),
+            &selection_wire(
+                "PUT",
+                &valid_selection_headers(SELECTION_BODY.len()),
+                SELECTION_BODY,
+                address,
+            ),
+        )
+        .await;
+        assert_fixed_tls_response(&selection, 200, SELECTED_STATUS, None);
+
+        let after = tls_exchange(
+            address,
+            client_config,
+            b"GET /api/v1/status HTTP/1.1\r\n\r\n",
+        )
+        .await;
+        assert_fixed_tls_response(&after, 200, SELECTED_STATUS, None);
+
+        server.abort();
+    }
+
+    /// The status route and the selection route must observe one arbiter even
+    /// when each request is served by a separately composed router.
+    #[tokio::test]
+    async fn selection_and_status_routes_share_one_arbiter_across_routers() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+
+        let selection = direct_tls_valid_selection(&surface, &configs).await;
+        assert_fixed_tls_response(&selection, 200, SELECTED_STATUS, None);
+
+        let status = surface
+            .routes()
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        assert_eq!(response_body(status).await, SELECTED_STATUS);
+
+        // The durable projection agrees with what the routes reported.
+        assert!(
+            surface
+                .startup
+                .composition
+                .adapter
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected()
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_selection_replay_changes_no_locator_generation_or_bytes() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+
+        let first = direct_tls_valid_selection(&surface, &configs).await;
+        assert_fixed_tls_response(&first, 200, SELECTED_STATUS, None);
+        let committed = surface.anchor_snapshot();
+        assert!(
+            committed
+                .iter()
+                .any(|(name, ..)| name.to_string_lossy().starts_with("database-locator-")),
+            "the first selection must publish a locator"
+        );
+
+        let replay = direct_tls_valid_selection(&surface, &configs).await;
+        assert_fixed_tls_response(&replay, 200, SELECTED_STATUS, None);
+        assert_eq!(
+            surface.anchor_snapshot(),
+            committed,
+            "an exact replay must not rotate or rewrite the locator"
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_method_matrix_advertises_its_own_allow_value() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+
+        for method in ["GET", "POST", "DELETE"] {
+            let response = direct_tls_selection(
+                &surface,
+                &configs,
+                method,
+                &valid_selection_headers(0).replace("Content-Length: 0\r\n", ""),
+                "",
+            )
+            .await;
+            assert_fixed_tls_response(
+                &response,
+                405,
+                "{\"error\":\"method_not_allowed\"}",
+                Some(AllowedMethod::Put),
+            );
+        }
+
+        // A `PUT` must declare a body, so the status route's own `405` is only
+        // reachable through an explicitly empty one.
+        let status = direct_tls_bound_response(
+            &surface,
+            "127.0.0.1:0",
+            &configs,
+            REQUEST_READ_TIMEOUT,
+            |_| b"PUT /api/v1/status HTTP/1.1\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        )
+        .await;
+        assert_fixed_tls_response(
+            &status,
+            405,
+            "{\"error\":\"method_not_allowed\"}",
+            Some(AllowedMethod::Get),
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_accepts_a_body_at_the_limit_and_rejects_bad_framing() {
+        let configs = tls_configs();
+
+        let padded = format!(
+            "{SELECTION_BODY}{}",
+            " ".repeat(MAX_REQUEST_BODY_BYTES - SELECTION_BODY.len())
+        );
+        assert_eq!(padded.len(), MAX_REQUEST_BODY_BYTES);
+        let at_limit = direct_tls_selection(
+            &Surface::new(StartupOutcome::UninitializedWithoutDatabase),
+            &configs,
+            "PUT",
+            &valid_selection_headers(padded.len()),
+            &padded,
+        )
+        .await;
+        assert_fixed_tls_response(&at_limit, 200, SELECTED_STATUS, None);
+
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let over_limit = format!(
+            "{SELECTION_BODY}{}",
+            " ".repeat(MAX_REQUEST_BODY_BYTES + 1 - SELECTION_BODY.len())
+        );
+        for (name, headers, body) in [
+            (
+                "body over the limit",
+                valid_selection_headers(over_limit.len()),
+                over_limit.as_str(),
+            ),
+            (
+                "missing content length",
+                valid_selection_headers(SELECTION_BODY.len())
+                    .replace(&format!("Content-Length: {}\r\n", SELECTION_BODY.len()), ""),
+                SELECTION_BODY,
+            ),
+            (
+                "non-canonical content length",
+                valid_selection_headers(SELECTION_BODY.len())
+                    .replace("Content-Length: 34\r\n", "Content-Length: 034\r\n"),
+                SELECTION_BODY,
+            ),
+            (
+                "duplicate content length",
+                format!(
+                    "{}Content-Length: 34\r\n",
+                    valid_selection_headers(SELECTION_BODY.len())
+                ),
+                SELECTION_BODY,
+            ),
+            (
+                "chunked transfer encoding",
+                format!(
+                    "{}Transfer-Encoding: chunked\r\n",
+                    valid_selection_headers(SELECTION_BODY.len())
+                ),
+                SELECTION_BODY,
+            ),
+        ] {
+            let response = direct_tls_selection(&surface, &configs, "PUT", &headers, body).await;
+            assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", None);
+            assert!(
+                !surface
+                    .startup
+                    .composition
+                    .adapter
+                    .arbiter
+                    .projection()
+                    .unwrap()
+                    .database_selected(),
+                "{name} must not commit a selection"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_route_media_matrix_accepts_only_the_documented_types() {
+        let configs = tls_configs();
+        let valid = valid_selection_headers(SELECTION_BODY.len());
+
+        for accept in ["", "Accept: application/json\r\n"] {
+            let response = direct_tls_selection(
+                &Surface::new(StartupOutcome::UninitializedWithoutDatabase),
+                &configs,
+                "PUT",
+                &format!("{valid}{accept}"),
+                SELECTION_BODY,
+            )
+            .await;
+            assert_fixed_tls_response(&response, 200, SELECTED_STATUS, None);
+        }
+
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        for headers in [
+            valid.replace(
+                "Content-Type: application/json\r\n",
+                "Content-Type: application/json; charset=utf-8\r\n",
+            ),
+            valid.replace("Content-Type: application/json\r\n", ""),
+            format!("{valid}Content-Type: application/json\r\n"),
+            format!("{valid}Accept: text/html\r\n"),
+            format!("{valid}Accept: application/json\r\nAccept: application/json\r\n"),
+        ] {
+            let response =
+                direct_tls_selection(&surface, &configs, "PUT", &headers, SELECTION_BODY).await;
+            assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", None);
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_route_denies_every_failed_origin_or_csrf_precondition() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let valid = valid_selection_headers(SELECTION_BODY.len());
+
+        for headers in [
+            valid.replace("Origin: https://{authority}\r\n", ""),
+            format!("{valid}Origin: https://{{authority}}\r\n"),
+            valid.replace(
+                "Origin: https://{authority}\r\n",
+                "Origin: https://127.0.0.1:1\r\n",
+            ),
+            valid.replace(
+                "Origin: https://{authority}\r\n",
+                "Origin: http://{authority}\r\n",
+            ),
+            valid.replace("Origin: https://{authority}\r\n", "Origin: null\r\n"),
+            valid.replace("Host: {authority}\r\n", ""),
+            format!("{valid}Host: {{authority}}\r\n"),
+            valid.replace("Host: {authority}\r\n", "Host: localhost\r\n"),
+            valid.replace("X-Weavelit-CSRF: 1\r\n", ""),
+            valid.replace("X-Weavelit-CSRF: 1\r\n", "X-Weavelit-CSRF: 0\r\n"),
+            format!("{valid}X-Weavelit-CSRF: 1\r\n"),
+        ] {
+            let response =
+                direct_tls_selection(&surface, &configs, "PUT", &headers, SELECTION_BODY).await;
+            assert_fixed_tls_response(
+                &response,
+                403,
+                "{\"error\":\"request_origin_denied\"}",
+                None,
+            );
+        }
+        assert!(
+            !surface
+                .startup
+                .composition
+                .adapter
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected()
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_accepts_ipv6_literals_and_default_port_normalization() {
+        let configs = tls_configs();
+
+        let ipv6 = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let headers = valid_selection_headers(SELECTION_BODY.len());
+        let response = direct_tls_bound_response(
+            &ipv6,
+            "[::1]:0",
+            &configs,
+            REQUEST_READ_TIMEOUT,
+            |address| selection_wire("PUT", &headers, SELECTION_BODY, address),
+        )
+        .await;
+        assert_fixed_tls_response(&response, 200, SELECTED_STATUS, None);
+
+        // Port 443 cannot be bound by a test, so the expected origin is composed
+        // for it directly while the socket stays on an ephemeral port.
+        for authority in ["127.0.0.1", "127.0.0.1:443"] {
+            let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+            let router = surface.routes_for("127.0.0.1:443".parse().unwrap());
+            let headers =
+                valid_selection_headers(SELECTION_BODY.len()).replace("{authority}", authority);
+            let response = direct_tls_response(
+                router,
+                Arc::clone(&configs.0),
+                Arc::clone(&configs.1),
+                &format!(
+                    "PUT {APPLICATION_DATABASE_ROUTE} HTTP/1.1\r\n{headers}\r\n{SELECTION_BODY}"
+                )
+                .into_bytes(),
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_fixed_tls_response(&response, 200, SELECTED_STATUS, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_route_rejects_every_schema_deviation() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+
+        for body in [
+            "",
+            "{}",
+            "{\"backend\":\"sqlite\"}",
+            "{\"backend\":\"sqlite\",\"settings\":{},\"extra\":1}",
+            "{\"backend\":\"sqlite\",\"settings\":{\"path\":\"/etc\"}}",
+            "{\"backend\":\"sqlite\",\"backend\":\"sqlite\",\"settings\":{}}",
+            "{\"backend\":1,\"settings\":{}}",
+            "{\"backend\":\"SQLITE\",\"settings\":{}}",
+            "{\"backend\":\"postgres\",\"settings\":{}}",
+            "{\"backend\":\"sqlite\",\"settings\":[]}",
+            "{\"backend\":\"sqlite\",\"settings\":{}}trailing",
+            "{\"backend\":\"sqlite\",\"settings\":{}}{}",
+        ] {
+            let response = direct_tls_selection(
+                &surface,
+                &configs,
+                "PUT",
+                &valid_selection_headers(body.len()),
+                body,
+            )
+            .await;
+            assert_fixed_tls_response(&response, 400, "{\"error\":\"bad_request\"}", None);
+        }
+        assert!(
+            !surface
+                .startup
+                .composition
+                .adapter
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected()
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_read_timeout_returns_the_fixed_response() {
+        let configs = tls_configs();
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let headers = valid_selection_headers(SELECTION_BODY.len());
+
+        let response = direct_tls_bound_response(
+            &surface,
+            "127.0.0.1:0",
+            &configs,
+            Duration::from_millis(50),
+            |address| {
+                // A declared body that never arrives must not restart the budget.
+                selection_wire("PUT", &headers, "{\"backend\":", address)
+            },
+        )
+        .await;
+        assert_fixed_tls_response(&response, 408, "{\"error\":\"request_timeout\"}", None);
+        assert!(
+            !surface
+                .startup
+                .composition
+                .adapter
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected()
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_route_is_mounted_under_both_uninitialized_gates_only() {
+        for outcome in [
+            StartupOutcome::UninitializedWithoutDatabase,
+            StartupOutcome::UninitializedWithDatabase,
+        ] {
+            let response = restricted_routes(outcome)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(APPLICATION_DATABASE_ROUTE)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{outcome:?}"
+            );
+            assert_eq!(response.headers().get("allow").unwrap(), "PUT");
+        }
+
+        let gated = restricted_routes(StartupOutcome::InitializationPending(
+            weavelit_server_lifecycle::WorkflowKind::Init,
+        ))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(APPLICATION_DATABASE_ROUTE)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(gated.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_body(gated).await, "{\"error\":\"not_found\"}");
+    }
+
+    /// A retained database already satisfies the selection, so the live status
+    /// route must report it before any request in this session.
+    #[tokio::test]
+    async fn a_retained_selection_is_reported_live_at_first_status_read() {
+        let surface = Surface::new(StartupOutcome::UninitializedWithDatabase);
+        let response = surface
+            .routes()
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_body(response).await, SELECTED_STATUS);
+    }
+
+    #[test]
+    fn rate_limiter_allows_the_configured_burst_then_refills_at_the_sustained_rate() {
         let limiter = RateLimiter::new();
         let source = "127.0.0.1".parse().unwrap();
         let now = std::time::Instant::now();
-        for _ in 0..5 {
+        for _ in 0..RATE_LIMIT_BURST {
             assert!(limiter.allows(source, now));
         }
         assert!(!limiter.allows(source, now));
-        assert!(limiter.allows(source, now + Duration::from_secs(3)));
+        let refill = Duration::from_secs(60 / u64::from(RATE_LIMIT_REQUESTS_PER_MINUTE));
+        assert!(limiter.allows(source, now + refill));
     }
 
     #[tokio::test]
@@ -2645,12 +4510,215 @@ mod tests {
             super::RequestHeadRead::Incomplete(super::RequestReadError::TimedOut)
         ));
 
-        let response = processing_response(Duration::ZERO, pending::<FixedResponse>()).await;
+        let response = processing_response(Duration::ZERO, pending::<BoundedResponse>()).await;
         assert_eq!(response.status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(response.body, gateway_timeout_response().body);
         assert_eq!(
-            request_timeout_response().body,
-            "{\"error\":\"request_timeout\"}"
+            request_timeout_response().body.as_ref(),
+            b"{\"error\":\"request_timeout\"}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lifecycle adapter: blocking I/O isolation and timeout correctness
+    // -----------------------------------------------------------------------
+
+    /// Projection reads must not compete with the mutation semaphore; even while
+    /// the single mutation permit is held, `project()` must complete.
+    #[tokio::test]
+    async fn adapter_projection_does_not_wait_for_mutation_lane() {
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let adapter = &surface.startup.composition.adapter;
+
+        // Hold the single mutation permit so any select() would block.
+        let _permit = Arc::clone(&adapter.mutation_lane)
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        // project() is independent of the mutation lane and must complete.
+        let projection = adapter.project().await;
+        assert!(projection.is_some());
+    }
+
+    /// A selection future that is cancelled while awaiting the mutation
+    /// semaphore must not commit any durable state.
+    #[tokio::test]
+    async fn adapter_selection_cancelled_at_semaphore_does_not_commit() {
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let adapter = Arc::clone(&surface.startup.composition.adapter);
+        let catalog = Arc::clone(&surface.startup.composition.catalog);
+        let context = Arc::clone(&surface.startup.composition.context);
+
+        // Hold the mutation permit so select() blocks at acquire_owned().
+        let permit = Arc::clone(&adapter.mutation_lane)
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            adapter
+                .select(
+                    weavelit_module_client_webui::SelectedBackend::Sqlite,
+                    catalog,
+                    context,
+                )
+                .await
+        });
+        // Yield so the spawned task reaches the semaphore await.
+        tokio::task::yield_now().await;
+
+        // Abort cancels the future while it is pending at acquire_owned();
+        // spawn_blocking is never entered, so no selection is committed.
+        handle.abort();
+        let _ = handle.await;
+
+        drop(permit);
+
+        assert!(
+            !surface
+                .startup
+                .composition
+                .adapter
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected(),
+            "cancelled selection must not commit durable state"
+        );
+    }
+
+    /// A `tokio::time::timeout` around a selection that is blocked at the
+    /// mutation semaphore must fire correctly because the selection future is
+    /// a normal async future that yields at the semaphore, not a blocking call.
+    #[tokio::test]
+    async fn adapter_selection_timeout_fires_when_mutation_lane_is_full() {
+        tokio::time::pause();
+
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let adapter = Arc::clone(&surface.startup.composition.adapter);
+        let catalog = Arc::clone(&surface.startup.composition.catalog);
+        let context = Arc::clone(&surface.startup.composition.context);
+
+        // Hold the mutation lane so select() is always blocked at the semaphore.
+        let _permit = Arc::clone(&adapter.mutation_lane)
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        let timeout_duration = Duration::from_secs(10);
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                timeout_duration,
+                adapter.select(
+                    weavelit_module_client_webui::SelectedBackend::Sqlite,
+                    catalog,
+                    context,
+                ),
+            )
+            .await
+        });
+
+        // Let the task reach the semaphore await before advancing time.
+        tokio::task::yield_now().await;
+        tokio::time::advance(timeout_duration + Duration::from_nanos(1)).await;
+
+        let result = task.await.unwrap();
+        assert!(
+            result.is_err(),
+            "timeout must fire before spawn_blocking starts"
+        );
+
+        // spawn_blocking was never entered, so no selection was committed.
+        assert!(
+            !surface
+                .startup
+                .composition
+                .adapter
+                .arbiter
+                .projection()
+                .unwrap()
+                .database_selected(),
+            "timed-out selection must not commit durable state"
+        );
+    }
+
+    /// A commit that has entered `spawn_blocking` must run to completion even
+    /// when the Tokio task that spawned it is aborted, leaving no partial state.
+    #[tokio::test]
+    async fn started_blocking_commit_completes_after_outer_task_is_aborted() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let committed = Arc::new(AtomicBool::new(false));
+        let started_gate = Arc::new(Barrier::new(2));
+        let finish_gate = Arc::new(Barrier::new(2));
+
+        let committed_clone = Arc::clone(&committed);
+        let started_gate_clone = Arc::clone(&started_gate);
+        let finish_gate_clone = Arc::clone(&finish_gate);
+
+        // A SelectionCommit that signals when spawn_blocking has started, then
+        // waits for the test to signal completion.  This simulates a durable
+        // write that must not be interrupted once it begins.
+        let commit: weavelit_module_client_webui::SelectionCommit = Arc::new(move |_backend| {
+            let committed = Arc::clone(&committed_clone);
+            let started_gate = Arc::clone(&started_gate_clone);
+            let finish_gate = Arc::clone(&finish_gate_clone);
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    started_gate.wait(); // signal: spawn_blocking has started
+                    finish_gate.wait(); // wait for test to say "go"
+                    committed.store(true, Ordering::SeqCst);
+                    Ok(weavelit_server_lifecycle::LifecycleProjection::new(true))
+                })
+                .await
+                .map_err(|_| DatabaseSelectionRejection::ServiceUnavailable)?
+            })
+        });
+
+        let expected_origin = weavelit_module_client_webui::ExpectedOrigin::from_listener(
+            UNBOUND_LISTENER.parse().unwrap(),
+        );
+        let router = Router::new().route(
+            APPLICATION_DATABASE_ROUTE,
+            weavelit_module_client_webui::database_selection_route(expected_origin, commit),
+        );
+
+        let request = Request::builder()
+            .method("PUT")
+            .uri(APPLICATION_DATABASE_ROUTE)
+            .header("host", UNBOUND_LISTENER)
+            .header("origin", format!("https://{UNBOUND_LISTENER}"))
+            .header("x-weavelit-csrf", "1")
+            .header("content-type", "application/json")
+            .header("content-length", SELECTION_BODY.len().to_string())
+            .body(Body::from(SELECTION_BODY))
+            .unwrap();
+
+        let task = tokio::spawn(async move { router.oneshot(request).await });
+
+        // Wait for the barrier that signals spawn_blocking has started.
+        let gate = Arc::clone(&started_gate);
+        tokio::task::spawn_blocking(move || gate.wait())
+            .await
+            .unwrap();
+
+        // Abort the outer task (simulates REQUEST_PROCESSING_TIMEOUT firing
+        // after spawn_blocking has already begun).  The running spawn_blocking
+        // task is unaffected.
+        task.abort();
+        let _ = task.await;
+
+        // Release the blocking work.
+        let gate = Arc::clone(&finish_gate);
+        tokio::task::spawn_blocking(move || gate.wait())
+            .await
+            .unwrap();
+
+        assert!(
+            committed.load(Ordering::SeqCst),
+            "spawn_blocking must complete even after the outer task is aborted"
         );
     }
 }

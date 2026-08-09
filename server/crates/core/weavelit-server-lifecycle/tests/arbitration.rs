@@ -12,8 +12,8 @@ use weavelit_server_lifecycle::{
     AnchorLoadState, ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog,
     BackendIdentifier, BackendRegistration, CheckpointMetadata as LifecycleCheckpointMetadata,
     LifecycleClassification, LifecycleError, LifecycleState, LifecycleStore,
-    RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
-    WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
+    RetainedDatabaseInspection, SelectionError, SelectionFailureKind, TrustedBackendContext,
+    ValidatedConnectionSettings, WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -77,6 +77,63 @@ fn sqlite_context(root: &Path) -> TrustedBackendContext {
 
 fn sqlite_backend() -> BackendIdentifier {
     BackendIdentifier::new(SQLITE_BACKEND).unwrap()
+}
+
+/// Returns every retained locator filename with its exact bytes, sorted by name.
+fn locator_files(path: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("database-locator-"))
+        })
+        .map(|entry| {
+            (
+                entry.file_name().unwrap().to_str().unwrap().to_owned(),
+                fs::read(&entry).unwrap(),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// Panics inside the permit so a test can observe poisoning rather than simulate it.
+struct PanickingFactory;
+
+impl ApplicationDatabaseFactory for PanickingFactory {
+    fn open(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+    ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+        panic!("factory panic under the lifecycle permit");
+    }
+
+    fn inspect_retained(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        _expected_deployment_identifier: weavelit_server_lifecycle::DeploymentIdentifier,
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        panic!("factory panic under the lifecycle permit");
+    }
+}
+
+fn panicking_catalog() -> BackendCatalog {
+    BackendCatalog::new(vec![BackendRegistration::new(
+        "panicking-backend",
+        vec![],
+        Box::new(PanickingFactory),
+    )])
+    .unwrap()
+}
+
+fn panicking_backend() -> BackendIdentifier {
+    BackendIdentifier::new("panicking-backend").unwrap()
 }
 
 fn metadata(value: &[u8]) -> LifecycleCheckpointMetadata {
@@ -405,6 +462,212 @@ fn retained_eligible_store_can_begin_init_or_restore() {
             LifecycleState::InitializationPending
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: serialized database selection and live projection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn projection_reports_unselected_before_and_selected_after_selection() {
+    let (_dir, path) = state_root();
+    let arbiter = WorkflowArbiter::new(LifecycleStore::open_or_create(&path).unwrap());
+    let catalog = sqlite_catalog();
+    let context = sqlite_context(&path);
+
+    assert!(
+        !arbiter.projection().unwrap().database_selected(),
+        "no database is selected before the first selection"
+    );
+
+    let (_database, projection) = arbiter
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .expect("selection must succeed");
+
+    assert!(
+        projection.database_selected(),
+        "the returned projection must reflect the state committed under the permit"
+    );
+    assert_eq!(arbiter.projection().unwrap(), projection);
+}
+
+#[test]
+fn arbiter_exact_replay_leaves_the_locator_generation_and_bytes_unchanged() {
+    let (_dir, path) = state_root();
+    let arbiter = WorkflowArbiter::new(LifecycleStore::open_or_create(&path).unwrap());
+    let catalog = sqlite_catalog();
+    let context = sqlite_context(&path);
+
+    arbiter
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .expect("initial selection must succeed");
+    let first_files = locator_files(&path);
+
+    let (_database, projection) = arbiter
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .expect("exact replay must succeed");
+
+    assert!(projection.database_selected());
+    assert_eq!(
+        locator_files(&path),
+        first_files,
+        "exact replay must not rotate the generation or rewrite the locator bytes"
+    );
+}
+
+#[test]
+fn concurrent_exact_replay_serializes_without_rotating_the_locator() {
+    let (_dir, path) = state_root();
+    let arbiter = Arc::new(WorkflowArbiter::new(
+        LifecycleStore::open_or_create(&path).unwrap(),
+    ));
+    let catalog = Arc::new(sqlite_catalog());
+    let context = Arc::new(sqlite_context(&path));
+
+    arbiter
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .expect("initial selection must succeed");
+    let first_files = locator_files(&path);
+
+    let barrier = Arc::new(Barrier::new(4));
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let arbiter = Arc::clone(&arbiter);
+            let catalog = Arc::clone(&catalog);
+            let context = Arc::clone(&context);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                arbiter
+                    .select_database(&catalog, &context, &sqlite_backend(), vec![])
+                    .map(|(_database, projection)| projection)
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let projection = handle
+            .join()
+            .expect("replay thread must not panic")
+            .expect("every concurrent exact replay must succeed");
+        assert!(projection.database_selected());
+    }
+    assert_eq!(
+        locator_files(&path),
+        first_files,
+        "concurrent exact replay must leave the locator unrotated"
+    );
+}
+
+#[test]
+fn selection_contending_with_a_workflow_serializes_rather_than_failing() {
+    let (_dir, path) = state_root();
+    let arbiter = Arc::new(WorkflowArbiter::new(
+        LifecycleStore::open_or_create(&path).unwrap(),
+    ));
+    let catalog = Arc::new(sqlite_catalog());
+    let context = Arc::new(sqlite_context(&path));
+    arbiter
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .expect("initial selection must succeed");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let selection = {
+        let arbiter = Arc::clone(&arbiter);
+        let catalog = Arc::clone(&catalog);
+        let context = Arc::clone(&context);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            arbiter
+                .select_database(&catalog, &context, &sqlite_backend(), vec![])
+                .map(|(_database, projection)| projection)
+        })
+    };
+    let workflow = {
+        let arbiter = Arc::clone(&arbiter);
+        let catalog = Arc::clone(&catalog);
+        let context = Arc::clone(&context);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            arbiter.begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
+        })
+    };
+
+    workflow
+        .join()
+        .expect("workflow thread must not panic")
+        .expect("the contending workflow must serialize and succeed");
+    match selection.join().expect("selection thread must not panic") {
+        Ok(projection) => assert!(projection.database_selected()),
+        Err(error) => assert_eq!(
+            error.kind(),
+            SelectionFailureKind::Conflict,
+            "contention must serialize; only a revalidated lifecycle conflict may fail"
+        ),
+    }
+}
+
+#[test]
+fn selection_after_the_record_advances_reports_a_conflict_not_unavailability() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+    arbiter
+        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
+        .unwrap();
+
+    let error = arbiter
+        .select_database(&catalog, &context, &sqlite_backend(), vec![])
+        .map(|_| ())
+        .expect_err("selection must be rejected once the record advances");
+
+    assert_eq!(error, SelectionError::NotAllowed);
+    assert_eq!(error.kind(), SelectionFailureKind::Conflict);
+}
+
+#[test]
+fn poisoned_arbiter_reports_unavailability_without_panicking() {
+    let (_dir, path) = state_root();
+    let arbiter = Arc::new(WorkflowArbiter::new(
+        LifecycleStore::open_or_create(&path).unwrap(),
+    ));
+
+    let poisoner = {
+        let arbiter = Arc::clone(&arbiter);
+        let path = path.clone();
+        thread::spawn(move || {
+            let _ = arbiter.select_database(
+                &panicking_catalog(),
+                &sqlite_context(&path),
+                &panicking_backend(),
+                vec![],
+            );
+        })
+    };
+    assert!(
+        poisoner.join().is_err(),
+        "the panicking factory must poison the permit"
+    );
+
+    let error = arbiter
+        .select_database(
+            &sqlite_catalog(),
+            &sqlite_context(&path),
+            &sqlite_backend(),
+            vec![],
+        )
+        .map(|_| ())
+        .expect_err("a poisoned permit must fail closed");
+    assert_eq!(
+        error,
+        SelectionError::Lifecycle(LifecycleError::Persistence)
+    );
+    assert_eq!(error.kind(), SelectionFailureKind::Unavailable);
+    assert_eq!(
+        arbiter.projection().unwrap_err(),
+        LifecycleError::Persistence
+    );
 }
 
 #[test]

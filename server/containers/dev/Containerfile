@@ -13,18 +13,83 @@ RUN apt-get update \
 		gh \
 		git \
 		make \
+		xz-utils \
 		build-essential \
 		pkg-config \
 		libssl-dev \
 		libsqlite3-dev \
+		openssl \
 	&& rm -rf /var/lib/apt/lists/*
+
+# Shared libraries required by the Playwright Chromium build. Playwright's
+# `install --with-deps` needs root, so the package set is installed here and the
+# browser itself is installed later as the unprivileged development user.
+RUN apt-get update \
+	&& apt-get install --yes --no-install-recommends \
+		libasound2t64 \
+		libatk-bridge2.0-0t64 \
+		libatk1.0-0t64 \
+		libatspi2.0-0t64 \
+		libcairo2 \
+		libcups2t64 \
+		libdbus-1-3 \
+		libgbm1 \
+		libglib2.0-0t64 \
+		libnspr4 \
+		libnss3 \
+		libpango-1.0-0 \
+		libx11-6 \
+		libxcb1 \
+		libxcomposite1 \
+		libxdamage1 \
+		libxext6 \
+		libxfixes3 \
+		libxkbcommon0 \
+		libxrandr2 \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Web UI toolchain. The Node release is read from server/web-ui/.node-version so
+# the image, CI, and local development stay on one pinned version; npm ships with
+# that Node release and is pinned by the `engines` field in
+# server/web-ui/package.json.
+COPY server/web-ui/.node-version /tmp/node-version
+
+RUN set -eux; \
+	node_version="$(tr -d '[:space:]' < /tmp/node-version)"; \
+	case "$(dpkg --print-architecture)" in \
+		amd64) node_arch=x64 ;; \
+		arm64) node_arch=arm64 ;; \
+		*) echo "unsupported architecture for the pinned Node toolchain" >&2; exit 1 ;; \
+	esac; \
+	tarball="node-v${node_version}-linux-${node_arch}.tar.xz"; \
+	cd /tmp; \
+	curl --proto '=https' --tlsv1.2 -fsSLO "https://nodejs.org/dist/v${node_version}/${tarball}"; \
+	curl --proto '=https' --tlsv1.2 -fsSLO "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt"; \
+	sha256sum --check --strict --ignore-missing SHASUMS256.txt; \
+	mkdir -p /usr/local/lib/nodejs; \
+	tar -xJf "${tarball}" -C /usr/local/lib/nodejs --strip-components=1; \
+	rm -f "${tarball}" SHASUMS256.txt /tmp/node-version; \
+	ln -s /usr/local/lib/nodejs/bin/node /usr/local/bin/node; \
+	ln -s /usr/local/lib/nodejs/bin/npm /usr/local/bin/npm; \
+	ln -s /usr/local/lib/nodejs/bin/npx /usr/local/bin/npx; \
+	node --version; \
+	npm --version
 
 RUN groupadd --gid 10001 weavelit \
 	&& useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash weavelit
 
 COPY --chown=weavelit:weavelit server/rust-toolchain.toml /tmp/rust-toolchain.toml
+COPY --chown=weavelit:weavelit server/web-ui/package.json server/web-ui/package-lock.json /tmp/web-ui/
 
 USER weavelit
+
+# The Chromium build is keyed to the exact @playwright/test version resolved by
+# server/web-ui/package-lock.json, so the cached browser in ~/.cache/ms-playwright
+# matches the Playwright release a later `npm ci` installs.
+RUN set -eux; \
+	playwright_version="$(node -e "process.stdout.write(require('/tmp/web-ui/package.json').devDependencies['@playwright/test'])")"; \
+	npx --yes "@playwright/test@${playwright_version}" install chromium; \
+	rm -rf /tmp/web-ui /home/weavelit/.npm/_npx
 
 RUN set -eux; \
 	rust_channel="$(awk -F '"' '/^channel[[:space:]]*=/{print $2; exit}' /tmp/rust-toolchain.toml)"; \

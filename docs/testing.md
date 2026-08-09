@@ -52,7 +52,7 @@ persisted state, emitted audit events, and provider requests over assertions on
 private functions or internal call order. Each defect fix includes a regression
 test that fails before the fix and passes after it.
 
-## Rust Quality Gates
+## Server Quality Gates
 
 All Rust code uses the repository's Rust 1.97 stable toolchain. Once the Cargo
 workspace is introduced, it must commit a `rust-toolchain.toml` that pins the
@@ -77,6 +77,43 @@ cargo build --locked --workspace --release
 Crate-local tests are included through their workspace member's Cargo targets.
 A dedicated Server test crate must be a workspace member so `make -C server
 check` runs it automatically.
+
+`make -C server check` runs the Web UI gate before the Rust commands above, in
+this order: a locked `npm ci` install, a TypeScript typecheck, the Web UI unit
+tests, the Node test-runner suite for the build-output validator scripts, a
+clean production build that also writes the build content manifest, and a
+build-output check that fails on a missing, renamed, extra, or oversized
+generated asset, re-verifies the manifest against the current bundle inputs and
+generated assets, and reports raw and gzip bundle sizes. Raw sizes are the
+enforced budget because the Server serves these assets without compression. The
+Node and npm releases are pinned by `server/web-ui/.node-version` and
+`server/web-ui/package.json`, and every frontend dependency is pinned to an
+exact version and locked by `server/web-ui/package-lock.json`.
+
+After the Rust commands, `make -C server check` installs the pinned Chromium
+build and runs the Playwright suite in `server/web-ui/browser-tests/` against
+the release Server binary over its real direct-TLS listener. That suite covers
+the pre-operational status page load and the complete Application Database
+selection outcome: an operator selects SQLite through the Web UI control, the
+displayed status changes to selected within the same process, the Server is
+terminated with `SIGTERM` and its exit is awaited and asserted rather than
+assumed, and a second Server generation is started against the identical state
+root and listener port, where the reloaded page still reports the selected
+database. The Server installs no signal handler, so this exercises termination
+and restart rather than an orderly application shutdown; a successful restart is
+also evidence that the terminated process released the state-root lock and the
+listening socket. Each generation asserts the exact set of requests it served,
+which keeps the scenario inside the listener's per-source request-rate budget.
+
+The build content manifest has two test surfaces, one per consumer, because a
+silent mismatch between the writer and the verifier would reintroduce the stale
+embedded asset it exists to prevent. The Node suite covers manifest write mode,
+check mode, and the requirement that check mode never repairs a stale manifest.
+The Web UI Client Module's `tests/build_manifest.rs` compiles the build script's
+verification module directly and covers a valid manifest, a missing, malformed,
+non-object, or wrongly versioned manifest, an unrecognized field, a non-digest
+entry, a source-hash mismatch, an asset-hash mismatch, an added or removed
+bundle input, and the rebuild-trigger inventory.
 
 `cargo fmt` and Clippy are quality gates, not substitutes for tests. The
 repository's shared VS Code settings run rustfmt on Rust-file saves and cause

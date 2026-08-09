@@ -3,6 +3,11 @@ use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -38,6 +43,32 @@ fn expect_open_error(path: &Path, expected: LifecycleError) {
     assert_eq!(error, expected);
     let output = format!("{error:?} {error}");
     assert!(!output.contains(path.to_string_lossy().as_ref()));
+}
+
+/// Runs `body` while another thread repeatedly forks, because a fork
+/// duplicates every descriptor and the child transiently shares a state root's
+/// lock until it execs.
+fn while_forking_child_processes(body: impl FnOnce() + std::panic::UnwindSafe) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let spawner = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let _ = Command::new("/bin/true")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        })
+    };
+
+    let result = std::panic::catch_unwind(body);
+    stop.store(true, Ordering::Relaxed);
+    spawner.join().unwrap();
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
 }
 
 #[test]
@@ -89,6 +120,44 @@ fn process_lifetime_lock_rejects_a_second_store() {
     let (_directory, path) = state_root();
     let _store = LifecycleStore::open_or_create(&path).unwrap();
     expect_open_error(&path, LifecycleError::LockContended);
+}
+
+#[test]
+fn lock_release_is_unaffected_by_a_concurrently_forked_child_process() {
+    let (_directory, path) = state_root();
+    while_forking_child_processes(|| {
+        for iteration in 0..200 {
+            drop(LifecycleStore::open_or_create(&path).unwrap());
+            LifecycleStore::open_or_create(&path).unwrap_or_else(|error| {
+                panic!("reopen {iteration} must not observe stale contention: {error}")
+            });
+        }
+    });
+}
+
+#[test]
+fn inventory_failure_releases_process_lock_before_returning() {
+    let (_directory, path) = state_root();
+    drop(LifecycleStore::open_or_create(&path).unwrap());
+    let child = path.join("unexpected-entry");
+    let child_bytes = b"retained child";
+    fs::write(&child, child_bytes).unwrap();
+    fs::set_permissions(&child, fs::Permissions::from_mode(0o600)).unwrap();
+
+    while_forking_child_processes(|| {
+        for _ in 0..200 {
+            // A fail-closed open must release its lock before returning, so the
+            // next attempt reports the same integrity failure rather than
+            // contention left behind by the previous one.
+            expect_open_error(&path, LifecycleError::IntegrityFailure);
+            expect_open_error(&path, LifecycleError::IntegrityFailure);
+        }
+    });
+
+    assert_eq!(fs::read(&child).unwrap(), child_bytes);
+    fs::remove_file(&child).unwrap();
+    let reopened = LifecycleStore::open_or_create(&path).unwrap();
+    assert_eq!(reopened.load_state(), AnchorLoadState::Retained);
 }
 
 #[test]

@@ -23,7 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `Cargo.toml`: Rust workspace manifest for Server package crates.
 - `containers/`: Development and production Containerfiles for the Server.
 - `crates/`: Rust crate locations for the Server, Application Database contract and backends, and compiled-in modules.
-- `Makefile`: Standard local and CI entry point for Server Rust quality gates.
+- `Makefile`: Standard local and CI entry point for the Server Web UI, Rust, and browser smoke-test quality gates.
 - `packaging/`: Release packaging assets for the Server package; `packaging/deb/` owns Debian-specific files.
 - `rust-toolchain.toml`: Pinned Rust toolchain and required quality-gate components.
 - `tests/`: Server-focused integration and end-to-end tests.
@@ -37,7 +37,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before changing a component, read its matching guide under `../docs/server/`, `../docs/client-modules/`, `../docs/mfa-modules/`, `../docs/log-modules/`, or `../docs/service-modules/`.
 - Make minimal, targeted changes and preserve the existing ownership boundaries between Server crates, Web UI, tests, and packaging.
 - Update the owning documentation and focused tests with each implementation behavior change, as required by `../docs/testing.md`.
-- Run `make check` for the complete Server Rust quality-gate suite.
+- Run `make check` for the complete Server Web UI, Rust, and browser smoke-test quality-gate suite.
 - Add a child `AGENTS.md` only when that path develops distinct commands, validation, security constraints, or documentation routing.
 
 ## Standards and Conventions

@@ -1,14 +1,20 @@
 use std::sync::Mutex;
 
 use weavelit_server_database::{
-    CheckpointMetadata, DatabaseError, DatabaseInspection, WorkflowCheckpoint, WorkflowKind,
+    ApplicationDatabase, CheckpointMetadata, DatabaseError, DatabaseInspection, WorkflowCheckpoint,
+    WorkflowKind,
 };
 
 use crate::{
-    BackendCatalog, DatabaseLocator, DeploymentRecord, LifecycleError, LifecycleState,
-    TrustedBackendContext, WorkflowError,
+    BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
+    LifecycleError, LifecycleProjection, LifecycleState, SelectionError, TrustedBackendContext,
+    WorkflowError,
     persistence::{LifecycleStore, RecordPersistencePermit},
 };
+
+/// A poisoned permit means a prior mutation panicked, so durable lifecycle state
+/// cannot be trusted to have completed safely.
+const POISONED: LifecycleError = LifecycleError::Persistence;
 
 /// In-process lifecycle mutation authority that serializes Init and Restore
 /// checkpoint ownership and record advancement.
@@ -31,6 +37,37 @@ impl WorkflowArbiter {
             .expect("lifecycle mutex is not poisoned")
             .record()
             .state()
+    }
+
+    /// Returns the live lifecycle projection observed under the exclusive permit.
+    pub fn projection(&self) -> Result<LifecycleProjection, LifecycleError> {
+        let store = self.store.lock().map_err(|_| POISONED)?;
+        Ok(project(&store))
+    }
+
+    /// Selects, replaces, or replays the Application Database selection.
+    ///
+    /// Acquires the exclusive permit, rechecks lifecycle eligibility under it, delegates the
+    /// durable work to the store, and returns the opened database with the projection observed
+    /// under the same permit. An exact replay of the persisted selection changes nothing.
+    pub fn select_database(
+        &self,
+        catalog: &BackendCatalog,
+        context: &TrustedBackendContext,
+        backend: &BackendIdentifier,
+        inputs: Vec<ConnectionFieldInput>,
+    ) -> Result<(Box<dyn ApplicationDatabase>, LifecycleProjection), SelectionError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| SelectionError::Lifecycle(POISONED))?;
+
+        if store.record().state() != LifecycleState::Uninitialized {
+            return Err(SelectionError::NotAllowed);
+        }
+        let database = store.select_database(catalog, context, backend, inputs)?;
+
+        Ok((database, project(&store)))
     }
 
     /// Begins a workflow from eligible selected uninitialized state.
@@ -89,6 +126,10 @@ impl WorkflowArbiter {
 
         Ok(())
     }
+}
+
+fn project(store: &LifecycleStore) -> LifecycleProjection {
+    LifecycleProjection::new(store.locator().is_some())
 }
 
 fn map_database_error(error: DatabaseError) -> WorkflowError {

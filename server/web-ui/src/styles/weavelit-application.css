@@ -1,0 +1,79 @@
+/* Import design system tokens */
+@import "../design-system/tokens.css";
+
+/* Weavelit Application Styles
+ *
+ * Note: This stylesheet is transitioning to use design-system tokens.
+ * New styles should prefer CSS custom properties (--ds-*) defined in
+ * ../design-system/tokens.css. Existing .shell* classes will be refactored
+ * incrementally to consume tokens.
+ */
+
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+}
+
+.shell {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: var(--ds-space-2xl) var(--ds-space-lg);
+}
+
+.shell__title {
+  font-size: var(--ds-font-size-heading-lg);
+  margin: 0;
+}
+
+.shell__subtitle {
+  font-size: var(--ds-font-size-body);
+  margin: var(--ds-space-xs) 0 var(--ds-space-xl);
+  opacity: 0.7;
+}
+
+.shell__status {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-md);
+  margin: 0;
+  padding: var(--ds-space-md);
+}
+
+.shell__selection {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-md);
+  margin: var(--ds-space-lg) 0 0;
+  padding: var(--ds-space-md);
+}
+
+.shell__selection-title {
+  font-size: var(--ds-font-size-lg);
+  margin: 0;
+}
+
+.shell__selection-description {
+  margin: var(--ds-space-sm) 0 var(--ds-space-md);
+}
+
+.shell__selection-action {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+}
+
+.shell__selection-action:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.shell__selection-failure {
+  margin: var(--ds-space-md) 0 0;
+}

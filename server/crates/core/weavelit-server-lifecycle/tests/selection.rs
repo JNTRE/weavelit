@@ -14,8 +14,8 @@ use weavelit_server_lifecycle::{
     BackendOpenError, BackendRegistration, ConnectionFieldDeclaration, ConnectionFieldIdentifier,
     ConnectionFieldInput, ConnectionFieldRequirement, ConnectionValidationError, ConnectionValue,
     ConnectionValueKind, FieldDeclarationError, LifecycleError, LifecycleStore,
-    RetainedDatabaseInspection, SecretClassification, SelectionError, TrustedBackendContext,
-    ValidatedConnectionSettings, WorkflowCheckpoint, WorkflowKind,
+    RetainedDatabaseInspection, SecretClassification, SelectionError, SelectionFailureKind,
+    TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,28 @@ fn sqlite_backend() -> BackendIdentifier {
     BackendIdentifier::new(SQLITE_BACKEND).unwrap()
 }
 
+/// Returns every retained locator filename with its exact bytes, sorted by name.
+fn locator_files(path: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("database-locator-"))
+        })
+        .map(|entry| {
+            (
+                entry.file_name().unwrap().to_str().unwrap().to_owned(),
+                fs::read(&entry).unwrap(),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
 // ---------------------------------------------------------------------------
 // Fake factory helpers
 // ---------------------------------------------------------------------------
@@ -160,6 +182,37 @@ fn fake_backend() -> BackendIdentifier {
 
 fn fake_context() -> TrustedBackendContext {
     TrustedBackendContext::new(PathBuf::from("/fake/path/application.sqlite3"))
+}
+
+fn secret_field_backend() -> BackendIdentifier {
+    BackendIdentifier::new("secret-field-backend").unwrap()
+}
+
+fn secret_field_catalog() -> BackendCatalog {
+    BackendCatalog::new(vec![BackendRegistration::new(
+        "secret-field-backend",
+        vec![
+            ConnectionFieldDeclaration::new(
+                "credential",
+                ConnectionValueKind::String,
+                ConnectionFieldRequirement::Optional,
+                SecretClassification::Secret,
+            )
+            .unwrap(),
+        ],
+        Box::new(FakeFactory {
+            result: Ok(DatabaseInspection::Uninitialized),
+        }),
+    )])
+    .unwrap()
+}
+
+fn credential_input(value: &str) -> ConnectionFieldInput {
+    ConnectionFieldInput::new(
+        ConnectionFieldIdentifier::new("credential").unwrap(),
+        SecretClassification::Secret,
+        ConnectionValue::string(value),
+    )
 }
 
 fn fake_checkpoint(deployment_identifier: DeploymentIdentifier) -> WorkflowCheckpoint {
@@ -527,11 +580,42 @@ fn sqlite_database_path_is_derived_from_state_root_not_client() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: replacement
+// Tests: replacement and exact replay
 // ---------------------------------------------------------------------------
 
 #[test]
-fn replacement_allowed_when_current_database_is_uninitialized() {
+fn replacement_with_different_settings_rotates_the_locator() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = secret_field_catalog();
+    let backend = secret_field_backend();
+
+    store
+        .select_database(
+            &catalog,
+            &fake_context(),
+            &backend,
+            vec![credential_input("first-credential")],
+        )
+        .expect("initial selection must succeed");
+    let first_generation = store.locator().unwrap().generation();
+    let first_files = locator_files(&path);
+
+    store
+        .select_database(
+            &catalog,
+            &fake_context(),
+            &backend,
+            vec![credential_input("second-credential")],
+        )
+        .expect("replacement must succeed");
+
+    assert_ne!(store.locator().unwrap().generation(), first_generation);
+    assert_ne!(locator_files(&path), first_files);
+}
+
+#[test]
+fn exact_replay_leaves_the_locator_generation_and_bytes_unchanged() {
     let (_dir, path) = state_root();
     let mut store = LifecycleStore::open_or_create(&path).unwrap();
     let catalog = sqlite_catalog();
@@ -539,14 +623,55 @@ fn replacement_allowed_when_current_database_is_uninitialized() {
 
     store
         .select_database(&catalog, &context, &sqlite_backend(), vec![])
-        .unwrap();
+        .expect("initial selection must succeed");
     let first_generation = store.locator().unwrap().generation();
+    let first_files = locator_files(&path);
 
     store
         .select_database(&catalog, &context, &sqlite_backend(), vec![])
-        .unwrap();
+        .expect("exact replay must succeed");
 
-    assert_ne!(store.locator().unwrap().generation(), first_generation);
+    assert_eq!(
+        store.locator().unwrap().generation(),
+        first_generation,
+        "exact replay must not rotate the locator generation"
+    );
+    assert_eq!(
+        locator_files(&path),
+        first_files,
+        "exact replay must not rewrite the locator bytes"
+    );
+}
+
+#[test]
+fn exact_replay_of_secret_settings_leaves_the_locator_unchanged() {
+    let (_dir, path) = state_root();
+    let mut store = LifecycleStore::open_or_create(&path).unwrap();
+    let catalog = secret_field_catalog();
+    let backend = secret_field_backend();
+
+    store
+        .select_database(
+            &catalog,
+            &fake_context(),
+            &backend,
+            vec![credential_input("replayed-credential")],
+        )
+        .expect("initial selection must succeed");
+    let first_generation = store.locator().unwrap().generation();
+    let first_files = locator_files(&path);
+
+    store
+        .select_database(
+            &catalog,
+            &fake_context(),
+            &backend,
+            vec![credential_input("replayed-credential")],
+        )
+        .expect("exact replay must succeed");
+
+    assert_eq!(store.locator().unwrap().generation(), first_generation);
+    assert_eq!(locator_files(&path), first_files);
 }
 
 #[test]
@@ -684,6 +809,46 @@ fn orphan_locator_from_crash_before_record_commit_fails_closed_without_mutation(
 }
 
 // ---------------------------------------------------------------------------
+// Tests: failure families
+// ---------------------------------------------------------------------------
+
+#[test]
+fn selection_failures_separate_the_conflict_and_unavailable_families() {
+    for conflict in [
+        SelectionError::NotAllowed,
+        SelectionError::CandidateIneligible,
+        SelectionError::ReplacementIneligible,
+    ] {
+        assert_eq!(
+            conflict.kind(),
+            SelectionFailureKind::Conflict,
+            "{conflict:?} must be a conflict"
+        );
+    }
+    for unavailable in [
+        SelectionError::Lifecycle(LifecycleError::Persistence),
+        SelectionError::Lifecycle(LifecycleError::DependencyUnavailable),
+        SelectionError::Lifecycle(LifecycleError::IntegrityFailure),
+        SelectionError::Open(BackendOpenError::Factory(
+            LifecycleError::DependencyUnavailable,
+        )),
+    ] {
+        assert_eq!(
+            unavailable.kind(),
+            SelectionFailureKind::Unavailable,
+            "{unavailable:?} must be unavailable"
+        );
+    }
+    assert_eq!(
+        SelectionError::Open(BackendOpenError::ConnectionInvalid(
+            ConnectionValidationError::UnknownBackend
+        ))
+        .kind(),
+        SelectionFailureKind::RequestInvalid
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Tests: redaction
 // ---------------------------------------------------------------------------
 
@@ -702,6 +867,7 @@ fn selection_errors_do_not_expose_sensitive_values() {
         SelectionError::Lifecycle(LifecycleError::DependencyUnavailable),
         SelectionError::Lifecycle(LifecycleError::IntegrityFailure),
         SelectionError::Lifecycle(LifecycleError::DeploymentMismatch),
+        SelectionError::Lifecycle(LifecycleError::Persistence),
     ];
     for error in errors {
         let output = format!("{error:?} {error}");

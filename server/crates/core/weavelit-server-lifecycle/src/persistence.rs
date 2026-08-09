@@ -4,8 +4,8 @@ use weavelit_server_database::{DatabaseError, DatabaseInspection};
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
-    LifecycleClassification, LifecycleError, LifecycleState, RetainedDatabaseInspection,
-    SelectionError, TrustedBackendContext, ValidatedConnectionSettings,
+    LifecycleClassification, LifecycleError, LifecycleState, LocatorConnectionSettings,
+    RetainedDatabaseInspection, SelectionError, TrustedBackendContext, ValidatedConnectionSettings,
     filesystem::{Inventory, StateRoot},
     format::{
         AnchorKey, KEY_FILE_LIMIT, KEY_FILE_NAME, LOCATOR_ENVELOPE_LIMIT, RECORD_ENVELOPE_LIMIT,
@@ -145,7 +145,8 @@ impl LifecycleStore {
     /// Requires the deployment record to be `Uninitialized`. If a locator already exists,
     /// reopens the current database and inspects it; the current selection can only be
     /// replaced while it remains uninitialized with no checkpoint. Fully preflights the
-    /// candidate before atomically persisting the new locator.
+    /// candidate before atomically persisting the new locator. An exact replay of the
+    /// persisted settings succeeds without creating, rotating, or rewriting a locator.
     pub fn select_database(
         &mut self,
         catalog: &BackendCatalog,
@@ -185,6 +186,13 @@ impl LifecycleStore {
             DatabaseInspection::Pending(_) | DatabaseInspection::Initialized { .. } => {
                 return Err(SelectionError::CandidateIneligible);
             }
+        }
+
+        // Exact replay: identical persisted settings require no durable locator change.
+        if let Some(locator) = &self.locator
+            && settings_match(locator.settings(), &settings)
+        {
+            return Ok(new_db);
         }
 
         // Persist the new locator atomically.
@@ -411,6 +419,23 @@ impl fmt::Debug for LifecycleStore {
 
 fn map_database_error(error: DatabaseError) -> SelectionError {
     SelectionError::Lifecycle(map_database_error_to_lifecycle(error))
+}
+
+/// Compares persisted locator settings with newly validated settings. Both are
+/// canonically sorted by field identifier.
+fn settings_match(
+    persisted: &LocatorConnectionSettings,
+    candidate: &ValidatedConnectionSettings,
+) -> bool {
+    persisted.backend_identifier() == candidate.backend_identifier()
+        && persisted.len() == candidate.len()
+        && persisted
+            .iter()
+            .zip(candidate.iter())
+            .all(|(persisted, candidate)| {
+                persisted.identifier() == candidate.identifier()
+                    && persisted.value() == candidate.value()
+            })
 }
 
 fn map_database_error_to_lifecycle(error: DatabaseError) -> LifecycleError {

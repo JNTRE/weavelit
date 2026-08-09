@@ -132,12 +132,23 @@ opens `lifecycle.lock` without following links and obtains a non-blocking
 exclusive lock before inventorying or inspecting another child. The lock is
 held for the process lifetime. Contention therefore fails as `LockContended`
 even when another process has retained a temporary, unknown, or otherwise
-invalid child. A newly created lock with no other entry is a fresh bootstrap;
+invalid child. A failure of the advisory-lock operation itself, rather than
+contention with another holder, fails as `Persistence` so that an unavailable
+state-root filesystem is not reported as another instance holding the root. A
+newly created lock with no other entry is a fresh bootstrap;
 an existing lock with no other entry, or a newly created lock with any retained
 entry, fails closed after lock acquisition. A second Server process using the
 same root exits before binding HTTPS. The pinned Rust standard library's
 `File::try_lock` supplies this process lock; no third-party lock dependency is
 required.
+
+Releasing the root releases the advisory lock explicitly rather than relying on
+descriptor closure, on both the successful and the fail-closed acquisition path.
+An advisory lock belongs to the open file description, so closing one descriptor
+leaves the lock held until every duplicate is closed. A concurrently forked
+child transiently duplicates every open descriptor until it executes its own
+image, so an implicit release would otherwise leave the root observably in use
+after its owner released it.
 
 Before creating a managed file, the process sets an owner-only `0077` umask.
 Every managed child must be a regular non-symlink file owned by the effective
@@ -523,13 +534,45 @@ locator replacement and does not delete artifacts at the previous destination.
 Database selection becomes immutable when a pending checkpoint exists and
 remains permanently immutable after sealing.
 
+Every selection request is serialized through the same exclusive mutation
+permit that arbitrates Init and Restore. The permit holder rechecks lifecycle
+eligibility before performing durable work, so a request that waited behind
+another mutation is revalidated rather than applied to stale state. Ordinary
+contention waits and then succeeds; waiting is not a failure. A permit left
+unusable by a failed mutation is a fail-closed unavailability rather than a
+lifecycle conflict.
+
+A selection whose validated backend identifier and settings exactly match the
+persisted locator is a replay and changes nothing durable. The lifecycle crate
+still validates the submitted values and reopens and inspects the selected
+database, then returns success without creating a locator, rotating its
+generation, or rewriting its bytes. Only settings that actually differ cause
+locator replacement.
+
+Selection failures fall into three caller-visible families so a Client Module
+contract can present them distinctly: an invalid submitted request, a lifecycle
+conflict that no longer permits the requested selection, and an unavailability
+caused by a backend, integrity, persistence, or permit-serialization failure.
+The lifecycle crate classifies the family; it does not choose a transport
+result.
+
+The lifecycle crate also exposes a live projection of whether an Application
+Database is currently selected, read under that same exclusive permit. The
+projection returned by a successful selection therefore reflects the state
+committed under the permit, and every read after that return observes the
+selected state. A concurrent reader may still observe the valid pre-commit
+state. The projection carries no transport, presentation, or serialization
+concern.
+
 ## Workflow Arbitration And Sealing
 
 Init and Restore are mutually exclusive consumers of one selected uninitialized
 database. The lifecycle crate grants an exclusive workflow mutation permit only
-after rechecking current trusted state. Creating either workflow checkpoint
-makes the other workflow unavailable. Concurrent or stale requests are
-rechecked while serialized; at most one workflow can commit application state.
+after rechecking current trusted state. Database selection acquires the same
+permit, so a selection and a workflow start cannot interleave. Creating either
+workflow checkpoint makes the other workflow unavailable. Concurrent or stale
+requests are rechecked while serialized; at most one workflow can commit
+application state.
 
 The lifecycle progression is:
 
@@ -680,6 +723,15 @@ interruption classification, absence of reconciliation, retry, reset, deletion,
 recreation, and sealing after restart, direct invocation after sealing,
 rejection before secret or backup reading, redaction, and fail-closed missing,
 malformed, mismatched, unavailable, and integrity-failing state.
+
+Serialized-selection tests assert that an exact replay leaves both the locator
+generation and the locator bytes unchanged, including under concurrent replay
+from multiple threads, while settings that differ still rotate the generation.
+They assert that a selection contending with a workflow start serializes rather
+than failing on contention, that a lifecycle that has advanced produces the
+conflict family, that a permit poisoned by a panicking backend produces the
+unavailable family without panicking, and that the live projection reports no
+selection before and a selection after a successful request.
 
 Real-filesystem tests use isolated roots to exercise missing and malformed
 configuration, root execution, every symlink position, wrong owner and mode,

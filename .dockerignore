@@ -1,3 +1,6 @@
 # Deny everything by default; re-include only what the Containerfile requires.
 *
 !server/rust-toolchain.toml
+!server/web-ui/.node-version
+!server/web-ui/package.json
+!server/web-ui/package-lock.json

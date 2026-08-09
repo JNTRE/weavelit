@@ -1,6 +1,6 @@
 use std::{
     fmt,
-    fs::File,
+    fs::{File, TryLockError},
     io::{Read, Write},
     path::{Component, Path},
 };
@@ -48,7 +48,7 @@ pub(crate) struct Inventory {
 
 pub(crate) struct StateRoot {
     directory: File,
-    _lock: File,
+    lock: File,
 }
 
 impl StateRoot {
@@ -86,21 +86,28 @@ impl StateRoot {
         validate_root(&directory)?;
         let directory = File::from(directory);
         let (lock, lock_was_created) = open_lock(&directory)?;
-        let inventory = inspect_inventory(&directory)?;
+        let root = Self { directory, lock };
+        let inventory = root.inventory()?;
         if !inventory.has_lock
             || (lock_was_created && !inventory.is_empty())
             || (!lock_was_created && inventory.is_empty())
         {
             return Err(LifecycleError::IntegrityFailure);
         }
-        Ok(Self {
-            directory,
-            _lock: lock,
-        })
+        Ok(root)
     }
 
     pub(crate) fn inventory(&self) -> Result<Inventory, LifecycleError> {
         inspect_inventory(&self.directory)
+    }
+}
+
+impl Drop for StateRoot {
+    /// Releases the advisory lock explicitly, because closing the descriptor
+    /// leaves the lock held until every duplicate of its open file description
+    /// is closed, including one transiently inherited by a forked child.
+    fn drop(&mut self) {
+        let _ = self.lock.unlock();
     }
 }
 
@@ -295,7 +302,10 @@ fn open_lock(directory: &File) -> Result<(File, bool), LifecycleError> {
     };
     validate_file(&descriptor)?;
     let lock = File::from(descriptor);
-    lock.try_lock().map_err(|_| LifecycleError::LockContended)?;
+    lock.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => LifecycleError::LockContended,
+        TryLockError::Error(_) => LifecycleError::Persistence,
+    })?;
     Ok((lock, was_created))
 }
 

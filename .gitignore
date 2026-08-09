@@ -2,6 +2,11 @@
 weavelit.code-workspace
 /target/
 /server/target/
+/server/web-ui/node_modules/
+/server/web-ui/dist/
+/server/web-ui/browser-tests-output/
+/server/web-ui/playwright-report/
+/server/web-ui/.playwright-browsers/
 *.rs.bk
 *.pdb
 .github/agents/
