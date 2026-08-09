@@ -1,6 +1,8 @@
 import { useCallback, useState, type JSX } from "react";
 
 import { selectSqliteDatabase } from "../api/weavelit-init-database-selection";
+// Design system tokens for component styling integration
+import type {} from "../design-system/tokens";
 import {
   useDeploymentStatus,
   type StatusViewState,
