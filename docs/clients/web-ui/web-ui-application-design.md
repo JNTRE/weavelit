@@ -142,7 +142,9 @@ no follow-up status request, because a second request would spend a shared
 rate-limit budget to re-read a value the Server already returned. Applying the
 projection moves the status to Selected, which withdraws the control: once a
 database is selected the shell never offers to select again, and a repeat
-selection is refused by the Server regardless.
+database is selected the shell never offers to select again, and an exact replay
+is accepted as a successful no-op; only a differing repeat is refused by the
+Server.
 
 ## Same-Origin Requests
 
