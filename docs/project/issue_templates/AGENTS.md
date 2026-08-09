@@ -36,6 +36,9 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then the repository-root `AGENTS.md`.
 - Select the template whose hidden `Native type` value matches the issue being created.
+- Before creating any native issue type, supply the Conventional Commit-style
+  title required for agent-created issues by `CONTRIBUTING.md`; the title is
+  separate from the copied template body.
 - Copy only the sections beginning with `##` into the temporary body file passed to `gh issue create --body-file`.
 - Replace every bracketed placeholder before creating the issue.
 - Pass the template's `Native type` value to `gh issue create --type`.
@@ -50,6 +53,8 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep the required heading order and keep this guide under 100 lines.
 - Name each file `<native-type>-template.md` using the lowercase native issue type shown in its hidden `Native type` instruction.
 - Keep each template's hidden creation instructions before the copied `##` body sections.
+- Keep issue titles out of template bodies; the active issue lifecycle workflow
+  validates and passes the title separately at creation time.
 - Keep the `## Related Documents` section at the end of each template and link
   it to [GitHub Planning Compatibility Index](../project-standards.md).
 - Do not place live issue assignments or Project values in a template body; apply them after issue creation through the documented GitHub workflow.
