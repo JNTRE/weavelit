@@ -99,18 +99,28 @@ normal operation, each Client Module MUST declare and expose a
 **[Administration Plane](glossary.md#applications-and-interfaces)**, or both.
 Each Client Module MUST compile and register only the planes it declares; an
 undeclared plane and its routes, request handlers, and client-facing contracts
-MUST NOT be present in that Client Module. A corresponding client application
-MUST implement commands, views, and workflows only for the planes declared by
+MUST NOT be registered by, or reachable through, that Client Module. A
+corresponding client application MUST implement commands, views, and workflows
+only for the planes declared by
 its Client Module. Plane declaration determines interface capability, not
 authorization: Client Modules and clients MUST NOT decide whether a principal
 is authorized to invoke an exposed function, and the Server core MUST independently
 authorize every request against the principal's effective grants.
+
+A module kind MAY be implemented as a shared contract crate that owns the common
+schemas, handlers, validation, and results, together with per-module crates that
+own only what genuinely differs. Shared implementation MUST NOT weaken
+declaration: each module MUST still declare what it exposes, and the Server MUST
+register only what a module declares.
+
 API routes MUST be versioned under `/api/v1/`. The Web UI MUST perform every
-application function as an API client through the API surface exposed by the
-Web UI Client Module. Non-API Web UI routes MUST be limited to delivering the
+application function as an API client through the API surface its Client Module
+declares. Non-API Web UI routes MUST be limited to delivering the
 application assets and supporting client-side navigation. The Weavelit CLI MUST
-use the API surface exposed by the Weavelit CLI Client Module and MUST NOT use
-non-API Web UI routes.
+likewise use only the API surface its Client Module declares, and MUST NOT use
+non-API Web UI routes. Client Modules MAY declare the same shared API surface;
+where they do, the Server MUST serve one implementation so their behavior cannot
+diverge.
 
 Before Init or Restore completes, the same listener MUST expose only applicable
 **[Pre-Operational Surfaces](glossary.md#applications-and-interfaces)** provided
@@ -227,7 +237,10 @@ all of that user's Group grants. Every new client-facing Client Module and
 feature MUST declare and enforce the grants it requires and exactly one access
 class: self-service, group-scoped, or server-administration. Human User access
 MUST be delivered only through Group membership; a self-service feature still
-requires a Group grant to the Client Module through which it is accessed. The
+requires a Group grant to the Client Module through which it is accessed. When
+Client Modules share an API surface, the Server MUST determine the Client Module
+through which a request is made from the authenticated session established for
+that Client Module. The
 Server MUST deny access by default whenever that access is absent. An inactive
 Human User or a disabled Client Module, Service Module, or Operation MUST remain
 unusable regardless of any Group grant. A

@@ -56,39 +56,22 @@ access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 Administration Permission? Which group-grant changes require additional
 confirmation or reauthentication?
 
-### 6. Client Module plane and Pre-Operational Surface schema
+### 6. Client Module command organization for the Weavelit CLI
 
-The Milestone 1 Web UI Client Module's transport-only status capability is
-settled in the [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
-The restricted **[Init](glossary.md#states-and-requests)** and
-**[Restore](glossary.md#states-and-requests)** contracts remain exposed through
-each **[Client Module](glossary.md#applications-and-interfaces)**'s
-**[Pre-Operational Surface](glossary.md#applications-and-interfaces)** when it
-declares the corresponding capabilities and the Server is uninitialized. The
-Pre-Operational Surface is distinct from the normal authenticated
+The Client Module capability declaration schema, plane composition, route
+organization, and shared contract composition are settled in the
+[Server API Contract](server/api/api-contract-design.md). The Milestone 1 Web UI
+Client Module's transport-only status capability is settled in the
+[Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
+What command organization maps the
+**[Weavelit CLI](glossary.md#applications-and-interfaces)**'s
 **[User Plane](glossary.md#applications-and-interfaces)** and
-**[Administration Plane](glossary.md#applications-and-interfaces)**. What route
-and command organization maps later normal functions to their declared plane and
-access class and later lifecycle functions to their declared capability? What
-declaration schema composes those planes with the later lifecycle capabilities?
-How does that schema represent the Web UI with Init and Restore capabilities
-plus User Plane and Administration Plane functions, and the
-**[Weavelit CLI](glossary.md#applications-and-interfaces)** with User Plane and
-Administration Plane functions? How does the resulting route and command
-terminology remain distinct from host-level deployment administration and
-separate network-plane architecture?
+**[Administration Plane](glossary.md#applications-and-interfaces)** functions to
+the shared API surface? How does the resulting command terminology remain
+distinct from host-level deployment administration and separate network-plane
+architecture?
 
 ## API, Security, and Operations
-
-### 8. API contract and compatibility policy
-
-The `/api/v1/status` contract and its additive-only compatibility policy are
-settled in the [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md).
-What wire format and compatibility policy apply to later
-**[Operational Requests](glossary.md#states-and-requests)**, restricted
-**[Init](glossary.md#states-and-requests)** and
-**[Restore](glossary.md#states-and-requests)** contracts, results, errors,
-pagination, idempotency keys, and Server/Weavelit CLI version compatibility?
 
 ### 10. Secrets and provider credential management
 
