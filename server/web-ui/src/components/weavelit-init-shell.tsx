@@ -7,6 +7,7 @@ import {
   useDeploymentStatus,
   type StatusViewState,
 } from "../hooks/weavelit-init-deployment-status";
+import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
 
 const LOADING_MESSAGE = "Checking the deployment status.";
 const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
@@ -54,6 +55,10 @@ export function ApplicationShell(): JSX.Element {
   }, [applyStatus]);
 
   const offerSelection = state.kind === "available" && !state.status.databaseSelected;
+  // Restore becomes eligible exactly when a database has been selected, and the
+  // status projection stops being served at all once the deployment is sealed,
+  // so the same condition withdraws the form after activation.
+  const offerRestore = state.kind === "available" && state.status.databaseSelected;
 
   return (
     <main className="shell">
@@ -81,6 +86,7 @@ export function ApplicationShell(): JSX.Element {
           ) : null}
         </section>
       ) : null}
+      {offerRestore ? <RestoreSubmissionForm /> : null}
     </main>
   );
 }

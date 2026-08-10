@@ -42,7 +42,7 @@ Each change must include the tests appropriate to its risk and boundary:
 | Authentication, authorization, secret handling, audit logging, MFA, or destructive operations | Tests for every allowed and denied path, plus tests that sensitive values are absent from returned errors and logs. |
 | Server-owned lifecycle and pre-operational database-selection contract | Direct tests for every startup classification; the published anchor known-answer vector; strict version, canonical JSON, Base64, schema, size, setting, and cryptographic validation; deployment-record creation and irreversible sealing; deployment-identifier and locator-generation matching; database selection and generation-pointer locator persistence; rejection of client-supplied paths and file references; Server-derived local paths; encrypted secret connection persistence and restart reopening; workflow exclusivity and process-lifetime root locking; mutation serialization; valid-run failure handling for file or directory synchronization, locator commit, cleanup, and cross-store operations; direct invocation after sealing; exact redacted category/reason output; and fail-closed missing, malformed, mismatched, unavailable, or integrity-failing deployment state. Isolated real-filesystem tests cover non-root ownership, exact modes, every path-component and child symlink position, hard links, non-regular and unknown entries, closed-inventory bounds, unavailable filesystem behavior, retained temporary and orphan classification, interrupted-bootstrap classification, SQLite recovery sidecars, and restart. Contract and process tests verify nonzero exit before HTTPS bind, route gating, stable redacted interruption action-class diagnostics, absence of post-interruption completion-log delivery, reconciliation, cleanup, or sealing, and transitions to normal operation only after valid completion. They must not assert survival across power loss or abrupt process termination as an application guarantee; where the Server can start and classify state, they must assert the fail-closed result and stable redacted error reporting. |
 | Server-owned **[Init](glossary.md#states-and-requests)** use case and Init-capable **[Pre-Operational Surface](glossary.md#applications-and-interfaces)** | Direct workflow tests for normalized request validation, validation before later secret submission, recovery-key generation, one-time delivery, proof, Init-checkpoint handling, atomic fresh-state creation, durable Init-result System Log recording during a valid run, retained-partial-state classification, absence of post-interruption reconciliation, retry, reset, automatic deletion, recreation, and sealing, concurrency, redaction, and rejection before secret reading or side effects; contract and process tests for lifecycle composition, fail-closed route removal, stable redacted action-class diagnostics, and the transition to normal operation only after valid completion. |
-| Server-owned **[Restore](glossary.md#states-and-requests)** use case and Restore-capable Pre-Operational Surface | Direct workflow tests for every artifact and resource bound, malformed, unauthentic, integrity-failing, incompatible, and semantically invalid backups, wrong recovery keys, checkpoint handling, session invalidation, recovery-public-key preservation, protected-secret re-encryption, private-key and plaintext non-persistence, atomic rollback, durable Restore-result System Log recording during a valid run, retained-partial-state classification, absence of post-interruption reconciliation, retry, reset, automatic cleanup, recreation, and sealing, Restore-specific valid-run failure classification, concurrency with Init and Restore, redaction, and rejection before key or artifact processing; external known-answer vectors from the C2SP Community Cryptography Test Vectors for age, vendored at a pinned upstream commit, run against the age v1 reader with each vector's outcome pinned by category; contract, process, and Web UI end-to-end tests for transfer, lifecycle gating, stable redacted action-class diagnostics, fail-closed route removal, and normal sign-in only after valid Restore completion. |
+| Server-owned **[Restore](glossary.md#states-and-requests)** use case and Restore-capable Pre-Operational Surface | Direct workflow tests for every artifact and resource bound, malformed, unauthentic, integrity-failing, incompatible, and semantically invalid backups, wrong recovery keys, checkpoint handling, session invalidation, recovery-public-key preservation, protected-secret re-encryption, private-key and plaintext non-persistence, atomic rollback, durable Restore-result System Log recording during a valid run, retained-partial-state classification, absence of post-interruption reconciliation, retry, reset, automatic cleanup, recreation, and sealing, Restore-specific valid-run failure classification, concurrency with Init and Restore, redaction, and rejection before key or artifact processing; runtime tests that judge at least one complete submission against the Server's own compiled-in component inventory rather than a supplied one, and that a backup naming a component the build lacks is refused as `backup_incompatible` before any state changes; external known-answer vectors from the C2SP Community Cryptography Test Vectors for age, vendored at a pinned upstream commit, run against the age v1 reader with each vector's outcome pinned by category; contract, process, and Web UI end-to-end tests for transfer, the two-request submission protocol and its one-time ticket, lifecycle gating, stable redacted action-class diagnostics, fail-closed route removal, and normal sign-in only after valid Restore completion. |
 | Provider integration | Tests against controlled fakes or recorded fixtures for request construction, error mapping, retry, rate-limit, and duplicate-protection behavior. Live-provider checks are separately controlled smoke tests, never the default test suite. |
 | Web UI, Weavelit CLI, packaging, or deployment workflow | Focused end-to-end or smoke tests of the user workflow and the failure condition most likely to cause an unusable release. |
 
@@ -93,17 +93,32 @@ exact version and locked by `server/web-ui/package-lock.json`.
 After the Rust commands, `make -C server check` installs the pinned Chromium
 build and runs the Playwright suite in `server/web-ui/browser-tests/` against
 the release Server binary over its real direct-TLS listener. That suite covers
-the pre-operational status page load and the complete Application Database
-selection outcome: an operator selects SQLite through the Web UI control, the
-displayed status changes to selected within the same process, the Server is
-terminated with `SIGTERM` and its exit is awaited and asserted rather than
-assumed, and a second Server generation is started against the identical state
-root and listener port, where the reloaded page still reports the selected
-database. The Server installs no signal handler, so this exercises termination
-and restart rather than an orderly application shutdown; a successful restart is
-also evidence that the terminated process released the state-root lock and the
-listening socket. Each generation asserts the exact set of requests it served,
-which keeps the scenario inside the listener's per-source request-rate budget.
+the pre-operational status page load, the complete Application Database
+selection outcome, and the complete Restore submission outcome.
+
+The selection scenario has an operator select SQLite through the Web UI control,
+the displayed status change to selected within the same process, the Server
+terminated with `SIGTERM` and its exit awaited and asserted rather than assumed,
+and a second Server generation started against the identical state root and
+listener port, where the reloaded page still reports the selected database. The
+Server installs no signal handler, so this exercises termination and restart
+rather than an orderly application shutdown; a successful restart is also
+evidence that the terminated process released the state-root lock and the
+listening socket.
+
+The Restore scenario drives the two-request submission protocol through the
+browser against the committed backup fixture whose referenced components match
+what the release binary compiles in. It asserts a rejected attempt rendered as
+the Server's stable code alone, then a completed Restore that activates normal
+operation in the same process, both Restore routes absent from the sealed
+surface, and no recovery key or ticket in any request URL, cookie, browser
+storage, rendered page, or Server output. Because it drives the real binary, it
+would fail if the fixture named a component the binary does not compile in; the
+`weavelit-server` suite proves the same pairing first, so that failure is caught
+before the browser layer.
+
+Each generation asserts the exact set of requests it served, which keeps every
+scenario inside the listener's per-source request-rate budget.
 
 The build content manifest has two test surfaces, one per consumer, because a
 silent mismatch between the writer and the verifier would reintroduce the stale

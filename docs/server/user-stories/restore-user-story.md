@@ -68,24 +68,25 @@ previous destination.
    storage.
 2. The person supplies the matching private recovery key retained outside
    Weavelit when the source deployment was initialized.
-3. The Web UI keeps the private key only in current-page memory. It never places
-   the key in a URL, browser history, log, analytics event, crash report, or
-   persistent client storage.
-4. The Web UI presents a review of the selected destination backend and the
-   locally selected artifact. It does not inspect or preview backup plaintext,
-   redisplay the recovery key, or claim that client-side checks establish
-   validity.
+3. The Web UI keeps the private key only in current-page memory and keeps the
+   backup only as the browser-provided file reference. It never places the key
+   in a URL, browser history, log, analytics event, crash report, or persistent
+   client storage, and it clears the key as soon as the attempt it drove
+   settles, whether that attempt succeeded or failed.
+4. The Web UI does not inspect or preview backup plaintext, redisplay the
+   recovery key, or claim that client-side checks establish validity.
 
 The original encrypted backup remains under the person's control. Restore does
 not consume or modify that source file.
 
 ## Confirm And Restore
 
-1. The person chooses **Restore deployment**.
-2. The Web UI sends the bounded encrypted artifact and private recovery key over
-   HTTPS to the Restore-capable Web UI Client Module. Client-side size and format
-   checks improve usability only; the Server independently enforces every
-   bound and validation rule.
+1. The person chooses **Restore backup**.
+2. The Web UI submits the private recovery key on its own first and receives a
+   short-lived one-time ticket, then uploads the bounded encrypted artifact
+   against that ticket. The key therefore never travels with the artifact.
+   Client-side checks improve usability only; the Server independently enforces
+   every bound and validation rule.
 3. Before reading sensitive content or changing state, the Server reloads and
    validates the deployment record, database locator, selected database,
    deployment identifier, and Restore eligibility.
@@ -105,6 +106,29 @@ not consume or modify that source file.
 If validation fails before the database commit, the Web UI remains in Restore,
 shows an actionable redacted error, discards the key from page memory when the
 request ends, and does not imply that application state was partially restored.
+A failed attempt consumes its ticket, so the person supplies the recovery key
+again for the next attempt.
+
+## A Backup This Server Cannot Serve
+
+A backup can be valid, authentic, and correctly decrypted and still be refused.
+A backup records the components its source deployment used, and this Server
+restores one only when it compiles in every component the backup names. A backup
+that enrolled an **[MFA Module](../../glossary.md#applications-and-interfaces)**
+factor, configured a **[Service Module](../../glossary.md#applications-and-interfaces)**
+connection, granted an operation, or assigned a
+**[Log Module](../../glossary.md#applications-and-interfaces)** that this build
+does not include is refused as `backup_incompatible`.
+
+The refusal happens before any state changes, so the deployment remains eligible
+for Init or another Restore. It is deliberate: restoring such a backup would
+produce a deployment whose Groups, sign-in factors, and Service Connections
+point at components that could never load, which would be discovered only after
+the deployment was sealed. The
+[Server Restore Design](../lifecycle/restore/restore-design.md#compiled-in-component-inventory)
+records exactly what this build compiles in. The person's recourse is a build
+that includes those components, not a modified backup; Weavelit offers no way to
+drop a referenced component from a backup during Restore.
 
 ## Sign In
 
@@ -160,6 +184,8 @@ Restore.
 - [Server Lifecycle Design](../lifecycle/lifecycle-design.md)
 - [Server Init Design](../lifecycle/init/init-design.md)
 - [Init User Story](init-user-story.md)
+- [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md)
+- [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
 - [Application Database Design](../database/application-database-design.md)
 - [Security Model](../../security-model.md)
 - [Testing and Validation Policy](../../testing.md)

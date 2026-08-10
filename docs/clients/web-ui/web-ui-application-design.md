@@ -1,6 +1,6 @@
 # Web UI Application Design
 
-This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, and the Application Database selection control. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, and the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser. This document does not restate any of those contracts.
+This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the Application Database selection control, and the **[Restore](../../glossary.md#states-and-requests)** submission control. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, and the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser. This document does not restate any of those contracts.
 
 ## Build Toolchain
 
@@ -146,17 +146,68 @@ database is selected the shell never offers to select again, and an exact replay
 is accepted as a successful no-op; only a differing repeat is refused by the
 Server.
 
+## Restore Submission Control
+
+The shell offers the Restore control exactly when the status projection reports
+a selected Application Database, which is exactly when the Server makes Restore
+eligible. The same condition withdraws it: the pre-operational status projection
+is no longer served once the deployment is sealed, so a completed Restore
+removes the control rather than leaving a second submission on the page.
+
+The control is presented in a titled region carrying a `data-restore-state`
+attribute for testability, containing a heading, a short description, a file
+input for the encrypted backup, a masked recovery-key input, and an action
+button whose accessible name is fixed so it does not change between states. It
+renders exactly four states:
+
+| State | Condition | Presentation |
+| --- | --- | --- |
+| Idle | No submission is in flight and none has failed since the last attempt. | Both inputs are enabled, and the action is enabled once a file is chosen and a key is entered. |
+| Submitting | A Restore submission is in flight. | Both inputs and the action are disabled, so a repeated activation cannot issue a second Restore. |
+| Failed | Either request of the submission was rejected. | The inputs are enabled again and the Server's stable error code is presented in an assertive live region. |
+| Completed | The Restore completed and the deployment now runs in normal operation. | The inputs and the action are replaced by a fixed completion message in a polite live region. |
+
+The failure presentation renders the Server's stable, lowercase error code and
+nothing else: no server message, HTTP status number, field path, or transport
+diagnostic. A code outside the closed stable-code shape, an unreadable body, a
+response outside the contract, and a transport failure all present as the single
+documented `restore_failed` code, so an unexpected response cannot become a
+distinguishing signal or place arbitrary text on the page. Rendering the code
+rather than a single fixed message is deliberate here and differs from the
+selection control: the Restore rejection contract distinguishes causes the
+person can act on, such as an invalid recovery key or an incompatible backup.
+
+The recovery key is held in component state alone and the backup is held only as
+the browser-provided `File` handle. Neither is written to a URL, a cookie, or
+any browser storage, and the key is cleared as soon as the attempt it drove
+settles, whether that attempt succeeded or failed. The selected file's bytes are
+never read into a string, an `ArrayBuffer`, or an array; the handle is passed to
+`fetch` as the request body, so the approved 256 MiB artifact bound streams from
+the browser's file-backed storage instead of being copied through the JavaScript
+heap.
+
+The application performs no client-side validation of the artifact or the key
+beyond requiring that both are present. It does not parse, preview, or inspect
+backup content, and it does not claim that any client-side check establishes
+validity.
+
 ## Same-Origin Requests
 
-The application issues exactly two outbound request kinds, both same-origin,
-both with `credentials: omit`, `cache: no-store`, and `redirect: error`:
+The application issues exactly four outbound request kinds, all same-origin, all
+with `credentials: omit`, `cache: no-store`, and `redirect: error`:
 
-- `GET /api/v1/status` with `Accept: application/json`; and
+- `GET /api/v1/status` with `Accept: application/json`;
 - `PUT /api/v1/application-database` with `Accept: application/json`, an
   unparameterized `Content-Type: application/json`, the required
   `X-Weavelit-CSRF` header, and the fixed request body the
   [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
-  defines.
+  defines;
+- `PUT /api/v1/restore` with the same JSON headers and a body carrying only the
+  recovery key; and
+- `PUT /api/v1/restore/artifact` with `Accept: application/json`, an
+  unparameterized `Content-Type: application/octet-stream`, the required
+  `X-Weavelit-CSRF` header, the issued ticket in `X-Weavelit-Restore-Ticket`,
+  and the selected file as the request body.
 
 The application never sets `Host` or `Origin`. Both are forbidden header names
 that the browser populates itself on a same-origin request, and a same-origin
@@ -168,7 +219,9 @@ cross-origin call.
 
 - [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
 - [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
+- [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md)
 - [Web UI Agent Guide](AGENTS.md)
+- [Server Restore Design](../../server/lifecycle/restore/restore-design.md)
 - [Testing and Validation Policy](../../testing.md)
 - [Technical Specification](../../spec.md)

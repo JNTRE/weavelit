@@ -124,8 +124,12 @@ pub fn generate() -> Fixtures {
     let recipient_key = PublicKey::from(&StaticSecret::from(RECOVERY_SECRET));
     let recipient_line = encode_recipient(recipient_key.as_bytes());
 
-    let plaintext = backup_plaintext(1, "sqlite", &recipient_line);
+    let plaintext = backup_plaintext(1, "sqlite", &recipient_line, Referenced::Full);
     let valid = artifact(&plaintext, &recipient_key);
+
+    let compiled_in_plaintext =
+        backup_plaintext(1, "sqlite", &recipient_line, Referenced::CompiledIn);
+    let compiled_in = artifact(&compiled_in_plaintext, &recipient_key);
 
     let mut bad_magic = valid.clone();
     bad_magic[0] ^= 0x01;
@@ -154,11 +158,11 @@ pub fn generate() -> Fixtures {
     tampered_ciphertext[ciphertext_index] ^= 0x01;
 
     let wrong_inner_version = artifact(
-        &backup_plaintext(2, "sqlite", &recipient_line),
+        &backup_plaintext(2, "sqlite", &recipient_line, Referenced::Full),
         &recipient_key,
     );
     let wrong_source_backend = artifact(
-        &backup_plaintext(1, "postgresql", &recipient_line),
+        &backup_plaintext(1, "postgresql", &recipient_line, Referenced::Full),
         &recipient_key,
     );
 
@@ -170,6 +174,14 @@ pub fn generate() -> Fixtures {
         Fixture {
             name: "valid-plaintext.json",
             bytes: plaintext,
+        },
+        Fixture {
+            name: "valid-web-ui-sqlite.wlitbackup",
+            bytes: compiled_in,
+        },
+        Fixture {
+            name: "valid-web-ui-sqlite-plaintext.json",
+            bytes: compiled_in_plaintext,
         },
         Fixture {
             name: "valid-identity.txt",
@@ -268,9 +280,31 @@ pub fn digest(bytes: &[u8]) -> String {
         })
 }
 
+/// Which components a generated backup plaintext refers to.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Referenced {
+    /// Also names the `totp` MFA Module and the `zendesk` Service Module, which
+    /// no Server build in this repository compiles in.
+    Full,
+    /// Names only the `web-ui` Client Module and the `sqlite` Log Module, which
+    /// is exactly what the Server binary compiles in.
+    CompiledIn,
+}
+
 /// Builds one canonical version 1 backup plaintext.
-fn backup_plaintext(format_version: u32, source_backend: &str, recipient_line: &str) -> Vec<u8> {
-    padded_backup_plaintext(format_version, source_backend, recipient_line, &[])
+fn backup_plaintext(
+    format_version: u32,
+    source_backend: &str,
+    recipient_line: &str,
+    referenced: Referenced,
+) -> Vec<u8> {
+    padded_backup_plaintext(
+        format_version,
+        source_backend,
+        recipient_line,
+        &[],
+        referenced,
+    )
 }
 
 /// Builds one canonical version 1 backup plaintext with extra padding entries.
@@ -283,6 +317,7 @@ fn padded_backup_plaintext(
     source_backend: &str,
     recipient_line: &str,
     padding: &[usize],
+    referenced: Referenced,
 ) -> Vec<u8> {
     let account = encode_identifier(0x01);
     let group = encode_identifier(0x02);
@@ -293,6 +328,17 @@ fn padded_backup_plaintext(
     let factor_data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"totp-seed");
     let component_secret =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"at-rest-value");
+    let (mfa_factors, service_connections) = match referenced {
+        Referenced::Full => (
+            format!(
+                "{{\"identifier\":\"{factor}\",\"account\":\"{account}\",\"module\":\"totp\",\"factor_data\":\"{factor_data}\"}}"
+            ),
+            format!(
+                "{{\"identifier\":\"{connection}\",\"service_module\":\"zendesk\",\"name\":\"Primary\",\"credential\":\"{secret}\"}}"
+            ),
+        ),
+        Referenced::CompiledIn => (String::new(), String::new()),
+    };
     let padding = padding.iter().enumerate().fold(
         String::new(),
         |mut entries, (index, length)| {
@@ -319,8 +365,8 @@ fn padded_backup_plaintext(
             "\"group_memberships\":[{{\"group\":\"{group}\",\"account\":\"{account}\"}}],",
             "\"group_grants\":[{{\"group\":\"{group}\",\"grant\":{{\"type\":\"server_administration\"}}}},",
             "{{\"group\":\"{group}\",\"grant\":{{\"type\":\"client_module\",\"value\":\"web-ui\"}}}}],",
-            "\"mfa_factors\":[{{\"identifier\":\"{factor}\",\"account\":\"{account}\",\"module\":\"totp\",\"factor_data\":\"{factor_data}\"}}],",
-            "\"service_connections\":[{{\"identifier\":\"{connection}\",\"service_module\":\"zendesk\",\"name\":\"Primary\",\"credential\":\"{secret}\"}}],",
+            "\"mfa_factors\":[{mfa_factors}],",
+            "\"service_connections\":[{service_connections}],",
             "\"log_module_configurations\":[{{\"identifier\":\"{log_configuration}\",\"module\":\"sqlite\",\"name\":\"Local\",\"enabled\":true,",
             "\"settings\":[{{\"key\":\"retention-days\",\"value\":\"30\"}}]}}],",
             "\"log_assignments\":[{{\"log_type\":\"system\",\"configuration\":\"{log_configuration}\"}},",
@@ -333,10 +379,8 @@ fn padded_backup_plaintext(
         component_secret = component_secret,
         account = account,
         group = group,
-        factor = factor,
-        factor_data = factor_data,
-        connection = connection,
-        secret = secret,
+        mfa_factors = mfa_factors,
+        service_connections = service_connections,
         log_configuration = log_configuration,
     )
     .into_bytes()
@@ -445,7 +489,9 @@ fn generate_backup(plaintext_length: usize, flag_final: bool) -> GeneratedBackup
 
     let recipient_key = PublicKey::from(&StaticSecret::from(RECOVERY_SECRET));
     let recipient_line = encode_recipient(recipient_key.as_bytes());
-    let build = |padding: &[usize]| padded_backup_plaintext(1, "sqlite", &recipient_line, padding);
+    let build = |padding: &[usize]| {
+        padded_backup_plaintext(1, "sqlite", &recipient_line, padding, Referenced::Full)
+    };
 
     let mut padding = Vec::new();
     let plaintext = loop {

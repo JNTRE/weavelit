@@ -127,7 +127,8 @@ describe("ApplicationShell database selection control", () => {
     await waitFor(() => {
       expect(statusRegion().dataset.statusState).toBe("available");
     });
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Select SQLite" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Application Database" })).toBeNull();
   });
 
   it("does not offer the selection control when the status is unavailable", async () => {
@@ -188,7 +189,7 @@ describe("ApplicationShell database selection control", () => {
         "An Application Database is selected for this deployment.",
       );
     });
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Select SQLite" })).toBeNull();
 
     // One status request on mount and one selection request: the success
     // projection is authoritative, so no status refetch is issued.
@@ -266,5 +267,67 @@ describe("ApplicationShell database selection control", () => {
     expect(statusRegion().textContent).toBe(
       "No Application Database is selected for this deployment.",
     );
+  });
+});
+
+describe("ApplicationShell Restore form gating", () => {
+  function restoreSection(): HTMLElement | null {
+    return document.querySelector("section.shell__restore");
+  }
+
+  it("offers the Restore form once an Application Database is selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ lifecycle: "uninitialized", database_selected: true }),
+    );
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(restoreSection()).not.toBeNull();
+    });
+    expect(screen.getByRole("heading", { name: "Restore" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restore backup" })).toBeTruthy();
+  });
+
+  it("does not offer the Restore form before a database is selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("available");
+    });
+    expect(restoreSection()).toBeNull();
+  });
+
+  it("does not offer the Restore form when the status is unavailable", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED 127.0.0.1:8443"));
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("unavailable");
+    });
+    expect(restoreSection()).toBeNull();
+  });
+
+  it("offers the Restore form as soon as a selection succeeds", async () => {
+    mockRoutedFetch({
+      status: unselectedStatus,
+      selection: () =>
+        Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: true })),
+    });
+
+    render(<ApplicationShell />);
+    await waitFor(() => {
+      expect(selectionButton().disabled).toBe(false);
+    });
+    expect(restoreSection()).toBeNull();
+
+    fireEvent.click(selectionButton());
+
+    await waitFor(() => {
+      expect(restoreSection()).not.toBeNull();
+    });
   });
 });

@@ -41,8 +41,12 @@ state normalization performed before any deployment state is replaced.
   validation tests, plus the shared deterministic fixture generator and harness
   in `tests/support/`.
 - `tests/fixtures/`: Immutable committed backup fixtures, their canonical
-  recovery keys, the expected decrypted plaintext, and the `fixtures.json`
-  manifest pinning every fixture's byte length and SHA-256 digest.
+  recovery keys, the expected decrypted plaintext for each valid fixture, and
+  the `fixtures.json` manifest pinning every fixture's byte length and SHA-256
+  digest. Two valid fixtures are committed: `valid.wlitbackup`, which names a
+  fuller component inventory than any build in this repository compiles in, and
+  `valid-web-ui-sqlite.wlitbackup`, which names exactly the `web-ui` Client
+  Module and the `sqlite` Log Module the Server binary compiles in.
 - `tests/vectors/`: Vendored C2SP CCTV age test vectors, their `README.md`
   provenance and license record, and the `vectors.json` manifest pinning every
   vendored file's byte length and SHA-256 digest.

@@ -69,6 +69,43 @@ applies once a second backup format version or Application Database backend
 exists is tracked in
 [Open Questions](../../../open-questions.md#16-backup-format-and-server-version-compatibility-window).
 
+## Compiled-In Component Inventory
+
+A backup names the components its source deployment used. A Restore succeeds
+only into a Server that can actually serve every one of them, so the runtime
+reports the single inventory of what this build compiles in and every Restore is
+judged against it.
+
+For Milestone 1 that inventory is exactly:
+
+| Component kind | Compiled in |
+| --- | --- |
+| **[Client Module](../../../glossary.md#applications-and-interfaces)** | `web-ui` |
+| **[Log Module](../../../glossary.md#applications-and-interfaces)** | `sqlite` |
+| **[MFA Module](../../../glossary.md#applications-and-interfaces)** | none |
+| **[Service Module](../../../glossary.md#applications-and-interfaces)** | none |
+| Named operation | none |
+
+Each name comes from the module crate that supplies it rather than from a string
+literal restated in the runtime, so a compiled-in module and the inventory it is
+judged by cannot drift apart. Adding a module to the build adds its name here;
+nothing else may.
+
+Content validation resolves every component a backup references against that
+inventory: each Log Module configuration's module, each enrolled MFA factor's
+module, each Service Connection's Service Module, and each Group grant naming a
+Client Module, a Service Module, or an operation. A backup referencing anything
+outside the inventory is refused as `backup_incompatible` before any checkpoint
+exists.
+
+This is an operator-visible constraint, not an internal detail. A backup taken
+from a deployment that enrolled an MFA factor or configured a Service Connection
+cannot be restored into a build that compiles in neither, because restoring it
+would produce a deployment whose Groups, factors, and connections point at
+components that could never load. The refusal is deliberate and is never relaxed
+by overstating the inventory. Comparison is exact: a component name that differs
+only in case or spelling is unavailable.
+
 ## Request And Sensitive Input Handling
 
 The normalized Restore request contains a bounded encrypted backup artifact and
@@ -299,9 +336,38 @@ for either workflow. A failure at or after step 8 leaves the Server fail-closed
 with its retained partial state intact. No rollback is attempted, because the
 replaced state is exactly what an operator asked to discard.
 
-The runtime is not the authority for which components a backup may reference.
-The composing caller supplies that inventory, because the Server does not yet
-report a single compiled-in inventory of Client, MFA, and Service Modules.
+The runtime is the authority for which components a backup may reference. It
+supplies the single compiled-in inventory defined in
+[Compiled-In Component Inventory](#compiled-in-component-inventory) to the
+validation crate, which resolves the backup's references against it.
+
+## Two-Request Submission Protocol
+
+The orchestration above runs behind a submission split into two requests. The
+first carries the private recovery key alone; the runtime retains it, mints a
+one-time ticket from operating-system randomness, and returns only the ticket.
+The second presents that ticket and uploads the encrypted artifact. The recovery
+key therefore never travels with the artifact, and no artifact is admitted
+without a ticket this Server issued.
+
+The runtime owns the ticket store and nothing about the wire format. It retains
+only a domain-separated digest of the ticket and compares a submitted ticket
+against it in constant time. At most one submission may be outstanding. Every
+claim consumes the retained submission whether or not it succeeds, so a replay,
+a concurrent claim, a wrong ticket, and an expired ticket all destroy the
+retained recovery key rather than leaving it available for another attempt. An
+outstanding submission expires on its own schedule after the approved upload
+deadline, capped at what remains of the total request deadline the first request
+started, so an abandoned submission does not leave a recovery key resident for
+the listener's lifetime.
+
+Eligibility is re-checked at request time on both requests, because the listener
+snapshots the whole serving surface when it accepts a connection: a connection
+accepted while a Restore was still eligible keeps a router mounting both routes
+even after a checkpoint exists. Route absence is an additional control, not the
+authority. The
+[Web UI Pre-Operational Restore Surface](../../../client-modules/web-ui/pre-operational-restore-design.md)
+owns the routes, schemas, headers, bounds, and rejection contract.
 
 ## Concurrency And Errors
 
@@ -335,11 +401,25 @@ state classification, absence of reconciliation, retry, reset, automatic
 cleanup, recreation, and sealing after interruption, Restore-specific valid-run
 failure classification, concurrency with Init and Restore requests, direct
 invocation after sealing, and rejection before key or artifact processing.
-Fixture-based tests use an immutable raw `.wlitbackup` file, its canonical
+Fixture-based tests use immutable raw `.wlitbackup` files, their canonical
 private-key line, the expected decrypted plaintext, and a canonical JSON
-manifest recording each fixture's exact byte lengths and SHA-256 digests.
-Negative fixtures mutate exactly one property of the valid fixture at a time
-so each failure path is independently attributable. Because those fixtures are
+manifest recording each fixture's exact byte lengths and SHA-256 digests. Every
+fixture is produced by one deterministic generator, run with
+`cargo run --example generate-restore-fixtures -p weavelit-server-restore`, and
+a test regenerates the whole set and compares it byte for byte with the
+committed bytes and the manifest, so a fixture cannot be hand-edited.
+
+Two valid backups are committed, both sealed to the same committed recovery key
+and differing only in the components they reference:
+
+| Fixture | References | Purpose |
+| --- | --- | --- |
+| `valid.wlitbackup` | `web-ui`, `sqlite`, `totp`, `zendesk` | The canonical valid artifact, and the backup a build compiling in fewer components must refuse. |
+| `valid-web-ui-sqlite.wlitbackup` | `web-ui`, `sqlite` | The backup whose references match this build's [compiled-in inventory](#compiled-in-component-inventory) exactly, so it is the artifact an end-to-end Restore of the real Server actually restores. |
+
+Each valid artifact commits its expected decrypted plaintext alongside it.
+Negative fixtures mutate exactly one property of `valid.wlitbackup` at a time so
+each failure path is independently attributable. Because those fixtures are
 produced by a second implementation in this repository, the age v1 reader is
 additionally validated against 110 external known-answer vectors vendored from
 the C2SP Community Cryptography Test Vectors for age; the
@@ -364,6 +444,17 @@ failure after the checkpoint stays fail-closed across a restart with no
 rollback, and that no rendered failure discloses recovery material or backup
 plaintext.
 
+The compiled-in inventory is proven at that layer rather than assumed. One test
+drives the complete two-request protocol against the real inventory the composed
+listener reports, using the fixture whose references match it, so a Restore that
+the released binary could not perform fails in the Rust suite rather than only
+in the browser suite. A second test submits `valid.wlitbackup` to that same real
+inventory and asserts it is refused as `backup_incompatible` with the serving
+mode, the anchor set, and the lifecycle record untouched, then restores the
+matching fixture on the same deployment so the refusal is attributable to the
+component check alone. A supplied fuller inventory remains in use only for the
+tests that exercise other behavior with the canonical fixture.
+
 ## Related Documents
 
 - [Restore User Story](../../user-stories/restore-user-story.md)
@@ -374,6 +465,7 @@ plaintext.
 - [Server Architecture Design](../../server-architecture-design.md)
 - [Server Lifecycle Design](../lifecycle-design.md)
 - [Server Init Design](../init/init-design.md)
+- [Web UI Pre-Operational Restore Surface](../../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Application Database Design](../../database/application-database-design.md)
 - [Testing and Validation Policy](../../../testing.md)
 - [Log Module Design](../../../log-modules/log-module-design.md)

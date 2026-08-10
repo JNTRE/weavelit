@@ -35,7 +35,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then each parent `AGENTS.md` upward to the repository root.
 - Read `../../../../../docs/server/api/api-contract-design.md` before changing route organization, result and error representation, or capability declaration.
-- Read `../../../../../docs/server/lifecycle/lifecycle-design.md`, `../../../../../docs/client-modules/web-ui/pre-operational-status-design.md`, and `../../../../../docs/client-modules/web-ui/pre-operational-database-selection-design.md` before changing a pre-operational contract.
+- Read `../../../../../docs/server/lifecycle/lifecycle-design.md`, `../../../../../docs/client-modules/web-ui/pre-operational-status-design.md`, `../../../../../docs/client-modules/web-ui/pre-operational-database-selection-design.md`, and `../../../../../docs/client-modules/web-ui/pre-operational-restore-design.md` before changing a pre-operational contract.
 - Keep client-specific behavior in its named per-client crate and add it here only when every Client Module must observe the same behavior.
 - Add contract and security tests for accepted requests, stable responses,
   declared capability presence, and denied access as required by

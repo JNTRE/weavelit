@@ -77,3 +77,52 @@ body {
 .shell__selection-failure {
   margin: var(--ds-space-md) 0 0;
 }
+
+.shell__restore {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-md);
+  margin: var(--ds-space-lg) 0 0;
+  padding: var(--ds-space-md);
+}
+
+.shell__restore-title {
+  font-size: var(--ds-font-size-lg);
+  margin: 0;
+}
+
+.shell__restore-description {
+  margin: var(--ds-space-sm) 0 var(--ds-space-md);
+}
+
+.shell__restore-label {
+  display: block;
+  margin: var(--ds-space-md) 0 var(--ds-space-xs);
+}
+
+.shell__restore-artifact,
+.shell__restore-recovery-key {
+  display: block;
+  font: inherit;
+  max-width: 100%;
+}
+
+.shell__restore-action {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  margin: var(--ds-space-md) 0 0;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+}
+
+.shell__restore-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.shell__restore-completion,
+.shell__restore-failure {
+  margin: var(--ds-space-md) 0 0;
+}

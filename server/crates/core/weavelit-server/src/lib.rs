@@ -1523,16 +1523,23 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
 
 fn fixed_json_body(body: &[u8]) -> Option<&'static str> {
     match body {
+        b"{\"error\":\"backup_incompatible\"}" => Some("{\"error\":\"backup_incompatible\"}"),
+        b"{\"error\":\"backup_invalid\"}" => Some("{\"error\":\"backup_invalid\"}"),
         b"{\"error\":\"bad_request\"}" => Some("{\"error\":\"bad_request\"}"),
         b"{\"error\":\"database_selection_not_allowed\"}" => {
             Some("{\"error\":\"database_selection_not_allowed\"}")
         }
         b"{\"error\":\"method_not_allowed\"}" => Some("{\"error\":\"method_not_allowed\"}"),
         b"{\"error\":\"not_found\"}" => Some("{\"error\":\"not_found\"}"),
+        b"{\"error\":\"recovery_key_invalid\"}" => Some("{\"error\":\"recovery_key_invalid\"}"),
         b"{\"error\":\"request_header_fields_too_large\"}" => {
             Some("{\"error\":\"request_header_fields_too_large\"}")
         }
         b"{\"error\":\"request_origin_denied\"}" => Some("{\"error\":\"request_origin_denied\"}"),
+        b"{\"error\":\"restore_failed\"}" => Some("{\"error\":\"restore_failed\"}"),
+        b"{\"error\":\"restore_not_allowed\"}" => Some("{\"error\":\"restore_not_allowed\"}"),
+        b"{\"error\":\"restore_pending\"}" => Some("{\"error\":\"restore_pending\"}"),
+        b"{\"error\":\"restore_ticket_invalid\"}" => Some("{\"error\":\"restore_ticket_invalid\"}"),
         b"{\"error\":\"service_unavailable\"}" => Some("{\"error\":\"service_unavailable\"}"),
         b"{\"error\":\"uri_too_long\"}" => Some("{\"error\":\"uri_too_long\"}"),
         b"{\"lifecycle\":\"uninitialized\",\"database_selected\":false}" => {
@@ -2044,7 +2051,7 @@ mod tests {
     use weavelit_module_client::{
         APPLICATION_DATABASE_ROUTE, DatabaseSelectionRejection, ExpectedOrigin,
         RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, RestoreDeclaration,
-        STATUS_ROUTE,
+        RestoreRejection, STATUS_ROUTE,
     };
     use weavelit_server_database::{
         ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
@@ -2070,7 +2077,7 @@ mod tests {
         read_request_head_until, redacted_response, request_timeout_response,
         restore::RestoreOrchestrator,
         serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
-        sqlite_catalog, startup_outcome,
+        server_components, sqlite_catalog, startup_outcome,
         transport::{
             BodyAdmission, MountedSurface, TransportCapability, TransportProfile,
             TransportRegistration,
@@ -4570,6 +4577,42 @@ mod tests {
         }
     }
 
+    /// Every Restore body a route handler can emit must be in the fixed-JSON
+    /// allowlist too.
+    ///
+    /// Two Restore rejections are answered by the pre-body path, which carries
+    /// its own fixed responses and never reaches this step. The rest are
+    /// produced by the mounted handler, so an omission here would silently
+    /// replace the documented stable code with the redacted gateway-timeout
+    /// body and leave a submitting client unable to tell one failure from
+    /// another.
+    #[tokio::test]
+    async fn restore_bodies_survive_the_fixed_json_allowlist() {
+        for rejection in [
+            RestoreRejection::BadRequest,
+            RestoreRejection::RecoveryKeyInvalid,
+            RestoreRejection::BackupInvalid,
+            RestoreRejection::BackupIncompatible,
+            RestoreRejection::RequestOriginDenied,
+            RestoreRejection::RestoreTicketInvalid,
+            RestoreRejection::MethodNotAllowed,
+            RestoreRejection::RestoreNotAllowed,
+            RestoreRejection::RestorePending,
+            RestoreRejection::RestoreFailed,
+            RestoreRejection::ServiceUnavailable,
+        ] {
+            let expected = rejection.body();
+            let bounded = bounded_response_from_axum(rejection.response()).await;
+            assert_eq!(bounded.status, rejection.status(), "{rejection:?}");
+            assert_eq!(bounded.profile, ResponseProfile::Json, "{rejection:?}");
+            assert_eq!(
+                bounded.body.as_ref(),
+                expected.as_bytes(),
+                "{rejection:?} was redacted instead of returned"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn direct_tls_listener_never_answers_a_cleartext_request() {
         let (server_config, _client_config) = tls_configs();
@@ -5461,16 +5504,23 @@ mod tests {
         recovery_key_fixture("valid-identity.txt")
     }
 
+    /// The committed backup whose referenced components are exactly the ones
+    /// this build compiles in: the Web UI Client Module and the SQLite Log
+    /// Module. It is sealed to the same recovery key every valid fixture is.
+    const COMPILED_IN_BACKUP: &str = "valid-web-ui-sqlite.wlitbackup";
+
     /// The correlation identifier the listener would have generated when it
     /// issued this Restore's ticket.
     const RESTORE_CORRELATION: &str = "0123456789abcdef0123456789abcdef";
 
-    /// The component inventory the committed backup fixture references.
+    /// The component inventory the shared `valid.wlitbackup` fixture references.
     ///
-    /// The composing caller supplies this because the Server does not yet
-    /// report a single compiled-in inventory of Client, MFA, and Service
-    /// Modules, and the shared fixture names components beyond the Web UI
-    /// Client Module and SQLite Log Module this Server actually compiles in.
+    /// That fixture deliberately names an MFA Module and a Service Module no
+    /// build in this repository compiles in, so the tests that use it supply
+    /// the fuller inventory a deployment offering those modules would report.
+    /// A Restore judged against what this build actually serves uses
+    /// [`server_components`] and the `valid-web-ui-sqlite.wlitbackup` fixture
+    /// instead.
     fn fixture_components() -> AvailableComponents {
         fn names(values: &[&str]) -> std::collections::BTreeSet<Name> {
             values
@@ -5535,6 +5585,12 @@ mod tests {
                 fixture_components(),
                 Arc::clone(&self.switch),
             )
+        }
+
+        /// An orchestration judged against the Server's own compiled-in
+        /// inventory, exactly as the composed listener judges one.
+        fn compiled_in_orchestrator(&self) -> Arc<RestoreOrchestrator> {
+            RestoreOrchestrator::new(&self.startup, server_components(), Arc::clone(&self.switch))
         }
 
         /// Acquires the same Restore admission permit the listener holds before
@@ -5923,6 +5979,52 @@ mod tests {
         assert_preoperational(surface.served_router()).await;
     }
 
+    /// A backup is restorable only into a Server that can serve everything it
+    /// names. `valid.wlitbackup` enrols a `totp` MFA factor and a `zendesk`
+    /// Service Connection, and this build compiles in neither, so the real
+    /// inventory must refuse it rather than restore a deployment whose Groups
+    /// and factors point at components that would never load.
+    #[tokio::test]
+    async fn a_backup_naming_components_this_build_lacks_is_incompatible() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.compiled_in_orchestrator();
+        let anchors = surface.anchor_snapshot();
+
+        let error = surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, RestoreError::BackupIncompatible);
+        assert_eq!(
+            error.category_reason(),
+            ("backup_incompatible", "backup_incompatible")
+        );
+        assert_eq!(surface.anchor_snapshot(), anchors);
+        assert_eq!(
+            surface.startup.composition.adapter.arbiter.record_state(),
+            LifecycleState::Uninitialized
+        );
+        assert_preoperational(surface.served_router()).await;
+
+        // The same deployment restores the backup that names only what this
+        // build compiles in, so the refusal above is the component check and
+        // not a Restore that could never have succeeded here.
+        let state = surface
+            .restore(
+                &orchestrator,
+                restore_fixture(COMPILED_IN_BACKUP),
+                valid_recovery_key(),
+            )
+            .await
+            .expect("the compiled-in backup must restore");
+        assert!(state.completion_acknowledged());
+    }
+
     #[tokio::test]
     async fn a_failure_after_the_checkpoint_leaves_the_server_fail_closed() {
         let surface = RestoreSurface::new();
@@ -6029,10 +6131,15 @@ mod tests {
 
     /// The whole protocol, driven exactly as a client drives it: the recovery
     /// key alone, then the artifact against the ticket that submission issued.
+    ///
+    /// This is the one orchestration judged against [`server_components`]
+    /// rather than a supplied inventory, so it proves the composed listener can
+    /// actually restore a committed backup instead of proving only that some
+    /// inventory would accept one.
     #[tokio::test]
     async fn the_two_request_restore_protocol_activates_normal_operation() {
         let surface = RestoreSurface::new();
-        let orchestrator = surface.orchestrator();
+        let orchestrator = surface.compiled_in_orchestrator();
         let mounted = surface.restore_routes(&orchestrator);
 
         assert_preoperational(surface.served_router()).await;
@@ -6044,7 +6151,7 @@ mod tests {
             RESTORE_ARTIFACT_ROUTE,
             "application/octet-stream",
             Some(&ticket),
-            restore_fixture("valid.wlitbackup"),
+            restore_fixture(COMPILED_IN_BACKUP),
         )
         .await;
         assert_eq!(completed.status, StatusCode::OK);

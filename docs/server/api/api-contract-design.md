@@ -70,6 +70,9 @@ Route groups:
   [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
   and the
   [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md).
+- `/api/v1/restore` and `/api/v1/restore/artifact` are the two requests of the
+  Restore submission protocol. Their behavior is fixed by the
+  [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md).
 - Pre-operational lifecycle contracts are mounted only while their declaring
   capability is eligible.
 - `/api/v1/auth/` carries authentication bootstrap. These routes are neither
@@ -175,4 +178,5 @@ for this purpose.
 - [Server Restore Design](../lifecycle/restore/restore-design.md)
 - [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
 - [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
+- [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Glossary](../../glossary.md)
