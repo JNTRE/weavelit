@@ -27,13 +27,12 @@ Use this section as the source of truth for what assets belong in this directory
   state-root configuration reading, `classify_restricted_startup`, the listener's
   serving-mode switch, and stable error presentation.
 - `src/restore.rs`: Server-owned Restore orchestration that joins backup
-  validation to the lifecycle typestate chain, delivers the System Log
-  acknowledgement, and activates normal operation in-process.
+  validation to the lifecycle typestate chain, the one-time ticket store and
+  admission registrations behind the two-step submission protocol, the System
+  Log acknowledgement delivery, and in-process activation of normal operation.
 - `src/transport.rs`: Route-registered transport profiles and the admission
   typestate that orders rate limiting, classification, framing, pre-body
   validation, and permit acquisition ahead of any body allocation.
-- `src/typed_json.rs`: Bounded typed result and error envelopes for every route
-  outside the frozen pre-operational allowlist.
 - `src/main.rs`: Thin executable entry point that reads state-root configuration
   and calls the library composition function.
 - `tests/startup.rs`: Composition and process-level tests for restricted startup

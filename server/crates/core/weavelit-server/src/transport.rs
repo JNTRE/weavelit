@@ -11,7 +11,10 @@
 //! than a review finding.
 
 use std::{
+    any::Any,
+    future::Future,
     net::IpAddr,
+    pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -137,6 +140,11 @@ pub enum PreBodyRejection {
     /// The request failed the route's same-origin or cross-site request
     /// forgery precondition.
     RequestOriginDenied,
+    /// The request presented no usable one-time submission ticket.
+    RestoreTicketInvalid,
+    /// The deployment lifecycle no longer permits the workflow the route
+    /// serves, even though the router that accepted the connection mounts it.
+    RestoreNotAllowed,
 }
 
 impl PreBodyRejection {
@@ -150,7 +158,76 @@ impl PreBodyRejection {
                 StatusCode::FORBIDDEN,
                 "{\"error\":\"request_origin_denied\"}",
             ),
+            Self::RestoreTicketInvalid => json_fixed_response(
+                StatusCode::FORBIDDEN,
+                "{\"error\":\"restore_ticket_invalid\"}",
+            ),
+            Self::RestoreNotAllowed => {
+                json_fixed_response(StatusCode::CONFLICT, "{\"error\":\"restore_not_allowed\"}")
+            }
         }
+    }
+}
+
+/// An opaque value a pre-body check hands to the route that admitted it.
+///
+/// The transport carries it without knowing what it is, so a route can pass a
+/// claimed submission, a retained secret, or any other admission product to
+/// its own handler without the listener naming that type. The value is dropped
+/// with the request, so a client disconnect, an expired deadline, an
+/// unreadable body, or any later failure destroys whatever it held.
+#[derive(Clone)]
+pub struct PreBodyGrantValue(Arc<dyn Any + Send + Sync>);
+
+impl PreBodyGrantValue {
+    /// Wraps a value for the route that produced it.
+    #[must_use]
+    pub fn new<T: Send + Sync + 'static>(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+
+    /// Returns the wrapped value when it has the requested type.
+    #[must_use]
+    pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
+/// What a pre-body check returns when it accepts the request.
+///
+/// A grant may narrow the request's remaining time, but it can never widen it:
+/// the listener takes the earlier of the profile's deadline and the granted
+/// remainder, so an inherited budget bounds a later request without ever
+/// extending the one the profile already allowed.
+#[derive(Clone, Default)]
+pub struct PreBodyGrant {
+    value: Option<PreBodyGrantValue>,
+    remaining: Option<Duration>,
+}
+
+impl PreBodyGrant {
+    /// Accepts the request with nothing to carry forward.
+    #[must_use]
+    pub fn accepted() -> Self {
+        Self::default()
+    }
+
+    /// Carries an opaque admission product to the route's handler.
+    #[must_use]
+    pub fn with_value(mut self, value: PreBodyGrantValue) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    /// Caps everything after this check at `remaining`.
+    #[must_use]
+    pub fn with_remaining_budget(mut self, remaining: Duration) -> Self {
+        self.remaining = Some(remaining);
+        self
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.remaining
     }
 }
 
@@ -163,7 +240,18 @@ pub trait PreBodyCheck: Send + Sync + 'static {
         method: &Method,
         uri: &Uri,
         headers: &HeaderMap,
-    ) -> Result<(), PreBodyRejection>;
+    ) -> Result<PreBodyGrant, PreBodyRejection>;
+}
+
+/// Validation a route runs while already holding its admission permit.
+///
+/// The listener runs this after the permit is acquired and before any body is
+/// allocated, so a route that must observe authoritative state under its own
+/// mutation lane observes it exactly once, serialized, and still ahead of the
+/// allocation it would otherwise have to pay for first.
+pub trait AdmittedCheck: Send + Sync + 'static {
+    /// Accepts or rejects the request under the acquired permit.
+    fn check(&self) -> Pin<Box<dyn Future<Output = Result<(), PreBodyRejection>> + Send + '_>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +266,7 @@ pub struct TransportRegistration {
     profile: TransportProfile,
     pre_body: Option<Arc<dyn PreBodyCheck>>,
     admission: Option<Arc<Semaphore>>,
+    admitted: Option<Arc<dyn AdmittedCheck>>,
 }
 
 impl TransportRegistration {
@@ -190,6 +279,7 @@ impl TransportRegistration {
             profile,
             pre_body: None,
             admission: None,
+            admitted: None,
         }
     }
 
@@ -207,6 +297,14 @@ impl TransportRegistration {
         self.admission = Some(permits);
         self
     }
+
+    /// Declares validation that runs under the acquired permit, still before
+    /// the body is allocated.
+    #[must_use]
+    pub fn with_admitted_check(mut self, check: Arc<dyn AdmittedCheck>) -> Self {
+        self.admitted = Some(check);
+        self
+    }
 }
 
 /// A capability's router mount and its transport registration as one value.
@@ -215,16 +313,19 @@ impl TransportRegistration {
 /// it, so a registration cannot describe a route the surface did not mount.
 pub struct TransportCapability {
     registration: TransportRegistration,
-    mount: fn(Router) -> Router,
+    mount: Box<dyn FnOnce(Router) -> Router>,
 }
 
 impl TransportCapability {
     /// Pairs a registration with the mount that serves the same route.
     #[must_use]
-    pub fn new(registration: TransportRegistration, mount: fn(Router) -> Router) -> Self {
+    pub fn new<M>(registration: TransportRegistration, mount: M) -> Self
+    where
+        M: FnOnce(Router) -> Router + 'static,
+    {
         Self {
             registration,
-            mount,
+            mount: Box::new(mount),
         }
     }
 }
@@ -311,6 +412,7 @@ struct Selection {
     profile: TransportProfile,
     pre_body: Option<Arc<dyn PreBodyCheck>>,
     admission: Option<Arc<Semaphore>>,
+    admitted: Option<Arc<dyn AdmittedCheck>>,
 }
 
 impl Selection {
@@ -319,6 +421,7 @@ impl Selection {
             profile: registration.profile,
             pre_body: registration.pre_body.clone(),
             admission: registration.admission.clone(),
+            admitted: registration.admitted.clone(),
         }
     }
 }
@@ -329,6 +432,7 @@ impl Default for Selection {
             profile: TransportProfile::DEFAULT,
             pre_body: None,
             admission: None,
+            admitted: None,
         }
     }
 }
@@ -347,6 +451,16 @@ impl Default for Selection {
 pub struct BodyAdmission(Arc<OwnedSemaphorePermit>);
 
 impl BodyAdmission {
+    /// Wraps a permit already acquired from a route's admission lane.
+    ///
+    /// In production only [`Validated::acquire`] produces this. A test that
+    /// drives an admitted handler directly acquires the same lane first, so it
+    /// runs under the route's real concurrency bound rather than beside it.
+    #[cfg(test)]
+    pub(crate) fn from_permit(permit: OwnedSemaphorePermit) -> Self {
+        Self(Arc::new(permit))
+    }
+
     /// Returns the permit this request was admitted under.
     ///
     /// Downstream work takes this handle from the request extensions instead of
@@ -452,17 +566,19 @@ pub(crate) struct Framed {
 impl Framed {
     /// Stage 5: the route's registered pre-body validation.
     pub(crate) fn validate(self) -> Result<Validated, PreBodyRejection> {
-        if let Some(check) = &self.selection.pre_body {
-            check.check(
+        let grant = match &self.selection.pre_body {
+            Some(check) => check.check(
                 self.request.method(),
                 self.request.uri(),
                 self.request.headers(),
-            )?;
-        }
+            )?,
+            None => PreBodyGrant::accepted(),
+        };
         Ok(Validated {
             request: self.request,
             selection: self.selection,
             body_length: self.body_length,
+            grant,
         })
     }
 }
@@ -472,11 +588,22 @@ pub(crate) struct Validated {
     request: Request,
     selection: Selection,
     body_length: Option<usize>,
+    grant: PreBodyGrant,
 }
 
 impl Validated {
-    /// Stage 6: acquire the route's admission permit, if it declared one.
-    pub(crate) async fn acquire(self) -> Admitted {
+    /// Returns the time the pre-body check capped this request at, if any.
+    pub(crate) fn remaining_budget(&self) -> Option<Duration> {
+        self.grant.remaining()
+    }
+
+    /// Stage 6: acquire the route's admission permit, if it declared one, and
+    /// run its registered admitted validation while holding it.
+    ///
+    /// A rejection here drops the permit and the pre-body grant together, so a
+    /// request denied under the permit releases the lane and destroys whatever
+    /// its pre-body check had claimed.
+    pub(crate) async fn acquire(self) -> Result<Admitted, PreBodyRejection> {
         let admission = match &self.selection.admission {
             Some(permits) => Arc::clone(permits)
                 .acquire_owned()
@@ -485,12 +612,16 @@ impl Validated {
                 .map(|permit| BodyAdmission(Arc::new(permit))),
             None => None,
         };
-        Admitted {
+        if let Some(check) = &self.selection.admitted {
+            check.check().await?;
+        }
+        Ok(Admitted {
             request: self.request,
             profile: self.selection.profile,
             body_length: self.body_length,
             admission,
-        }
+            grant: self.grant,
+        })
     }
 }
 
@@ -500,6 +631,7 @@ pub(crate) struct Admitted {
     profile: TransportProfile,
     body_length: Option<usize>,
     admission: Option<BodyAdmission>,
+    grant: PreBodyGrant,
 }
 
 impl Admitted {
@@ -517,6 +649,9 @@ impl Admitted {
     {
         if let Some(admission) = self.admission {
             self.request.extensions_mut().insert(admission);
+        }
+        if let Some(value) = self.grant.value {
+            self.request.extensions_mut().insert(value);
         }
         let Some(length) = self.body_length else {
             return Ok(self.request);
@@ -559,7 +694,7 @@ mod tests {
 
     use super::{
         Admitted, BodyAdmission, Duration, HeadRead, Instant, IpAddr, MAX_REQUEST_BODY_BYTES,
-        Method, MountedSurface, PreBodyCheck, PreBodyRejection, RateLimiter, Request,
+        Method, MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection, RateLimiter, Request,
         RequestReadError, Router, Semaphore, TransportBudget, TransportCapability,
         TransportProfile, TransportRegistration, TransportRegistry, Uri, allocate_body,
     };
@@ -729,7 +864,7 @@ mod tests {
             _method: &Method,
             _uri: &Uri,
             _headers: &super::HeaderMap,
-        ) -> Result<(), PreBodyRejection> {
+        ) -> Result<PreBodyGrant, PreBodyRejection> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(self.rejection)
         }
@@ -812,7 +947,10 @@ mod tests {
             .unwrap_or_else(|_| panic!("no pre-body check is registered"));
         assert_eq!(permits.available_permits(), 1);
 
-        let admitted = validated.acquire().await;
+        let admitted = validated
+            .acquire()
+            .await
+            .unwrap_or_else(|_| panic!("no admitted check is registered"));
         assert_eq!(
             permits.available_permits(),
             0,
@@ -847,7 +985,10 @@ mod tests {
                 .unwrap_or_else(|_| panic!("no pre-body check is registered"))
         };
 
-        let first = admit(surface.registry()).acquire().await;
+        let first = admit(surface.registry())
+            .acquire()
+            .await
+            .unwrap_or_else(|_| panic!("no admitted check is registered"));
         let second = admit(surface.registry());
         let third = admit(surface.registry());
 
@@ -861,7 +1002,10 @@ mod tests {
         assert_eq!(permits.available_permits(), 0);
 
         drop(first);
-        let second: Admitted = pending.await.unwrap();
+        let second: Admitted = pending
+            .await
+            .unwrap()
+            .unwrap_or_else(|_| panic!("no admitted check is registered"));
         assert_eq!(permits.available_permits(), 0);
 
         let mut pending = tokio::spawn(async move { third.acquire().await });

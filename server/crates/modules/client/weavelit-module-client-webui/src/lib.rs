@@ -18,24 +18,42 @@ use axum::{
     routing::any,
 };
 pub use weavelit_module_client::{
-    ExpectedOrigin, OperationalSurface, PreoperationalSurface, ProjectionSource, SelectionCommit,
+    ExpectedOrigin, OperationalSurface, PreoperationalSurface, ProjectionSource, RestoreCapability,
+    SelectionCommit,
 };
 use weavelit_module_client::{has_request_body, json_response, json_response_with_allow};
+
+/// The canonical identifier this Client Module is compiled in under.
+///
+/// It is the single source of the Server's compiled-in Client Module inventory,
+/// so a Restore cannot be judged against a component name the runtime restated
+/// by hand.
+pub const MODULE_IDENTIFIER: &str = "web-ui";
 
 /// Returns the pre-operational surface this Client Module declares.
 ///
 /// Presence is the declaration: the Web UI declares the live status projection,
 /// Application Database selection, and browser asset capabilities, so the
 /// Server core mounts exactly those and nothing else.
+///
+/// Restore is declared only when the Server core supplies its collaborators,
+/// which it does only once an Application Database has been selected. Before
+/// that, and on the fail-closed and operational surfaces, neither Restore route
+/// exists.
 pub fn preoperational_surface(
     projection: ProjectionSource,
     expected_origin: ExpectedOrigin,
     commit: SelectionCommit,
+    restore: Option<RestoreCapability>,
 ) -> PreoperationalSurface {
-    PreoperationalSurface::default()
+    let surface = PreoperationalSurface::default()
         .with_status(projection)
         .with_database_selection(expected_origin, commit)
-        .with_assets(embedded_asset_routes())
+        .with_assets(embedded_asset_routes());
+    match restore {
+        Some(restore) => surface.with_restore(restore),
+        None => surface,
+    }
 }
 
 /// Returns the operational surface this Client Module declares.

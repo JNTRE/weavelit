@@ -1,4 +1,4 @@
-//! Server-owned Restore orchestration.
+//! Server-owned Restore orchestration and its two-step submission protocol.
 //!
 //! The cryptographic validation crate and the lifecycle typestate chain each
 //! own one half of a Restore. This module is the only place that joins them:
@@ -8,21 +8,41 @@
 //! backup itself declares, seals the deployment, and activates normal
 //! operation in-process.
 //!
-//! This module owns no transport. Its entry point takes already-received bytes
-//! so the HTTP upload route can be composed over it without changing any
-//! ordering guarantee established here.
+//! A Restore is submitted in two requests. The first submits the recovery key
+//! alone; this module retains it, issues a one-time ticket, and returns only
+//! the ticket. The second presents that ticket and uploads the encrypted
+//! artifact. The recovery key therefore never travels with the artifact, and
+//! the artifact is never admitted without a ticket this module issued.
+//!
+//! This module owns no wire format. The shared Client Module crate owns the
+//! routes, schemas, and rendered responses; this module owns the ticket store,
+//! the lifecycle eligibility re-checks, the admission registrations, and the
+//! orchestration behind them.
 
 use std::{
+    future::Future,
     path::PathBuf,
-    sync::Arc,
+    pin::Pin,
+    sync::{Arc, Mutex, PoisonError},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use tokio::{sync::Semaphore, task};
+use axum::http::Method;
+use tokio::{
+    sync::Semaphore,
+    task,
+    time::{Instant as Deadline, sleep_until},
+};
+use weavelit_module_client::{
+    ExpectedOrigin, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RestoreArtifactSubmission,
+    RestoreCapability, RestoreCompleted, RestoreKeySubmission, RestoreRejection,
+    RestoreTicketIssued, submitted_restore_ticket, validate_restore_artifact_request,
+    validate_restore_key_request,
+};
 use weavelit_server_lifecycle::{
     ApplicationState, BackendCatalog, CheckpointMetadata, DeploymentIdentifier, InitializedState,
-    LifecycleError, StateIdentifier, TrustedBackendContext, WorkflowArbiter, WorkflowError,
-    WorkflowKind, WorkflowPermit,
+    LifecycleError, LifecycleState, StateIdentifier, TrustedBackendContext, WorkflowArbiter,
+    WorkflowError, WorkflowKind, WorkflowPermit,
 };
 use weavelit_server_log::{
     CompleteLogRecord, ConfiguredLogDestination, LogModuleCatalog, LogModuleIdentifier,
@@ -31,19 +51,45 @@ use weavelit_server_log::{
 use weavelit_server_log_authority::ServerLogAuthority;
 use weavelit_server_observability::ServerObservability;
 use weavelit_server_restore::{
-    AvailableComponents, LogAssignment, LogModuleConfiguration, LogType, RequestBudget,
-    RestoreAuthority, RestoreError, RestoreRequest, RestoreTarget, RestoreValidator,
+    AvailableComponents, LogAssignment, LogModuleConfiguration, LogType,
+    MAX_CONCURRENT_RESTORE_OPERATIONS, MAX_ENCRYPTED_ARTIFACT_BYTES, RequestBudget,
+    RestoreAuthority, RestoreError, RestoreRequest, RestoreTarget, RestoreTicket,
+    RestoreTicketDigest, RestoreValidator, TOTAL_REQUEST_DEADLINE, UPLOAD_DEADLINE,
     ValidatedBackup, build_application_state,
 };
 use zeroize::Zeroizing;
 
-use crate::{RestrictedStartup, ServingModeSwitch};
+use crate::{
+    RestrictedStartup, ServingModeSwitch,
+    transport::{
+        AdmittedCheck, BodyAdmission, PreBodyCheck, PreBodyGrant, PreBodyGrantValue,
+        PreBodyRejection, TransportProfile, TransportRegistration,
+    },
+};
 
 /// Opaque non-secret checkpoint metadata this workflow writes.
 ///
 /// The lifecycle crate stores it without interpretation, so it carries only
 /// the workflow's own fixed marker and never any backup content.
 const RESTORE_CHECKPOINT_METADATA: &[u8] = b"weavelit.restore.v1";
+
+/// The transport profile the encrypted artifact upload is admitted under.
+///
+/// The read budget is the approved upload deadline and the handling budget is
+/// the approved total deadline. Both are further capped at what remains of the
+/// budget the recovery-key submission started, so neither can restart it.
+const RESTORE_ARTIFACT_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_ENCRYPTED_ARTIFACT_BYTES,
+    UPLOAD_DEADLINE,
+    TOTAL_REQUEST_DEADLINE,
+);
+
+/// The mutation lane is the Restore admission lane, so the approved concurrency
+/// bound and the lane's single permit cannot drift apart.
+const _: () = assert!(
+    MAX_CONCURRENT_RESTORE_OPERATIONS == 1,
+    "the pre-operational mutation lane admits exactly one Restore at a time"
+);
 
 /// Server-owned composition that runs one Restore at a time.
 ///
@@ -57,6 +103,7 @@ pub struct RestoreOrchestrator {
     log_catalog: Arc<LogModuleCatalog>,
     state_root: PathBuf,
     mutation_lane: Arc<Semaphore>,
+    pending: Arc<PendingRestoreSlot>,
     serving_modes: Arc<ServingModeSwitch>,
     validator: RestoreValidator,
     observability: ServerObservability,
@@ -68,10 +115,10 @@ pub struct RestoreOrchestrator {
 impl RestoreOrchestrator {
     /// Composes Restore over a restricted startup's lifecycle authority.
     ///
-    /// `components` is the inventory a backup may reference. It is supplied by
-    /// the composing runtime rather than derived here, because the compiled-in
-    /// Client Module, MFA Module, Service Module, and operation inventory is
-    /// not yet reported by a single Server-owned registry.
+    /// `components` is the inventory a backup may reference. The runtime call
+    /// site supplies the Server's compiled-in Client, MFA, Service, and Log
+    /// Module names; a test may supply a narrower or wider inventory to drive
+    /// a compatibility decision it wants to observe.
     #[must_use]
     pub fn new(
         startup: &RestrictedStartup,
@@ -89,6 +136,7 @@ impl RestoreOrchestrator {
             log_catalog: Arc::clone(&startup.log_catalog),
             state_root: startup.state_root.clone(),
             mutation_lane: Arc::clone(&startup.composition.adapter.mutation_lane),
+            pending: Arc::new(PendingRestoreSlot::default()),
             serving_modes,
             validator: RestoreValidator::new(components),
             observability,
@@ -96,31 +144,182 @@ impl RestoreOrchestrator {
         })
     }
 
-    /// Runs one Restore from an already-received artifact and recovery key.
+    /// Returns the Restore capability a Client Module declares this Server with.
+    #[must_use]
+    pub fn capability(self: &Arc<Self>, expected_origin: ExpectedOrigin) -> RestoreCapability {
+        let submitting = Arc::clone(self);
+        let uploading = Arc::clone(self);
+        RestoreCapability {
+            expected_origin,
+            max_artifact_bytes: MAX_ENCRYPTED_ARTIFACT_BYTES,
+            submit_key: Arc::new(move |submission: RestoreKeySubmission| {
+                let orchestrator = Arc::clone(&submitting);
+                Box::pin(async move {
+                    orchestrator.submit_recovery_key(&submission.context, submission.recovery_key)
+                })
+            }),
+            upload_artifact: Arc::new(move |submission: RestoreArtifactSubmission| {
+                let orchestrator = Arc::clone(&uploading);
+                Box::pin(async move { orchestrator.upload_artifact(submission).await })
+            }),
+        }
+    }
+
+    /// Returns the registration that admits a recovery-key submission.
     ///
-    /// The request budget starts before anything else, so validation deadlines
-    /// cover the whole operation. Ownership of both sensitive inputs is taken
-    /// so they can be cleared inside the operation instead of outliving it in
-    /// a caller's buffer.
+    /// The submission carries no artifact, so it keeps the listener's default
+    /// body bound and its default read budget. What it does add is the Restore
+    /// admission lane and the lifecycle eligibility re-check, so the recovery
+    /// key is read only while this Server still holds the only Restore slot and
+    /// only while the deployment still permits a Restore.
+    #[must_use]
+    pub fn key_registration(
+        self: &Arc<Self>,
+        expected_origin: ExpectedOrigin,
+    ) -> TransportRegistration {
+        TransportRegistration::new(Method::PUT, RESTORE_ROUTE, TransportProfile::DEFAULT)
+            .with_pre_body_check(Arc::new(RestoreKeyCheck { expected_origin }))
+            .with_admission(Arc::clone(&self.mutation_lane))
+            .with_admitted_check(self.eligibility())
+    }
+
+    /// Returns the registration that admits an encrypted artifact upload.
+    ///
+    /// The ticket is claimed in the pre-body check, before the artifact bound
+    /// is allocated, so an unticketed upload never costs this Server memory.
+    #[must_use]
+    pub fn artifact_registration(
+        self: &Arc<Self>,
+        expected_origin: ExpectedOrigin,
+    ) -> TransportRegistration {
+        TransportRegistration::new(
+            Method::PUT,
+            RESTORE_ARTIFACT_ROUTE,
+            RESTORE_ARTIFACT_PROFILE,
+        )
+        .with_pre_body_check(Arc::new(RestoreArtifactCheck {
+            expected_origin,
+            pending: Arc::clone(&self.pending),
+        }))
+        .with_admission(Arc::clone(&self.mutation_lane))
+        .with_admitted_check(self.eligibility())
+    }
+
+    fn eligibility(self: &Arc<Self>) -> Arc<dyn AdmittedCheck> {
+        Arc::new(RestoreEligibility {
+            arbiter: Arc::clone(&self.arbiter),
+        })
+    }
+
+    /// Retains a submitted recovery key and issues its one-time ticket.
+    ///
+    /// The ticket is independent, cryptographically random bearer material. It
+    /// is never derived from the correlation identifier, and only its digest is
+    /// retained, so this Server cannot reproduce a ticket it already returned.
+    fn submit_recovery_key(
+        self: &Arc<Self>,
+        context: &axum::http::Extensions,
+        recovery_key: Zeroizing<String>,
+    ) -> Result<RestoreTicketIssued, RestoreRejection> {
+        let admission = context
+            .get::<PreBodyGrantValue>()
+            .and_then(PreBodyGrantValue::get::<RestoreKeyAdmission>)
+            .ok_or(RestoreRejection::RestoreFailed)?;
+        // The budget started before the recovery key was read, and the ticket
+        // inherits it unchanged.
+        let budget = admission.budget;
+        let remaining = budget.remaining().ok_or(RestoreRejection::RestoreFailed)?;
+
+        let ticket = RestoreTicket::from_entropy(random_bytes().map_err(restore_rejection)?);
+        let digest = ticket.digest();
+        let correlation_identifier = correlation_identifier().map_err(restore_rejection)?;
+        let expires_at = Deadline::now() + UPLOAD_DEADLINE.min(remaining);
+
+        self.pending
+            .issue(PendingRestore {
+                digest,
+                recovery_key,
+                correlation_identifier: correlation_identifier.clone(),
+                budget,
+                expires_at,
+            })
+            .map_err(restore_rejection)?;
+
+        // An expired ticket is destroyed on its own schedule rather than
+        // waiting for a later request to notice it, so an abandoned submission
+        // does not leave a recovery key resident for the listener's lifetime.
+        let pending = Arc::clone(&self.pending);
+        task::spawn(async move {
+            sleep_until(expires_at).await;
+            pending.expire(&digest);
+        });
+
+        Ok(RestoreTicketIssued {
+            ticket: ticket.as_str().to_owned(),
+            correlation_id: correlation_identifier,
+        })
+    }
+
+    /// Runs one Restore against an already-claimed ticket.
+    async fn upload_artifact(
+        self: &Arc<Self>,
+        submission: RestoreArtifactSubmission,
+    ) -> Result<RestoreCompleted, RestoreRejection> {
+        // The pre-body check already consumed the pending entry. Taking it here
+        // moves the recovery key out of the request extensions, so it is owned
+        // by this operation and cleared when the operation ends.
+        let claimed = submission
+            .context
+            .get::<PreBodyGrantValue>()
+            .and_then(PreBodyGrantValue::get::<ClaimedRestore>)
+            .and_then(ClaimedRestore::take)
+            .ok_or(RestoreRejection::RestoreTicketInvalid)?;
+        // Carried in from admission: the lane was acquired before the artifact
+        // was allocated, and it is held until this operation finishes.
+        let admission = submission
+            .context
+            .get::<BodyAdmission>()
+            .cloned()
+            .ok_or(RestoreRejection::RestoreFailed)?;
+
+        let correlation_identifier = claimed.correlation_identifier;
+        let completed = RestoreCompleted {
+            correlation_id: correlation_identifier.clone(),
+        };
+        self.restore(
+            admission,
+            claimed.budget,
+            correlation_identifier,
+            owned_bytes(submission.artifact),
+            claimed.recovery_key,
+        )
+        .await
+        .map(|_| completed)
+        .map_err(restore_rejection)
+    }
+
+    /// Runs one Restore from an already-admitted artifact and recovery key.
+    ///
+    /// The admission permit, the request budget, and the correlation identifier
+    /// are all inherited from the transport that admitted the upload. Nothing
+    /// here acquires a lane or starts a budget of its own, so the memory bound
+    /// and the total deadline are the ones enforced before the artifact was
+    /// allocated rather than new ones granted after it.
+    ///
+    /// Ownership of both sensitive inputs is taken so they can be cleared
+    /// inside the operation instead of outliving it in a caller's buffer.
     ///
     /// Returns the sealed deployment's loaded state on success. The Server is
     /// already serving its operational surface by then.
     pub async fn restore(
         self: &Arc<Self>,
+        admission: BodyAdmission,
+        budget: RequestBudget,
+        correlation_identifier: String,
         artifact: Vec<u8>,
-        recovery_key: String,
+        recovery_key: Zeroizing<String>,
     ) -> Result<InitializedState, RestoreError> {
-        let budget = RequestBudget::start();
-
-        // Fail fast instead of queueing: a Restore that waited here would hold
-        // its artifact and recovery key resident for the whole wait, and the
-        // Restore contract already admits only one operation at a time.
-        let lane = Arc::clone(&self.mutation_lane)
-            .try_acquire_owned()
-            .map_err(|_| RestoreError::RestorePending)?;
-
         let artifact = Zeroizing::new(artifact);
-        let recovery_key = Zeroizing::new(recovery_key);
         let orchestrator = Arc::clone(self);
 
         // The entire authorize-through-seal chain is blocking work. Running it
@@ -128,8 +327,8 @@ impl RestoreOrchestrator {
         // seal on a single thread and outside any cancellation point, so no
         // caller timeout can abandon the deployment mid-replacement.
         task::spawn_blocking(move || {
-            let _lane = lane;
-            orchestrator.run(&budget, artifact, recovery_key)
+            let _admission = admission;
+            orchestrator.run(&budget, &correlation_identifier, artifact, recovery_key)
         })
         .await
         .map_err(|_| RestoreError::RestoreFailed)?
@@ -139,6 +338,7 @@ impl RestoreOrchestrator {
     fn run(
         &self,
         budget: &RequestBudget,
+        correlation_identifier: &str,
         artifact: Zeroizing<Vec<u8>>,
         recovery_key: Zeroizing<String>,
     ) -> Result<InitializedState, RestoreError> {
@@ -173,7 +373,6 @@ impl RestoreOrchestrator {
         let deployment_identifier = validated.deployment_identifier();
         let record_identifier = StateIdentifier::from_bytes(random_bytes()?)
             .map_err(|_| RestoreError::RestoreFailed)?;
-        let correlation_identifier = correlation_identifier()?;
 
         let (record, obligation) = self
             .observability
@@ -181,7 +380,7 @@ impl RestoreOrchestrator {
                 record_identifier,
                 deployment_identifier,
                 event_time_milliseconds()?,
-                &correlation_identifier,
+                correlation_identifier,
             )
             .map_err(|_| RestoreError::RestoreFailed)?
             .into_parts();
@@ -274,6 +473,241 @@ impl RestoreAuthority for AuthorizedTarget {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pending submission store
+// ---------------------------------------------------------------------------
+
+/// A retained recovery-key submission awaiting its artifact upload.
+///
+/// The ticket itself is not here: only its digest is, so this Server cannot
+/// reproduce, log, or leak a ticket it already returned. The recovery key is
+/// owned and cleared whenever this value is dropped, which is what every
+/// destroying path below relies on.
+struct PendingRestore {
+    digest: RestoreTicketDigest,
+    recovery_key: Zeroizing<String>,
+    correlation_identifier: String,
+    budget: RequestBudget,
+    expires_at: Deadline,
+}
+
+/// The single outstanding pending Restore.
+///
+/// At most one submission is retained at a time. Issuing while one is
+/// outstanding is rejected, and every claim consumes the entry whether or not
+/// it succeeds, so a replay, a concurrent claim, a wrong ticket, and an expired
+/// ticket all destroy the retained recovery key rather than leaving it
+/// available for another attempt.
+#[derive(Default)]
+struct PendingRestoreSlot {
+    entry: Mutex<Option<PendingRestore>>,
+}
+
+impl PendingRestoreSlot {
+    /// Retains one submission, rejecting a second outstanding one.
+    fn issue(&self, pending: PendingRestore) -> Result<(), RestoreError> {
+        let mut entry = self.held();
+        if entry
+            .as_ref()
+            .is_some_and(|held| held.expires_at > Deadline::now())
+        {
+            return Err(RestoreError::RestorePending);
+        }
+        // Assigning drops any expired entry still held, clearing its key.
+        *entry = Some(pending);
+        Ok(())
+    }
+
+    /// Consumes the outstanding submission and returns it only to its ticket.
+    ///
+    /// The entry is taken before the ticket is compared, so a failed claim is
+    /// not retryable: the recovery key is dropped on the way out of this
+    /// function no matter which check rejected it.
+    fn claim(&self, ticket: &str) -> Result<PendingRestore, PreBodyRejection> {
+        let submitted = RestoreTicketDigest::of(ticket);
+        let pending = self.held().take();
+
+        let pending = pending.ok_or(PreBodyRejection::RestoreTicketInvalid)?;
+        if !pending.digest.matches(&submitted) || pending.expires_at <= Deadline::now() {
+            return Err(PreBodyRejection::RestoreTicketInvalid);
+        }
+        Ok(pending)
+    }
+
+    /// Destroys the outstanding submission once its ticket has expired.
+    fn expire(&self, digest: &RestoreTicketDigest) {
+        let mut entry = self.held();
+        let expired = entry
+            .as_ref()
+            .is_some_and(|held| held.digest.matches(digest) && held.expires_at <= Deadline::now());
+        if expired {
+            *entry = None;
+        }
+    }
+
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<PendingRestore>> {
+        // A poisoned lane still holds a recovery key that must be destroyed, so
+        // recovering the guard is what keeps every destroying path reachable.
+        self.entry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The claimed submission a validated artifact upload carries to its handler.
+///
+/// It travels in the request extensions, so a client disconnect, an expired
+/// body deadline, an unreadable body, or any later failure drops it with the
+/// request and clears the recovery key it holds.
+struct ClaimedRestore {
+    pending: Mutex<Option<PendingRestore>>,
+}
+
+impl ClaimedRestore {
+    fn new(pending: PendingRestore) -> Self {
+        Self {
+            pending: Mutex::new(Some(pending)),
+        }
+    }
+
+    /// Takes the claimed submission exactly once.
+    fn take(&self) -> Option<PendingRestore> {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+}
+
+/// The request budget a recovery-key submission started.
+struct RestoreKeyAdmission {
+    budget: RequestBudget,
+}
+
+// ---------------------------------------------------------------------------
+// Admission checks
+// ---------------------------------------------------------------------------
+
+/// Head validation for the recovery-key submission.
+struct RestoreKeyCheck {
+    expected_origin: ExpectedOrigin,
+}
+
+impl PreBodyCheck for RestoreKeyCheck {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &axum::http::Uri,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        validate_restore_key_request(method, headers, self.expected_origin)
+            .map_err(pre_body_rejection)?;
+        // The total request budget starts here, before any recovery key byte is
+        // read, and the artifact upload later inherits exactly this budget.
+        Ok(
+            PreBodyGrant::accepted().with_value(PreBodyGrantValue::new(RestoreKeyAdmission {
+                budget: RequestBudget::start(),
+            })),
+        )
+    }
+}
+
+/// Head validation and ticket claim for the artifact upload.
+struct RestoreArtifactCheck {
+    expected_origin: ExpectedOrigin,
+    pending: Arc<PendingRestoreSlot>,
+}
+
+impl PreBodyCheck for RestoreArtifactCheck {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &axum::http::Uri,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        validate_restore_artifact_request(method, headers, self.expected_origin)
+            .map_err(pre_body_rejection)?;
+        let ticket = submitted_restore_ticket(headers).map_err(pre_body_rejection)?;
+        // Claimed before the artifact bound is allocated, so an unticketed or
+        // replayed upload costs this Server no memory at all.
+        let claimed = self.pending.claim(ticket)?;
+        let remaining = claimed
+            .budget
+            .remaining()
+            .ok_or(PreBodyRejection::RestoreTicketInvalid)?;
+        Ok(PreBodyGrant::accepted()
+            .with_remaining_budget(remaining)
+            .with_value(PreBodyGrantValue::new(ClaimedRestore::new(claimed))))
+    }
+}
+
+/// Lifecycle eligibility re-checked under the acquired mutation lane.
+///
+/// Route absence is necessary but not sufficient. The listener snapshots the
+/// router when it accepts a connection, so a connection accepted before a
+/// fail-closed publication still holds a router that mounts Restore. Reading
+/// the authoritative deployment record here, under the same lane a database
+/// selection and a checkpoint take, rejects that stale request before anything
+/// sensitive is read or allocated.
+struct RestoreEligibility {
+    arbiter: Arc<WorkflowArbiter>,
+}
+
+impl AdmittedCheck for RestoreEligibility {
+    fn check(&self) -> Pin<Box<dyn Future<Output = Result<(), PreBodyRejection>> + Send + '_>> {
+        let arbiter = Arc::clone(&self.arbiter);
+        Box::pin(async move {
+            let eligible = task::spawn_blocking(move || {
+                arbiter.record_state() == LifecycleState::Uninitialized
+                    && arbiter
+                        .projection()
+                        .is_ok_and(|projection| projection.database_selected())
+            })
+            .await
+            .unwrap_or(false);
+            if eligible {
+                Ok(())
+            } else {
+                Err(PreBodyRejection::RestoreNotAllowed)
+            }
+        })
+    }
+}
+
+/// Maps a route-level rejection onto the transport's closed rejection set.
+fn pre_body_rejection(rejection: RestoreRejection) -> PreBodyRejection {
+    match rejection {
+        RestoreRejection::RequestOriginDenied => PreBodyRejection::RequestOriginDenied,
+        RestoreRejection::RestoreTicketInvalid => PreBodyRejection::RestoreTicketInvalid,
+        RestoreRejection::RestoreNotAllowed => PreBodyRejection::RestoreNotAllowed,
+        _ => PreBodyRejection::BadRequest,
+    }
+}
+
+/// Maps a stable Restore failure onto its documented route rejection.
+fn restore_rejection(error: RestoreError) -> RestoreRejection {
+    match error {
+        RestoreError::RecoveryKeyInvalid => RestoreRejection::RecoveryKeyInvalid,
+        RestoreError::BackupInvalid => RestoreRejection::BackupInvalid,
+        RestoreError::BackupIncompatible => RestoreRejection::BackupIncompatible,
+        RestoreError::RestorePending => RestoreRejection::RestorePending,
+        RestoreError::Lifecycle(LifecycleError::InvalidState) => {
+            RestoreRejection::RestoreNotAllowed
+        }
+        RestoreError::Lifecycle(_) => RestoreRejection::ServiceUnavailable,
+        _ => RestoreRejection::RestoreFailed,
+    }
+}
+
+/// Takes ownership of an admitted body without copying it when it is unique.
+///
+/// The listener allocated exactly one artifact buffer under the Restore lane.
+/// Reusing that allocation keeps the resident cost at the approved bound
+/// instead of briefly doubling it on the way into the orchestration.
+fn owned_bytes(artifact: axum::body::Bytes) -> Vec<u8> {
+    artifact
+        .try_into_mut()
+        .map_or_else(|shared| shared.to_vec(), Vec::from)
+}
+
 /// Selects the Log Module the restored backup assigns the System Log to.
 ///
 /// Reads only the validated in-memory backup, so the acknowledgement is
@@ -342,4 +776,527 @@ fn event_time_milliseconds() -> Result<i64, RestoreError> {
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
         .ok_or(RestoreError::RestoreFailed)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fmt, sync::Barrier, thread, time::Duration, time::Instant as Monotonic};
+
+    use axum::{Router, body::Body, extract::Request};
+    use weavelit_module_client::RESTORE_TICKET_HEADER_NAME;
+
+    use super::{
+        Arc, ClaimedRestore, Deadline, ExpectedOrigin, MAX_CONCURRENT_RESTORE_OPERATIONS,
+        MAX_ENCRYPTED_ARTIFACT_BYTES, Method, PendingRestore, PendingRestoreSlot,
+        RESTORE_ARTIFACT_PROFILE, RESTORE_ARTIFACT_ROUTE, RequestBudget, RestoreArtifactCheck,
+        RestoreError, RestoreTicket, TOTAL_REQUEST_DEADLINE, UPLOAD_DEADLINE, Zeroizing,
+    };
+    use crate::{
+        RateLimiter, capped_deadline,
+        transport::{
+            Classified, MountedSurface, PreBodyRejection, TransportBudget, TransportCapability,
+            TransportRegistration,
+        },
+    };
+
+    /// The listener authority every Restore request in this module targets.
+    const LISTENER: &str = "127.0.0.1:8443";
+
+    /// The source address a driven request is admitted from.
+    const SOURCE: &str = "127.0.0.1";
+
+    /// A recovery key stand-in. No assertion below may ever find it rendered.
+    const RECOVERY_KEY: &str = "AGE-SECRET-KEY-1TESTONLYRECOVERYKEYMATERIAL";
+
+    /// The correlation identifier a retained submission carries.
+    const CORRELATION: &str = "0123456789abcdef0123456789abcdef";
+
+    fn expected_origin() -> ExpectedOrigin {
+        ExpectedOrigin::from_listener(LISTENER.parse().expect("the listener authority parses"))
+    }
+
+    /// Mints a distinct well-formed ticket for each seed.
+    fn seeded_ticket(seed: u8) -> RestoreTicket {
+        let mut entropy = [0_u8; 32];
+        for (index, byte) in entropy.iter_mut().enumerate() {
+            *byte = seed
+                .wrapping_mul(37)
+                .wrapping_add(u8::try_from(index).unwrap_or(u8::MAX));
+        }
+        RestoreTicket::from_entropy(entropy)
+    }
+
+    /// Builds a retained submission holding [`RECOVERY_KEY`].
+    fn retained(
+        ticket: &RestoreTicket,
+        budget: RequestBudget,
+        expires_at: Deadline,
+    ) -> PendingRestore {
+        PendingRestore {
+            digest: ticket.digest(),
+            recovery_key: Zeroizing::new(RECOVERY_KEY.to_owned()),
+            correlation_identifier: CORRELATION.to_owned(),
+            budget,
+            expires_at,
+        }
+    }
+
+    /// An expiry the slot has not reached yet.
+    fn live() -> Deadline {
+        Deadline::now() + UPLOAD_DEADLINE
+    }
+
+    /// An expiry every later read has already passed.
+    ///
+    /// The slot compares with `<=` and the monotonic clock never runs
+    /// backwards, so this instant is expired at every subsequent observation
+    /// without any test waiting on wall-clock time.
+    fn already_expired() -> Deadline {
+        Deadline::now()
+    }
+
+    fn retains_a_submission(slot: &PendingRestoreSlot) -> bool {
+        slot.held().is_some()
+    }
+
+    /// Returns the rejection a claim produced.
+    ///
+    /// Written without `unwrap_err` because the claimed submission implements
+    /// no `Debug` that could render the recovery key it holds.
+    fn claim_rejection(slot: &PendingRestoreSlot, ticket: &str) -> PreBodyRejection {
+        slot.claim(ticket)
+            .err()
+            .expect("the claim must have been rejected")
+    }
+
+    // -----------------------------------------------------------------------
+    // One-time ticket slot
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_ticket_is_claimable_exactly_once() {
+        let slot = PendingRestoreSlot::default();
+        let ticket = seeded_ticket(1);
+        slot.issue(retained(&ticket, RequestBudget::start(), live()))
+            .expect("the first submission is retained");
+
+        let claimed = slot
+            .claim(ticket.as_str())
+            .expect("the issuing ticket claims its own submission");
+        assert_eq!(claimed.recovery_key.as_str(), RECOVERY_KEY);
+        assert_eq!(claimed.correlation_identifier, CORRELATION);
+
+        assert_eq!(
+            claim_rejection(&slot, ticket.as_str()),
+            PreBodyRejection::RestoreTicketInvalid
+        );
+    }
+
+    #[test]
+    fn a_replayed_ticket_finds_the_recovery_key_already_destroyed() {
+        let slot = PendingRestoreSlot::default();
+        let ticket = seeded_ticket(2);
+        slot.issue(retained(&ticket, RequestBudget::start(), live()))
+            .expect("the first submission is retained");
+
+        let claimed = slot.claim(ticket.as_str()).expect("the first claim wins");
+        // The successful claim moved the retained submission out of the slot,
+        // so the replay below is refused by an empty slot rather than by a
+        // comparison against a recovery key this Server still holds.
+        assert!(!retains_a_submission(&slot));
+        drop(claimed);
+
+        assert_eq!(
+            claim_rejection(&slot, ticket.as_str()),
+            PreBodyRejection::RestoreTicketInvalid
+        );
+        assert!(!retains_a_submission(&slot));
+    }
+
+    #[test]
+    fn a_wrong_ticket_destroys_the_outstanding_submission() {
+        let slot = PendingRestoreSlot::default();
+        let issued = seeded_ticket(3);
+        let wrong = seeded_ticket(4);
+        slot.issue(retained(&issued, RequestBudget::start(), live()))
+            .expect("the submission is retained");
+
+        assert_eq!(
+            claim_rejection(&slot, wrong.as_str()),
+            PreBodyRejection::RestoreTicketInvalid
+        );
+        // A failed claim is deliberately not retryable: the entry is taken
+        // before the ticket is compared, so the recovery key is gone and the
+        // ticket this Server actually issued no longer opens anything.
+        assert!(!retains_a_submission(&slot));
+        assert_eq!(
+            claim_rejection(&slot, issued.as_str()),
+            PreBodyRejection::RestoreTicketInvalid
+        );
+    }
+
+    #[test]
+    fn two_concurrent_claims_admit_exactly_one() {
+        // The lane admits one Restore at a time, and the slot must reach the
+        // same outcome even when two claims race outside that lane.
+        assert_eq!(MAX_CONCURRENT_RESTORE_OPERATIONS, 1);
+
+        for attempt in 0..64_u8 {
+            let slot = Arc::new(PendingRestoreSlot::default());
+            let ticket = seeded_ticket(attempt);
+            slot.issue(retained(&ticket, RequestBudget::start(), live()))
+                .expect("the submission is retained");
+
+            let start = Arc::new(Barrier::new(2));
+            let outcomes = thread::scope(|scope| {
+                let claimants: Vec<_> = (0..2)
+                    .map(|_| {
+                        let slot = Arc::clone(&slot);
+                        let start = Arc::clone(&start);
+                        let submitted = ticket.as_str().to_owned();
+                        scope.spawn(move || {
+                            start.wait();
+                            slot.claim(&submitted)
+                                .map(|claimed| claimed.recovery_key.as_str() == RECOVERY_KEY)
+                        })
+                    })
+                    .collect();
+                claimants
+                    .into_iter()
+                    .map(|claimant| claimant.join().expect("a claiming thread must not panic"))
+                    .collect::<Vec<_>>()
+            });
+
+            let claimed: Vec<_> = outcomes
+                .iter()
+                .filter_map(|outcome| outcome.as_ref().ok())
+                .collect();
+            assert_eq!(claimed.len(), 1, "attempt {attempt}");
+            assert_eq!(claimed[0], &true, "attempt {attempt}");
+            let rejected: Vec<_> = outcomes
+                .iter()
+                .filter_map(|outcome| outcome.as_ref().err())
+                .collect();
+            assert_eq!(
+                rejected,
+                vec![&PreBodyRejection::RestoreTicketInvalid],
+                "attempt {attempt}"
+            );
+            assert!(!retains_a_submission(&slot), "attempt {attempt}");
+        }
+    }
+
+    #[test]
+    fn an_expired_submission_is_destroyed_and_a_new_one_is_then_permitted() {
+        let slot = PendingRestoreSlot::default();
+        let abandoned = seeded_ticket(5);
+        slot.issue(retained(
+            &abandoned,
+            RequestBudget::start(),
+            already_expired(),
+        ))
+        .expect("the abandoned submission is retained");
+
+        // A digest that is not the retained one destroys nothing.
+        slot.expire(&seeded_ticket(6).digest());
+        assert!(retains_a_submission(&slot));
+
+        // Its own scheduled expiry destroys it without waiting for a later
+        // request to notice, so no recovery key stays resident.
+        slot.expire(&abandoned.digest());
+        assert!(!retains_a_submission(&slot));
+
+        let replacement = seeded_ticket(7);
+        slot.issue(retained(&replacement, RequestBudget::start(), live()))
+            .expect("a new submission is permitted once the slot is free");
+        assert!(slot.claim(replacement.as_str()).is_ok());
+    }
+
+    #[test]
+    fn a_live_submission_is_never_destroyed_by_an_expiry_sweep() {
+        let slot = PendingRestoreSlot::default();
+        let ticket = seeded_ticket(8);
+        slot.issue(retained(&ticket, RequestBudget::start(), live()))
+            .expect("the submission is retained");
+
+        slot.expire(&ticket.digest());
+        assert!(
+            slot.claim(ticket.as_str()).is_ok(),
+            "an unexpired submission survives its own digest's sweep"
+        );
+    }
+
+    #[test]
+    fn issuing_while_a_live_submission_is_outstanding_is_rejected() {
+        let slot = PendingRestoreSlot::default();
+        let outstanding = seeded_ticket(9);
+        slot.issue(retained(&outstanding, RequestBudget::start(), live()))
+            .expect("the first submission is retained");
+
+        let intruder = seeded_ticket(10);
+        assert_eq!(
+            slot.issue(retained(&intruder, RequestBudget::start(), live()))
+                .unwrap_err(),
+            RestoreError::RestorePending
+        );
+
+        // The rejected issue neither replaced nor destroyed the outstanding
+        // submission, so the first ticket still claims its own recovery key.
+        let claimed = slot
+            .claim(outstanding.as_str())
+            .expect("the outstanding submission survives a rejected issue");
+        assert_eq!(claimed.recovery_key.as_str(), RECOVERY_KEY);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rendering
+    // -----------------------------------------------------------------------
+
+    /// Renders a value only through the traits it actually implements.
+    ///
+    /// The inherent methods below apply only when their bound holds, so a type
+    /// that implements neither trait falls back to [`UnrenderableValue`] and
+    /// reports nothing. Deriving `Debug` on a type asserted here turns its
+    /// result from `None` into `Some`, which fails the assertion.
+    struct Rendering<'value, T>(&'value T);
+
+    trait UnrenderableValue {
+        fn debug_text(&self) -> Option<String> {
+            None
+        }
+
+        fn display_text(&self) -> Option<String> {
+            None
+        }
+    }
+
+    impl<T> UnrenderableValue for Rendering<'_, T> {}
+
+    impl<T: fmt::Debug> Rendering<'_, T> {
+        fn debug_text(&self) -> Option<String> {
+            Some(format!("{:?}", self.0))
+        }
+    }
+
+    impl<T: fmt::Display> Rendering<'_, T> {
+        fn display_text(&self) -> Option<String> {
+            Some(self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn no_retained_restore_value_renders_a_ticket_or_a_recovery_key() {
+        let ticket = seeded_ticket(11);
+        let digest = ticket.digest();
+        let pending = retained(&ticket, RequestBudget::start(), live());
+        let claimed = ClaimedRestore::new(retained(&ticket, RequestBudget::start(), live()));
+
+        // The two values that do render are redacted, and neither reproduces
+        // the ticket they were derived from.
+        let rendered = [
+            Rendering(&ticket).debug_text(),
+            Rendering(&digest).debug_text(),
+        ];
+        assert_eq!(
+            rendered,
+            [
+                Some("RestoreTicket(redacted)".to_owned()),
+                Some("RestoreTicketDigest(redacted)".to_owned()),
+            ]
+        );
+        for text in rendered.iter().flatten() {
+            assert!(!text.contains(ticket.as_str()), "{text}");
+            assert!(!text.contains(RECOVERY_KEY), "{text}");
+        }
+        assert_eq!(Rendering(&ticket).display_text(), None);
+        assert_eq!(Rendering(&digest).display_text(), None);
+
+        // The two values that hold the recovery key render at all through
+        // neither trait, so no format string can reach the key they own.
+        assert_eq!(Rendering(&pending).debug_text(), None);
+        assert_eq!(Rendering(&pending).display_text(), None);
+        assert_eq!(Rendering(&claimed).debug_text(), None);
+        assert_eq!(Rendering(&claimed).display_text(), None);
+
+        // Control: the probe does report a rendering whenever the trait is
+        // implemented, so every `None` above is a real absence rather than a
+        // helper that never reports anything.
+        let control = RECOVERY_KEY.to_owned();
+        assert_eq!(
+            Rendering(&control).debug_text(),
+            Some(format!("{RECOVERY_KEY:?}"))
+        );
+        assert_eq!(
+            Rendering(&control).display_text(),
+            Some(RECOVERY_KEY.to_owned())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Inherited request budget at the artifact route's admission boundary
+    // -----------------------------------------------------------------------
+
+    /// Mounts the artifact route's registered pre-body check on its own
+    /// surface, so the chain below runs exactly the validation the listener
+    /// runs before it allocates an artifact.
+    fn artifact_surface(pending: &Arc<PendingRestoreSlot>) -> MountedSurface {
+        let registration = TransportRegistration::new(
+            Method::PUT,
+            RESTORE_ARTIFACT_ROUTE,
+            RESTORE_ARTIFACT_PROFILE,
+        )
+        .with_pre_body_check(Arc::new(RestoreArtifactCheck {
+            expected_origin: expected_origin(),
+            pending: Arc::clone(pending),
+        }));
+        MountedSurface::without_registrations(Router::new())
+            .with_capability(TransportCapability::new(registration, |router| router))
+    }
+
+    /// Builds an otherwise valid artifact upload head.
+    fn artifact_request(ticket: &str, declared_bytes: usize) -> Request {
+        Request::builder()
+            .method(Method::PUT)
+            .uri(RESTORE_ARTIFACT_ROUTE)
+            .header("host", LISTENER)
+            .header("origin", format!("https://{LISTENER}"))
+            .header("x-weavelit-csrf", "1")
+            .header("content-type", "application/octet-stream")
+            .header(RESTORE_TICKET_HEADER_NAME, ticket)
+            .header("content-length", declared_bytes.to_string())
+            .body(Body::empty())
+            .expect("the artifact upload head is well formed")
+    }
+
+    /// Runs the listener's admission chain up to route classification.
+    fn classify(surface: &MountedSurface, request: Request) -> Classified {
+        crate::transport::HeadRead::new(request)
+            .admit_rate(
+                &RateLimiter::new(),
+                SOURCE.parse().expect("the source address parses"),
+                Monotonic::now(),
+            )
+            .map_err(|_| "a fresh rate limiter admits the first request")
+            .expect("a fresh rate limiter admits the first request")
+            .classify(surface.registry())
+    }
+
+    #[test]
+    fn an_artifact_upload_inherits_the_budget_the_key_submission_started() {
+        /// Elapsed time the claim must still be carrying afterwards.
+        const ELAPSED: Duration = Duration::from_millis(20);
+
+        let slot = Arc::new(PendingRestoreSlot::default());
+        let ticket = seeded_ticket(12);
+        let submitted = RequestBudget::start();
+        slot.issue(retained(&ticket, submitted, live()))
+            .expect("the submission is retained");
+
+        // Advances the monotonic clock past the exact quantity the assertion
+        // reads, so the elapsed time is an established precondition rather
+        // than a wall-clock wait that could observe less than it needs.
+        while submitted.elapsed() < ELAPSED {
+            std::hint::spin_loop();
+        }
+
+        let surface = artifact_surface(&slot);
+        let validated = classify(&surface, artifact_request(ticket.as_str(), 1024))
+            .check_framing()
+            .expect("the declared artifact is inside the approved bound")
+            .validate()
+            .expect("the issuing ticket is admitted");
+
+        let remaining = validated
+            .remaining_budget()
+            .expect("a claimed upload carries the budget it inherited");
+        // A budget restarted by the claim would still have the whole total
+        // deadline left; an inherited one has already spent `ELAPSED`.
+        assert!(
+            remaining <= TOTAL_REQUEST_DEADLINE - ELAPSED,
+            "the claim must inherit the elapsed time: {remaining:?}"
+        );
+        assert!(remaining > Duration::ZERO);
+    }
+
+    #[test]
+    fn an_artifact_upload_is_bounded_by_the_smaller_of_its_two_deadlines() {
+        let slot = Arc::new(PendingRestoreSlot::default());
+        let ticket = seeded_ticket(13);
+        slot.issue(retained(&ticket, RequestBudget::start(), live()))
+            .expect("the submission is retained");
+
+        let surface = artifact_surface(&slot);
+        let classified = classify(&surface, artifact_request(ticket.as_str(), 1024));
+        let profile = classified.profile();
+        assert_eq!(profile.max_body_bytes(), MAX_ENCRYPTED_ARTIFACT_BYTES);
+        assert_eq!(
+            profile.budget(),
+            TransportBudget::Admitted {
+                body_read: UPLOAD_DEADLINE,
+                processing: TOTAL_REQUEST_DEADLINE,
+            }
+        );
+
+        let inherited = classified
+            .check_framing()
+            .expect("the declared artifact is inside the approved bound")
+            .validate()
+            .expect("the issuing ticket is admitted")
+            .remaining_budget()
+            .expect("a claimed upload carries the budget it inherited");
+
+        let admitted_at = Deadline::now();
+        // A head budget far longer than either Restore deadline, so only the
+        // registered profile and the inherited remainder can bound the read.
+        let head_deadline = admitted_at + TOTAL_REQUEST_DEADLINE * 2;
+        let upload_deadline = profile.body_deadline(head_deadline, admitted_at);
+        assert_eq!(upload_deadline, admitted_at + UPLOAD_DEADLINE);
+
+        // The listener caps the read at the earlier of the two. The inherited
+        // remainder of a freshly started total budget is the larger, so the
+        // upload deadline bounds this request.
+        assert!(inherited > UPLOAD_DEADLINE);
+        assert_eq!(
+            capped_deadline(upload_deadline, Some(admitted_at + inherited)),
+            upload_deadline
+        );
+        // A remainder smaller than the upload deadline bounds it instead, so
+        // the upload can never outlive the budget the key submission started.
+        let nearly_spent = admitted_at + Duration::from_secs(1);
+        assert_eq!(
+            capped_deadline(upload_deadline, Some(nearly_spent)),
+            nearly_spent
+        );
+    }
+
+    #[test]
+    fn an_oversized_declared_artifact_is_rejected_before_its_ticket_is_claimed() {
+        let slot = Arc::new(PendingRestoreSlot::default());
+        let ticket = seeded_ticket(14);
+        slot.issue(retained(&ticket, RequestBudget::start(), live()))
+            .expect("the submission is retained");
+
+        let surface = artifact_surface(&slot);
+        let oversized = classify(
+            &surface,
+            artifact_request(ticket.as_str(), MAX_ENCRYPTED_ARTIFACT_BYTES + 1),
+        );
+        assert!(
+            oversized.check_framing().is_err(),
+            "one byte over the approved bound is refused"
+        );
+        // Framing precedes the pre-body check, which precedes the only body
+        // allocation, so the rejection cost this Server neither the artifact's
+        // memory nor its outstanding submission.
+        assert!(retains_a_submission(&slot));
+
+        // The approved bound itself still frames, so the rejection above is
+        // the bound and not a blanket refusal.
+        let at_bound = classify(
+            &surface,
+            artifact_request(ticket.as_str(), MAX_ENCRYPTED_ARTIFACT_BYTES),
+        );
+        assert!(at_bound.check_framing().is_ok());
+        assert!(retains_a_submission(&slot));
+    }
 }

@@ -30,7 +30,8 @@ state normalization performed before any deployment state is replaced.
   canonical recovery-key handling, authenticated decryption, backup content
   normalization, redacted errors, and the validation entry point. `src/state.rs`
   re-seals every recovered secret under the replacement deployment's at-rest key
-  and assembles the replacement application state. `src/vectors.rs`
+  and assembles the replacement application state. `src/ticket.rs` mints the
+  one-time submission ticket and its retained digest. `src/vectors.rs`
   is compiled only under `cfg(test)` and runs the reader against the vendored
   external age vectors.
 - `examples/`: Development-only fixture generator; it is never linked into the

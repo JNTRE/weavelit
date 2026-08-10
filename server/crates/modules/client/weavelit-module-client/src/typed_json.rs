@@ -5,6 +5,11 @@
 //! API contract approves. Every part of an envelope is drawn from a validated
 //! closed character set, so no escaping is required and no request content, no
 //! message, no field path, no trace, and no dependency name can appear.
+//!
+//! The envelopes live in the shared Client Module crate because they are part
+//! of the API contract every Client Module route answers with, not part of any
+//! one route's implementation. The Server core only serializes them and
+//! enforces their derived byte bound at the transport boundary.
 
 use std::fmt::Write;
 
@@ -13,13 +18,22 @@ use axum::{body::Body, http::StatusCode, response::Response};
 /// Longest stable code or result field name the typed profile serializes.
 pub const MAX_STABLE_CODE_BYTES: usize = 48;
 
+/// Longest opaque token the typed profile serializes.
+///
+/// A token is an independent, high-entropy, single-use bearer value a route
+/// returns to the client that requested it, such as the Restore submission
+/// ticket. It is bounded by the stable-code bound so a token field can never
+/// cost more than a code field, and the derived envelope bound below therefore
+/// does not change when a route returns one.
+pub const MAX_OPAQUE_TOKEN_BYTES: usize = MAX_STABLE_CODE_BYTES;
+
 /// Longest correlation identifier the typed profile serializes.
 ///
 /// This matches the canonical correlation-identifier bound recorded by
 /// `weavelit_server_database::MAX_LOG_CORRELATION_IDENTIFIER_LENGTH`, so an
 /// envelope can carry any correlation value the Server already records. That
-/// crate is a development dependency here, so the bound is restated rather
-/// than imported.
+/// crate is not a dependency here, so the bound is restated rather than
+/// imported.
 pub const MAX_RESPONSE_CORRELATION_BYTES: usize = 64;
 
 /// Most fields one typed result object may carry.
@@ -39,6 +53,38 @@ impl StableCode {
         if !value
             .bytes()
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_'))
+        {
+            return None;
+        }
+        Some(Self(value.to_owned()))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// An opaque single-use bearer token a route returns exactly once.
+///
+/// The accepted set is unpadded URL-safe Base64, so a token is serialized
+/// without escaping and a value that is not a canonical token cannot be
+/// returned at all.
+///
+/// The wrapped value is a bearer secret, so this type renders nothing: it
+/// implements neither `Debug` nor `Display`, and no comparison.
+#[derive(Clone)]
+pub struct OpaqueToken(String);
+
+impl OpaqueToken {
+    /// Accepts only `[A-Za-z0-9_-]` within the token bound.
+    #[must_use]
+    pub fn new(value: &str) -> Option<Self> {
+        if value.is_empty() || value.len() > MAX_OPAQUE_TOKEN_BYTES {
+            return None;
+        }
+        if !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
         {
             return None;
         }
@@ -81,7 +127,7 @@ impl ResponseCorrelation {
 }
 
 /// Closed set of values a typed result field may carry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum TypedValue {
     /// A JSON boolean.
     Boolean(bool),
@@ -89,10 +135,12 @@ pub enum TypedValue {
     Unsigned(u64),
     /// A stable code emitted as a JSON string.
     Code(StableCode),
+    /// An opaque single-use token emitted as a JSON string.
+    Token(OpaqueToken),
 }
 
 /// The bounded object a typed success envelope carries as `result`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct TypedResult {
     fields: Vec<(StableCode, TypedValue)>,
 }
@@ -116,7 +164,7 @@ impl TypedResult {
 }
 
 /// The only JSON shapes the typed response profile may emit.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum TypedJsonEnvelope {
     /// `{"result":{...},"correlation_id":"..."}`.
     Result {
@@ -159,6 +207,9 @@ impl TypedJsonEnvelope {
                         TypedValue::Code(code) => {
                             let _ = write!(text, "\"{}\"", code.as_str());
                         }
+                        TypedValue::Token(token) => {
+                            let _ = write!(text, "\"{}\"", token.as_str());
+                        }
                     }
                 }
                 let _ = write!(
@@ -196,8 +247,9 @@ pub fn typed_json_response(status: StatusCode, envelope: TypedJsonEnvelope) -> R
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_RESPONSE_CORRELATION_BYTES, MAX_STABLE_CODE_BYTES, MAX_TYPED_RESULT_FIELDS,
-        ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
+        MAX_OPAQUE_TOKEN_BYTES, MAX_RESPONSE_CORRELATION_BYTES, MAX_STABLE_CODE_BYTES,
+        MAX_TYPED_RESULT_FIELDS, OpaqueToken, ResponseCorrelation, StableCode, TypedJsonEnvelope,
+        TypedResult, TypedValue,
     };
 
     fn correlation() -> ResponseCorrelation {
@@ -206,6 +258,10 @@ mod tests {
 
     fn longest_code() -> StableCode {
         StableCode::new(&"a".repeat(MAX_STABLE_CODE_BYTES)).unwrap()
+    }
+
+    fn longest_token() -> OpaqueToken {
+        OpaqueToken::new(&"a".repeat(MAX_OPAQUE_TOKEN_BYTES)).unwrap()
     }
 
     #[test]
@@ -225,6 +281,26 @@ mod tests {
             assert!(StableCode::new(rejected).is_none(), "{rejected}");
         }
         assert!(StableCode::new(&"a".repeat(MAX_STABLE_CODE_BYTES + 1)).is_none());
+    }
+
+    #[test]
+    fn opaque_tokens_accept_only_the_closed_character_set() {
+        assert!(OpaqueToken::new("Ab0-_zZ9").is_some());
+        assert!(OpaqueToken::new(&"a".repeat(MAX_OPAQUE_TOKEN_BYTES)).is_some());
+        for rejected in [
+            "",
+            "with space",
+            "with\"quote",
+            "with\\escape",
+            "with{brace}",
+            "with\nnewline",
+            "with+plus",
+            "with/slash",
+            "with=padding",
+        ] {
+            assert!(OpaqueToken::new(rejected).is_none(), "{rejected}");
+        }
+        assert!(OpaqueToken::new(&"a".repeat(MAX_OPAQUE_TOKEN_BYTES + 1)).is_none());
     }
 
     #[test]
@@ -284,13 +360,18 @@ mod tests {
                     StableCode::new("state").unwrap(),
                     TypedValue::Code(StableCode::new("uninitialized").unwrap()),
                 )
+                .unwrap()
+                .with_field(
+                    StableCode::new("restore_ticket").unwrap(),
+                    TypedValue::Token(OpaqueToken::new("Ab0-_zZ9").unwrap()),
+                )
                 .unwrap(),
             correlation_id: correlation.clone(),
         };
         assert_eq!(
             result.serialize(),
-            "{\"result\":{\"accepted\":true,\"bytes\":0,\"state\":\"uninitialized\"},\
-             \"correlation_id\":\"restore-0123456789\"}"
+            "{\"result\":{\"accepted\":true,\"bytes\":0,\"state\":\"uninitialized\",\
+             \"restore_ticket\":\"Ab0-_zZ9\"},\"correlation_id\":\"restore-0123456789\"}"
         );
 
         let empty = TypedJsonEnvelope::Result {
@@ -309,9 +390,11 @@ mod tests {
     /// The error envelope costs `{"error":"` (10) plus a 48-byte code, plus
     /// `","correlation_id":"` (20), plus a 64-byte correlation, plus `"}` (2):
     /// 144 bytes. The result envelope costs `{"result":{` (11), plus four
-    /// fields of a 48-byte quoted name, a colon, and a 48-byte quoted code
-    /// (101 each), plus three separating commas, plus `},"correlation_id":"`
-    /// (20), plus a 64-byte correlation, plus `"}` (2): 504 bytes.
+    /// fields of a 48-byte quoted name, a colon, and a 48-byte quoted code or
+    /// token (101 each), plus three separating commas, plus
+    /// `},"correlation_id":"` (20), plus a 64-byte correlation, plus `"}` (2):
+    /// 504 bytes. A token field is bounded exactly as a code field is, so the
+    /// derivation is the same whichever string value a field carries.
     #[test]
     fn the_largest_envelope_matches_the_derived_bound() {
         let error = TypedJsonEnvelope::Error {
@@ -320,17 +403,19 @@ mod tests {
         };
         assert_eq!(error.serialize().len(), 144);
 
-        let mut result = TypedResult::new();
-        for _ in 0..MAX_TYPED_RESULT_FIELDS {
-            result = result
-                .with_field(longest_code(), TypedValue::Code(longest_code()))
-                .unwrap();
+        for value in [
+            TypedValue::Code(longest_code()),
+            TypedValue::Token(longest_token()),
+        ] {
+            let mut result = TypedResult::new();
+            for _ in 0..MAX_TYPED_RESULT_FIELDS {
+                result = result.with_field(longest_code(), value.clone()).unwrap();
+            }
+            let largest = TypedJsonEnvelope::Result {
+                result,
+                correlation_id: correlation(),
+            };
+            assert_eq!(largest.serialize().len(), 504);
         }
-        let largest = TypedJsonEnvelope::Result {
-            result,
-            correlation_id: correlation(),
-        };
-        assert_eq!(largest.serialize().len(), 504);
-        assert!(largest.serialize().len() <= crate::MAX_TYPED_JSON_BODY_BYTES);
     }
 }

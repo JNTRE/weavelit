@@ -14,7 +14,12 @@ use weavelit_server_log::{
     LogRecordPersistenceView, LogRecordType, TrustedLogModuleContext,
 };
 
-const MODULE_IDENTIFIER: &str = "sqlite";
+/// The canonical identifier this Log Module is compiled in and registered under.
+///
+/// It is the single source of the Server's compiled-in Log Module inventory, so
+/// a Restore cannot be judged against a component name the runtime restated by
+/// hand.
+pub const MODULE_IDENTIFIER: &str = "sqlite";
 const DATABASE_FILENAME: &str = "log.sqlite3";
 const DATABASE_SIDECAR_FILENAMES: [&str; 3] =
     ["log.sqlite3-journal", "log.sqlite3-wal", "log.sqlite3-shm"];

@@ -86,6 +86,15 @@ impl RequestBudget {
         self.started.elapsed()
     }
 
+    /// Returns the time left before the approved total deadline, if any.
+    ///
+    /// A budget is inherited across the two Restore submission requests, so an
+    /// artifact upload is bounded by what remains of the deadline the recovery
+    /// key submission started, never by a fresh one.
+    pub fn remaining(&self) -> Option<Duration> {
+        TOTAL_REQUEST_DEADLINE.checked_sub(self.elapsed())
+    }
+
     /// Rejects the request once the approved total deadline has passed.
     pub fn check(&self) -> Result<(), RestoreError> {
         check_total_elapsed(self.elapsed())

@@ -3,7 +3,7 @@
 //! Restricted lifecycle startup composition for the Weavelit Server.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     env, fmt, fs,
     io::{ErrorKind, Read},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -53,12 +53,14 @@ use weavelit_server_lifecycle::{
     ValidatedConnectionSettings, WorkflowArbiter, WorkflowError, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
+use weavelit_server_restore::{AvailableComponents, Name};
 
 pub mod restore;
 pub mod transport;
-pub mod typed_json;
 
-use transport::{HeadRead, MountedSurface};
+pub use weavelit_module_client::typed_json;
+
+use transport::{HeadRead, MountedSurface, TransportCapability};
 use typed_json::TypedJsonEnvelope;
 
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
@@ -854,72 +856,93 @@ pub async fn run_restricted_https_listener(
     let tcp_listener = TcpListener::bind(listener.address())
         .await
         .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-    let result = serve_restricted_https_listener(
-        tcp_listener,
-        listener.tls_config(),
-        startup.composition.clone(),
-    )
-    .await;
+    let serving = serve_restricted_https_listener(tcp_listener, listener.tls_config(), &startup)?;
+    let result = serving.await;
     drop(startup);
     result
 }
 
-async fn serve_restricted_https_listener(
+/// Composes the listener's serving modes and returns the future that serves them.
+///
+/// Composition is synchronous and the returned future owns every value it
+/// needs. A sealed startup holds its Application Database open, and that
+/// database is not `Sync`, so borrowing the startup across an await point would
+/// make the whole listener unspawnable. The caller keeps the startup alive for
+/// as long as it drives the returned future.
+fn serve_restricted_https_listener(
     tcp_listener: TcpListener,
     tls_config: Arc<ServerConfig>,
-    composition: PreoperationalComposition,
-) -> Result<(), StartupError> {
+    startup: &RestrictedStartup,
+) -> Result<impl Future<Output = Result<(), StartupError>> + Send + use<>, StartupError> {
     // The expected request origin is the address actually bound, never a value
     // taken from a request header or a certificate subject alternative name.
     let bound_address = tcp_listener
         .local_addr()
         .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-    // Retained for the listener's lifetime so a later transition can publish a
-    // new serving mode into the running listener.
-    let (_serving_mode_switch, serving_modes) =
-        ServingModeSwitch::new(initial_serving_mode(&composition, bound_address));
-    let tls_acceptor = TlsAcceptor::from(tls_config);
-    let slots = ConnectionSlots::new();
-    let rate_limiter = Arc::new(RateLimiter::new());
+    // The switch is created before any surface is composed, and starts closed.
+    // Restore needs the publisher to move the listener between modes, and the
+    // pre-operational surface needs Restore, so the publisher must exist first.
+    // Nothing is served until the initial mode below is published.
+    let (serving_mode_switch, serving_modes) = ServingModeSwitch::new(ServingMode::FailClosed(
+        MountedSurface::without_registrations(fallback_router()),
+    ));
+    let serving_mode_switch = Arc::new(serving_mode_switch);
+    let composer = PreoperationalComposer::new(startup, bound_address, &serving_mode_switch);
+    composer.publish_initial(startup.composition.outcome);
 
-    loop {
-        let (stream, source) = tcp_listener
-            .accept()
-            .await
-            .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-        if !is_trusted_loopback_peer(source.ip()) {
-            drop(stream);
-            continue;
-        }
-        // Snapshot before spawning: an in-flight connection keeps serving the
-        // surface it snapshotted, and only a newly accepted connection sees a
-        // newer mode. The router and its transport registrations are one value,
-        // so they are always snapshotted and swapped together. The borrow guard
-        // is dropped at the end of this statement because holding it across an
-        // await would block the publisher.
-        let surface = serving_modes.borrow().surface().clone();
-        if let Ok(connection_permit) = Arc::clone(&slots.normal).try_acquire_owned() {
-            let tls_acceptor = tls_acceptor.clone();
-            let rate_limiter = Arc::clone(&rate_limiter);
-            tokio::spawn(async move {
-                serve_normal_connection(stream, source.ip(), tls_acceptor, surface, rate_limiter)
+    Ok(async move {
+        // Retained for the listener's lifetime so a later transition can still
+        // republish a surface into the running listener.
+        let _composer = composer;
+        let tls_acceptor = TlsAcceptor::from(tls_config);
+        let slots = ConnectionSlots::new();
+        let rate_limiter = Arc::new(RateLimiter::new());
+
+        loop {
+            let (stream, source) = tcp_listener
+                .accept()
+                .await
+                .map_err(|_| StartupError::HttpsListenerUnavailable)?;
+            if !is_trusted_loopback_peer(source.ip()) {
+                drop(stream);
+                continue;
+            }
+            // Snapshot before spawning: an in-flight connection keeps serving
+            // the surface it snapshotted, and only a newly accepted connection
+            // sees a newer mode. The router and its transport registrations are
+            // one value, so they are always snapshotted and swapped together.
+            // The borrow guard is dropped at the end of this statement because
+            // holding it across an await would block the publisher.
+            let surface = serving_modes.borrow().surface().clone();
+            if let Ok(connection_permit) = Arc::clone(&slots.normal).try_acquire_owned() {
+                let tls_acceptor = tls_acceptor.clone();
+                let rate_limiter = Arc::clone(&rate_limiter);
+                tokio::spawn(async move {
+                    serve_normal_connection(
+                        stream,
+                        source.ip(),
+                        tls_acceptor,
+                        surface,
+                        rate_limiter,
+                    )
                     .await;
-                drop(connection_permit);
+                    drop(connection_permit);
+                });
+                continue;
+            }
+
+            let Ok(rejection_permit) = Arc::clone(&slots.rejection).try_acquire_owned() else {
+                drop(stream);
+                continue;
+            };
+            let tls_acceptor = tls_acceptor.clone();
+
+            tokio::spawn(async move {
+                serve_rejection_connection(stream, tls_acceptor).await;
+                drop(rejection_permit);
             });
-            continue;
         }
-
-        let Ok(rejection_permit) = Arc::clone(&slots.rejection).try_acquire_owned() else {
-            drop(stream);
-            continue;
-        };
-        let tls_acceptor = tls_acceptor.clone();
-
-        tokio::spawn(async move {
-            serve_rejection_connection(stream, tls_acceptor).await;
-            drop(rejection_permit);
-        });
-    }
+    })
 }
 
 fn is_trusted_loopback_peer(peer: IpAddr) -> bool {
@@ -1060,12 +1083,24 @@ where
         Ok(validated) => validated,
         Err(rejection) => return rejection.response(),
     };
-    let Ok(admitted) = timeout_at(admission_deadline, validated.acquire()).await else {
-        return gateway_timeout_response();
+    // A pre-body check may hand back the time already spent by an earlier
+    // request in the same workflow. Everything after this point is capped at
+    // that remainder, so a multi-request workflow cannot restart its own total
+    // deadline by starting a new request.
+    let inherited_deadline = validated
+        .remaining_budget()
+        .map(|remaining| Deadline::now() + remaining);
+    let admitted = match timeout_at(admission_deadline, validated.acquire()).await {
+        Ok(Ok(admitted)) => admitted,
+        Ok(Err(rejection)) => return rejection.response(),
+        Err(_) => return gateway_timeout_response(),
     };
 
     let profile = admitted.profile();
-    let body_deadline = profile.body_deadline(head_deadline, Deadline::now());
+    let body_deadline = capped_deadline(
+        profile.body_deadline(head_deadline, Deadline::now()),
+        inherited_deadline,
+    );
     let request = match timeout_at(body_deadline, admitted.read_body(stream)).await {
         Ok(Ok(request)) => request,
         Ok(Err(error)) => return response_for_request_read_error(error),
@@ -1073,8 +1108,10 @@ where
     };
 
     let is_head = *request.method() == Method::HEAD;
-    let processing_deadline =
-        profile.processing_deadline(started, timeouts.processing, body_deadline);
+    let processing_deadline = capped_deadline(
+        profile.processing_deadline(started, timeouts.processing, body_deadline),
+        inherited_deadline,
+    );
     let router = surface.into_router();
     let mut bounded = processing_response(processing_deadline, async move {
         let response = router
@@ -1091,6 +1128,17 @@ where
     bounded
 }
 
+/// Narrows a deadline to an inherited remainder, and never widens it.
+///
+/// A registered profile already bounds a request. An inherited budget can only
+/// take time away, so a workflow that spans two requests cannot obtain more
+/// total time than its first request started with.
+fn capped_deadline(deadline: Deadline, inherited: Option<Deadline>) -> Deadline {
+    match inherited {
+        Some(inherited) => deadline.min(inherited),
+        None => deadline,
+    }
+}
 #[derive(Debug)]
 enum RequestReadError {
     TimedOut,
@@ -1249,6 +1297,7 @@ where
     .map_err(|_| RequestReadError::Invalid)?
     .acquire()
     .await
+    .map_err(|_| RequestReadError::Invalid)?
     .read_body(stream)
     .await
 }
@@ -1636,6 +1685,16 @@ impl ServingModeSwitch {
             MountedSurface::without_registrations(surface.mount(fallback_router())),
         ));
     }
+
+    /// Serves a newly composed pre-operational surface from the next accepted
+    /// connection onward.
+    ///
+    /// Selecting an Application Database makes Restore eligible, and Restore is
+    /// mounted only where it is eligible. Republishing the whole surface is
+    /// what makes it reachable without a restart.
+    fn publish_preoperational(&self, surface: MountedSurface) {
+        let _ = self.modes.send(ServingMode::PreOperational(surface));
+    }
 }
 
 /// The router every serving mode starts from: only the fixed not-found fallback.
@@ -1643,51 +1702,133 @@ fn fallback_router() -> Router {
     Router::new().fallback(not_found)
 }
 
-/// Selects the surface the listener serves for a classified startup.
+/// The Server's compiled-in component inventory.
 ///
-/// Only the pre-operational mode may ever carry a transport registration. The
-/// fail-closed and operational modes mount no route that needs one, so they
-/// carry none at all.
-fn initial_serving_mode(
-    composition: &PreoperationalComposition,
-    listener: SocketAddr,
-) -> ServingMode {
-    match composition.outcome {
-        StartupOutcome::UninitializedWithoutDatabase
-        | StartupOutcome::UninitializedWithDatabase => {
-            ServingMode::PreOperational(MountedSurface::without_registrations(
-                preoperational_routes(fallback_router(), composition, listener),
-            ))
-        }
-        StartupOutcome::InitializationPending(_) => {
-            ServingMode::FailClosed(MountedSurface::without_registrations(fallback_router()))
-        }
-        StartupOutcome::Initialized => {
-            ServingMode::Operational(MountedSurface::without_registrations(
-                weavelit_module_client_webui::operational_surface().mount(fallback_router()),
-            ))
-        }
+/// A Restore is judged against what this build can actually serve. The names
+/// come from the module crates themselves rather than from string literals
+/// restated here, so a compiled-in module and the inventory it is judged by
+/// cannot drift apart. This build compiles in one Client Module and one Log
+/// Module, and no MFA Module, Service Module, or named operation.
+fn server_components() -> AvailableComponents {
+    fn named(identifier: &str) -> BTreeSet<Name> {
+        Name::new(identifier).into_iter().collect()
+    }
+
+    AvailableComponents {
+        client_modules: named(weavelit_module_client_webui::MODULE_IDENTIFIER),
+        log_modules: named(weavelit_module_log_sqlite::MODULE_IDENTIFIER),
+        mfa_modules: BTreeSet::new(),
+        service_modules: BTreeSet::new(),
+        operations: BTreeSet::new(),
     }
 }
 
-/// Composes the Web UI Client Module's declared pre-operational surface.
+/// Composes and publishes the pre-operational surface of a running listener.
 ///
-/// The module owns its asset inventory and declares which capabilities it
-/// supplies; the core mounts exactly that declaration and supplies the trusted
-/// lifecycle authority behind it. Every mounted path is exact, so an unknown
-/// target, including any `/api/` target, falls through to the fixed not-found
-/// response.
-fn preoperational_routes(
-    router: Router,
-    composition: &PreoperationalComposition,
+/// The Web UI Client Module declares which capabilities it supplies; this
+/// composer supplies the trusted lifecycle authority and the Restore
+/// collaborators behind them, and pairs each Restore route with the transport
+/// registration that admits its body. Every mounted path is exact, so an
+/// unknown target, including any `/api/` target, falls through to the fixed
+/// not-found response.
+struct PreoperationalComposer {
+    composition: PreoperationalComposition,
     listener: SocketAddr,
-) -> Router {
-    weavelit_module_client_webui::preoperational_surface(
-        composition.projection_source(),
-        ExpectedOrigin::from_listener(listener),
-        composition.selection_commit(),
-    )
-    .mount(router)
+    orchestrator: Arc<restore::RestoreOrchestrator>,
+    serving_modes: Arc<ServingModeSwitch>,
+}
+
+impl PreoperationalComposer {
+    fn new(
+        startup: &RestrictedStartup,
+        listener: SocketAddr,
+        serving_modes: &Arc<ServingModeSwitch>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            composition: startup.composition.clone(),
+            listener,
+            orchestrator: restore::RestoreOrchestrator::new(
+                startup,
+                server_components(),
+                Arc::clone(serving_modes),
+            ),
+            serving_modes: Arc::clone(serving_modes),
+        })
+    }
+
+    /// Publishes the surface a classified startup begins with.
+    ///
+    /// Only the pre-operational mode may ever carry a transport registration.
+    /// The fail-closed and operational modes mount no route that needs one, so
+    /// they carry none at all, and neither mounts Restore.
+    fn publish_initial(self: &Arc<Self>, outcome: StartupOutcome) {
+        match outcome {
+            StartupOutcome::UninitializedWithoutDatabase => self.publish(false),
+            StartupOutcome::UninitializedWithDatabase => self.publish(true),
+            StartupOutcome::InitializationPending(_) => self.serving_modes.publish_fail_closed(),
+            StartupOutcome::Initialized => self
+                .serving_modes
+                .publish_operational(weavelit_module_client_webui::operational_surface()),
+        }
+    }
+
+    fn publish(self: &Arc<Self>, database_selected: bool) {
+        self.serving_modes
+            .publish_preoperational(self.surface(database_selected));
+    }
+
+    /// Composes the pre-operational surface, mounting Restore only when the
+    /// deployment has already selected an Application Database.
+    fn surface(self: &Arc<Self>, database_selected: bool) -> MountedSurface {
+        let expected_origin = ExpectedOrigin::from_listener(self.listener);
+        let restore = database_selected.then(|| self.orchestrator.capability(expected_origin));
+        let (declared, restore) = weavelit_module_client_webui::preoperational_surface(
+            self.composition.projection_source(),
+            expected_origin,
+            self.selection_commit(),
+            restore,
+        )
+        .split_restore();
+
+        let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
+        if let Some(restore) = restore {
+            let key_route = restore.key_route();
+            let artifact_route = restore.artifact_route();
+            surface = surface
+                .with_capability(TransportCapability::new(
+                    self.orchestrator.key_registration(expected_origin),
+                    move |router| router.route(weavelit_module_client::RESTORE_ROUTE, key_route),
+                ))
+                .with_capability(TransportCapability::new(
+                    self.orchestrator.artifact_registration(expected_origin),
+                    move |router| {
+                        router.route(
+                            weavelit_module_client::RESTORE_ARTIFACT_ROUTE,
+                            artifact_route,
+                        )
+                    },
+                ));
+        }
+        surface
+    }
+
+    /// Wraps the lifecycle selection commit so a successful selection also
+    /// republishes the surface that selection made Restore eligible on.
+    fn selection_commit(self: &Arc<Self>) -> SelectionCommit {
+        let composer = Arc::clone(self);
+        let commit = self.composition.selection_commit();
+        Arc::new(move |backend| {
+            let composer = Arc::clone(&composer);
+            let commit = Arc::clone(&commit);
+            Box::pin(async move {
+                let projection = commit(backend).await?;
+                if projection.database_selected() {
+                    composer.publish(true);
+                }
+                Ok(projection)
+            })
+        })
+    }
 }
 
 async fn not_found() -> Response {
@@ -1901,7 +2042,9 @@ mod tests {
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
     use weavelit_module_client::{
-        APPLICATION_DATABASE_ROUTE, DatabaseSelectionRejection, STATUS_ROUTE,
+        APPLICATION_DATABASE_ROUTE, DatabaseSelectionRejection, ExpectedOrigin,
+        RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, RestoreDeclaration,
+        STATUS_ROUTE,
     };
     use weavelit_server_database::{
         ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
@@ -1909,26 +2052,29 @@ mod tests {
     };
     use weavelit_server_lifecycle::{
         ApplicationState, BackendIdentifier, CheckpointMetadata, DatabaseInspection,
-        DeploymentIdentifier, LifecycleClassification, LifecycleProjection, LifecycleState,
-        LifecycleStore, StateIdentifier, TrustedBackendContext, WorkflowKind,
+        DeploymentIdentifier, InitializedState, LifecycleClassification, LifecycleProjection,
+        LifecycleState, LifecycleStore, StateIdentifier, TrustedBackendContext, WorkflowKind,
     };
-    use weavelit_server_restore::{AvailableComponents, RestoreError};
+    use weavelit_server_restore::{AvailableComponents, RequestBudget, RestoreError};
+    use zeroize::Zeroizing;
 
     use super::{
         APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse,
         ConnectionSlots, ConnectionTimeouts, MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES,
-        MAX_TYPED_JSON_BODY_BYTES, PreoperationalComposition, RATE_LIMIT_BURST,
-        RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
-        RateLimiter, RequestReadError, ResponseProfile, RestrictedStartup, ServingMode,
-        ServingModeSwitch, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter,
-        bounded_response_from_axum, classify_restricted_startup, fallback_router,
-        gateway_timeout_response, initial_serving_mode, parse_http_request, processing_response,
-        raw_header_section_bytes, read_default_profile_request, read_request_head_until,
-        redacted_response, request_timeout_response,
+        MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE,
+        REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT, RateLimiter, RequestReadError,
+        ResponseProfile, RestrictedStartup, ServingMode, ServingModeSwitch, StartupError,
+        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter, bounded_response_from_axum,
+        classify_restricted_startup, fallback_router, gateway_timeout_response, parse_http_request,
+        processing_response, raw_header_section_bytes, read_default_profile_request,
+        read_request_head_until, redacted_response, request_timeout_response,
         restore::RestoreOrchestrator,
         serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
         sqlite_catalog, startup_outcome,
-        transport::{MountedSurface, TransportCapability, TransportProfile, TransportRegistration},
+        transport::{
+            BodyAdmission, MountedSurface, TransportCapability, TransportProfile,
+            TransportRegistration,
+        },
         typed_json::{
             ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
             typed_json_response,
@@ -1940,6 +2086,24 @@ mod tests {
 
     /// The exact accepted Application Database selection body.
     const SELECTION_BODY: &str = "{\"backend\":\"sqlite\",\"settings\":{}}";
+
+    /// Composes and publishes the serving mode a listener starts a startup on.
+    ///
+    /// The listener creates its switch closed and lets the pre-operational
+    /// composer publish the first real mode, so a test that needs the initial
+    /// mode composes it exactly the same way.
+    fn published_serving_modes(
+        startup: &RestrictedStartup,
+        listener: SocketAddr,
+    ) -> (Arc<ServingModeSwitch>, watch::Receiver<ServingMode>) {
+        let (switch, modes) = ServingModeSwitch::new(ServingMode::FailClosed(
+            MountedSurface::without_registrations(fallback_router()),
+        ));
+        let switch = Arc::new(switch);
+        super::PreoperationalComposer::new(startup, listener, &switch)
+            .publish_initial(startup.composition.outcome);
+        (switch, modes)
+    }
 
     const SELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}";
     const UNSELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}";
@@ -1984,18 +2148,13 @@ mod tests {
             }
         }
 
-        fn composition(&self) -> PreoperationalComposition {
-            self.startup.composition.clone()
-        }
-
         fn routes(&self) -> Router {
             self.routes_for(UNBOUND_LISTENER.parse().unwrap())
         }
 
         fn routes_for(&self, listener: SocketAddr) -> Router {
-            super::initial_serving_mode(&self.startup.composition, listener)
-                .router()
-                .clone()
+            let (_switch, modes) = published_serving_modes(&self.startup, listener);
+            modes.borrow().router().clone()
         }
 
         /// Snapshots the lifecycle record and every locator file by name, bytes,
@@ -2041,16 +2200,21 @@ mod tests {
         Surface::new(outcome).routes()
     }
 
-    /// Serves the restricted listener over a surface whose state root is removed
-    /// before serving begins; the read-only routes these callers exercise are
-    /// unaffected.
+    /// Serves the restricted listener over a surface composed for `outcome`.
+    ///
+    /// The surface is retained for the whole call because the listener is
+    /// composed from the startup it holds.
     async fn serve_restricted_https_listener(
         tcp_listener: TcpListener,
         tls_config: Arc<ServerConfig>,
         outcome: StartupOutcome,
     ) -> Result<(), StartupError> {
-        let composition = Surface::new(outcome).composition();
-        super::serve_restricted_https_listener(tcp_listener, tls_config, composition).await
+        let surface = Surface::new(outcome);
+        let serving =
+            super::serve_restricted_https_listener(tcp_listener, tls_config, &surface.startup)?;
+        let result = serving.await;
+        drop(surface);
+        result
     }
 
     async fn response_body(response: axum::response::Response) -> String {
@@ -2421,12 +2585,10 @@ mod tests {
     #[tokio::test]
     async fn publishing_a_serving_mode_changes_only_later_connection_snapshots() {
         let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
-        let (switch, serving_modes) = ServingModeSwitch::new(initial_serving_mode(
-            &surface.startup.composition,
-            UNBOUND_LISTENER.parse().unwrap(),
-        ));
+        let (switch, serving_modes) =
+            published_serving_modes(&surface.startup, UNBOUND_LISTENER.parse().unwrap());
 
-        // A connection accepted before the switch publishes anything.
+        // A connection accepted before the switch publishes any later mode.
         let in_flight = serving_modes.borrow().router().clone();
 
         switch.publish_operational(weavelit_module_client_webui::operational_surface());
@@ -4570,11 +4732,10 @@ mod tests {
         let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(super::serve_restricted_https_listener(
-            listener,
-            server_config,
-            surface.composition(),
-        ));
+        let server = tokio::spawn(
+            super::serve_restricted_https_listener(listener, server_config, &surface.startup)
+                .unwrap(),
+        );
 
         let before = tls_exchange(
             address,
@@ -5300,6 +5461,10 @@ mod tests {
         recovery_key_fixture("valid-identity.txt")
     }
 
+    /// The correlation identifier the listener would have generated when it
+    /// issued this Restore's ticket.
+    const RESTORE_CORRELATION: &str = "0123456789abcdef0123456789abcdef";
+
     /// The component inventory the committed backup fixture references.
     ///
     /// The composing caller supplies this because the Server does not yet
@@ -5352,16 +5517,14 @@ mod tests {
 
             let startup = classify_restricted_startup(&state_root).unwrap();
             assert_eq!(startup.outcome(), StartupOutcome::UninitializedWithDatabase);
-            let (switch, modes) = ServingModeSwitch::new(initial_serving_mode(
-                &startup.composition,
-                UNBOUND_LISTENER.parse().unwrap(),
-            ));
+            let (switch, modes) =
+                published_serving_modes(&startup, UNBOUND_LISTENER.parse().unwrap());
 
             Self {
                 _root: root,
                 state_root,
                 startup,
-                switch: Arc::new(switch),
+                switch,
                 modes,
             }
         }
@@ -5374,9 +5537,70 @@ mod tests {
             )
         }
 
+        /// Acquires the same Restore admission permit the listener holds before
+        /// an artifact is allocated, so an orchestration driven directly still
+        /// runs under the route's single-permit concurrency bound.
+        async fn admission(&self) -> BodyAdmission {
+            BodyAdmission::from_permit(
+                Arc::clone(&self.startup.composition.adapter.mutation_lane)
+                    .acquire_owned()
+                    .await
+                    .unwrap(),
+            )
+        }
+
+        /// Runs one Restore exactly as an admitted artifact upload would.
+        ///
+        /// The listener holds the admission permit, started the request budget
+        /// before the recovery key was read, and generated the correlation
+        /// identifier when it issued the ticket. All three are supplied here so
+        /// the orchestration inherits them instead of minting its own.
+        async fn restore(
+            &self,
+            orchestrator: &Arc<RestoreOrchestrator>,
+            artifact: Vec<u8>,
+            recovery_key: String,
+        ) -> Result<InitializedState, RestoreError> {
+            orchestrator
+                .restore(
+                    self.admission().await,
+                    RequestBudget::start(),
+                    RESTORE_CORRELATION.to_owned(),
+                    artifact,
+                    Zeroizing::new(recovery_key),
+                )
+                .await
+        }
+
         /// Snapshots the router the next accepted connection would serve.
         fn served_router(&self) -> Router {
             self.modes.borrow().router().clone()
+        }
+
+        /// Mounts the two Restore routes with exactly the registrations the
+        /// pre-operational composer mounts them with.
+        ///
+        /// The surface is a snapshot, so a test can keep serving it after the
+        /// deployment has moved on, which is what a connection accepted before
+        /// a checkpoint existed holds.
+        fn restore_routes(&self, orchestrator: &Arc<RestoreOrchestrator>) -> MountedSurface {
+            let expected_origin = ExpectedOrigin::from_listener(
+                UNBOUND_LISTENER
+                    .parse()
+                    .expect("the listener authority parses"),
+            );
+            let declaration = RestoreDeclaration::new(orchestrator.capability(expected_origin));
+            let key_route = declaration.key_route();
+            let artifact_route = declaration.artifact_route();
+            MountedSurface::without_registrations(fallback_router())
+                .with_capability(TransportCapability::new(
+                    orchestrator.key_registration(expected_origin),
+                    move |router| router.route(RESTORE_ROUTE, key_route),
+                ))
+                .with_capability(TransportCapability::new(
+                    orchestrator.artifact_registration(expected_origin),
+                    move |router| router.route(RESTORE_ARTIFACT_ROUTE, artifact_route),
+                ))
         }
 
         fn anchor_snapshot(&self) -> Vec<(OsString, Vec<u8>, i64, i64)> {
@@ -5422,6 +5646,115 @@ mod tests {
         }
     }
 
+    /// Asserts neither Restore route is mounted on `router`.
+    async fn assert_restore_unmounted(router: Router) {
+        for target in [RESTORE_ROUTE, RESTORE_ARTIFACT_ROUTE] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::put(target)
+                        .header("host", UNBOUND_LISTENER)
+                        .header("origin", format!("https://{UNBOUND_LISTENER}"))
+                        .header("x-weavelit-csrf", "1")
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
+    }
+
+    /// A well-formed ticket this Server never issued.
+    const UNISSUED_TICKET: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+
+    /// Builds the exact accepted recovery-key submission body.
+    fn restore_key_body(recovery_key: &str) -> Vec<u8> {
+        format!("{{\"recovery_key\":\"{recovery_key}\"}}").into_bytes()
+    }
+
+    /// Reads the ticket out of the one response that may ever carry it.
+    fn issued_restore_ticket(body: &[u8]) -> String {
+        const FIELD: &str = "\"restore_ticket\":\"";
+
+        let rendered = std::str::from_utf8(body).expect("a typed envelope is UTF-8");
+        let start = rendered
+            .find(FIELD)
+            .expect("an accepted submission renders its ticket")
+            + FIELD.len();
+        let rest = &rendered[start..];
+        rest[..rest
+            .find('"')
+            .expect("the rendered ticket value is terminated")]
+            .to_owned()
+    }
+
+    /// Drives one Restore request through the listener's production path.
+    ///
+    /// The head, the body, and every precondition header are written over a
+    /// real stream, so the request passes through head reading, classification
+    /// against the mounted registrations, framing, the registered pre-body
+    /// check, admission, and the body allocation in that order.
+    async fn restore_request(
+        surface: MountedSurface,
+        target: &str,
+        media_type: &str,
+        ticket: Option<&str>,
+        body: Vec<u8>,
+    ) -> BoundedResponse {
+        let mut head = format!(
+            "PUT {target} HTTP/1.1\r\n\
+             Host: {UNBOUND_LISTENER}\r\n\
+             Origin: https://{UNBOUND_LISTENER}\r\n\
+             X-Weavelit-Csrf: 1\r\n\
+             Content-Type: {media_type}\r\n\
+             Content-Length: {}\r\n",
+            body.len()
+        );
+        if let Some(ticket) = ticket {
+            head.push_str(&format!("{RESTORE_TICKET_HEADER_NAME}: {ticket}\r\n"));
+        }
+        head.push_str("\r\n");
+
+        process_over_duplex(
+            surface,
+            ConnectionTimeouts {
+                handshake: TLS_HANDSHAKE_TIMEOUT,
+                request_read: REQUEST_READ_TIMEOUT,
+                processing: REQUEST_PROCESSING_TIMEOUT,
+            },
+            move |stream| {
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    stream.write_all(head.as_bytes()).await.unwrap();
+                    stream.write_all(&body).await.unwrap();
+                    pending::<()>().await;
+                })
+            },
+        )
+        .await
+    }
+
+    /// Submits the recovery key and returns the ticket that was issued.
+    async fn submit_recovery_key(surface: MountedSurface, recovery_key: &str) -> String {
+        let issued = restore_request(
+            surface,
+            RESTORE_ROUTE,
+            "application/json",
+            None,
+            restore_key_body(recovery_key),
+        )
+        .await;
+        assert_eq!(issued.status, StatusCode::ACCEPTED);
+        issued_restore_ticket(&issued.body)
+    }
+
     #[tokio::test]
     async fn a_restore_activates_normal_operation_without_a_restart() {
         let surface = RestoreSurface::new();
@@ -5429,8 +5762,12 @@ mod tests {
 
         assert_preoperational(surface.served_router()).await;
 
-        let state = orchestrator
-            .restore(restore_fixture("valid.wlitbackup"), valid_recovery_key())
+        let state = surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
             .await
             .expect("the committed valid backup must restore");
 
@@ -5478,8 +5815,12 @@ mod tests {
         let surface = RestoreSurface::new();
         let orchestrator = surface.orchestrator();
 
-        let state = orchestrator
-            .restore(restore_fixture("valid.wlitbackup"), valid_recovery_key())
+        let state = surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
             .await
             .unwrap();
         let obligation = state.state().completion_obligation().clone();
@@ -5509,8 +5850,12 @@ mod tests {
         let surface = RestoreSurface::new();
         let orchestrator = surface.orchestrator();
 
-        let restored = orchestrator
-            .restore(restore_fixture("valid.wlitbackup"), valid_recovery_key())
+        let restored = surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
             .await
             .unwrap();
         drop(orchestrator);
@@ -5534,8 +5879,9 @@ mod tests {
         let orchestrator = surface.orchestrator();
         let anchors = surface.anchor_snapshot();
 
-        let error = orchestrator
+        let error = surface
             .restore(
+                &orchestrator,
                 restore_fixture("valid.wlitbackup"),
                 recovery_key_fixture("wrong-identity.txt"),
             )
@@ -5559,8 +5905,9 @@ mod tests {
         let orchestrator = surface.orchestrator();
         let anchors = surface.anchor_snapshot();
 
-        let error = orchestrator
+        let error = surface
             .restore(
+                &orchestrator,
                 restore_fixture("bad-magic.wlitbackup"),
                 valid_recovery_key(),
             )
@@ -5587,8 +5934,12 @@ mod tests {
         // anchor set itself stays valid across the restart below.
         std::fs::write(surface.state_root.join("log.sqlite3"), b"not a database").unwrap();
 
-        let error = orchestrator
-            .restore(restore_fixture("valid.wlitbackup"), valid_recovery_key())
+        let error = surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
             .await
             .unwrap_err();
 
@@ -5626,23 +5977,33 @@ mod tests {
         ];
 
         let failures = [
-            orchestrator
+            surface
                 .restore(
+                    &orchestrator,
                     restore_fixture("valid.wlitbackup"),
                     recovery_key_fixture("wrong-identity.txt"),
                 )
                 .await
                 .unwrap_err(),
-            orchestrator
-                .restore(restore_fixture("bad-magic.wlitbackup"), key.clone())
-                .await
-                .unwrap_err(),
-            orchestrator
-                .restore(restore_fixture("tampered-tag.wlitbackup"), key.clone())
-                .await
-                .unwrap_err(),
-            orchestrator
+            surface
                 .restore(
+                    &orchestrator,
+                    restore_fixture("bad-magic.wlitbackup"),
+                    key.clone(),
+                )
+                .await
+                .unwrap_err(),
+            surface
+                .restore(
+                    &orchestrator,
+                    restore_fixture("tampered-tag.wlitbackup"),
+                    key.clone(),
+                )
+                .await
+                .unwrap_err(),
+            surface
+                .restore(
+                    &orchestrator,
                     restore_fixture("wrong-source-backend.wlitbackup"),
                     key.clone(),
                 )
@@ -5657,6 +6018,242 @@ mod tests {
                 assert!(
                     !rendered.contains(secret),
                     "rendered failure must not disclose {secret}: {rendered}"
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The two-request Restore submission protocol at the listener boundary
+    // -----------------------------------------------------------------------
+
+    /// The whole protocol, driven exactly as a client drives it: the recovery
+    /// key alone, then the artifact against the ticket that submission issued.
+    #[tokio::test]
+    async fn the_two_request_restore_protocol_activates_normal_operation() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let mounted = surface.restore_routes(&orchestrator);
+
+        assert_preoperational(surface.served_router()).await;
+
+        let ticket = submit_recovery_key(mounted.clone(), &valid_recovery_key()).await;
+
+        let completed = restore_request(
+            mounted,
+            RESTORE_ARTIFACT_ROUTE,
+            "application/octet-stream",
+            Some(&ticket),
+            restore_fixture("valid.wlitbackup"),
+        )
+        .await;
+        assert_eq!(completed.status, StatusCode::OK);
+        let rendered = String::from_utf8(completed.body.to_vec()).unwrap();
+        assert!(
+            rendered
+                .starts_with("{\"result\":{\"lifecycle\":\"initialized\"},\"correlation_id\":\"")
+                && rendered.ends_with("\"}"),
+            "{rendered}"
+        );
+
+        // The second request drove activation in-process: a newly accepted
+        // connection serves the operational surface and neither Restore route
+        // nor any other pre-operational route is mounted any more.
+        assert_eq!(
+            surface.startup.composition.adapter.arbiter.record_state(),
+            LifecycleState::Initialized
+        );
+        let router = surface.served_router();
+        let asset = router
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_restore_unmounted(router.clone()).await;
+        for target in [STATUS_ROUTE, APPLICATION_DATABASE_ROUTE] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+        }
+    }
+
+    /// Route absence cannot close this gap. The listener snapshots the whole
+    /// surface when it accepts a connection, so a connection accepted while a
+    /// Restore was still eligible keeps a router that mounts both routes even
+    /// after a checkpoint exists. Only the request-time eligibility re-check
+    /// rejects it.
+    #[tokio::test]
+    async fn a_stale_router_still_mounting_restore_is_rejected_at_request_time() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let stale = surface.restore_routes(&orchestrator);
+
+        // The identical request on the identical surface is admitted while the
+        // deployment still permits a Restore, and it leaves a live ticket the
+        // artifact request below can present.
+        let issued = submit_recovery_key(stale.clone(), &valid_recovery_key()).await;
+
+        surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .expect("the committed valid backup must restore");
+
+        // The surface is unchanged and still mounts both routes, and the
+        // artifact request presents a ticket this Server issued itself, so a
+        // rejection here is the lifecycle re-check and nothing else.
+        for (target, media_type, ticket, body) in [
+            (
+                RESTORE_ROUTE,
+                "application/json",
+                None,
+                restore_key_body(&valid_recovery_key()),
+            ),
+            (
+                RESTORE_ARTIFACT_ROUTE,
+                "application/octet-stream",
+                Some(issued.as_str()),
+                restore_fixture("valid.wlitbackup"),
+            ),
+        ] {
+            let rejected = restore_request(stale.clone(), target, media_type, ticket, body).await;
+            assert_ne!(rejected.status, StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(rejected.status, StatusCode::CONFLICT, "{target}");
+            assert_eq!(
+                rejected.body.as_ref(),
+                b"{\"error\":\"restore_not_allowed\"}",
+                "{target}"
+            );
+        }
+    }
+
+    /// Restore is mounted only where it is eligible, so an unselected
+    /// deployment serves no Restore route at all.
+    #[tokio::test]
+    async fn restore_is_not_mounted_before_a_database_is_selected() {
+        let unselected = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let (_switch, modes) =
+            published_serving_modes(&unselected.startup, UNBOUND_LISTENER.parse().unwrap());
+        assert!(modes.borrow().surface().registry().is_empty());
+        assert_restore_unmounted(modes.borrow().router().clone()).await;
+
+        // Selecting a database is what mounts them, so the absence above is
+        // the eligibility gate and not an unreachable route.
+        let selected = Surface::new(StartupOutcome::UninitializedWithDatabase);
+        let (_switch, modes) =
+            published_serving_modes(&selected.startup, UNBOUND_LISTENER.parse().unwrap());
+        let router = modes.borrow().router().clone();
+        for target in [RESTORE_ROUTE, RESTORE_ARTIFACT_ROUTE] {
+            let response = router
+                .clone()
+                .oneshot(Request::put(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{target}");
+        }
+    }
+
+    /// Neither mode a Restore moves the listener into may serve a Restore.
+    #[tokio::test]
+    async fn restore_is_absent_from_the_fail_closed_and_operational_surfaces() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+
+        // Mounted while the deployment is still eligible.
+        let mounted = surface.served_router();
+        let response = mounted
+            .oneshot(Request::put(RESTORE_ROUTE).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::NOT_FOUND);
+
+        surface.switch.publish_fail_closed();
+        assert!(surface.modes.borrow().surface().registry().is_empty());
+        assert_restore_unmounted(surface.served_router()).await;
+
+        surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .expect("the committed valid backup must restore");
+
+        assert!(surface.modes.borrow().surface().registry().is_empty());
+        assert_restore_unmounted(surface.served_router()).await;
+    }
+
+    /// Every ticket rejection the routes render is payload free, and a failed
+    /// claim destroys the outstanding submission rather than leaving it
+    /// available for another attempt.
+    #[tokio::test]
+    async fn no_restore_route_rejection_discloses_its_ticket_or_recovery_key() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let mounted = surface.restore_routes(&orchestrator);
+
+        let key = valid_recovery_key();
+        let ticket = submit_recovery_key(mounted.clone(), &key).await;
+
+        // A wrong ticket destroys the outstanding submission, so the ticket
+        // this Server itself issued is no longer claimable afterwards.
+        let wrong = restore_request(
+            mounted.clone(),
+            RESTORE_ARTIFACT_ROUTE,
+            "application/octet-stream",
+            Some(UNISSUED_TICKET),
+            restore_fixture("valid.wlitbackup"),
+        )
+        .await;
+        let replayed = restore_request(
+            mounted,
+            RESTORE_ARTIFACT_ROUTE,
+            "application/octet-stream",
+            Some(&ticket),
+            restore_fixture("valid.wlitbackup"),
+        )
+        .await;
+        for rejection in [&wrong, &replayed] {
+            assert_eq!(rejection.status, StatusCode::FORBIDDEN);
+            assert_eq!(
+                rejection.body.as_ref(),
+                b"{\"error\":\"restore_ticket_invalid\"}"
+            );
+        }
+
+        // The deployment never moved, so the destroyed submission really did
+        // stop the Restore rather than merely delaying it.
+        assert_eq!(
+            surface.startup.composition.adapter.arbiter.record_state(),
+            LifecycleState::Uninitialized
+        );
+        assert_preoperational(surface.served_router()).await;
+
+        let secrets = [
+            key.as_str(),
+            ticket.as_str(),
+            UNISSUED_TICKET,
+            "administrator",
+            "Site Administrator",
+            "Administrators",
+            "totp-seed",
+            "provider-token",
+            "at-rest-value",
+        ];
+        for rejection in [&wrong, &replayed] {
+            let rendered = String::from_utf8_lossy(&rejection.body).into_owned();
+            for secret in secrets {
+                assert!(
+                    !rendered.contains(secret),
+                    "a rendered rejection must not disclose {secret}: {rendered}"
                 );
             }
         }
@@ -5856,13 +6453,24 @@ mod tests {
 
         for outcome in [
             StartupOutcome::UninitializedWithoutDatabase,
-            StartupOutcome::UninitializedWithDatabase,
             StartupOutcome::Initialized,
         ] {
-            let composition = Surface::new(outcome).composition();
-            let mode = initial_serving_mode(&composition, UNBOUND_LISTENER.parse().unwrap());
-            assert!(mode.surface().registry().is_empty());
+            let surface = Surface::new(outcome);
+            let (_switch, modes) =
+                published_serving_modes(&surface.startup, UNBOUND_LISTENER.parse().unwrap());
+            assert!(
+                modes.borrow().surface().registry().is_empty(),
+                "{outcome:?}"
+            );
         }
+
+        // The only initial mode that carries a registration is the
+        // pre-operational surface that mounts Restore, the one large-body
+        // route this Server serves.
+        let with_restore = Surface::new(StartupOutcome::UninitializedWithDatabase);
+        let (_switch, modes) =
+            published_serving_modes(&with_restore.startup, UNBOUND_LISTENER.parse().unwrap());
+        assert!(!modes.borrow().surface().registry().is_empty());
     }
 
     // -----------------------------------------------------------------------

@@ -22,6 +22,12 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and shared Client Module crate-boundary rules.
 - `Cargo.toml`: Compiled-in shared Client Module package manifest.
 - `src/lib.rs`: Canonical route paths, the pre-operational and operational capability declarations and their mounting, pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the shared fixed-profile response helpers, and contract tests.
+- `src/restore.rs`: The two-step Restore submission contract: both canonical
+  route paths, the ticket header, every header precondition, the recovery-key
+  request schema, the payload-free rejection contract, the two typed success
+  envelopes, and the Server-core hooks the declaration is composed over.
+- `src/typed_json.rs`: Bounded typed result and error envelopes for every route
+  outside the frozen pre-operational allowlist.
 
 ## Usage Guidance
 

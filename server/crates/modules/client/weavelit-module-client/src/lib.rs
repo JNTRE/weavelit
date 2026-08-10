@@ -30,6 +30,17 @@ use axum::{
 use serde::Deserialize;
 use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
 
+pub mod restore;
+pub mod typed_json;
+
+pub use restore::{
+    MAX_RESTORE_KEY_BODY_BYTES, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME,
+    RestoreArtifactCommit, RestoreArtifactSubmission, RestoreCapability, RestoreCompleted,
+    RestoreDeclaration, RestoreKeyCommit, RestoreKeySubmission, RestoreRejection,
+    RestoreTicketIssued, submitted_restore_ticket, validate_restore_artifact_request,
+    validate_restore_key_request,
+};
+
 /// The canonical route for the live pre-operational lifecycle projection.
 pub const STATUS_ROUTE: &str = "/api/v1/status";
 
@@ -75,6 +86,7 @@ pub type SelectionCommit = Arc<
 pub struct PreoperationalSurface {
     status: Option<ProjectionSource>,
     database_selection: Option<(ExpectedOrigin, SelectionCommit)>,
+    restore: Option<RestoreDeclaration>,
     assets: Option<Router>,
 }
 
@@ -95,6 +107,30 @@ impl PreoperationalSurface {
         self
     }
 
+    /// Declares the two-step Restore submission capability.
+    ///
+    /// Restore is declared only where it is eligible. A surface composed before
+    /// an Application Database has been selected, a fail-closed surface, and an
+    /// operational surface carry no declaration at all, so neither route exists
+    /// to be denied.
+    pub fn with_restore(mut self, capability: RestoreCapability) -> Self {
+        self.restore = Some(RestoreDeclaration::new(capability));
+        self
+    }
+
+    /// Separates the declared Restore capability from the rest of the surface.
+    ///
+    /// Both Restore routes need a transport registration the Server core owns,
+    /// and a registration may only travel with the mount that serves it. This
+    /// hands the declaration back so the core mounts each Restore route
+    /// together with its registration, and mounts everything else through
+    /// [`PreoperationalSurface::mount`].
+    #[must_use]
+    pub fn split_restore(mut self) -> (Self, Option<RestoreDeclaration>) {
+        let restore = self.restore.take();
+        (self, restore)
+    }
+
     /// Declares client-specific asset delivery, which owns its own exact paths.
     pub fn with_assets(mut self, assets: Router) -> Self {
         self.assets = Some(assets);
@@ -105,6 +141,12 @@ impl PreoperationalSurface {
     ///
     /// An undeclared capability is absent rather than present and denied, so
     /// the Server core mounts exactly what the Client Module returned.
+    ///
+    /// A Restore declaration this surface still holds is mounted here without
+    /// a transport registration, which grants it only the listener's default
+    /// body bound. A composer that must serve real artifact uploads takes the
+    /// declaration through [`PreoperationalSurface::split_restore`] first and
+    /// mounts each route together with its registration.
     pub fn mount(self, router: Router) -> Router {
         let router = match self.status {
             Some(projection) => router.route(STATUS_ROUTE, preoperational_status_route(projection)),
@@ -115,6 +157,12 @@ impl PreoperationalSurface {
                 APPLICATION_DATABASE_ROUTE,
                 database_selection_route(expected_origin, commit),
             ),
+            None => router,
+        };
+        let router = match self.restore {
+            Some(restore) => router
+                .route(restore::RESTORE_ROUTE, restore.key_route())
+                .route(restore::RESTORE_ARTIFACT_ROUTE, restore.artifact_route()),
             None => router,
         };
         match self.assets {
@@ -216,7 +264,7 @@ async fn status_response(request: Request, projection: ProjectionSource) -> Resp
 pub const MAX_DATABASE_SELECTION_BODY_BYTES: usize = 1024;
 
 /// The exact request media type and the only negotiable response media type.
-const JSON_MEDIA_TYPE: &[u8] = b"application/json";
+pub(crate) const JSON_MEDIA_TYPE: &[u8] = b"application/json";
 
 /// Non-simple header a browser cannot send cross-site without a preflight.
 pub const CSRF_HEADER_NAME: &str = "x-weavelit-csrf";
@@ -418,33 +466,41 @@ impl ExpectedOrigin {
     /// normalize to this expected IP literal and effective port, and the origin
     /// must use the `https` scheme.
     pub fn validate(self, headers: &HeaderMap) -> Result<(), DatabaseSelectionRejection> {
-        let denied = DatabaseSelectionRejection::RequestOriginDenied;
+        if self.is_trusted(headers) {
+            Ok(())
+        } else {
+            Err(DatabaseSelectionRejection::RequestOriginDenied)
+        }
+    }
 
-        let csrf = single_header(headers, CSRF_HEADER_NAME).ok_or(denied)?;
+    /// Reports whether the request satisfies the same-origin and CSRF checks.
+    ///
+    /// Every state-changing pre-operational route shares this one predicate, so
+    /// two routes cannot disagree about what a trusted request looks like.
+    #[must_use]
+    pub fn is_trusted(self, headers: &HeaderMap) -> bool {
+        let Some(csrf) = single_header(headers, CSRF_HEADER_NAME) else {
+            return false;
+        };
         if csrf.as_bytes() != CSRF_HEADER_VALUE {
-            return Err(denied);
+            return false;
         }
 
-        let origin = single_header(headers, ORIGIN).ok_or(denied)?;
-        let host = single_header(headers, HOST).ok_or(denied)?;
+        let (Some(origin), Some(host)) =
+            (single_header(headers, ORIGIN), single_header(headers, HOST))
+        else {
+            return false;
+        };
 
         let origin_authority = origin
             .to_str()
             .ok()
             .and_then(|value| value.strip_prefix("https://"))
-            .and_then(normalize_authority)
-            .ok_or(denied)?;
-        let host_authority = host
-            .to_str()
-            .ok()
-            .and_then(normalize_authority)
-            .ok_or(denied)?;
+            .and_then(normalize_authority);
+        let host_authority = host.to_str().ok().and_then(normalize_authority);
 
-        let expected = (self.address, self.port);
-        if origin_authority != expected || host_authority != expected {
-            return Err(denied);
-        }
-        Ok(())
+        let expected = Some((self.address, self.port));
+        origin_authority == expected && host_authority == expected
     }
 }
 
@@ -531,7 +587,7 @@ pub fn validate_database_selection_request(
     validate_database_selection_media(headers)
 }
 
-fn single_header<N: AsHeaderName>(headers: &HeaderMap, name: N) -> Option<&HeaderValue> {
+pub(crate) fn single_header<N: AsHeaderName>(headers: &HeaderMap, name: N) -> Option<&HeaderValue> {
     let mut values = headers.get_all(name).iter();
     match (values.next(), values.next()) {
         (Some(value), None) => Some(value),

@@ -16,6 +16,7 @@ mod envelope;
 mod error;
 mod key;
 mod state;
+mod ticket;
 #[cfg(test)]
 mod vectors;
 
@@ -37,6 +38,9 @@ pub use key::{
     RecoveryRecipient,
 };
 pub use state::build_application_state;
+pub use ticket::{
+    RESTORE_TICKET_ENTROPY_BYTES, RESTORE_TICKET_TEXT_BYTES, RestoreTicket, RestoreTicketDigest,
+};
 pub use weavelit_server_database::{
     Account, AccountPasswordVerifier, ConfigurationEntry, ConfigurationKey, DeploymentIdentifier,
     Group, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogModuleConfiguration,
