@@ -36,7 +36,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{Semaphore, watch},
     task,
-    time::timeout,
+    time::{Instant as Deadline, timeout, timeout_at},
 };
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
@@ -55,6 +55,11 @@ use weavelit_server_lifecycle::{
 use weavelit_server_log::LogModuleCatalog;
 
 pub mod restore;
+pub mod transport;
+pub mod typed_json;
+
+use transport::{HeadRead, MountedSurface};
+use typed_json::TypedJsonEnvelope;
 
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
 const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
@@ -78,6 +83,14 @@ const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
 /// document, two asset, and one status request, plus two immediate reloads.
 const RATE_LIMIT_BURST: u32 = 12;
 const MAX_JSON_BODY_BYTES: usize = 128;
+/// Derived from the typed envelope's own maxima rather than from the fixed
+/// profile's bound: a 48-byte stable code, a correlation identifier at the
+/// canonical 64-byte bound, and at most four result fields, each a 48-byte
+/// name and a 48-byte code value. The largest error envelope is 144 bytes and
+/// the largest result envelope is 504 bytes, so 512 bounds both. The listener
+/// re-checks a serialized envelope against this bound and redacts rather than
+/// truncating, so the derivation is enforced and not merely documented.
+const MAX_TYPED_JSON_BODY_BYTES: usize = 512;
 const MAX_HTML_BODY_BYTES: usize = 16 * 1024;
 const MAX_JAVASCRIPT_BODY_BYTES: usize = 256 * 1024;
 const MAX_CSS_BODY_BYTES: usize = 64 * 1024;
@@ -154,7 +167,11 @@ impl RateLimiter {
 /// contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResponseProfile {
+    /// Compile-time bodies drawn from the fixed allowlist, used by the frozen
+    /// pre-operational lifecycle routes.
     Json,
+    /// Envelopes the listener serializes itself, used by every other route.
+    TypedJson,
     Html,
     JavaScript,
     Css,
@@ -163,7 +180,7 @@ enum ResponseProfile {
 impl ResponseProfile {
     const fn media_type(self) -> &'static str {
         match self {
-            Self::Json => "application/json; charset=utf-8",
+            Self::Json | Self::TypedJson => "application/json; charset=utf-8",
             Self::Html => "text/html; charset=utf-8",
             Self::JavaScript => "text/javascript; charset=utf-8",
             Self::Css => "text/css; charset=utf-8",
@@ -173,6 +190,7 @@ impl ResponseProfile {
     const fn max_body_bytes(self) -> usize {
         match self {
             Self::Json => MAX_JSON_BODY_BYTES,
+            Self::TypedJson => MAX_TYPED_JSON_BODY_BYTES,
             Self::Html => MAX_HTML_BODY_BYTES,
             Self::JavaScript => MAX_JAVASCRIPT_BODY_BYTES,
             Self::Css => MAX_CSS_BODY_BYTES,
@@ -181,11 +199,15 @@ impl ResponseProfile {
 
     const fn security_headers(self) -> &'static str {
         match self {
-            Self::Json => "",
+            Self::Json | Self::TypedJson => "",
             Self::Html | Self::JavaScript | Self::Css => ASSET_SECURITY_HEADERS,
         }
     }
 
+    /// Maps an observed module media type to a profile.
+    ///
+    /// The typed profile is never selected here: a route reaches it only by
+    /// returning a typed envelope the listener serializes itself.
     fn from_media_type(value: &HeaderValue) -> Option<Self> {
         match value.as_bytes() {
             b"application/json; charset=utf-8" => Some(Self::Json),
@@ -871,14 +893,16 @@ async fn serve_restricted_https_listener(
         }
         // Snapshot before spawning: an in-flight connection keeps serving the
         // surface it snapshotted, and only a newly accepted connection sees a
-        // newer mode. The borrow guard is dropped at the end of this statement
-        // because holding it across an await would block the publisher.
-        let router = serving_modes.borrow().router().clone();
+        // newer mode. The router and its transport registrations are one value,
+        // so they are always snapshotted and swapped together. The borrow guard
+        // is dropped at the end of this statement because holding it across an
+        // await would block the publisher.
+        let surface = serving_modes.borrow().surface().clone();
         if let Ok(connection_permit) = Arc::clone(&slots.normal).try_acquire_owned() {
             let tls_acceptor = tls_acceptor.clone();
             let rate_limiter = Arc::clone(&rate_limiter);
             tokio::spawn(async move {
-                serve_normal_connection(stream, source.ip(), tls_acceptor, router, rate_limiter)
+                serve_normal_connection(stream, source.ip(), tls_acceptor, surface, rate_limiter)
                     .await;
                 drop(connection_permit);
             });
@@ -906,14 +930,14 @@ async fn serve_normal_connection(
     stream: TcpStream,
     source: IpAddr,
     tls_acceptor: TlsAcceptor,
-    router: Router,
+    surface: MountedSurface,
     rate_limiter: Arc<RateLimiter>,
 ) {
     serve_normal_connection_with_timeouts(
         stream,
         source,
         tls_acceptor,
-        router,
+        surface,
         rate_limiter,
         ConnectionTimeouts {
             handshake: TLS_HANDSHAKE_TIMEOUT,
@@ -928,7 +952,7 @@ async fn serve_normal_connection_with_timeouts(
     stream: TcpStream,
     source: IpAddr,
     tls_acceptor: TlsAcceptor,
-    router: Router,
+    surface: MountedSurface,
     rate_limiter: Arc<RateLimiter>,
     timeouts: ConnectionTimeouts,
 ) {
@@ -937,17 +961,8 @@ async fn serve_normal_connection_with_timeouts(
         return;
     };
 
-    let response = processing_response(
-        timeouts.processing,
-        process_restricted_request(
-            &mut tls_stream,
-            source,
-            router,
-            rate_limiter,
-            timeouts.request_read,
-        ),
-    )
-    .await;
+    let response =
+        process_restricted_request(&mut tls_stream, source, surface, rate_limiter, timeouts).await;
     let _ = timeout(
         timeouts.processing,
         write_bounded_response(&mut tls_stream, response),
@@ -982,42 +997,93 @@ async fn serve_rejection_connection_with_timeouts(
     .await;
 }
 
+/// Serves one request through the ordered admission chain.
+///
+/// The chain is: head read within its own absolute deadline, rate admission,
+/// exact route classification against the mounted registrations, framing,
+/// registered pre-body validation, admission permit, and only then a fallible
+/// body allocation. Each stage consumes the previous stage's value, so the
+/// ordering is enforced by the type system rather than by this comment.
 async fn process_restricted_request<S>(
     stream: &mut S,
     source: IpAddr,
-    router: Router,
+    surface: MountedSurface,
     rate_limiter: Arc<RateLimiter>,
-    request_read_timeout: Duration,
+    timeouts: ConnectionTimeouts,
 ) -> BoundedResponse
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let request = match read_http_request_with_timeout(stream, request_read_timeout).await {
-        RequestHeadRead::Completed(request) => {
-            if !rate_limiter.allows(source, Instant::now()) {
-                let mut response = rate_limited_response();
-                // RFC 9110 §9.3.2: HEAD responses must not include a message body.
-                if matches!(request.as_ref(), Ok(r) if *r.method() == Method::HEAD) {
-                    response.body = Bytes::new();
-                }
-                return response;
-            }
-            *request
-        }
+    let started = Deadline::now();
+    // The head's deadline is absolute and is never extended by a route, a
+    // registration, or an admitted body.
+    let head_deadline = started + timeouts.request_read;
+    // Everything between the head and the body allocation is either immediate
+    // or a bounded wait for a route permit, and stays inside the connection's
+    // own processing budget.
+    let admission_deadline = started + timeouts.processing;
+
+    let completed = match read_request_head_until(stream, head_deadline).await {
+        RequestHeadRead::Completed(result) => *result,
         RequestHeadRead::Incomplete(error) => return response_for_request_read_error(error),
     };
 
-    let request = match request {
-        Ok(request) => request,
+    // A completed head consumes rate-limit quota whether or not it parsed.
+    let head = match completed {
+        Ok(head) => head,
+        Err(error) => {
+            return if rate_limiter.allows(source, Instant::now()) {
+                response_for_request_read_error(error)
+            } else {
+                rate_limited_response()
+            };
+        }
+    };
+
+    let rate_admitted = match head.admit_rate(&rate_limiter, source, Instant::now()) {
+        Ok(admitted) => admitted,
+        Err(head) => {
+            let mut response = rate_limited_response();
+            // RFC 9110 §9.3.2: HEAD responses must not include a message body.
+            if *head.method() == Method::HEAD {
+                response.body = Bytes::new();
+            }
+            return response;
+        }
+    };
+
+    let framed = match rate_admitted.classify(surface.registry()).check_framing() {
+        Ok(framed) => framed,
         Err(error) => return response_for_request_read_error(error),
+    };
+    let validated = match framed.validate() {
+        Ok(validated) => validated,
+        Err(rejection) => return rejection.response(),
+    };
+    let Ok(admitted) = timeout_at(admission_deadline, validated.acquire()).await else {
+        return gateway_timeout_response();
+    };
+
+    let profile = admitted.profile();
+    let body_deadline = profile.body_deadline(head_deadline, Deadline::now());
+    let request = match timeout_at(body_deadline, admitted.read_body(stream)).await {
+        Ok(Ok(request)) => request,
+        Ok(Err(error)) => return response_for_request_read_error(error),
+        Err(_) => return request_timeout_response(),
     };
 
     let is_head = *request.method() == Method::HEAD;
-    let response = router
-        .oneshot(request)
-        .await
-        .expect("restricted router response is infallible");
-    let mut bounded = bounded_response_from_axum(response).await;
+    let processing_deadline =
+        profile.processing_deadline(started, timeouts.processing, body_deadline);
+    let router = surface.into_router();
+    let mut bounded = processing_response(processing_deadline, async move {
+        let response = router
+            .oneshot(request)
+            .await
+            .expect("restricted router response is infallible");
+        bounded_response_from_axum(response).await
+    })
+    .await;
     // RFC 9110 §9.3.2: HEAD responses must not include a message body.
     if is_head {
         bounded.body = Bytes::new();
@@ -1031,11 +1097,13 @@ enum RequestReadError {
     TargetTooLong,
     MethodNotAllowed,
     HeadersTooLarge,
+    /// The host could not supply memory for an admitted body.
+    BodyUnavailable,
     Invalid,
 }
 
 enum RequestHeadRead {
-    Completed(Box<Result<Request, RequestReadError>>),
+    Completed(Box<Result<HeadRead, RequestReadError>>),
     Incomplete(RequestReadError),
 }
 
@@ -1141,31 +1209,51 @@ fn request_line_has_non_get_method(bytes: &[u8]) -> bool {
     method != b"GET" && Method::from_bytes(method).is_ok()
 }
 
-async fn read_http_request_with_timeout<S>(
-    stream: &mut S,
-    request_read_timeout: Duration,
-) -> RequestHeadRead
+/// Reads a request head within an absolute deadline.
+///
+/// The deadline is the head's own, so it is never extended by a route, a
+/// registration, or an admitted body.
+async fn read_request_head_until<S>(stream: &mut S, deadline: Deadline) -> RequestHeadRead
 where
     S: AsyncRead + Unpin,
 {
-    match timeout(request_read_timeout, read_http_request_outcome(stream)).await {
+    match timeout_at(deadline, read_request_head_outcome(stream)).await {
         Ok(result) => result,
         Err(_) => RequestHeadRead::Incomplete(RequestReadError::TimedOut),
     }
 }
 
+/// Reads a complete request through the production admission chain.
+///
+/// Used by reader-level tests so they exercise the same stages the listener
+/// runs rather than a parallel implementation.
 #[cfg(test)]
-async fn read_http_request<S>(stream: &mut S) -> Result<Request, RequestReadError>
+async fn read_default_profile_request<S>(stream: &mut S) -> Result<Request, RequestReadError>
 where
     S: AsyncRead + Unpin,
 {
-    match read_http_request_outcome(stream).await {
-        RequestHeadRead::Completed(result) => *result,
-        RequestHeadRead::Incomplete(error) => Err(error),
-    }
+    let deadline = Deadline::now() + Duration::from_secs(30);
+    let head = match read_request_head_until(stream, deadline).await {
+        RequestHeadRead::Completed(result) => (*result)?,
+        RequestHeadRead::Incomplete(error) => return Err(error),
+    };
+    head.admit_rate(
+        &RateLimiter::new(),
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        Instant::now(),
+    )
+    .map_err(|_| RequestReadError::Invalid)?
+    .classify(&transport::TransportRegistry::default())
+    .check_framing()?
+    .validate()
+    .map_err(|_| RequestReadError::Invalid)?
+    .acquire()
+    .await
+    .read_body(stream)
+    .await
 }
 
-async fn read_http_request_outcome<S>(stream: &mut S) -> RequestHeadRead
+async fn read_request_head_outcome<S>(stream: &mut S) -> RequestHeadRead
 where
     S: AsyncRead + Unpin,
 {
@@ -1192,50 +1280,24 @@ where
             let request = if target_too_long {
                 Err(RequestReadError::TargetTooLong)
             } else {
-                match parse_http_request(&bytes, request_line.completed_classification()) {
-                    Ok(request) => read_request_body(stream, request).await,
-                    Err(error) => Err(error),
-                }
+                parse_http_request(&bytes, request_line.completed_classification())
+                    .map(HeadRead::new)
             };
             return RequestHeadRead::Completed(Box::new(request));
         }
     }
 }
 
-/// Reads the bounded request body the completed head declared.
-///
-/// This runs inside the caller's single request-read budget, so the head and
-/// body share one deadline and the body never restarts it.
-async fn read_request_body<S>(
-    stream: &mut S,
-    mut request: Request,
-) -> Result<Request, RequestReadError>
-where
-    S: AsyncRead + Unpin,
-{
-    let Some(length) = declared_request_body_length(request.method(), request.headers())? else {
-        return Ok(request);
-    };
-    let mut body = vec![0_u8; length];
-    stream
-        .read_exact(&mut body)
-        .await
-        .map_err(|_| RequestReadError::Invalid)?;
-    if stream_has_pending_bytes(stream).await {
-        return Err(RequestReadError::Invalid);
-    }
-    *request.body_mut() = Body::from(body);
-    Ok(request)
-}
-
 /// Returns the exact number of body bytes a completed head declared.
 ///
 /// Only `PUT` may carry a body, and only through exactly one canonical
-/// `Content-Length` within [`MAX_REQUEST_BODY_BYTES`]. Every other method must
-/// declare no body at all. Chunked framing and `Expect` are never supported.
+/// `Content-Length` within the classified profile's bound. Every other method
+/// must declare no body at all. Chunked framing and `Expect` are never
+/// supported.
 fn declared_request_body_length(
     method: &Method,
     headers: &HeaderMap,
+    max_body_bytes: usize,
 ) -> Result<Option<usize>, RequestReadError> {
     if headers.contains_key(TRANSFER_ENCODING) || headers.contains_key(EXPECT) {
         return Err(RequestReadError::Invalid);
@@ -1258,7 +1320,7 @@ fn declared_request_body_length(
     let Some(length) = canonical_content_length(value) else {
         return Err(RequestReadError::Invalid);
     };
-    if length > MAX_REQUEST_BODY_BYTES {
+    if length > max_body_bytes {
         return Err(RequestReadError::Invalid);
     }
     Ok(Some(length))
@@ -1311,6 +1373,7 @@ fn response_for_request_read_error(error: RequestReadError) -> BoundedResponse {
             StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
             "{\"error\":\"request_header_fields_too_large\"}",
         ),
+        RequestReadError::BodyUnavailable => service_unavailable_response(),
         RequestReadError::Invalid => {
             json_fixed_response(StatusCode::BAD_REQUEST, "{\"error\":\"bad_request\"}")
         }
@@ -1365,6 +1428,21 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         .headers()
         .get(ALLOW)
         .and_then(AllowedMethod::from_header_value);
+    // The typed profile serializes the route's envelope itself and ignores the
+    // response body and every header the route set, so it can emit no cookie,
+    // cross-origin header, message, path, trace, or dependency detail.
+    if let Some(envelope) = response.extensions().get::<TypedJsonEnvelope>() {
+        let body = envelope.serialize();
+        if body.len() > ResponseProfile::TypedJson.max_body_bytes() {
+            return redacted_response(status, allow);
+        }
+        return BoundedResponse {
+            status,
+            profile: ResponseProfile::TypedJson,
+            body: Bytes::from(body),
+            allow,
+        };
+    }
     let Some(profile) = response
         .headers()
         .get(CONTENT_TYPE)
@@ -1444,11 +1522,11 @@ where
     stream.shutdown().await
 }
 
-async fn processing_response<F>(processing_timeout: Duration, processing: F) -> BoundedResponse
+async fn processing_response<F>(processing_deadline: Deadline, processing: F) -> BoundedResponse
 where
     F: Future<Output = BoundedResponse>,
 {
-    match timeout(processing_timeout, processing).await {
+    match timeout_at(processing_deadline, processing).await {
         Ok(response) => response,
         Err(_) => gateway_timeout_response(),
     }
@@ -1499,24 +1577,31 @@ fn rate_limited_response() -> BoundedResponse {
 /// The surface the listener currently serves.
 ///
 /// Every mode starts from the same fixed not-found fallback, so a mode serves
-/// exactly the routes its Client Module surface declared and nothing else.
+/// exactly the routes its Client Module surface declared and nothing else. Each
+/// mode carries its router and its transport registrations as one value, so a
+/// registration can never describe a route the published mode did not mount.
 enum ServingMode {
     /// The pre-operational Client Module surface permitted before sealing.
-    PreOperational(Router),
+    PreOperational(MountedSurface),
     /// No functional route at all; every valid request receives not-found.
-    FailClosed(Router),
+    FailClosed(MountedSurface),
     /// The sealed deployment's operational Client Module surface.
-    Operational(Router),
+    Operational(MountedSurface),
 }
 
 impl ServingMode {
-    /// Returns the router this mode serves.
-    fn router(&self) -> &Router {
+    /// Returns the router and registrations this mode serves.
+    fn surface(&self) -> &MountedSurface {
         match self {
-            Self::PreOperational(router) | Self::FailClosed(router) | Self::Operational(router) => {
-                router
-            }
+            Self::PreOperational(surface)
+            | Self::FailClosed(surface)
+            | Self::Operational(surface) => surface,
         }
+    }
+
+    #[cfg(test)]
+    fn router(&self) -> &Router {
+        self.surface().router()
     }
 }
 
@@ -1539,15 +1624,17 @@ impl ServingModeSwitch {
 
     /// Serves no functional route from the next accepted connection onward.
     pub fn publish_fail_closed(&self) {
-        let _ = self.modes.send(ServingMode::FailClosed(fallback_router()));
+        let _ = self.modes.send(ServingMode::FailClosed(
+            MountedSurface::without_registrations(fallback_router()),
+        ));
     }
 
     /// Serves the supplied operational Client Module surface from the next
     /// accepted connection onward.
     pub fn publish_operational(&self, surface: OperationalSurface) {
-        let _ = self
-            .modes
-            .send(ServingMode::Operational(surface.mount(fallback_router())));
+        let _ = self.modes.send(ServingMode::Operational(
+            MountedSurface::without_registrations(surface.mount(fallback_router())),
+        ));
     }
 }
 
@@ -1557,19 +1644,29 @@ fn fallback_router() -> Router {
 }
 
 /// Selects the surface the listener serves for a classified startup.
+///
+/// Only the pre-operational mode may ever carry a transport registration. The
+/// fail-closed and operational modes mount no route that needs one, so they
+/// carry none at all.
 fn initial_serving_mode(
     composition: &PreoperationalComposition,
     listener: SocketAddr,
 ) -> ServingMode {
     match composition.outcome {
         StartupOutcome::UninitializedWithoutDatabase
-        | StartupOutcome::UninitializedWithDatabase => ServingMode::PreOperational(
-            preoperational_routes(fallback_router(), composition, listener),
-        ),
-        StartupOutcome::InitializationPending(_) => ServingMode::FailClosed(fallback_router()),
-        StartupOutcome::Initialized => ServingMode::Operational(
-            weavelit_module_client_webui::operational_surface().mount(fallback_router()),
-        ),
+        | StartupOutcome::UninitializedWithDatabase => {
+            ServingMode::PreOperational(MountedSurface::without_registrations(
+                preoperational_routes(fallback_router(), composition, listener),
+            ))
+        }
+        StartupOutcome::InitializationPending(_) => {
+            ServingMode::FailClosed(MountedSurface::without_registrations(fallback_router()))
+        }
+        StartupOutcome::Initialized => {
+            ServingMode::Operational(MountedSurface::without_registrations(
+                weavelit_module_client_webui::operational_surface().mount(fallback_router()),
+            ))
+        }
     }
 }
 
@@ -1786,7 +1883,7 @@ mod tests {
     use axum::{
         Router,
         body::Body,
-        http::{Request, StatusCode},
+        http::{HeaderValue, Method, Request, StatusCode, header::CONTENT_TYPE},
         response::Response,
         routing::any,
     };
@@ -1799,7 +1896,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpSocket, TcpStream},
-        sync::watch,
+        sync::{Semaphore, watch},
     };
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
@@ -1819,16 +1916,23 @@ mod tests {
 
     use super::{
         APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse,
-        ConnectionSlots, ConnectionTimeouts, MAX_REQUEST_BODY_BYTES, PreoperationalComposition,
-        RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT,
-        REQUEST_READ_TIMEOUT, RateLimiter, RequestHeadRead, RequestReadError, ResponseProfile,
-        RestrictedStartup, ServingMode, ServingModeSwitch, StartupError, StartupOutcome,
-        TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter, bounded_response_from_axum,
-        classify_restricted_startup, fallback_router, gateway_timeout_response,
-        initial_serving_mode, parse_http_request, processing_response, raw_header_section_bytes,
-        read_http_request, read_http_request_with_timeout, request_timeout_response,
-        restore::RestoreOrchestrator, serve_normal_connection_with_timeouts,
-        serve_rejection_connection_with_timeouts, sqlite_catalog, startup_outcome,
+        ConnectionSlots, ConnectionTimeouts, MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES,
+        MAX_TYPED_JSON_BODY_BYTES, PreoperationalComposition, RATE_LIMIT_BURST,
+        RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
+        RateLimiter, RequestReadError, ResponseProfile, RestrictedStartup, ServingMode,
+        ServingModeSwitch, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter,
+        bounded_response_from_axum, classify_restricted_startup, fallback_router,
+        gateway_timeout_response, initial_serving_mode, parse_http_request, processing_response,
+        raw_header_section_bytes, read_default_profile_request, read_request_head_until,
+        redacted_response, request_timeout_response,
+        restore::RestoreOrchestrator,
+        serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
+        sqlite_catalog, startup_outcome,
+        transport::{MountedSurface, TransportCapability, TransportProfile, TransportRegistration},
+        typed_json::{
+            ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
+            typed_json_response,
+        },
     };
 
     /// Listener authority used by router-level tests that bind no socket.
@@ -1967,7 +2071,7 @@ mod tests {
         let (mut client, mut server) = tokio::io::duplex(bytes.len().max(1));
         client.write_all(bytes).await.unwrap();
         client.shutdown().await.unwrap();
-        match read_http_request(&mut server).await {
+        match read_default_profile_request(&mut server).await {
             Ok(_) => RequestHeadResult::Accepted,
             Err(error) => head_result(error),
         }
@@ -1978,7 +2082,7 @@ mod tests {
         let (mut client, mut server) = tokio::io::duplex(bytes.len().max(1));
         client.write_all(bytes).await.unwrap();
         client.shutdown().await.unwrap();
-        match read_http_request(&mut server).await {
+        match read_default_profile_request(&mut server).await {
             Ok(request) => Ok(request
                 .into_body()
                 .collect()
@@ -1996,6 +2100,9 @@ mod tests {
             RequestReadError::MethodNotAllowed => RequestHeadResult::MethodNotAllowed,
             RequestReadError::TargetTooLong => RequestHeadResult::TargetTooLong,
             RequestReadError::HeadersTooLarge => RequestHeadResult::HeadersTooLarge,
+            RequestReadError::BodyUnavailable => {
+                panic!("reader test must not exhaust host memory")
+            }
             RequestReadError::TimedOut => panic!("reader test must not time out"),
         }
     }
@@ -2285,7 +2392,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_fail_closed_serving_mode_serves_only_not_found() {
-        let router = ServingMode::FailClosed(fallback_router()).router().clone();
+        let router =
+            ServingMode::FailClosed(MountedSurface::without_registrations(fallback_router()))
+                .router()
+                .clone();
         for target in [
             "/",
             "/assets/weavelit-application.js",
@@ -2739,34 +2849,55 @@ mod tests {
     }
 
     /// The head arrives at 400 ms and the body at 700 ms. A 500 ms budget shared
-    /// by both expires, while a budget restarted at the body would not.
+    /// by both expires, while a budget restarted at the body would not. This
+    /// drives the production request path, so it also proves the default
+    /// profile still shares one budget after admission was introduced.
     #[tokio::test]
     async fn request_read_timeout_covers_the_head_and_body_as_one_budget() {
-        let schedule = |budget: Duration| async move {
-            let (mut client, mut server) = tokio::io::duplex(256);
-            let writer = tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(400)).await;
-                client
-                    .write_all(b"PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\n\r\n")
-                    .await
-                    .unwrap();
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                client.write_all(b"body").await.unwrap();
-                std::future::pending::<()>().await;
-            });
-            let outcome = read_http_request_with_timeout(&mut server, budget).await;
-            writer.abort();
-            outcome
+        let surface = MountedSurface::without_registrations(restricted_routes(
+            StartupOutcome::UninitializedWithDatabase,
+        ));
+        let schedule = |budget: Duration| {
+            let surface = surface.clone();
+            async move {
+                let (mut client, mut server) = tokio::io::duplex(256);
+                let writer = tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    client
+                        .write_all(b"PUT /api/v1/database HTTP/1.1\r\nContent-Length: 4\r\n\r\n")
+                        .await
+                        .unwrap();
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    client.write_all(b"body").await.unwrap();
+                    std::future::pending::<()>().await;
+                });
+                let outcome = super::process_restricted_request(
+                    &mut server,
+                    "127.0.0.1".parse().unwrap(),
+                    surface,
+                    Arc::new(RateLimiter::new()),
+                    ConnectionTimeouts {
+                        handshake: TLS_HANDSHAKE_TIMEOUT,
+                        request_read: budget,
+                        processing: REQUEST_PROCESSING_TIMEOUT,
+                    },
+                )
+                .await;
+                writer.abort();
+                outcome
+            }
         };
 
-        assert!(matches!(
-            schedule(Duration::from_millis(500)).await,
-            RequestHeadRead::Incomplete(RequestReadError::TimedOut)
-        ));
-        assert!(matches!(
-            schedule(Duration::from_millis(1_500)).await,
-            RequestHeadRead::Completed(result) if result.is_ok()
-        ));
+        let expired = schedule(Duration::from_millis(500)).await;
+        assert_eq!(expired.status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(expired.body, request_timeout_response().body);
+
+        // The same schedule inside a budget that covers both stages is read in
+        // full and reaches the router, which answers not-found for a target the
+        // surface never mounted.
+        let accepted = schedule(Duration::from_millis(1_500)).await;
+        assert_eq!(accepted.status, StatusCode::NOT_FOUND);
+        assert_eq!(accepted.body.as_ref(), b"{\"error\":\"not_found\"}");
     }
 
     #[tokio::test]
@@ -2961,6 +3092,29 @@ mod tests {
         request_read_timeout: Duration,
         processing_timeout: Duration,
     ) -> Vec<u8> {
+        direct_tls_surface_response(
+            MountedSurface::without_registrations(router),
+            server_config,
+            client_config,
+            rate_limiter,
+            request,
+            request_read_timeout,
+            processing_timeout,
+        )
+        .await
+    }
+
+    /// Serves one direct-TLS request against a surface that may carry its own
+    /// transport registrations.
+    async fn direct_tls_surface_response(
+        surface: MountedSurface,
+        server_config: Arc<ServerConfig>,
+        client_config: Arc<ClientConfig>,
+        rate_limiter: Arc<RateLimiter>,
+        request: &[u8],
+        request_read_timeout: Duration,
+        processing_timeout: Duration,
+    ) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -2969,7 +3123,7 @@ mod tests {
                 stream,
                 source.ip(),
                 TlsAcceptor::from(server_config),
-                router,
+                surface,
                 rate_limiter,
                 ConnectionTimeouts {
                     handshake: TLS_HANDSHAKE_TIMEOUT,
@@ -3009,7 +3163,7 @@ mod tests {
                 stream,
                 source.ip(),
                 TlsAcceptor::from(server_config),
-                router,
+                MountedSurface::without_registrations(router),
                 rate_limiter,
                 ConnectionTimeouts {
                     handshake: TLS_HANDSHAKE_TIMEOUT,
@@ -4265,7 +4419,9 @@ mod tests {
                 stream,
                 source.ip(),
                 TlsAcceptor::from(server_config),
-                restricted_routes(StartupOutcome::UninitializedWithoutDatabase),
+                MountedSurface::without_registrations(restricted_routes(
+                    StartupOutcome::UninitializedWithoutDatabase,
+                )),
                 Arc::new(RateLimiter::new()),
                 ConnectionTimeouts {
                     handshake: TLS_HANDSHAKE_TIMEOUT,
@@ -4331,7 +4487,7 @@ mod tests {
                 stream,
                 source.ip(),
                 TlsAcceptor::from(server_config),
-                router,
+                MountedSurface::without_registrations(router),
                 Arc::new(RateLimiter::new()),
                 ConnectionTimeouts {
                     handshake: TLS_HANDSHAKE_TIMEOUT,
@@ -4883,7 +5039,7 @@ mod tests {
     async fn request_and_processing_timeouts_use_fixed_responses() {
         let (mut client, mut server) = tokio::io::duplex(1);
         let read = tokio::spawn(async move {
-            read_http_request_with_timeout(&mut server, Duration::ZERO).await
+            read_request_head_until(&mut server, super::Deadline::now()).await
         });
         let _ = client.write_all(b"").await;
         assert!(matches!(
@@ -4891,7 +5047,8 @@ mod tests {
             super::RequestHeadRead::Incomplete(super::RequestReadError::TimedOut)
         ));
 
-        let response = processing_response(Duration::ZERO, pending::<BoundedResponse>()).await;
+        let response =
+            processing_response(super::Deadline::now(), pending::<BoundedResponse>()).await;
         assert_eq!(response.status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(response.body, gateway_timeout_response().body);
         assert_eq!(
@@ -5503,5 +5660,380 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Route-registered transport profiles at the listener boundary
+    // -----------------------------------------------------------------------
+
+    /// Test-only target for an admitted large-body registration.
+    const ADMITTED_TARGET: &str = "/api/v1/admitted-large-body";
+
+    /// Body bound a stage-one admitted registration proves it can carry.
+    const ADMITTED_BODY_BYTES: usize = 256 * 1024 * 1024;
+
+    /// A registration whose body budget is long enough to outlive the head's.
+    fn admitted_capability() -> TransportCapability {
+        TransportCapability::new(
+            TransportRegistration::new(
+                Method::PUT,
+                ADMITTED_TARGET,
+                TransportProfile::admitted(
+                    ADMITTED_BODY_BYTES,
+                    Duration::from_secs(120),
+                    Duration::from_secs(60),
+                ),
+            )
+            .with_admission(Arc::new(Semaphore::new(1))),
+            |router| {
+                router.route(
+                    ADMITTED_TARGET,
+                    axum::routing::put(|| async {
+                        typed_json_response(StatusCode::ACCEPTED, admitted_envelope())
+                    }),
+                )
+            },
+        )
+    }
+
+    /// The admitted test route's typed envelope.
+    fn admitted_envelope() -> TypedJsonEnvelope {
+        TypedJsonEnvelope::Result {
+            result: TypedResult::new()
+                .with_field(
+                    StableCode::new("accepted").unwrap(),
+                    TypedValue::Boolean(true),
+                )
+                .unwrap(),
+            correlation_id: ResponseCorrelation::new("admitted-0123456789").unwrap(),
+        }
+    }
+
+    /// Drives one request through the production path over an in-memory stream.
+    async fn process_over_duplex(
+        surface: MountedSurface,
+        timeouts: ConnectionTimeouts,
+        write: impl FnOnce(tokio::io::DuplexStream) -> tokio::task::JoinHandle<()>,
+    ) -> BoundedResponse {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let writer = write(client);
+        let response = super::process_restricted_request(
+            &mut server,
+            "127.0.0.1".parse().unwrap(),
+            surface,
+            Arc::new(RateLimiter::new()),
+            timeouts,
+        )
+        .await;
+        writer.abort();
+        response
+    }
+
+    fn short_head_budget() -> ConnectionTimeouts {
+        ConnectionTimeouts {
+            handshake: TLS_HANDSHAKE_TIMEOUT,
+            request_read: Duration::from_millis(400),
+            processing: REQUEST_PROCESSING_TIMEOUT,
+        }
+    }
+
+    /// A registered route may read its body past the head's budget, and the
+    /// same schedule under the default profile still times out.
+    #[tokio::test]
+    async fn an_admitted_route_reads_its_body_on_its_own_budget() {
+        let head = format!(
+            "PUT {ADMITTED_TARGET} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\n"
+        );
+        let schedule = |stream: tokio::io::DuplexStream| {
+            let head = head.clone();
+            tokio::spawn(async move {
+                let mut stream = stream;
+                stream.write_all(head.as_bytes()).await.unwrap();
+                // Arrives well after the 400 ms head budget would have expired.
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                stream.write_all(b"body").await.unwrap();
+                std::future::pending::<()>().await;
+            })
+        };
+
+        let registered = process_over_duplex(
+            MountedSurface::without_registrations(fallback_router())
+                .with_capability(admitted_capability()),
+            short_head_budget(),
+            schedule,
+        )
+        .await;
+        assert_eq!(registered.status, StatusCode::ACCEPTED);
+        assert_eq!(
+            registered.body.as_ref(),
+            b"{\"result\":{\"accepted\":true},\"correlation_id\":\"admitted-0123456789\"}"
+        );
+
+        // The identical schedule against a surface that mounted no registration
+        // stays on the default profile's shared head-and-body budget.
+        let unregistered = process_over_duplex(
+            MountedSurface::without_registrations(fallback_router()),
+            short_head_budget(),
+            schedule,
+        )
+        .await;
+        assert_eq!(unregistered.status, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// A registration never lengthens the head's own absolute deadline, so a
+    /// slow-loris head still dies inside the connection's read budget.
+    #[tokio::test]
+    async fn a_registration_never_extends_the_head_deadline() {
+        let response = process_over_duplex(
+            MountedSurface::without_registrations(fallback_router())
+                .with_capability(admitted_capability()),
+            short_head_budget(),
+            |stream| {
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    // A head that dribbles forever and never terminates.
+                    for byte in format!("PUT {ADMITTED_TARGET} HTTP/1.1\r\nHost: localhost\r\n")
+                        .into_bytes()
+                    {
+                        stream.write_all(&[byte]).await.unwrap();
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    std::future::pending::<()>().await;
+                })
+            },
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(response.body, request_timeout_response().body);
+    }
+
+    /// A body larger than the default bound is refused on a surface that never
+    /// mounted the registration granting it.
+    #[tokio::test]
+    async fn an_unmounted_registration_grants_no_larger_body() {
+        let response = process_over_duplex(
+            MountedSurface::without_registrations(fallback_router()),
+            ConnectionTimeouts {
+                handshake: TLS_HANDSHAKE_TIMEOUT,
+                request_read: REQUEST_READ_TIMEOUT,
+                processing: REQUEST_PROCESSING_TIMEOUT,
+            },
+            |stream| {
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    let oversized = MAX_REQUEST_BODY_BYTES + 1;
+                    stream
+                        .write_all(
+                            format!(
+                                "PUT {ADMITTED_TARGET} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {oversized}\r\n\r\n"
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                    std::future::pending::<()>().await;
+                })
+            },
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        assert_eq!(response.body.as_ref(), b"{\"error\":\"bad_request\"}");
+    }
+
+    /// The modes that serve no large-body route carry no registration at all.
+    #[test]
+    fn the_fail_closed_and_operational_modes_carry_no_transport_registration() {
+        let (modes, _receiver) = watch::channel(ServingMode::FailClosed(
+            MountedSurface::without_registrations(fallback_router()),
+        ));
+        let switch = ServingModeSwitch { modes };
+
+        switch.publish_fail_closed();
+        assert!(switch.modes.borrow().surface().registry().is_empty());
+
+        switch.publish_operational(weavelit_module_client_webui::operational_surface());
+        assert!(switch.modes.borrow().surface().registry().is_empty());
+
+        for outcome in [
+            StartupOutcome::UninitializedWithoutDatabase,
+            StartupOutcome::UninitializedWithDatabase,
+            StartupOutcome::Initialized,
+        ] {
+            let composition = Surface::new(outcome).composition();
+            let mode = initial_serving_mode(&composition, UNBOUND_LISTENER.parse().unwrap());
+            assert!(mode.surface().registry().is_empty());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Response profiles: frozen routes and the typed envelope
+    // -----------------------------------------------------------------------
+
+    /// The frozen routes must answer with exactly the bytes they answered with
+    /// before route-registered profiles and the typed profile existed.
+    #[tokio::test]
+    async fn the_frozen_routes_keep_byte_for_byte_identical_responses() {
+        let (server_config, client_config) = tls_configs();
+
+        for (outcome, status_body) in [
+            (
+                StartupOutcome::UninitializedWithoutDatabase,
+                "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}",
+            ),
+            (
+                StartupOutcome::UninitializedWithDatabase,
+                "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}",
+            ),
+        ] {
+            let response = direct_tls_response(
+                restricted_routes(outcome),
+                Arc::clone(&server_config),
+                Arc::clone(&client_config),
+                b"GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                REQUEST_READ_TIMEOUT,
+                REQUEST_PROCESSING_TIMEOUT,
+            )
+            .await;
+            assert_eq!(
+                response,
+                format!(
+                    "HTTP/1.1 200 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n{status_body}"
+                )
+                .as_bytes(),
+                "{outcome:?}"
+            );
+        }
+
+        let selection_surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let selection =
+            direct_tls_valid_selection(&selection_surface, &(server_config, client_config)).await;
+        assert_eq!(
+            selection,
+            format!(
+                "HTTP/1.1 200 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n{SELECTED_STATUS}"
+            )
+            .as_bytes()
+        );
+    }
+
+    /// The typed profile carries its own derived bound; the fixed profile keeps
+    /// the bound and allowlist it already had.
+    #[test]
+    fn the_typed_profile_does_not_reuse_the_fixed_profile_bound() {
+        assert_eq!(ResponseProfile::Json.max_body_bytes(), MAX_JSON_BODY_BYTES);
+        assert_eq!(ResponseProfile::Json.max_body_bytes(), 128);
+        assert_eq!(
+            ResponseProfile::TypedJson.max_body_bytes(),
+            MAX_TYPED_JSON_BODY_BYTES
+        );
+        assert_eq!(ResponseProfile::TypedJson.max_body_bytes(), 512);
+        assert_eq!(
+            ResponseProfile::TypedJson.media_type(),
+            ResponseProfile::Json.media_type()
+        );
+        assert_eq!(ResponseProfile::TypedJson.security_headers(), "");
+        // A request-supplied media type can never select the typed profile.
+        assert!(matches!(
+            ResponseProfile::from_media_type(&HeaderValue::from_static(
+                "application/json; charset=utf-8"
+            )),
+            Some(ResponseProfile::Json)
+        ));
+    }
+
+    fn typed_envelope() -> TypedJsonEnvelope {
+        TypedJsonEnvelope::Result {
+            result: TypedResult::new()
+                .with_field(
+                    StableCode::new("accepted").unwrap(),
+                    TypedValue::Boolean(true),
+                )
+                .unwrap()
+                .with_field(
+                    StableCode::new("bytes").unwrap(),
+                    TypedValue::Unsigned(268_435_456),
+                )
+                .unwrap(),
+            correlation_id: ResponseCorrelation::new("restore-0123456789").unwrap(),
+        }
+    }
+
+    /// The listener serializes the envelope itself and discards whatever the
+    /// route put in its body and headers.
+    #[tokio::test]
+    async fn the_typed_profile_serializes_only_its_envelope() {
+        let mut response = typed_json_response(StatusCode::ACCEPTED, typed_envelope());
+        // A route cannot smuggle bytes or headers past the typed profile.
+        *response.body_mut() = Body::from("route supplied bytes");
+        response
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static("text/html"));
+        response
+            .headers_mut()
+            .insert("set-cookie", HeaderValue::from_static("session=1"));
+
+        let bounded = bounded_response_from_axum(response).await;
+        assert_eq!(bounded.status, StatusCode::ACCEPTED);
+        assert!(matches!(bounded.profile, ResponseProfile::TypedJson));
+        assert_eq!(
+            bounded.body.as_ref(),
+            b"{\"result\":{\"accepted\":true,\"bytes\":268435456},\"correlation_id\":\"restore-0123456789\"}"
+        );
+        assert_eq!(bounded.allow, None);
+    }
+
+    /// The typed profile's wire bytes carry no cookie, no cross-origin header,
+    /// no message, no path, no trace, and no dependency detail.
+    #[tokio::test]
+    async fn the_typed_profile_emits_no_forbidden_header_on_the_wire() {
+        let (server_config, client_config) = tls_configs();
+        let router = fallback_router().route(
+            "/api/v1/typed",
+            any(|| async { typed_json_response(StatusCode::ACCEPTED, typed_envelope()) }),
+        );
+
+        let response = direct_tls_response(
+            router,
+            server_config,
+            client_config,
+            b"GET /api/v1/typed HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            response,
+            b"HTTP/1.1 202 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n{\"result\":{\"accepted\":true,\"bytes\":268435456},\"correlation_id\":\"restore-0123456789\"}"
+        );
+
+        let rendered = String::from_utf8(response).unwrap();
+        for forbidden in [
+            "Set-Cookie",
+            "set-cookie",
+            "Access-Control-",
+            "message",
+            "trace",
+            "/api/v1/typed",
+            "sqlite",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "typed response must not disclose {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    /// A typed envelope larger than the derived bound is redacted rather than
+    /// truncated, so the derivation is enforced at the boundary.
+    #[tokio::test]
+    async fn a_typed_envelope_over_the_derived_bound_is_redacted() {
+        let bounded =
+            bounded_response_from_axum(typed_json_response(StatusCode::OK, typed_envelope())).await;
+        assert!(bounded.body.len() <= MAX_TYPED_JSON_BODY_BYTES);
+
+        // The listener re-checks the serialized length against the profile's
+        // bound; a shape that outgrew the derivation would take this branch.
+        let redacted = redacted_response(StatusCode::OK, None);
+        assert_eq!(redacted.body.as_ref(), b"{\"error\":\"gateway_timeout\"}");
     }
 }

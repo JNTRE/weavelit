@@ -122,6 +122,13 @@ carries correlation identifiers, and is the only profile permitted to emit the
 approved session and cross-site request forgery cookies. Both profiles enforce
 their own bounds; neither can emit a body the other is responsible for.
 
+The typed profile's bound is derived from the envelope's own maxima rather than
+inherited from the fixed profile: a stable code, a correlation identifier at its
+canonical bound, and the result fields a route may return. The Server re-checks
+each serialized envelope against that bound and redacts rather than truncating,
+so a route cannot emit a partial envelope that still parses as valid JSON. No
+route emits a session or cross-site request forgery cookie yet.
+
 ## Pagination
 
 A collection response is cursor-paginated. A request MAY supply `limit` and

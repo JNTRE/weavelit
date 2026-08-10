@@ -244,15 +244,22 @@ uninitialized classifications serve the pre-operational surface, a retained
 pending classification serves the fail-closed surface, and a sealed deployment
 serves the operational surface.
 
-The runtime publishes the current mode through one watch channel. The listener
-snapshots the mode's router when it accepts a connection and before it spawns
-the connection task, so an in-flight connection continues serving the surface it
-snapshotted and only a newly accepted connection observes a newer mode. The
-publisher is a separate named capability that a workflow holds to move a running
-listener from its pre-operational surface to fail-closed and then to the
-operational surface without a restart. The publisher carries no lifecycle
+The runtime publishes the current mode through one watch channel. A mode carries
+its router and its transport registrations as one value, so the two are composed,
+published, and snapshotted together and can never describe different route sets.
+The listener snapshots that whole value when it accepts a connection and before
+it spawns the connection task, so an in-flight connection continues serving the
+surface it snapshotted and only a newly accepted connection observes a newer
+mode. The publisher is a separate named capability that a workflow holds to move
+a running listener from its pre-operational surface to fail-closed and then to
+the operational surface without a restart. The publisher carries no lifecycle
 authority: a caller must already have completed the trusted transition it
 publishes.
+
+Only the pre-operational mode may carry a transport registration, because it is
+the only mode that mounts a route needing one. The fail-closed and operational
+modes are composed with no registration at all, so no request they serve can
+reach a non-default transport profile.
 
 The runtime composes every mounted pre-operational route over one shared
 lifecycle authority. Startup constructs a single workflow arbiter over the
@@ -311,26 +318,73 @@ by this architecture decision.
 
 ### Bounded Request Reading
 
-The runtime reads a request in two stages within a single request-read budget.
-The first stage reads the request head under the existing 2 KiB request-target,
-8 KiB raw-header, and aggregate head bounds. The second stage reads a request
-body only when the head declares one.
+The runtime reads a request head, admits it, and only then reads a body. The head
+read applies the existing 2 KiB request-target, 8 KiB raw-header, and aggregate
+head bounds. A body is read only when the head declares one and only after the
+request has been admitted.
 
-Only `PUT` may carry a body. It must declare exactly one canonical decimal
-`Content-Length` of at most 1 KiB. This body allowance is separate from the head
-bounds and never relaxes them. The runtime rejects chunked transfer encoding,
-any `Expect` header, a duplicated or conflicting `Content-Length`, a
-non-numeric, signed, or non-canonical length, a declared length over 1 KiB, a
-stream that ends before the declared length, and bytes beyond the declared
-length. Every other method must declare no body at all, so a `GET` carrying body
-framing is still rejected. Each rejection uses the fixed `400` bad-request
-response.
+#### Route-Registered Transport Profiles
 
-The 5-second request-read timeout is one budget covering the head and the body
-together; it does not restart when the body begins. The 10-second total
-processing timeout remains outermost and unchanged. Per-source rate admission
-still keys on a completed request head, so a body read that times out is a
-request timeout rather than a consumed quota slot.
+A transport profile supplies the maximum body size a request may declare and the
+budget its body read and processing receive. Every request starts on the default
+profile, which preserves the listener-wide behavior: at most 1 KiB of body, only
+for `PUT`, one 5-second budget shared by the head and the body, and a 10-second
+total processing budget measured from the start of the request.
+
+A route earns a different profile only by being registered, and a registration
+reaches the listener only bundled with the router mount that serves the same
+route. A registration therefore cannot describe a route the published surface did
+not mount, and a mounted route without a registration stays on the default
+profile.
+
+Classification matches the exact canonical request target and the exact method.
+A query string, an absolute-form request target, a percent-encoded separator or
+segment, a dot segment, a trailing slash, a prefix, a longer target, and any
+other method all fail to match and receive the default profile. A registered
+profile is therefore never reachable by rewriting a request target.
+
+#### Admission Ordering
+
+The runtime performs these steps in this order, and each step consumes the value
+the previous step produced, so a different order does not compile:
+
+1. Read the request head within its own absolute 5-second deadline.
+2. Admit the head against the per-source rate limit.
+3. Classify the request against the published surface's registrations.
+4. Apply the classified profile's framing checks.
+5. Run the registration's pre-body validation, if it declared any.
+6. Acquire the registered route's admission permit.
+7. Allocate the declared body fallibly, then read it.
+
+The head's deadline is absolute in every case and is never lengthened by a route,
+a registration, or an admitted body, so a slow request head still fails inside
+the 5-second read budget. Only an admitted body may receive a longer body-read
+and processing budget, measured from the moment admission completed. The wait for
+an admission permit stays inside the connection's own processing budget and
+answers with the fixed `504` response when it expires.
+
+A registered route may bound how many bodies it admits at once. The permit is
+acquired before any body memory is reserved and is handed to the route through
+the request, so downstream work never acquires it again. Concurrent large-body
+memory is therefore bounded by the registered permit count rather than by the
+number of accepted connections. The allocation itself is fallible: a reservation
+the host cannot satisfy answers with the fixed `503` service-unavailable response
+rather than aborting the process.
+
+#### Framing Rules
+
+On the default profile only `PUT` may carry a body. A request that carries one
+must declare exactly one canonical decimal `Content-Length` within the classified
+profile's maximum. This body allowance is separate from the head bounds and never
+relaxes them. The runtime rejects chunked transfer encoding, any `Expect` header,
+a duplicated or conflicting `Content-Length`, a non-numeric, signed, or
+non-canonical length, a declared length over the classified maximum, a stream
+that ends before the declared length, and bytes beyond the declared length. Every
+other method must declare no body at all, so a `GET` carrying body framing is
+still rejected. Each rejection uses the fixed `400` bad-request response.
+
+Per-source rate admission still keys on a completed request head, so a head read
+that times out is a request timeout rather than a consumed quota slot.
 
 A complete request keeps its method and is dispatched, so the mounted route
 decides whether the method is permitted and which method it advertises. Only a
