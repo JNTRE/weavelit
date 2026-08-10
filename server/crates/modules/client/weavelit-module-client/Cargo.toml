@@ -1,0 +1,15 @@
+[package]
+name = "weavelit-module-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+axum.workspace = true
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+weavelit-server-lifecycle = { path = "../../../core/weavelit-server-lifecycle" }
+
+[dev-dependencies]
+tokio.workspace = true
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }

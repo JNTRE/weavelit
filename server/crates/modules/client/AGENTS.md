@@ -11,13 +11,14 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns the shared Client Module crate layout.
 - It does not own client-application behavior, Server authorization policy, or Service Module provider integrations.
-- Child paths own connection-surface behavior for their named client.
+- `weavelit-module-client/` owns the shared API contract and capability declaration; each per-client path owns only what genuinely differs for its named client.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and Client Module crate-boundary rules.
+- `weavelit-module-client/`: Shared Client Module contract crate boundary.
 - `weavelit-module-client-cli/`: Weavelit CLI Client Module crate boundary.
 - `weavelit-module-client-webui/`: Web UI Client Module crate boundary.
 
@@ -40,6 +41,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
+- Keep shared contract behavior in `weavelit-module-client/` rather than duplicating it in a per-client crate.
 - Derive caller identity from Server-validated credentials or sessions; never trust identity, group, or permission claims supplied by a client.
 - Pass every accepted request to the shared Server authorization policy.
 - Keep client-application behavior in its named application boundary rather than duplicating it in a Client Module crate.

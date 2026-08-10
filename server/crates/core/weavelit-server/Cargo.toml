@@ -23,6 +23,7 @@ tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 weavelit-server-database-sqlite = { path = "../../database/weavelit-server-database-sqlite" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
 weavelit-server-log = { path = "../weavelit-server-log" }
+weavelit-module-client = { path = "../../modules/client/weavelit-module-client" }
 weavelit-module-client-webui = { path = "../../modules/client/weavelit-module-client-webui" }
 weavelit-module-log-sqlite = { path = "../../modules/log/weavelit-module-log-sqlite" }
 

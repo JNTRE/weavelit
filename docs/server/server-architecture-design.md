@@ -39,6 +39,7 @@ canonical Module category. `<implementation>` identifies the client surface,
 log destination, MFA method, or external service. For example:
 
 ```text
+weavelit-module-client
 weavelit-module-client-cli
 weavelit-module-client-webui
 weavelit-module-mfa-totp
@@ -59,8 +60,10 @@ hyphens; Rust imports use underscores.
 
 Create a base crate only when it owns meaningful shared code or a shared
 contract. An implementation crate may stand alone until a shared crate is
-justified. The naming convention does not classify a component as a runtime
-module.
+justified. A base Module crate omits `-<implementation>`, as
+`weavelit-module-client` does for the shared Client Module contract described in
+the [Server API Contract](api/api-contract-design.md). The naming convention
+does not classify a component as a runtime module.
 
 For example, the **[Application Database](../glossary.md#applications-and-interfaces)**
 crates are:
@@ -208,14 +211,18 @@ over Hyper and Tokio with Rustls. Rustls uses the approved AWS-LC cryptographic
 provider and permits TLS 1.2 and TLS 1.3. The runtime does not create a second
 listener or a cleartext fallback.
 
-The compiled-in `weavelit-module-client-webui` crate owns translation of the
-Web UI pre-operational status request and Application Database selection request
-and response contracts and delivery of its compile-time embedded browser asset
-allowlist. The runtime mounts those routes
+The compiled-in `weavelit-module-client` crate owns translation of the
+pre-operational status request and Application Database selection request and
+response contracts, their canonical route paths, and the pre-operational
+capability declaration a Client Module returns. The compiled-in
+`weavelit-module-client-webui` crate owns only what is browser-specific: the
+capabilities the Web UI declares and delivery of its compile-time embedded
+browser asset allowlist. The runtime mounts the declared surface
 only when the Server-owned lifecycle gate permits it and retains ownership of
 direct TLS, listener composition, raw request parsing, resource limits, and
 lifecycle classification. The module cannot independently compose a route or
-listener. The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
+listener, and an undeclared capability is absent rather than present and denied.
+The [Web UI Pre-Operational Status Surface](../client-modules/web-ui/pre-operational-status-design.md)
 defines the status contract and resource limits; the
 [Web UI Pre-Operational Database Selection Surface](../client-modules/web-ui/pre-operational-database-selection-design.md)
 defines the selection contract; the
@@ -681,7 +688,7 @@ handling.
 
 | Package | Exact version and minimal features | Owner and purpose | Maintenance, license, and advisory evidence |
 | --- | --- | --- | --- |
-| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the restricted status, Application Database selection, and embedded-asset routes; `weavelit-module-client-webui` translates the status and selection requests and JSON responses and each embedded asset into its profile-bounded response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
+| `axum` | `=0.8.9`; defaults disabled; `http1`, `tokio` | `weavelit-server` composes the restricted status, Application Database selection, and embedded-asset routes; `weavelit-module-client` translates the status and selection requests and JSON responses; `weavelit-module-client-webui` translates each embedded asset into its profile-bounded response | Tokio-rs Axum; MIT. The cached package metadata identifies its upstream repository. No advisory scanner is installed in the development container, so no clean-advisory assertion is recorded. |
 | `http-body-util` | `=0.1.4`; defaults enabled | `weavelit-server`; collects each Axum route response before direct TLS emission, bounded by its `ResponseProfile` body limit (128 B JSON, 16 KiB HTML, 256 KiB JavaScript, 64 KiB CSS) rather than a single fixed size | Hyperium; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `httparse` | `=1.10.1`; defaults enabled | `weavelit-server`; bounded HTTP/1 request-head parsing before route dispatch, with request-body buffering bounded separately to 1 KiB and permitted only for `PUT` | Sean McArthur; MIT OR Apache-2.0. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
 | `tokio` | `=1.53.1`; defaults disabled; `io-util`, `macros`, `net`, `rt-multi-thread`, `sync`, `time` | `weavelit-server`; bounded asynchronous listener, TLS-stream I/O, timers, and task runtime | Tokio; MIT. The cached package metadata identifies its upstream repository. Advisory scanning was unavailable. |
@@ -776,8 +783,9 @@ every dependency-resolution change.
 - **Source and version:** crates.io `=1.0.229`.
 - **Owner and behavior:** `weavelit-server-lifecycle` derives the bounded
   versioned key-file, envelope, deployment-record, and database-locator data
-  models used by the strict JSON parser. The standard library does not provide
-  structured serialization or deserialization.
+  models used by the strict JSON parser. `weavelit-module-client` derives the
+  bounded Application Database selection request model. The standard library
+  does not provide structured serialization or deserialization.
 - **Features:** default features are disabled; only `derive` and `std` are
   enabled. Reference-counted-value and unstable features are excluded.
 - **Maintenance, license, and advisories:** version 1.0.229 supports Rust 1.56
@@ -796,6 +804,8 @@ every dependency-resolution change.
 - **Source and version:** crates.io `=1.0.151`.
 - **Owner and behavior:** `weavelit-server-lifecycle` parses and emits the
   bounded, versioned UTF-8 JSON anchor formats through typed Serde models.
+  `weavelit-module-client` parses the bounded Application Database selection
+  request body through a strict typed model.
   `weavelit-module-client-webui` uses it as a build-dependency only, to parse
   the Web UI build content manifest strictly at compile time; it is not linked
   into that crate's runtime code. The standard library does not provide a JSON

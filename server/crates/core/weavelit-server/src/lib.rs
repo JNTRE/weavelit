@@ -40,7 +40,7 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
-use weavelit_module_client_webui::{
+use weavelit_module_client::{
     DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource, SelectedBackend, SelectionCommit,
 };
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
@@ -58,9 +58,6 @@ const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
 const TLS_CERTIFICATE_PATH_ENV: &str = "WEAVELIT_TLS_CERTIFICATE_PATH";
 const TLS_PRIVATE_KEY_PATH_ENV: &str = "WEAVELIT_TLS_PRIVATE_KEY_PATH";
 const APPLICATION_DATABASE_FILE: &str = "application.sqlite3";
-/// The sole pre-operational route that may change lifecycle state.
-const APPLICATION_DATABASE_ROUTE: &str = "/api/v1/application-database";
-const STATUS_ROUTE: &str = "/api/v1/status";
 const MAX_TLS_MATERIAL_BYTES: u64 = 1024 * 1024;
 const MAX_NORMAL_CONNECTIONS: usize = 15;
 const MAX_REJECTION_CONNECTIONS: usize = 1;
@@ -1477,30 +1474,22 @@ fn restricted_routes(composition: &PreoperationalComposition, listener: SocketAd
 
 /// Composes the Web UI Client Module's declared pre-operational surface.
 ///
-/// The module owns its asset inventory and route paths; the core only mounts
-/// them and supplies the trusted lifecycle authority behind them. Every mounted
-/// path is exact, so an unknown target, including any `/api/` target, falls
-/// through to the fixed not-found response.
+/// The module owns its asset inventory and declares which capabilities it
+/// supplies; the core mounts exactly that declaration and supplies the trusted
+/// lifecycle authority behind it. Every mounted path is exact, so an unknown
+/// target, including any `/api/` target, falls through to the fixed not-found
+/// response.
 fn preoperational_routes(
     router: Router,
     composition: &PreoperationalComposition,
     listener: SocketAddr,
 ) -> Router {
-    router
-        .route(
-            STATUS_ROUTE,
-            weavelit_module_client_webui::preoperational_status_route(
-                composition.projection_source(),
-            ),
-        )
-        .route(
-            APPLICATION_DATABASE_ROUTE,
-            weavelit_module_client_webui::database_selection_route(
-                ExpectedOrigin::from_listener(listener),
-                composition.selection_commit(),
-            ),
-        )
-        .merge(weavelit_module_client_webui::embedded_asset_routes())
+    weavelit_module_client_webui::preoperational_surface(
+        composition.projection_source(),
+        ExpectedOrigin::from_listener(listener),
+        composition.selection_commit(),
+    )
+    .mount(router)
 }
 
 async fn not_found() -> Response {
@@ -1684,20 +1673,19 @@ mod tests {
     };
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
-    use weavelit_module_client_webui::DatabaseSelectionRejection;
+    use weavelit_module_client::{APPLICATION_DATABASE_ROUTE, DatabaseSelectionRejection};
     use weavelit_server_lifecycle::{
         BackendIdentifier, LifecycleProjection, LifecycleStore, TrustedBackendContext,
     };
 
     use super::{
-        APPLICATION_DATABASE_FILE, APPLICATION_DATABASE_ROUTE, ASSET_SECURITY_HEADERS,
-        AllowedMethod, BoundedResponse, ConnectionSlots, ConnectionTimeouts,
-        MAX_REQUEST_BODY_BYTES, PreoperationalComposition, RATE_LIMIT_BURST,
-        RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
-        RateLimiter, RequestHeadRead, RequestReadError, ResponseProfile, RestrictedStartup,
-        StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, bounded_response_from_axum,
-        classify_restricted_startup, gateway_timeout_response, parse_http_request,
-        processing_response, raw_header_section_bytes, read_http_request,
+        APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse,
+        ConnectionSlots, ConnectionTimeouts, MAX_REQUEST_BODY_BYTES, PreoperationalComposition,
+        RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT,
+        REQUEST_READ_TIMEOUT, RateLimiter, RequestHeadRead, RequestReadError, ResponseProfile,
+        RestrictedStartup, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
+        bounded_response_from_axum, classify_restricted_startup, gateway_timeout_response,
+        parse_http_request, processing_response, raw_header_section_bytes, read_http_request,
         read_http_request_with_timeout, request_timeout_response,
         serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
         sqlite_catalog,
@@ -3844,9 +3832,8 @@ mod tests {
     /// with the redacted gateway-timeout body.
     #[tokio::test]
     async fn database_selection_bodies_survive_the_fixed_json_allowlist() {
-        let success = weavelit_module_client_webui::database_selection_response(
-            &LifecycleProjection::new(true),
-        );
+        let success =
+            weavelit_module_client::database_selection_response(&LifecycleProjection::new(true));
         let bounded = bounded_response_from_axum(success).await;
         assert_eq!(bounded.status, StatusCode::OK);
         assert_eq!(
@@ -4021,7 +4008,7 @@ mod tests {
         assert_eq!(SELECTION_BODY.len(), 34);
         assert_eq!(
             MAX_REQUEST_BODY_BYTES,
-            weavelit_module_client_webui::MAX_DATABASE_SELECTION_BODY_BYTES
+            weavelit_module_client::MAX_DATABASE_SELECTION_BODY_BYTES
         );
     }
 
@@ -4559,7 +4546,7 @@ mod tests {
         let handle = tokio::spawn(async move {
             adapter
                 .select(
-                    weavelit_module_client_webui::SelectedBackend::Sqlite,
+                    weavelit_module_client::SelectedBackend::Sqlite,
                     catalog,
                     context,
                 )
@@ -4611,7 +4598,7 @@ mod tests {
             tokio::time::timeout(
                 timeout_duration,
                 adapter.select(
-                    weavelit_module_client_webui::SelectedBackend::Sqlite,
+                    weavelit_module_client::SelectedBackend::Sqlite,
                     catalog,
                     context,
                 ),
@@ -4661,7 +4648,7 @@ mod tests {
         // A SelectionCommit that signals when spawn_blocking has started, then
         // waits for the test to signal completion.  This simulates a durable
         // write that must not be interrupted once it begins.
-        let commit: weavelit_module_client_webui::SelectionCommit = Arc::new(move |_backend| {
+        let commit: weavelit_module_client::SelectionCommit = Arc::new(move |_backend| {
             let committed = Arc::clone(&committed_clone);
             let started_gate = Arc::clone(&started_gate_clone);
             let finish_gate = Arc::clone(&finish_gate_clone);
@@ -4677,12 +4664,12 @@ mod tests {
             })
         });
 
-        let expected_origin = weavelit_module_client_webui::ExpectedOrigin::from_listener(
+        let expected_origin = weavelit_module_client::ExpectedOrigin::from_listener(
             UNBOUND_LISTENER.parse().unwrap(),
         );
         let router = Router::new().route(
             APPLICATION_DATABASE_ROUTE,
-            weavelit_module_client_webui::database_selection_route(expected_origin, commit),
+            weavelit_module_client::database_selection_route(expected_origin, commit),
         );
 
         let request = Request::builder()

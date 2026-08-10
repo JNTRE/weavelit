@@ -9,6 +9,7 @@ members = [
 	"crates/core/weavelit-server-restore",
 	"crates/database/weavelit-server-database",
 	"crates/database/weavelit-server-database-sqlite",
+	"crates/modules/client/weavelit-module-client",
 	"crates/modules/client/weavelit-module-client-webui",
 	"crates/modules/log/weavelit-module-log-sqlite",
 ]
