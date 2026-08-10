@@ -1199,3 +1199,13 @@ fn a_permit_seals_secrets_under_the_deployment_key_without_exposing_them() {
         LifecycleError::IntegrityFailure
     );
 }
+
+#[test]
+fn a_permit_reports_the_selected_backend_it_authorized_against() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
+
+    assert_eq!(permit.selected_backend(), &sqlite_backend());
+}

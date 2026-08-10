@@ -54,6 +54,8 @@ use weavelit_server_lifecycle::{
 };
 use weavelit_server_log::LogModuleCatalog;
 
+pub mod restore;
+
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
 const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
 const TLS_CERTIFICATE_PATH_ENV: &str = "WEAVELIT_TLS_CERTIFICATE_PATH";
@@ -635,7 +637,12 @@ pub enum StartupOutcome {
 /// Restricted startup state, including the process-lifetime state-root lock.
 pub struct RestrictedStartup {
     outcome: StartupOutcome,
-    log_catalog: LogModuleCatalog,
+    /// Trusted state root the anchor set, Application Database, and Log Module
+    /// local storage all live under.
+    state_root: PathBuf,
+    /// Shared so a lifecycle workflow builds its log destination from the same
+    /// compiled-in catalog the process retains.
+    log_catalog: Arc<LogModuleCatalog>,
     composition: PreoperationalComposition,
     /// Present only for a sealed deployment, which holds its Application
     /// Database open for the process lifetime.
@@ -648,8 +655,13 @@ impl RestrictedStartup {
         self.outcome
     }
 
+    /// Returns the trusted state root this startup is bound to.
+    pub fn state_root(&self) -> &Path {
+        &self.state_root
+    }
+
     /// Returns the compiled-in Log Module catalog retained for process lifetime.
-    pub const fn log_catalog(&self) -> &LogModuleCatalog {
+    pub fn log_catalog(&self) -> &LogModuleCatalog {
         &self.log_catalog
     }
 
@@ -1745,7 +1757,8 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
     };
     Ok(RestrictedStartup {
         outcome,
-        log_catalog: sqlite_log_catalog(),
+        state_root: state_root.to_path_buf(),
+        log_catalog: Arc::new(sqlite_log_catalog()),
         // The arbiter takes ownership of the store, so it also retains the
         // process-lifetime state-root lock.
         composition: PreoperationalComposition {
@@ -1786,6 +1799,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpSocket, TcpStream},
+        sync::watch,
     };
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
@@ -1798,9 +1812,10 @@ mod tests {
     };
     use weavelit_server_lifecycle::{
         ApplicationState, BackendIdentifier, CheckpointMetadata, DatabaseInspection,
-        DeploymentIdentifier, LifecycleClassification, LifecycleProjection, LifecycleStore,
-        StateIdentifier, TrustedBackendContext, WorkflowKind,
+        DeploymentIdentifier, LifecycleClassification, LifecycleProjection, LifecycleState,
+        LifecycleStore, StateIdentifier, TrustedBackendContext, WorkflowKind,
     };
+    use weavelit_server_restore::{AvailableComponents, RestoreError};
 
     use super::{
         APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse,
@@ -1812,8 +1827,8 @@ mod tests {
         classify_restricted_startup, fallback_router, gateway_timeout_response,
         initial_serving_mode, parse_http_request, processing_response, raw_header_section_bytes,
         read_http_request, read_http_request_with_timeout, request_timeout_response,
-        serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
-        sqlite_catalog, startup_outcome,
+        restore::RestoreOrchestrator, serve_normal_connection_with_timeouts,
+        serve_rejection_connection_with_timeouts, sqlite_catalog, startup_outcome,
     };
 
     /// Listener authority used by router-level tests that bind no socket.
@@ -5098,5 +5113,395 @@ mod tests {
             committed.load(Ordering::SeqCst),
             "spawn_blocking must complete even after the outer task is aborted"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Restore orchestration
+    // -----------------------------------------------------------------------
+
+    /// Reads a backup fixture the Restore validation crate owns and commits.
+    ///
+    /// The runtime deliberately reuses those fixtures rather than minting its
+    /// own, so this orchestration is proven against exactly the artifacts the
+    /// validation contract is proven against.
+    fn restore_fixture(name: &str) -> Vec<u8> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../weavelit-server-restore/tests/fixtures")
+            .join(name);
+        std::fs::read(&path).unwrap_or_else(|error| panic!("fixture {name} must exist: {error}"))
+    }
+
+    /// Reads a recovery key fixture as submitted text.
+    fn recovery_key_fixture(name: &str) -> String {
+        String::from_utf8(restore_fixture(name))
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    fn valid_recovery_key() -> String {
+        recovery_key_fixture("valid-identity.txt")
+    }
+
+    /// The component inventory the committed backup fixture references.
+    ///
+    /// The composing caller supplies this because the Server does not yet
+    /// report a single compiled-in inventory of Client, MFA, and Service
+    /// Modules, and the shared fixture names components beyond the Web UI
+    /// Client Module and SQLite Log Module this Server actually compiles in.
+    fn fixture_components() -> AvailableComponents {
+        fn names(values: &[&str]) -> std::collections::BTreeSet<Name> {
+            values
+                .iter()
+                .map(|value| Name::new(*value).unwrap())
+                .collect()
+        }
+
+        AvailableComponents {
+            client_modules: names(&["web-ui"]),
+            mfa_modules: names(&["totp"]),
+            service_modules: names(&["zendesk"]),
+            log_modules: names(&["sqlite"]),
+            operations: names(&["ticket-search"]),
+        }
+    }
+
+    /// A Restore composed over a real state root with a selected database.
+    struct RestoreSurface {
+        /// Retained so the state root outlives the orchestration under test.
+        _root: tempfile::TempDir,
+        state_root: PathBuf,
+        startup: RestrictedStartup,
+        switch: Arc<ServingModeSwitch>,
+        modes: watch::Receiver<ServingMode>,
+    }
+
+    impl RestoreSurface {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let state_root = root.path().canonicalize().unwrap();
+            {
+                let mut store = LifecycleStore::open_or_create(&state_root).unwrap();
+                store
+                    .select_database(
+                        &sqlite_catalog(),
+                        &TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE)),
+                        &BackendIdentifier::new("sqlite").unwrap(),
+                        Vec::new(),
+                    )
+                    .unwrap();
+            }
+
+            let startup = classify_restricted_startup(&state_root).unwrap();
+            assert_eq!(startup.outcome(), StartupOutcome::UninitializedWithDatabase);
+            let (switch, modes) = ServingModeSwitch::new(initial_serving_mode(
+                &startup.composition,
+                UNBOUND_LISTENER.parse().unwrap(),
+            ));
+
+            Self {
+                _root: root,
+                state_root,
+                startup,
+                switch: Arc::new(switch),
+                modes,
+            }
+        }
+
+        fn orchestrator(&self) -> Arc<RestoreOrchestrator> {
+            RestoreOrchestrator::new(
+                &self.startup,
+                fixture_components(),
+                Arc::clone(&self.switch),
+            )
+        }
+
+        /// Snapshots the router the next accepted connection would serve.
+        fn served_router(&self) -> Router {
+            self.modes.borrow().router().clone()
+        }
+
+        fn anchor_snapshot(&self) -> Vec<(OsString, Vec<u8>, i64, i64)> {
+            anchor_snapshot(&self.state_root)
+        }
+
+        /// Releases the process-lifetime state-root lock so startup can re-run.
+        fn release(self) -> (tempfile::TempDir, PathBuf) {
+            let Self {
+                _root,
+                state_root,
+                startup,
+                ..
+            } = self;
+            drop(startup);
+            (_root, state_root)
+        }
+    }
+
+    /// Asserts a router serves the pre-operational Client Module surface.
+    async fn assert_preoperational(router: Router) {
+        let response = router
+            .oneshot(Request::get(STATUS_ROUTE).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Asserts a router serves no functional route at all.
+    async fn assert_fail_closed(router: Router) {
+        for target in ["/", STATUS_ROUTE, APPLICATION_DATABASE_ROUTE] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_restore_activates_normal_operation_without_a_restart() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+
+        assert_preoperational(surface.served_router()).await;
+
+        let state = orchestrator
+            .restore(restore_fixture("valid.wlitbackup"), valid_recovery_key())
+            .await
+            .expect("the committed valid backup must restore");
+
+        assert!(state.completion_acknowledged());
+        assert_eq!(
+            state
+                .state()
+                .accounts()
+                .iter()
+                .map(|account| account.username.as_str())
+                .collect::<Vec<_>>(),
+            vec!["administrator"]
+        );
+        assert_eq!(
+            state.state().completion_obligation().workflow(),
+            WorkflowKind::Restore
+        );
+
+        // A newly accepted connection serves the operational surface, and every
+        // pre-operational route is gone rather than mounted and denied.
+        let router = surface.served_router();
+        let asset = router
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(asset.status(), StatusCode::OK);
+        for target in [STATUS_ROUTE, APPLICATION_DATABASE_ROUTE] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_restore_acknowledges_completion_through_the_restored_log_configuration() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+
+        let state = orchestrator
+            .restore(restore_fixture("valid.wlitbackup"), valid_recovery_key())
+            .await
+            .unwrap();
+        let obligation = state.state().completion_obligation().clone();
+
+        // The fixture assigns the System Log to the SQLite Log Module, so the
+        // acknowledgement must be durable in that module's local storage.
+        let log_database = surface.state_root.join("log.sqlite3");
+        assert!(log_database.exists(), "the assigned destination must exist");
+
+        let connection = rusqlite::Connection::open(&log_database).unwrap();
+        let (record_id, classification, correlation): (Vec<u8>, String, String) = connection
+            .query_row(
+                "SELECT record_id, classification, correlation_id \
+                 FROM weavelit_log_system_records",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("exactly one System Log record must be delivered");
+
+        assert_eq!(record_id, obligation.record_identifier().as_bytes());
+        assert_eq!(classification, obligation.classification().as_str());
+        assert_eq!(correlation, obligation.correlation_identifier().as_str());
+    }
+
+    #[tokio::test]
+    async fn a_restored_deployment_is_durable_across_startup_classification() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+
+        let restored = orchestrator
+            .restore(restore_fixture("valid.wlitbackup"), valid_recovery_key())
+            .await
+            .unwrap();
+        drop(orchestrator);
+
+        let (_root, state_root) = surface.release();
+        let reloaded = classify_restricted_startup(&state_root).unwrap();
+
+        assert_eq!(reloaded.outcome(), StartupOutcome::Initialized);
+        let loaded = reloaded.initialized_state().unwrap();
+        assert_eq!(
+            loaded.deployment_identifier(),
+            restored.deployment_identifier()
+        );
+        assert!(loaded.completion_acknowledged());
+        assert_eq!(loaded.state(), restored.state());
+    }
+
+    #[tokio::test]
+    async fn a_wrong_recovery_key_fails_before_the_checkpoint() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let anchors = surface.anchor_snapshot();
+
+        let error = orchestrator
+            .restore(
+                restore_fixture("valid.wlitbackup"),
+                recovery_key_fixture("wrong-identity.txt"),
+            )
+            .await
+            .unwrap_err();
+
+        // A syntactically valid key that does not open the envelope is
+        // attributed to the backup, not to the submitted key.
+        assert_eq!(error, RestoreError::BackupInvalid);
+        assert_eq!(surface.anchor_snapshot(), anchors);
+        assert_eq!(
+            surface.startup.composition.adapter.arbiter.record_state(),
+            LifecycleState::Uninitialized
+        );
+        assert_preoperational(surface.served_router()).await;
+    }
+
+    #[tokio::test]
+    async fn a_malformed_artifact_fails_before_the_checkpoint() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let anchors = surface.anchor_snapshot();
+
+        let error = orchestrator
+            .restore(
+                restore_fixture("bad-magic.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, RestoreError::BackupInvalid);
+        assert_eq!(surface.anchor_snapshot(), anchors);
+        assert_eq!(
+            surface.startup.composition.adapter.arbiter.record_state(),
+            LifecycleState::Uninitialized
+        );
+        assert_preoperational(surface.served_router()).await;
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_the_checkpoint_leaves_the_server_fail_closed() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+
+        // The assigned Log Module cannot open its local storage, which fails
+        // only after the checkpoint has already replaced retained state. The
+        // file name is one the state root inventory already recognizes, so the
+        // anchor set itself stays valid across the restart below.
+        std::fs::write(surface.state_root.join("log.sqlite3"), b"not a database").unwrap();
+
+        let error = orchestrator
+            .restore(restore_fixture("valid.wlitbackup"), valid_recovery_key())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, RestoreError::RestoreFailed);
+        assert_eq!(
+            surface.startup.composition.adapter.arbiter.record_state(),
+            LifecycleState::InitializationPending
+        );
+        assert_fail_closed(surface.served_router()).await;
+
+        // The interrupted deployment stays fail-closed across a restart too,
+        // because no automatic rollback is attempted.
+        drop(orchestrator);
+        let (_root, state_root) = surface.release();
+        assert_eq!(
+            classify_restricted_startup(&state_root).unwrap_err(),
+            StartupError::LifecycleInterruptedRedeployRequired
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_failures_render_no_recovery_material_or_backup_content() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+
+        let key = valid_recovery_key();
+        let secrets = [
+            key.as_str(),
+            "administrator",
+            "Site Administrator",
+            "Administrators",
+            "totp-seed",
+            "provider-token",
+            "at-rest-value",
+        ];
+
+        let failures = [
+            orchestrator
+                .restore(
+                    restore_fixture("valid.wlitbackup"),
+                    recovery_key_fixture("wrong-identity.txt"),
+                )
+                .await
+                .unwrap_err(),
+            orchestrator
+                .restore(restore_fixture("bad-magic.wlitbackup"), key.clone())
+                .await
+                .unwrap_err(),
+            orchestrator
+                .restore(restore_fixture("tampered-tag.wlitbackup"), key.clone())
+                .await
+                .unwrap_err(),
+            orchestrator
+                .restore(
+                    restore_fixture("wrong-source-backend.wlitbackup"),
+                    key.clone(),
+                )
+                .await
+                .unwrap_err(),
+        ];
+
+        for error in failures {
+            let (category, reason) = error.category_reason();
+            let rendered = format!("{error} {error:?} {category} {reason}");
+            for secret in secrets {
+                assert!(
+                    !rendered.contains(secret),
+                    "rendered failure must not disclose {secret}: {rendered}"
+                );
+            }
+        }
     }
 }

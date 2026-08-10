@@ -258,6 +258,51 @@ on the new deployment with an independently retained compatible backup and its
 private recovery key. Weavelit does not retain the backup or private key and
 does not manage their durability.
 
+## Runtime Orchestration Order
+
+The Restore validation crate and the lifecycle typestate chain each own one half
+of a Restore and do not depend on each other. The `weavelit-server` runtime owns
+the only composition that joins them, and therefore owns the order below. Every
+step that can fail without leaving retained state runs before the checkpoint.
+
+1. Start the request budget, then acquire the shared lifecycle mutation lane
+   without waiting. Contention returns `restore_pending`.
+2. Authorize the workflow through the lifecycle authority. The permit that
+   authorization returns supplies both the replacement deployment identifier and
+   the selected backend the backup must match, so the authority is consulted
+   before any submitted key or artifact byte is read.
+3. Validate the artifact and recovery key, then release both immediately.
+4. Generate the Restore-result record identifier and correlation identifier from
+   operating-system randomness and read the event time.
+5. Prepare the completion record and its obligation together through Server
+   Observability, then build the replacement application state from the
+   validated backup, the workflow permit's at-rest sealer, and that obligation.
+6. Resolve the Log Module the restored backup assigns the System Log to. A
+   backup naming a module this Server cannot serve fails here, while failing is
+   still free.
+7. Publish the fail-closed serving mode. Every connection accepted from this
+   point forward serves no functional route.
+8. Create the Restore checkpoint. This is the point of no return.
+9. Replace the application state atomically.
+10. Open the assigned System Log destination and deliver the completion record.
+    The destination is opened only now, because creating a Log Module's local
+    storage earlier would leave durable state a pre-checkpoint failure promised
+    not to leave behind.
+11. Acknowledge completion, then seal the deployment record `Initialized`.
+12. Publish the operational serving mode. Only a connection accepted after this
+    point serves normal operation, so an in-flight fail-closed connection is
+    never upgraded mid-request.
+
+A failure before step 8 leaves the Server exactly as it was: the serving mode is
+never changed, the anchor set is unmodified, and the deployment remains eligible
+for either workflow. A failure at or after step 8 leaves the Server fail-closed
+with its retained partial state intact. No rollback is attempted, because the
+replaced state is exactly what an operator asked to discard.
+
+The runtime is not the authority for which components a backup may reference.
+The composing caller supplies that inventory, because the Server does not yet
+report a single compiled-in inventory of Client, MFA, and Service Modules.
+
 ## Concurrency And Errors
 
 The lifecycle crate serializes Init and Restore mutation. Concurrent or stale
@@ -307,6 +352,17 @@ bounded transfer, normalized status and errors, lifecycle gating, and absence
 of sensitive output. Server process tests verify interruption classification and
 the in-process transition to normal operation. Web UI end-to-end tests cover
 the complete Restore story and fail-closed interrupted-workflow behavior.
+
+`weavelit-server` tests drive the runtime orchestration directly against the
+committed backup fixtures. They prove that a valid Restore activates the
+operational surface for a newly accepted connection while every pre-operational
+route becomes absent, that the committed state survives a fresh startup
+classification unchanged, that the Restore result is durable in the Log Module
+the restored backup itself assigns, that a wrong recovery key and a malformed
+artifact both fail with the serving mode and the anchor set untouched, that a
+failure after the checkpoint stays fail-closed across a restart with no
+rollback, and that no rendered failure discloses recovery material or backup
+plaintext.
 
 ## Related Documents
 

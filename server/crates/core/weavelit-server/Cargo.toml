@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+getrandom = { version = "=0.4.3", default-features = false }
 http-body-util = "=0.1.4"
 httparse = "=1.10.1"
 rustls = { version = "=0.23.43", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
@@ -20,9 +21,13 @@ rustix.workspace = true
 tokio.workspace = true
 tokio-rustls = { version = "=0.26.4", default-features = false }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 weavelit-server-database-sqlite = { path = "../../database/weavelit-server-database-sqlite" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
 weavelit-server-log = { path = "../weavelit-server-log" }
+weavelit-server-log-authority = { path = "../weavelit-server-log-authority" }
+weavelit-server-observability = { path = "../weavelit-server-observability" }
+weavelit-server-restore = { path = "../weavelit-server-restore" }
 weavelit-module-client = { path = "../../modules/client/weavelit-module-client" }
 weavelit-module-client-webui = { path = "../../modules/client/weavelit-module-client-webui" }
 weavelit-module-log-sqlite = { path = "../../modules/log/weavelit-module-log-sqlite" }

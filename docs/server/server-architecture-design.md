@@ -269,6 +269,30 @@ Init. The expected same-origin authority passed to the selection route is the
 socket address the listener actually bound, never a request header or a
 certificate subject alternative name.
 
+### Restore Orchestration Composition
+
+The `weavelit-server` runtime owns the only composition that joins the Restore
+validation crate to the lifecycle typestate chain. Neither crate depends on the
+other, so the ordering that makes a Restore safe is a runtime responsibility
+rather than a property either crate can enforce alone. The orchestration takes
+already-received bytes instead of a request, so the transport that delivers a
+backup is composed over it without being able to change that ordering.
+
+The orchestration shares the startup composition's workflow arbiter and its
+single-permit mutation lane, so a Restore serializes against pre-operational
+Application Database selection instead of racing it. It acquires that lane
+without waiting: a Restore that queued would hold its artifact and recovery key
+resident for the whole wait, and the Restore contract already admits one
+operation at a time.
+
+The whole authorize-through-seal chain runs in one blocking task. That keeps the
+exclusive workflow permit, the checkpoint, the durable acknowledgement, and the
+seal on a single thread with no cancellation point between them, so no caller
+timeout can abandon a deployment mid-replacement. The runtime constructs the
+Server Log Authority and Server Observability inside this composition and
+retains the authority privately, so no other caller can mint a trusted record
+issuer or a trusted Log Module context.
+
 A sealed startup uses that same arbiter to load the deployment's application
 state. The load runs under the exclusive mutation permit and independently
 re-reads the deployment record and re-inspects the database exactly as sealing
@@ -741,9 +765,11 @@ every dependency-resolution change.
 - **Source and version:** crates.io `=0.4.3`.
 - **Owner and behavior:** `weavelit-server-lifecycle` obtains operating-system
   randomness for the deployment key, deployment identifier, locator generation,
-  temporary-file uniqueness, and AEAD nonces. The Rust standard library and
-  approved dependencies do not expose the required fallible operating-system
-  random-byte interface.
+  temporary-file uniqueness, and AEAD nonces. `weavelit-server` obtains the same
+  randomness for the Restore-result System Log record identifier and its
+  correlation identifier, which must be unpredictable and must not derive from
+  request content. The Rust standard library and approved dependencies do not
+  expose the required fallible operating-system random-byte interface.
 - **Features:** default features are disabled and no optional features are
   enabled. The `std`, `sys_rng`, and `wasm_js` features are excluded; Milestone
   1 uses the supported Ubuntu operating-system source and does not add a user-
@@ -796,8 +822,11 @@ every dependency-resolution change.
 - **Source and version:** crates.io `=1.9.0`.
 - **Owner and behavior:** `weavelit-server-lifecycle` uses `Zeroizing` and the
   `Zeroize` trait for application-owned at-rest key and decrypted anchor buffers.
-  The standard library does not guarantee that clearing sensitive memory will
-  survive compiler optimization.
+  `weavelit-server` uses `Zeroizing` for the owned backup artifact and recovery
+  key a Restore takes custody of, so both are cleared when the orchestration
+  releases them rather than surviving in a runtime buffer. The standard library
+  does not guarantee that clearing sensitive memory will survive compiler
+  optimization.
 - **Features:** default features are disabled and only `alloc` is enabled. The
   derive, Serde, SIMD, architecture-specific, and `std` features are excluded.
 - **Maintenance, license, and advisories:** version 1.9.0 supports Rust 1.85 and

@@ -26,6 +26,9 @@ Use this section as the source of truth for what assets belong in this directory
 - `src/lib.rs`: Restricted lifecycle startup composition, SQLite backend factory,
   state-root configuration reading, `classify_restricted_startup`, the listener's
   serving-mode switch, and stable error presentation.
+- `src/restore.rs`: Server-owned Restore orchestration that joins backup
+  validation to the lifecycle typestate chain, delivers the System Log
+  acknowledgement, and activates normal operation in-process.
 - `src/main.rs`: Thin executable entry point that reads state-root configuration
   and calls the library composition function.
 - `tests/startup.rs`: Composition and process-level tests for restricted startup

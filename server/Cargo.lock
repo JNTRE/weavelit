@@ -1283,6 +1283,7 @@ name = "weavelit-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "getrandom 0.4.3",
  "http-body-util",
  "httparse",
  "rcgen",
@@ -1300,6 +1301,10 @@ dependencies = [
  "weavelit-server-database-sqlite",
  "weavelit-server-lifecycle",
  "weavelit-server-log",
+ "weavelit-server-log-authority",
+ "weavelit-server-observability",
+ "weavelit-server-restore",
+ "zeroize",
 ]
 
 [[package]]

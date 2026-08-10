@@ -202,6 +202,18 @@ impl<'arbiter> WorkflowPermit<'arbiter> {
         self.store.record().deployment_identifier()
     }
 
+    /// Returns the Application Database backend this workflow is bound to.
+    ///
+    /// Authorization already established the locator, so a permit that exists
+    /// always has one; this reports it rather than restating that condition as
+    /// a failure the caller must handle again.
+    pub fn selected_backend(&self) -> &BackendIdentifier {
+        self.store
+            .locator()
+            .map(DatabaseLocator::backend_identifier)
+            .expect("authorization established the selected database locator")
+    }
+
     /// Returns the capability that protects application secrets at rest.
     pub fn sealer(&self) -> &dyn ProtectedValueSealer {
         &*self.store
