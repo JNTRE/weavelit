@@ -18,7 +18,7 @@ use axum::{
     routing::any,
 };
 pub use weavelit_module_client::{
-    ExpectedOrigin, PreoperationalSurface, ProjectionSource, SelectionCommit,
+    ExpectedOrigin, OperationalSurface, PreoperationalSurface, ProjectionSource, SelectionCommit,
 };
 use weavelit_module_client::{has_request_body, json_response, json_response_with_allow};
 
@@ -36,6 +36,15 @@ pub fn preoperational_surface(
         .with_status(projection)
         .with_database_selection(expected_origin, commit)
         .with_assets(embedded_asset_routes())
+}
+
+/// Returns the operational surface this Client Module declares.
+///
+/// A sealed deployment's Web UI declares only browser asset delivery, so the
+/// pre-operational status and Application Database routes are absent rather
+/// than mounted and denied.
+pub fn operational_surface() -> OperationalSurface {
+    OperationalSurface::default().with_assets(embedded_asset_routes())
 }
 
 // ---------------------------------------------------------------------------

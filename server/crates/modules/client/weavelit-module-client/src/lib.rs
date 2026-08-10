@@ -124,6 +124,33 @@ impl PreoperationalSurface {
     }
 }
 
+/// A Client Module's declared operational interface surface.
+///
+/// Presence is the declaration, exactly as it is for
+/// [`PreoperationalSurface`]. This surface has no status or Application
+/// Database capability: those are pre-operational contracts, so a sealed
+/// deployment cannot mount them at all rather than mounting and denying them.
+#[derive(Default)]
+pub struct OperationalSurface {
+    assets: Option<Router>,
+}
+
+impl OperationalSurface {
+    /// Declares client-specific asset delivery, which owns its own exact paths.
+    pub fn with_assets(mut self, assets: Router) -> Self {
+        self.assets = Some(assets);
+        self
+    }
+
+    /// Mounts every declared capability at its canonical path.
+    pub fn mount(self, router: Router) -> Router {
+        match self.assets {
+            Some(assets) => router.merge(assets),
+            None => router,
+        }
+    }
+}
+
 /// Returns the Client Module route for the live status projection.
 pub fn preoperational_status_route(projection: ProjectionSource) -> MethodRouter {
     any(move |request| status_response(request, Arc::clone(&projection)))
@@ -593,8 +620,8 @@ mod tests {
     use weavelit_server_lifecycle::LifecycleProjection;
 
     use super::{
-        APPLICATION_DATABASE_ROUTE, ExpectedOrigin, PreoperationalSurface, ProjectionSource,
-        STATUS_ROUTE, SelectionCommit,
+        APPLICATION_DATABASE_ROUTE, ExpectedOrigin, OperationalSurface, PreoperationalSurface,
+        ProjectionSource, STATUS_ROUTE, SelectionCommit,
     };
 
     /// Builds a projection source; `None` models an unreadable lifecycle boundary.
@@ -666,6 +693,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_operational_capability_mounts_no_route() {
+        let router = OperationalSurface::default().mount(Router::new());
+
+        for target in [STATUS_ROUTE, APPLICATION_DATABASE_ROUTE, "/"] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_operational_surface_mounts_only_declared_asset_delivery() {
+        let assets = Router::new().route("/", axum::routing::get(|| async { "asset" }));
+        let router = OperationalSurface::default()
+            .with_assets(assets)
+            .mount(Router::new());
+
+        for (target, status) in [
+            ("/", StatusCode::OK),
+            (STATUS_ROUTE, StatusCode::NOT_FOUND),
+            (APPLICATION_DATABASE_ROUTE, StatusCode::NOT_FOUND),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{target}");
+        }
     }
 
     #[tokio::test]

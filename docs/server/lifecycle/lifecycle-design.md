@@ -509,6 +509,17 @@ Module's fixed JSON `404` result. The
 defines its public contract; this lifecycle boundary remains the authority for
 whether the route exists.
 
+An `Initialized` record maps to the Web UI Client Module's operational surface.
+The runtime loads the sealed deployment's application state through the same
+exclusive mutation permit before it serves anything, and that load re-reads the
+deployment record and re-inspects the database independently of the
+classification that selected it. Because the pre-operational status and
+Application Database contracts cannot be expressed in an operational capability
+declaration, they are absent from the sealed surface rather than mounted and
+denied; every request for them receives the same fixed JSON `404` result. The
+[Server Architecture Design](../server-architecture-design.md#serving-mode-switch)
+defines how the runtime changes the surface a running listener serves.
+
 ## Application Database Selection
 
 The lifecycle crate presents the runtime-supplied backend catalog and each

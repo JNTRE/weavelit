@@ -977,6 +977,72 @@ fn a_workflow_seals_the_deployment_only_after_the_full_ordered_path() {
 }
 
 #[test]
+fn a_sealed_deployment_reloads_its_state_and_open_database_on_a_later_startup() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
+    let deployment_identifier = permit.deployment_identifier();
+    let state = application_state();
+    permit
+        .create_checkpoint(WorkflowKind::Restore, restore_metadata())
+        .unwrap()
+        .complete_checkpoint(&state)
+        .unwrap()
+        .acknowledge_completion(identifier(RECORD_BYTE))
+        .unwrap()
+        .seal()
+        .unwrap();
+    drop(arbiter);
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    let arbiter = WorkflowArbiter::new(store);
+    let mut sealed = arbiter
+        .load_sealed_deployment(&catalog, &context)
+        .expect("a sealed deployment must load its application state");
+
+    assert_eq!(
+        sealed.state().deployment_identifier(),
+        deployment_identifier
+    );
+    assert!(sealed.state().completion_acknowledged());
+    assert_eq!(sealed.state().state(), &state);
+    assert_eq!(
+        sealed.database().inspect(deployment_identifier).unwrap(),
+        DatabaseInspection::Initialized {
+            deployment_identifier
+        }
+    );
+    assert_eq!(format!("{sealed:?}"), "SealedDeployment(REDACTED)");
+}
+
+#[test]
+fn loading_a_sealed_deployment_is_refused_before_the_record_is_sealed() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    assert_eq!(
+        arbiter
+            .load_sealed_deployment(&catalog, &context)
+            .unwrap_err(),
+        WorkflowError::NotAllowed
+    );
+
+    arbiter
+        .authorize_workflow(&catalog, &context)
+        .unwrap()
+        .create_checkpoint(WorkflowKind::Restore, restore_metadata())
+        .unwrap();
+
+    assert_eq!(
+        arbiter
+            .load_sealed_deployment(&catalog, &context)
+            .unwrap_err(),
+        WorkflowError::NotAllowed
+    );
+}
+
+#[test]
 fn a_sealed_deployment_admits_no_further_workflow() {
     let (_dir, path) = state_root();
     let (arbiter, catalog, context) = setup(&path);

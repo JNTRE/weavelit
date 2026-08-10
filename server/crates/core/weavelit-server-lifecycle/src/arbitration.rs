@@ -110,6 +110,81 @@ impl WorkflowArbiter {
 
         Ok(WorkflowPermit { store, database })
     }
+
+    /// Loads a sealed deployment's application state under the exclusive permit.
+    ///
+    /// Startup classification is a routing control, not the authority, so this
+    /// re-reads the deployment record and independently re-inspects the
+    /// database exactly as sealing does. A record and database that no longer
+    /// agree, or that are bound to another deployment, fail closed rather than
+    /// producing a surface to serve.
+    pub fn load_sealed_deployment(
+        &self,
+        catalog: &BackendCatalog,
+        context: &TrustedBackendContext,
+    ) -> Result<SealedDeployment, WorkflowError> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| WorkflowError::Lifecycle(POISONED))?;
+
+        if store.record().state() != LifecycleState::Initialized {
+            return Err(WorkflowError::NotAllowed);
+        }
+        let deployment_identifier = store.record().deployment_identifier();
+        let locator = store.locator().ok_or(WorkflowError::DatabaseNotSelected)?;
+
+        let mut database = catalog
+            .reopen(locator.settings(), context)
+            .map_err(WorkflowError::Lifecycle)?;
+        match database
+            .inspect(deployment_identifier)
+            .map_err(map_database_error)?
+        {
+            DatabaseInspection::Initialized {
+                deployment_identifier: initialized,
+            } if initialized == deployment_identifier => {}
+            _ => return Err(WorkflowError::StateMismatch),
+        }
+
+        let state = database
+            .load_initialized_state(deployment_identifier)
+            .map_err(map_database_error)?;
+        if state.deployment_identifier() != deployment_identifier
+            || !state.completion_acknowledged()
+        {
+            return Err(WorkflowError::StateMismatch);
+        }
+
+        Ok(SealedDeployment { state, database })
+    }
+}
+
+/// A sealed deployment's loaded application state and its open database.
+///
+/// The runtime holds this for the process lifetime, so the Application Database
+/// opened during startup stays open rather than being reopened per request.
+pub struct SealedDeployment {
+    state: InitializedState,
+    database: Box<dyn ApplicationDatabase>,
+}
+
+impl SealedDeployment {
+    /// Returns the loaded initialized application state.
+    pub const fn state(&self) -> &InitializedState {
+        &self.state
+    }
+
+    /// Returns the Application Database this deployment holds open.
+    pub fn database(&mut self) -> &mut dyn ApplicationDatabase {
+        &mut *self.database
+    }
+}
+
+impl fmt::Debug for SealedDeployment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SealedDeployment(REDACTED)")
+    }
 }
 
 /// Exclusive authority to begin one workflow against the selected database.

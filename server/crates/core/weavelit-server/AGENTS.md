@@ -24,8 +24,8 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and Server executable-boundary rules.
 - `Cargo.toml`: Rust package manifest for the Weavelit Server executable crate.
 - `src/lib.rs`: Restricted lifecycle startup composition, SQLite backend factory,
-  state-root configuration reading, `classify_restricted_startup`, and stable
-  error presentation.
+  state-root configuration reading, `classify_restricted_startup`, the listener's
+  serving-mode switch, and stable error presentation.
 - `src/main.rs`: Thin executable entry point that reads state-root configuration
   and calls the library composition function.
 - `tests/startup.rs`: Composition and process-level tests for restricted startup

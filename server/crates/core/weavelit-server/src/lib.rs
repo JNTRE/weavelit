@@ -34,22 +34,23 @@ use rustls::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::Semaphore,
+    sync::{Semaphore, watch},
     task,
     time::timeout,
 };
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use weavelit_module_client::{
-    DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource, SelectedBackend, SelectionCommit,
+    DatabaseSelectionRejection, ExpectedOrigin, OperationalSurface, ProjectionSource,
+    SelectedBackend, SelectionCommit,
 };
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
-    BackendRegistration, DatabaseError, DeploymentIdentifier, InterruptedLifecycleAction,
-    LifecycleClassification, LifecycleError, LifecycleProjection, LifecycleStore,
-    RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
-    WorkflowArbiter, WorkflowKind,
+    BackendRegistration, DatabaseError, DeploymentIdentifier, InitializedState,
+    InterruptedLifecycleAction, LifecycleClassification, LifecycleError, LifecycleProjection,
+    LifecycleStore, RetainedDatabaseInspection, SealedDeployment, TrustedBackendContext,
+    ValidatedConnectionSettings, WorkflowArbiter, WorkflowError, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
 
@@ -627,6 +628,8 @@ pub enum StartupOutcome {
     UninitializedWithDatabase,
     /// Init checkpoint is pending; Server exposes only Init reconciliation.
     InitializationPending(WorkflowKind),
+    /// The deployment is sealed; Server serves its operational surface.
+    Initialized,
 }
 
 /// Restricted startup state, including the process-lifetime state-root lock.
@@ -634,6 +637,9 @@ pub struct RestrictedStartup {
     outcome: StartupOutcome,
     log_catalog: LogModuleCatalog,
     composition: PreoperationalComposition,
+    /// Present only for a sealed deployment, which holds its Application
+    /// Database open for the process lifetime.
+    sealed: Option<SealedDeployment>,
 }
 
 impl RestrictedStartup {
@@ -645,6 +651,16 @@ impl RestrictedStartup {
     /// Returns the compiled-in Log Module catalog retained for process lifetime.
     pub const fn log_catalog(&self) -> &LogModuleCatalog {
         &self.log_catalog
+    }
+
+    /// Returns a sealed deployment's loaded application state, if any.
+    pub fn initialized_state(&self) -> Option<&InitializedState> {
+        self.sealed.as_ref().map(SealedDeployment::state)
+    }
+
+    /// Returns the Application Database a sealed deployment holds open, if any.
+    pub fn application_database(&mut self) -> Option<&mut dyn ApplicationDatabase> {
+        self.sealed.as_mut().map(SealedDeployment::database)
     }
 }
 
@@ -824,7 +840,10 @@ async fn serve_restricted_https_listener(
     let bound_address = tcp_listener
         .local_addr()
         .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-    let router = restricted_routes(&composition, bound_address);
+    // Retained for the listener's lifetime so a later transition can publish a
+    // new serving mode into the running listener.
+    let (_serving_mode_switch, serving_modes) =
+        ServingModeSwitch::new(initial_serving_mode(&composition, bound_address));
     let tls_acceptor = TlsAcceptor::from(tls_config);
     let slots = ConnectionSlots::new();
     let rate_limiter = Arc::new(RateLimiter::new());
@@ -838,9 +857,13 @@ async fn serve_restricted_https_listener(
             drop(stream);
             continue;
         }
+        // Snapshot before spawning: an in-flight connection keeps serving the
+        // surface it snapshotted, and only a newly accepted connection sees a
+        // newer mode. The borrow guard is dropped at the end of this statement
+        // because holding it across an await would block the publisher.
+        let router = serving_modes.borrow().router().clone();
         if let Ok(connection_permit) = Arc::clone(&slots.normal).try_acquire_owned() {
             let tls_acceptor = tls_acceptor.clone();
-            let router = router.clone();
             let rate_limiter = Arc::clone(&rate_limiter);
             tokio::spawn(async move {
                 serve_normal_connection(stream, source.ip(), tls_acceptor, router, rate_limiter)
@@ -1461,14 +1484,80 @@ fn rate_limited_response() -> BoundedResponse {
     )
 }
 
-fn restricted_routes(composition: &PreoperationalComposition, listener: SocketAddr) -> Router {
-    let router = Router::new().fallback(not_found);
+/// The surface the listener currently serves.
+///
+/// Every mode starts from the same fixed not-found fallback, so a mode serves
+/// exactly the routes its Client Module surface declared and nothing else.
+enum ServingMode {
+    /// The pre-operational Client Module surface permitted before sealing.
+    PreOperational(Router),
+    /// No functional route at all; every valid request receives not-found.
+    FailClosed(Router),
+    /// The sealed deployment's operational Client Module surface.
+    Operational(Router),
+}
+
+impl ServingMode {
+    /// Returns the router this mode serves.
+    fn router(&self) -> &Router {
+        match self {
+            Self::PreOperational(router) | Self::FailClosed(router) | Self::Operational(router) => {
+                router
+            }
+        }
+    }
+}
+
+/// Publisher half of the listener's serving-mode switch.
+///
+/// Restore holds this to move a running listener from its pre-operational
+/// surface to fail-closed and then to the sealed deployment's operational
+/// surface without a restart. It owns no lifecycle authority: a caller must
+/// already have completed the trusted transition it is publishing.
+pub struct ServingModeSwitch {
+    modes: watch::Sender<ServingMode>,
+}
+
+impl ServingModeSwitch {
+    /// Creates the switch and the receiver the listener reads before each connection.
+    fn new(initial: ServingMode) -> (Self, watch::Receiver<ServingMode>) {
+        let (modes, receiver) = watch::channel(initial);
+        (Self { modes }, receiver)
+    }
+
+    /// Serves no functional route from the next accepted connection onward.
+    pub fn publish_fail_closed(&self) {
+        let _ = self.modes.send(ServingMode::FailClosed(fallback_router()));
+    }
+
+    /// Serves the supplied operational Client Module surface from the next
+    /// accepted connection onward.
+    pub fn publish_operational(&self, surface: OperationalSurface) {
+        let _ = self
+            .modes
+            .send(ServingMode::Operational(surface.mount(fallback_router())));
+    }
+}
+
+/// The router every serving mode starts from: only the fixed not-found fallback.
+fn fallback_router() -> Router {
+    Router::new().fallback(not_found)
+}
+
+/// Selects the surface the listener serves for a classified startup.
+fn initial_serving_mode(
+    composition: &PreoperationalComposition,
+    listener: SocketAddr,
+) -> ServingMode {
     match composition.outcome {
         StartupOutcome::UninitializedWithoutDatabase
-        | StartupOutcome::UninitializedWithDatabase => {
-            preoperational_routes(router, composition, listener)
-        }
-        StartupOutcome::InitializationPending(_) => router,
+        | StartupOutcome::UninitializedWithDatabase => ServingMode::PreOperational(
+            preoperational_routes(fallback_router(), composition, listener),
+        ),
+        StartupOutcome::InitializationPending(_) => ServingMode::FailClosed(fallback_router()),
+        StartupOutcome::Initialized => ServingMode::Operational(
+            weavelit_module_client_webui::operational_surface().mount(fallback_router()),
+        ),
     }
 }
 
@@ -1580,25 +1669,19 @@ fn map_classification_error(error: LifecycleError) -> StartupError {
     }
 }
 
-/// Composes the lifecycle crate and SQLite backend, opens or creates the anchor
-/// set, and classifies startup state.
-///
-/// Returns a `StartupOutcome` for every supported restricted state.
-/// Fails closed for `Initialized` and `PostCommitReconciliationRequired` states
-/// since normal operation and sealing are not yet implemented.
-pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartup, StartupError> {
-    let store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
+/// Maps a sealed-deployment load failure to a startup error category.
+fn map_workflow_error(error: WorkflowError) -> StartupError {
+    match error {
+        WorkflowError::Lifecycle(error) => map_classification_error(error),
+        _ => StartupError::StateCombinationInvalid,
+    }
+}
 
-    let catalog = Arc::new(sqlite_catalog());
-    let context = Arc::new(TrustedBackendContext::new(
-        state_root.join(APPLICATION_DATABASE_FILE),
-    ));
-
-    let classification = store
-        .classify_startup(&catalog, &context)
-        .map_err(map_classification_error)?;
-
-    let outcome = match classification {
+/// Maps a lifecycle classification to the surface the runtime may serve.
+fn startup_outcome(
+    classification: LifecycleClassification,
+) -> Result<StartupOutcome, StartupError> {
+    Ok(match classification {
         LifecycleClassification::UninitializedWithoutDatabase => {
             StartupOutcome::UninitializedWithoutDatabase
         }
@@ -1608,6 +1691,7 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
         LifecycleClassification::InitializationPending(kind) => {
             StartupOutcome::InitializationPending(kind)
         }
+        LifecycleClassification::Initialized => StartupOutcome::Initialized,
         LifecycleClassification::Interrupted(action) => {
             return Err(match action {
                 InterruptedLifecycleAction::RedeployNew => {
@@ -1621,13 +1705,44 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
                 }
             });
         }
-        // Fail closed for states not yet handled by this milestone.
-        LifecycleClassification::PostCommitReconciliationRequired
-        | LifecycleClassification::Initialized => {
+        // Post-commit reconciliation is not implemented, so it fails closed.
+        LifecycleClassification::PostCommitReconciliationRequired => {
             return Err(StartupError::StateCombinationInvalid);
         }
-    };
+    })
+}
+
+/// Composes the lifecycle crate and SQLite backend, opens or creates the anchor
+/// set, and classifies startup state.
+///
+/// Returns a `StartupOutcome` for every supported state. A sealed deployment
+/// additionally loads its application state under the lifecycle mutation permit
+/// and retains its open Application Database. `PostCommitReconciliationRequired`
+/// fails closed because reconciliation is not implemented.
+pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartup, StartupError> {
+    let store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
+
+    let catalog = Arc::new(sqlite_catalog());
+    let context = Arc::new(TrustedBackendContext::new(
+        state_root.join(APPLICATION_DATABASE_FILE),
+    ));
+
+    let classification = store
+        .classify_startup(&catalog, &context)
+        .map_err(map_classification_error)?;
+
+    let outcome = startup_outcome(classification)?;
     let arbiter = Arc::new(WorkflowArbiter::new(store));
+    // The sealed deployment's state is loaded under the lifecycle mutation
+    // permit, which independently re-verifies the record and the database.
+    let sealed = match outcome {
+        StartupOutcome::Initialized => Some(
+            arbiter
+                .load_sealed_deployment(&catalog, &context)
+                .map_err(map_workflow_error)?,
+        ),
+        _ => None,
+    };
     Ok(RestrictedStartup {
         outcome,
         log_catalog: sqlite_log_catalog(),
@@ -1639,6 +1754,7 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
             catalog,
             context,
         },
+        sealed,
     })
 }
 
@@ -1673,9 +1789,17 @@ mod tests {
     };
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
-    use weavelit_module_client::{APPLICATION_DATABASE_ROUTE, DatabaseSelectionRejection};
+    use weavelit_module_client::{
+        APPLICATION_DATABASE_ROUTE, DatabaseSelectionRejection, STATUS_ROUTE,
+    };
+    use weavelit_server_database::{
+        ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
+        LogClassification, LogDetail, LogModuleConfiguration, LogType, Name, RecoveryPublicKey,
+    };
     use weavelit_server_lifecycle::{
-        BackendIdentifier, LifecycleProjection, LifecycleStore, TrustedBackendContext,
+        ApplicationState, BackendIdentifier, CheckpointMetadata, DatabaseInspection,
+        DeploymentIdentifier, LifecycleClassification, LifecycleProjection, LifecycleStore,
+        StateIdentifier, TrustedBackendContext, WorkflowKind,
     };
 
     use super::{
@@ -1683,12 +1807,13 @@ mod tests {
         ConnectionSlots, ConnectionTimeouts, MAX_REQUEST_BODY_BYTES, PreoperationalComposition,
         RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT,
         REQUEST_READ_TIMEOUT, RateLimiter, RequestHeadRead, RequestReadError, ResponseProfile,
-        RestrictedStartup, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
-        bounded_response_from_axum, classify_restricted_startup, gateway_timeout_response,
-        parse_http_request, processing_response, raw_header_section_bytes, read_http_request,
-        read_http_request_with_timeout, request_timeout_response,
+        RestrictedStartup, ServingMode, ServingModeSwitch, StartupError, StartupOutcome,
+        TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter, bounded_response_from_axum,
+        classify_restricted_startup, fallback_router, gateway_timeout_response,
+        initial_serving_mode, parse_http_request, processing_response, raw_header_section_bytes,
+        read_http_request, read_http_request_with_timeout, request_timeout_response,
         serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
-        sqlite_catalog,
+        sqlite_catalog, startup_outcome,
     };
 
     /// Listener authority used by router-level tests that bind no socket.
@@ -1749,7 +1874,9 @@ mod tests {
         }
 
         fn routes_for(&self, listener: SocketAddr) -> Router {
-            super::restricted_routes(&self.startup.composition, listener)
+            super::initial_serving_mode(&self.startup.composition, listener)
+                .router()
+                .clone()
         }
 
         /// Snapshots the lifecycle record and every locator file by name, bytes,
@@ -2089,6 +2216,258 @@ mod tests {
                 "{target}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: serving modes and sealed-deployment startup
+    // -----------------------------------------------------------------------
+
+    /// Builds the operational router exactly as the sealed serving mode does.
+    fn operational_routes() -> Router {
+        restricted_routes(StartupOutcome::Initialized)
+    }
+
+    #[tokio::test]
+    async fn the_operational_surface_serves_the_web_ui_asset_allowlist() {
+        for (target, relative, media_type) in EMBEDDED_ASSETS {
+            let response = operational_routes()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{target}");
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                media_type,
+                "{target}"
+            );
+            let body = axum::body::to_bytes(response.into_body(), 256 * 1024)
+                .await
+                .unwrap();
+            assert_eq!(body.as_ref(), generated_asset_bytes(relative), "{target}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_operational_surface_removes_every_preoperational_route() {
+        for target in [STATUS_ROUTE, APPLICATION_DATABASE_ROUTE] {
+            let response = operational_routes()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "application/json; charset=utf-8",
+                "{target}"
+            );
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_fail_closed_serving_mode_serves_only_not_found() {
+        let router = ServingMode::FailClosed(fallback_router()).router().clone();
+        for target in [
+            "/",
+            "/assets/weavelit-application.js",
+            "/assets/weavelit-application.css",
+            STATUS_ROUTE,
+            APPLICATION_DATABASE_ROUTE,
+            "/unknown",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+            assert_eq!(
+                response_body(response).await,
+                "{\"error\":\"not_found\"}",
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn publishing_a_serving_mode_changes_only_later_connection_snapshots() {
+        let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let (switch, serving_modes) = ServingModeSwitch::new(initial_serving_mode(
+            &surface.startup.composition,
+            UNBOUND_LISTENER.parse().unwrap(),
+        ));
+
+        // A connection accepted before the switch publishes anything.
+        let in_flight = serving_modes.borrow().router().clone();
+
+        switch.publish_operational(weavelit_module_client_webui::operational_surface());
+        let after_operational = serving_modes.borrow().router().clone();
+
+        // The already-snapshotted connection keeps its pre-operational surface.
+        let status = in_flight
+            .clone()
+            .oneshot(Request::get(STATUS_ROUTE).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+
+        // A newly accepted connection observes the published mode instead.
+        let removed = after_operational
+            .clone()
+            .oneshot(Request::get(STATUS_ROUTE).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_body(removed).await, "{\"error\":\"not_found\"}");
+        let asset = after_operational
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(asset.status(), StatusCode::OK);
+
+        switch.publish_fail_closed();
+        let after_fail_closed = serving_modes.borrow().router().clone();
+        let closed = after_fail_closed
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(closed.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_body(closed).await, "{\"error\":\"not_found\"}");
+
+        // The first connection is still unaffected by either publication.
+        let unchanged = in_flight
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(unchanged.status(), StatusCode::OK);
+    }
+
+    /// Seals a deployment by driving the real lifecycle typestate chain.
+    ///
+    /// Returns the sealed deployment identifier and the committed application
+    /// state. The arbiter is dropped before returning so the state-root lock is
+    /// released for the startup path under test.
+    fn seal_deployment(state_root: &Path) -> (DeploymentIdentifier, ApplicationState) {
+        let mut store = LifecycleStore::open_or_create(state_root).unwrap();
+        let catalog = sqlite_catalog();
+        let context = TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE));
+        store
+            .select_database(
+                &catalog,
+                &context,
+                &BackendIdentifier::new("sqlite").unwrap(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        let arbiter = WorkflowArbiter::new(store);
+        let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
+        let deployment_identifier = permit.deployment_identifier();
+        let state = sealed_application_state();
+        permit
+            .create_checkpoint(
+                WorkflowKind::Restore,
+                CheckpointMetadata::from_bytes(b"restore-checkpoint-metadata".as_slice()).unwrap(),
+            )
+            .unwrap()
+            .complete_checkpoint(&state)
+            .unwrap()
+            .acknowledge_completion(completion_record_identifier())
+            .unwrap()
+            .seal()
+            .unwrap();
+        drop(arbiter);
+        (deployment_identifier, state)
+    }
+
+    fn completion_record_identifier() -> StateIdentifier {
+        StateIdentifier::from_bytes([0x5A; 16]).unwrap()
+    }
+
+    /// Builds the smallest state the Application Database contract accepts.
+    fn sealed_application_state() -> ApplicationState {
+        let configuration_identifier = StateIdentifier::from_bytes([0x11; 16]).unwrap();
+        ApplicationState::new(ApplicationStateInput {
+            configuration: vec![],
+            protected_secrets: vec![],
+            accounts: vec![],
+            password_verifiers: vec![],
+            groups: vec![],
+            group_memberships: vec![],
+            group_grants: vec![],
+            mfa_factors: vec![],
+            service_connections: vec![],
+            recovery_public_key: RecoveryPublicKey::new("age1recoverypublickeyvalue").unwrap(),
+            log_module_configurations: vec![LogModuleConfiguration {
+                identifier: configuration_identifier,
+                module: Name::new("log-sqlite").unwrap(),
+                name: Name::new("local").unwrap(),
+                enabled: true,
+                settings: vec![],
+            }],
+            log_assignments: LogType::ALL
+                .into_iter()
+                .map(|log_type| LogAssignment {
+                    log_type,
+                    configuration: configuration_identifier,
+                })
+                .collect(),
+            completion_obligation: CompletionObligation::new(
+                completion_record_identifier(),
+                WorkflowKind::Restore,
+                LogClassification::new("lifecycle.restore").unwrap(),
+                CorrelationIdentifier::new("correlation-identifier").unwrap(),
+                1_700_000_000_000,
+                LogDetail::new("restore completed").unwrap(),
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_sealed_deployment_starts_and_loads_its_application_state() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let (deployment_identifier, state) = seal_deployment(&state_root);
+
+        let mut startup = classify_restricted_startup(&state_root)
+            .expect("a sealed deployment must reach normal operation");
+
+        assert_eq!(startup.outcome(), StartupOutcome::Initialized);
+        let loaded = startup
+            .initialized_state()
+            .expect("a sealed deployment must retain its loaded application state");
+        assert_eq!(loaded.deployment_identifier(), deployment_identifier);
+        assert!(loaded.completion_acknowledged());
+        assert_eq!(loaded.state(), &state);
+        assert_eq!(
+            startup
+                .application_database()
+                .expect("a sealed deployment must hold its database open")
+                .inspect(deployment_identifier)
+                .unwrap(),
+            DatabaseInspection::Initialized {
+                deployment_identifier
+            }
+        );
+    }
+
+    #[test]
+    fn post_commit_reconciliation_still_fails_closed() {
+        assert_eq!(
+            startup_outcome(LifecycleClassification::PostCommitReconciliationRequired).unwrap_err(),
+            StartupError::StateCombinationInvalid
+        );
+        assert_eq!(
+            startup_outcome(LifecycleClassification::Initialized).unwrap(),
+            StartupOutcome::Initialized
+        );
     }
 
     #[test]
@@ -4640,10 +5019,14 @@ mod tests {
         let committed = Arc::new(AtomicBool::new(false));
         let started_gate = Arc::new(Barrier::new(2));
         let finish_gate = Arc::new(Barrier::new(2));
+        // Without this third rendezvous the assertion below races the store it
+        // is observing, because releasing `finish_gate` orders nothing after it.
+        let committed_gate = Arc::new(Barrier::new(2));
 
         let committed_clone = Arc::clone(&committed);
         let started_gate_clone = Arc::clone(&started_gate);
         let finish_gate_clone = Arc::clone(&finish_gate);
+        let committed_gate_clone = Arc::clone(&committed_gate);
 
         // A SelectionCommit that signals when spawn_blocking has started, then
         // waits for the test to signal completion.  This simulates a durable
@@ -4652,11 +5035,13 @@ mod tests {
             let committed = Arc::clone(&committed_clone);
             let started_gate = Arc::clone(&started_gate_clone);
             let finish_gate = Arc::clone(&finish_gate_clone);
+            let committed_gate = Arc::clone(&committed_gate_clone);
             Box::pin(async move {
                 tokio::task::spawn_blocking(move || {
                     started_gate.wait(); // signal: spawn_blocking has started
                     finish_gate.wait(); // wait for test to say "go"
                     committed.store(true, Ordering::SeqCst);
+                    committed_gate.wait(); // signal: the commit has landed
                     Ok(weavelit_server_lifecycle::LifecycleProjection::new(true))
                 })
                 .await
@@ -4699,6 +5084,12 @@ mod tests {
 
         // Release the blocking work.
         let gate = Arc::clone(&finish_gate);
+        tokio::task::spawn_blocking(move || gate.wait())
+            .await
+            .unwrap();
+
+        // Rendezvous with the commit itself, so the assertion observes it.
+        let gate = Arc::clone(&committed_gate);
         tokio::task::spawn_blocking(move || gate.wait())
             .await
             .unwrap();

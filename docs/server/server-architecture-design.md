@@ -213,8 +213,12 @@ listener or a cleartext fallback.
 
 The compiled-in `weavelit-module-client` crate owns translation of the
 pre-operational status request and Application Database selection request and
-response contracts, their canonical route paths, and the pre-operational
-capability declaration a Client Module returns. The compiled-in
+response contracts, their canonical route paths, and both the pre-operational
+and operational capability declarations a Client Module returns. The
+pre-operational declaration carries the status, Application Database selection,
+and asset capabilities; the operational declaration carries only client asset
+delivery and cannot express either pre-operational route, so a sealed
+deployment's surface has no way to mount them. The compiled-in
 `weavelit-module-client-webui` crate owns only what is browser-specific: the
 capabilities the Web UI declares and delivery of its compile-time embedded
 browser asset allowlist. The runtime mounts the declared surface
@@ -228,6 +232,27 @@ defines the status contract and resource limits; the
 defines the selection contract; the
 [Embedded Asset Delivery Design](../client-modules/web-ui/embedded-asset-delivery-design.md)
 defines the asset allowlist, media types, security headers, and body bounds.
+
+### Serving-Mode Switch
+
+The listener serves exactly one of three modes: the pre-operational surface, a
+fail-closed surface with no functional route, or the sealed deployment's
+operational surface. Every mode is composed over the same fixed not-found
+fallback, so a mode serves the routes its Client Module declaration supplied and
+nothing else. A classified startup selects the initial mode: the two
+uninitialized classifications serve the pre-operational surface, a retained
+pending classification serves the fail-closed surface, and a sealed deployment
+serves the operational surface.
+
+The runtime publishes the current mode through one watch channel. The listener
+snapshots the mode's router when it accepts a connection and before it spawns
+the connection task, so an in-flight connection continues serving the surface it
+snapshotted and only a newly accepted connection observes a newer mode. The
+publisher is a separate named capability that a workflow holds to move a running
+listener from its pre-operational surface to fail-closed and then to the
+operational surface without a restart. The publisher carries no lifecycle
+authority: a caller must already have completed the trusted transition it
+publishes.
 
 The runtime composes every mounted pre-operational route over one shared
 lifecycle authority. Startup constructs a single workflow arbiter over the
@@ -243,6 +268,15 @@ arbiter; composing a second one would defeat serialization between selection and
 Init. The expected same-origin authority passed to the selection route is the
 socket address the listener actually bound, never a request header or a
 certificate subject alternative name.
+
+A sealed startup uses that same arbiter to load the deployment's application
+state. The load runs under the exclusive mutation permit and independently
+re-reads the deployment record and re-inspects the database exactly as sealing
+does, because startup classification is a routing control rather than the
+authority. A record and database that no longer agree, or that are bound to
+another deployment, fail startup closed rather than producing a surface to
+serve. The runtime retains the loaded state and the opened Application Database
+for the process lifetime.
 
 The implementation selects minimal features and exact crates.io versions for
 Axum, Hyper, Tokio, and their required adapters under the dependency policy

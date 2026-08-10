@@ -21,7 +21,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and shared Client Module crate-boundary rules.
 - `Cargo.toml`: Compiled-in shared Client Module package manifest.
-- `src/lib.rs`: Canonical route paths, the pre-operational capability declaration and its mounting, pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the shared fixed-profile response helpers, and contract tests.
+- `src/lib.rs`: Canonical route paths, the pre-operational and operational capability declarations and their mounting, pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the shared fixed-profile response helpers, and contract tests.
 
 ## Usage Guidance
 
