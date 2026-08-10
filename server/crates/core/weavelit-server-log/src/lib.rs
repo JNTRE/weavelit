@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use weavelit_server_log_authority::ServerLogAuthority;
+
 const MAX_LOG_MODULES: usize = 64;
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 const RECORD_ID_LENGTH: usize = 16;
@@ -97,6 +99,12 @@ impl TrustedRecordIssuer {
     #[allow(dead_code)]
     pub(crate) const fn new() -> Self {
         Self { _private: () }
+    }
+
+    /// Creates the issuer for a holder of Server-owned logging authority.
+    #[must_use]
+    pub const fn from_server_authority(_authority: &ServerLogAuthority) -> Self {
+        Self::new()
     }
 
     /// Issues an identifier from Server-generated entropy.
@@ -546,6 +554,16 @@ impl TrustedLogModuleContext {
             local_root,
             deployment_identity,
         }
+    }
+
+    /// Creates the context for a holder of Server-owned logging authority.
+    #[must_use]
+    pub fn from_server_authority(
+        _authority: &ServerLogAuthority,
+        local_root: PathBuf,
+        deployment_identity: [u8; RECORD_ID_LENGTH],
+    ) -> Self {
+        Self::new(local_root, deployment_identity)
     }
 
     /// Returns the Server-supplied local root without deriving a destination path.
@@ -1650,6 +1668,7 @@ mod tests {
             ("acknowledgement", "E0624"),
             ("dispatch", "E0451"),
             ("catalog-dispatch", "E0308"),
+            ("server-authority", "E0603"),
         ] {
             assert_forbidden_fixture_rejected(&fixture_root, &target_root, binary, expected_code);
         }

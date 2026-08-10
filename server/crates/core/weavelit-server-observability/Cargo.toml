@@ -1,0 +1,17 @@
+[package]
+name = "weavelit-server-observability"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+weavelit-server-database = { path = "../../database/weavelit-server-database" }
+weavelit-server-log = { path = "../weavelit-server-log" }
+
+# Tests compose the producer the way the Server runtime does, so they need the
+# same capability key.
+[dev-dependencies]
+weavelit-server-log-authority = { path = "../weavelit-server-log-authority" }

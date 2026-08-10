@@ -595,6 +595,33 @@ Only after the seal's configured valid-run commit path completes may the runtime
 remove all pre-operational routes, load application state, and enable normal
 authenticated operation in the same process.
 
+The crate exposes this ordering as a chain of single-use stages rather than
+independently callable steps, so an out-of-order or repeated call does not
+compile:
+
+```text
+authorize_workflow -> create_checkpoint -> complete_checkpoint
+                   -> acknowledge_completion -> seal
+```
+
+Each stage consumes the previous one and carries the exclusive permit forward,
+so the whole workflow runs under one uninterrupted permit and no other mutation
+can interleave. Authorization performs every check that can be made before a
+durable change, including opening the selected database and confirming it is
+uninitialized, so a caller that fails during preparation leaves nothing
+retained. Creating the checkpoint is the point of no return. Sealing is
+reachable only from an acknowledged workflow, so an unacknowledged deployment
+cannot be sealed by construction.
+
+Sealing does not trust the calls that appeared to succeed. It re-reads the
+deployment record and the database, requires the record to be
+`InitializationPending`, requires the database to report initialized state bound
+to this same deployment, loads that state, and requires the persisted completion
+obligation to be acknowledged. Only after every one of those fallible checks
+passes is the record written, so the record advances only once the deployment is
+known to be complete, acknowledged, and loadable. A backend that misreports its
+own durable state fails closed rather than producing a sealed deployment.
+
 If database state commits but sealing or in-process activation fails, the
 runtime exposes no routes and fails closed. On restart, the lifecycle crate
 classifies the retained partial state and exits without invoking either workflow
@@ -604,6 +631,42 @@ failed replacement Restore: a new deployment requires redeploying and beginning
 Init again; a replacement Restore requires redeploying and using independently
 retained compatible backup and recovery material. The lifecycle crate neither
 retains that material nor manages its durability.
+
+## Application At-Rest Protection
+
+The lifecycle crate owns the deployment's Server-local at-rest key, so it also
+owns the capability that protects application secrets stored in the Application
+Database. The approved anchor profile gives a deployment exactly one 256-bit
+at-rest key, so protection reuses that key rather than deriving a second key
+hierarchy.
+
+The capability is a seal-only contract. A caller submits one bounded plaintext
+and a protected-value kind and receives the opaque bytes to store. It cannot
+read key material, and it cannot recover the plaintext of a value that is
+already stored, so holding the capability does not grant the ability to read
+stored secrets.
+
+The protected-value kinds are `component-secret`, `mfa-factor-data`, and
+`service-connection-credential`. The kind label is bound into the sealed value
+as additional authenticated data under the prefix
+`weavelit:application-protected-value:v1:`, so a value sealed for one purpose
+cannot be replayed as another. These labels persist inside stored values, so an
+existing label is never renamed or reused for a different meaning.
+
+Each sealed value uses the same XChaCha20-Poly1305 envelope, format version, and
+canonical encoding as the deployment record and database locator, with a fresh
+24-byte nonce per call. Sealing the same plaintext twice therefore yields
+distinct stored values.
+
+A sealed value is stored as one Application Database protected value, so its
+envelope must fit that bound. The envelope adds a fixed header, a Base64 nonce,
+and Base64 expansion of the plaintext and authentication tag, so the accepted
+plaintext is bounded well below the stored bound at 32 KiB rather than tuned to
+the exact worst case. A plaintext that is empty or exceeds that bound is refused
+before any encryption occurs. Any workflow that admits secret material,
+including Restore, applies the same plaintext bound during validation, so a
+secret that could never be sealed is refused before a workflow begins rather
+than failing partway through it.
 
 ## Errors And Sensitive Output
 

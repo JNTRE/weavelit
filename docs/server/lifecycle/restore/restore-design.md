@@ -59,9 +59,15 @@ persistent deployment anchor, but that host-level destruction is outside the
 Restore contract.
 
 The selected backend must be compatible with the backup. Restore does not
-perform an in-place migration between Application Database technologies. The
-supported backup-format and Server-version compatibility windows remain defined
-by the decisions tracked in [Open Questions](../../../open-questions.md).
+perform an in-place migration between Application Database technologies. For
+Milestone 1, Restore accepts only an exact match: the artifact's declared
+outer format version and its repeated inner `format_version` must both equal
+`1`, and the backup's source Application Database backend must equal the
+selected backend. Anything else is rejected as `backup_incompatible`, and
+Restore performs no cross-version upgrade. The compatibility window that
+applies once a second backup format version or Application Database backend
+exists is tracked in
+[Open Questions](../../../open-questions.md#16-backup-format-and-server-version-compatibility-window).
 
 ## Request And Sensitive Input Handling
 
@@ -91,13 +97,20 @@ for future backups, and keeps the private key, unwrapped data key, and plaintext
 only in bounded transient memory. Sensitive buffers are cleared through the
 selected maintained cryptographic facilities when no longer needed.
 
-If staging is required, the Server may persist only the encrypted artifact in
-bounded protected temporary storage. It never persists the private recovery
-key, an unwrapped data key, or decrypted backup plaintext. Staged artifacts are
-not application state and are removed after success or rejection before a
-checkpoint exists. An interruption that retains staging state is classified
-fail-closed without automatic cleanup, resumption, or upload retry. Exact
-normal-request staging mechanics remain an open design decision.
+The Milestone 1 Restore request is held entirely in bounded transient memory.
+The Server does not persist the encrypted artifact, the private recovery key,
+an unwrapped data key, or decrypted plaintext to any temporary storage. The
+approved bounds above — a 256 MiB maximum encrypted artifact and
+authenticated-plaintext size, a 120-second upload deadline, a 300-second total
+request deadline, and a single concurrent Restore operation — make this safe:
+because at most one Restore may run and every input is bounded, peak resident
+memory cost is bounded. Because no artifact is staged on disk, there is no
+staged-artifact residue to remove and no staged-upload resumption or retry
+path. An interruption before checkpoint creation releases transient memory and
+leaves the selected database eligible for either workflow. On-disk staging of
+the encrypted artifact may become a future option if the artifact ceiling is
+raised or concurrent Restore is ever permitted, but that remains a possible
+future change and not current behavior.
 
 ## Backup Envelope And Cryptography
 
@@ -109,9 +122,15 @@ the [Security Model](../../../security-model.md#backup-input-security-profile)'s
 approved age v1 X25519 recipient profile: X25519 key agreement with
 HKDF-SHA-256 and ChaCha20-Poly1305 wrap the per-backup data key, HMAC-SHA-256
 authenticates the header, and the age STREAM construction with
-ChaCha20-Poly1305 encrypts the authenticated plaintext. The authenticated
-plaintext repeats `format_version: 1` so the inner content is bound to the
-outer envelope's declared version.
+ChaCha20-Poly1305 encrypts the authenticated plaintext. Weavelit's backup format
+defines exactly one recovery recipient, so a backup carrying no recipient
+stanza, more than one stanza, an `scrypt` stanza, any other stanza type, or an
+unsupported age version is rejected as `backup_incompatible` before key
+agreement. The reader scans a bounded header prefix, so a header that exceeds
+that bound is rejected as `backup_invalid` before its stanza type is examined;
+both outcomes refuse the artifact, and the bound is never relaxed to report the
+more specific category. The authenticated plaintext repeats `format_version: 1`
+so the inner content is bound to the outer envelope's declared version.
 
 A private recovery key is accepted only in its canonical age Bech32 encoding —
 a lowercase `age1...` public recipient or an uppercase
@@ -140,7 +159,8 @@ attacker-controlled work and performs no state mutation until it is complete:
 7. authenticated-plaintext size bounds;
 8. the inner `format_version` and Server/source-backend compatibility;
 9. internal references, required components, and domain semantics;
-10. removal of any staged artifact; and
+10. clearing of the private recovery key and unwrapped data key from transient
+    memory, retaining only the recovery public key; and
 11. checkpoint creation and atomic replacement, detailed in
     [Checkpoint, Atomic Restore, And Sealing](#checkpoint-atomic-restore-and-sealing).
 
@@ -163,10 +183,24 @@ Restore binds all normalized state to the replacement deployment identifier.
 It creates no active session, accepts no session from the artifact, and ensures
 that credentials from the prior deployment cannot resume a Server session. It
 decrypts protected application values from the backup envelope and re-encrypts
-them with the replacement Server's own at-rest key before persistence. The
-private recovery key is never repurposed as an at-rest key.
+them with the replacement Server's own at-rest key before persistence, using the
+seal-only capability defined by
+[Application At-Rest Protection](../lifecycle-design.md#application-at-rest-protection).
+Each value is sealed under its own protected-value kind, so a component secret,
+MFA factor data, and a Service Connection credential cannot be interchanged. A
+decrypted value that exceeds the plaintext bound that capability accepts is
+refused during content validation, before any checkpoint exists, because it
+could never be written back. The private recovery key is never repurposed as an
+at-rest key.
 
 ## Checkpoint, Atomic Restore, And Sealing
+
+Every step that can fail without leaving retained state runs before the
+checkpoint exists. The Restore crate re-seals each recovered secret under the
+replacement deployment's at-rest key and assembles the complete replacement
+state, including the Restore-result completion obligation, while the deployment
+is still uninitialized. A failure during that preparation leaves nothing to
+clean up.
 
 After complete validation and before application-state mutation, the Restore
 crate asks the Application Database contract to create a non-operational Restore
@@ -175,7 +209,7 @@ checkpoint contains the replacement deployment identifier, the Restore workflow
 discriminator, and only format-defined non-secret metadata needed for safe
 classification. The lifecycle crate then advances the deployment record to
 `InitializationPending` using the fail-closed ordering defined in the Server
-Lifecycle Design.
+Lifecycle Design. Creating that checkpoint is the point of no return.
 
 The Restore crate asks the database contract to atomically replace the eligible
 Restore checkpoint with the complete normalized restored state. The backend
@@ -184,14 +218,19 @@ verifies the expected deployment identifier, checkpoint kind, and one-time
 state transition. A failure before commit leaves no partial application state.
 
 The restored state carries a post-commit Restore-result obligation with
-non-secret event fields. The Restore crate loads the restored System Log
-assignment, receives the durable acknowledgement defined in the
-[Technical Specification](../../../spec.md#logging-and-accountability) for the
+non-secret event fields. The obligation and the System Log record it obliges are
+built from the same fields by Server Observability, so the record cannot
+describe something the committed state does not. The Restore crate loads the
+restored System Log assignment, receives the durable acknowledgement defined in
+the [Technical Specification](../../../spec.md#logging-and-accountability) for the
 Restore result, and marks that obligation complete. The record identifies
 Restore, the replacement deployment identifier, time, result, and correlation
 identifier without recovery keys, backup contents, restored identities, or other
 protected values. The lifecycle crate seals the deployment record `Initialized`
 only after the database commit and required System Log result acknowledgement.
+Sealing is reachable only from an acknowledged workflow, and it independently
+re-reads the record and the database before writing, as defined in
+[Workflow Arbitration And Sealing](../lifecycle-design.md#workflow-arbitration-and-sealing).
 The runtime then removes every pre-operational route, loads application state,
 and enables normal authenticated operation without a restart.
 
@@ -199,7 +238,9 @@ If the database commit succeeds but System Log recording, sealing, or in-process
 activation fails, the Server exposes no routes and fails closed. On startup,
 the lifecycle crate classifies the matching initialized database and pending
 deployment record as retained partial state with the stable
-`lifecycle_interrupted` / `operator_redeploy_restore` diagnostic. It does not
+`lifecycle_interrupted` / `operator_redeploy_required` diagnostic, as defined by
+the classification table in the
+[Server Lifecycle Design](../lifecycle-design.md). It does not
 invoke Restore, retry completion logging, seal the deployment, or reopen Init
 or Restore.
 
@@ -208,9 +249,8 @@ or Restore.
 Before a Restore checkpoint exists, a rejected request leaves the selected
 database eligible for either workflow and releases transient inputs. Once a
 checkpoint exists, interruption leaves retained partial state that is
-non-operational. The Server does not reconcile, retry, reset, resume a staged
-upload, delete a checkpoint or artifact, recreate state, seal, or expose Init
-or Restore over that state.
+non-operational. The Server does not reconcile, retry, reset, delete a
+checkpoint, recreate state, seal, or expose Init or Restore over that state.
 
 The operator may preserve the failed root for diagnosis or evidence, or discard
 it and rebuild or redeploy the replacement host. Restore then begins again only
@@ -254,7 +294,12 @@ Fixture-based tests use an immutable raw `.wlitbackup` file, its canonical
 private-key line, the expected decrypted plaintext, and a canonical JSON
 manifest recording each fixture's exact byte lengths and SHA-256 digests.
 Negative fixtures mutate exactly one property of the valid fixture at a time
-so each failure path is independently attributable.
+so each failure path is independently attributable. Because those fixtures are
+produced by a second implementation in this repository, the age v1 reader is
+additionally validated against 110 external known-answer vectors vendored from
+the C2SP Community Cryptography Test Vectors for age; the
+[Server Architecture Design](../../server-architecture-design.md) records their
+provenance, license, and the pinned outcome of every one.
 
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify

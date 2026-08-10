@@ -112,6 +112,20 @@ needs executable direct-TLS process compatibility evidence for the selected
 behavior and validation that no cleartext listener exists, consistent with the
 [Testing and Validation Policy](testing.md).
 
+### 16. Backup-format and Server-version compatibility window
+
+Milestone 1 **[Restore](glossary.md#states-and-requests)** accepts only an
+exact match: the backup artifact's declared outer format version and its
+repeated inner `format_version` must both equal `1`, and the backup's source
+**[Application Database](glossary.md#applications-and-interfaces)** backend
+must equal the selected backend, as settled in the
+[Server Restore Design](server/lifecycle/restore/restore-design.md#eligibility-and-workflow-choice).
+What backup-format and Server-version compatibility window applies once a
+second backup format version or a second Application Database backend exists?
+May Restore upgrade an older backup during restoration, how is a compatibility
+window declared and tested, and how does an operator-facing error distinguish
+an incompatible-but-recognized artifact from a corrupt one?
+
 ## Packages and Integrations
 
 ### 11. Package, update, and container model
@@ -168,4 +182,7 @@ appropriate single source of truth after that validation.
 - [Glossary](glossary.md)
 - [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md)
 - [Testing and Validation Policy](testing.md)
-- Backup and Restore protection is settled in the [Server Restore Design](server/lifecycle/restore/restore-design.md) and [Security Model](security-model.md).
+- Backup and Restore protection and Milestone 1 backup-format compatibility are
+  settled in the [Server Restore Design](server/lifecycle/restore/restore-design.md)
+  and [Security Model](security-model.md); the future multi-version and
+  multi-backend compatibility window remains open (question 16).

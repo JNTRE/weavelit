@@ -1,14 +1,17 @@
-use std::sync::Mutex;
+use std::{
+    fmt,
+    sync::{Mutex, MutexGuard},
+};
 
 use weavelit_server_database::{
-    ApplicationDatabase, CheckpointMetadata, DatabaseError, DatabaseInspection, WorkflowCheckpoint,
-    WorkflowKind,
+    ApplicationDatabase, ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, InitializedState, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
-    LifecycleError, LifecycleProjection, LifecycleState, SelectionError, TrustedBackendContext,
-    WorkflowError,
+    LifecycleError, LifecycleProjection, LifecycleState, ProtectedValueSealer, SelectionError,
+    TrustedBackendContext, WorkflowError,
     persistence::{LifecycleStore, RecordPersistencePermit},
 };
 
@@ -70,29 +73,31 @@ impl WorkflowArbiter {
         Ok((database, project(&store)))
     }
 
-    /// Begins a workflow from eligible selected uninitialized state.
+    /// Authorizes one exclusive workflow attempt from eligible selected state.
     ///
-    /// Acquires the exclusive permit, revalidates current durable state, creates
-    /// exactly one deployment-bound checkpoint, then advances the record to
-    /// `InitializationPending` in the documented cross-store order.
-    pub fn begin_workflow(
-        &self,
+    /// Acquires the exclusive permit, revalidates current durable state, and
+    /// opens the selected database. No durable change occurs yet, so a caller
+    /// may still fail without leaving retained partial state. The returned
+    /// permit holds the exclusive lock until the workflow ends.
+    pub fn authorize_workflow<'arbiter>(
+        &'arbiter self,
         catalog: &BackendCatalog,
         context: &TrustedBackendContext,
-        kind: WorkflowKind,
-        metadata: CheckpointMetadata,
-    ) -> Result<(), WorkflowError> {
-        let mut store = self.store.lock().expect("lifecycle mutex is not poisoned");
+    ) -> Result<WorkflowPermit<'arbiter>, WorkflowError> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| WorkflowError::Lifecycle(POISONED))?;
 
         if store.record().state() != LifecycleState::Uninitialized {
             return Err(WorkflowError::NotAllowed);
         }
         let locator = store.locator().ok_or(WorkflowError::DatabaseNotSelected)?;
 
-        let mut db = catalog
+        let mut database = catalog
             .reopen(locator.settings(), context)
             .map_err(WorkflowError::Lifecycle)?;
-        match db
+        match database
             .inspect(store.record().deployment_identifier())
             .map_err(map_database_error)?
         {
@@ -103,28 +108,173 @@ impl WorkflowArbiter {
             }
         }
 
+        Ok(WorkflowPermit { store, database })
+    }
+}
+
+/// Exclusive authority to begin one workflow against the selected database.
+///
+/// Holding this permit blocks every other lifecycle mutation, so a caller
+/// completes its preparation and releases it rather than retaining it.
+pub struct WorkflowPermit<'arbiter> {
+    store: MutexGuard<'arbiter, LifecycleStore>,
+    database: Box<dyn ApplicationDatabase>,
+}
+
+impl<'arbiter> WorkflowPermit<'arbiter> {
+    /// Returns the deployment identifier every created state must be bound to.
+    pub fn deployment_identifier(&self) -> DeploymentIdentifier {
+        self.store.record().deployment_identifier()
+    }
+
+    /// Returns the capability that protects application secrets at rest.
+    pub fn sealer(&self) -> &dyn ProtectedValueSealer {
+        &*self.store
+    }
+
+    /// Creates the deployment-bound checkpoint and advances the record.
+    ///
+    /// This is the workflow's point of no return: it makes the other workflow
+    /// permanently unavailable, and any later failure leaves retained partial
+    /// state that only a redeploy resolves.
+    pub fn create_checkpoint(
+        mut self,
+        kind: WorkflowKind,
+        metadata: CheckpointMetadata,
+    ) -> Result<PendingWorkflow<'arbiter>, WorkflowError> {
         let checkpoint =
-            WorkflowCheckpoint::new(store.record().deployment_identifier(), kind, metadata);
-        db.create_checkpoint(&checkpoint)
+            WorkflowCheckpoint::new(self.store.record().deployment_identifier(), kind, metadata);
+        self.database
+            .create_checkpoint(&checkpoint)
             .map_err(map_database_checkpoint_error)?;
 
         // A crash here leaves a durable checkpoint that startup classifies as interrupted.
-        let generation = store
+        let generation = self
+            .store
             .locator()
             .map(DatabaseLocator::generation)
             .ok_or(WorkflowError::DatabaseNotSelected)?;
         let new_record = DeploymentRecord::new(
-            store.record().deployment_identifier(),
+            self.store.record().deployment_identifier(),
             LifecycleState::InitializationPending,
             Some(generation),
         )
         .map_err(|_| WorkflowError::Lifecycle(LifecycleError::InvalidState))?;
-        let permit = RecordPersistencePermit;
-        store
-            .replace_record(&permit, new_record)
+        self.store
+            .replace_record(&RecordPersistencePermit, new_record)
             .map_err(WorkflowError::Lifecycle)?;
 
-        Ok(())
+        Ok(PendingWorkflow {
+            store: self.store,
+            database: self.database,
+            checkpoint,
+        })
+    }
+}
+
+/// A durable checkpoint awaiting its one atomic state replacement.
+pub struct PendingWorkflow<'arbiter> {
+    store: MutexGuard<'arbiter, LifecycleStore>,
+    database: Box<dyn ApplicationDatabase>,
+    checkpoint: WorkflowCheckpoint,
+}
+
+impl<'arbiter> PendingWorkflow<'arbiter> {
+    /// Atomically replaces this exact checkpoint with complete application state.
+    pub fn complete_checkpoint(
+        mut self,
+        state: &ApplicationState,
+    ) -> Result<CommittedWorkflow<'arbiter>, WorkflowError> {
+        self.database
+            .complete_checkpoint(&self.checkpoint, state)
+            .map_err(map_database_completion_error)?;
+
+        Ok(CommittedWorkflow {
+            store: self.store,
+            database: self.database,
+        })
+    }
+}
+
+/// Committed application state whose completion obligation is still outstanding.
+pub struct CommittedWorkflow<'arbiter> {
+    store: MutexGuard<'arbiter, LifecycleStore>,
+    database: Box<dyn ApplicationDatabase>,
+}
+
+impl<'arbiter> CommittedWorkflow<'arbiter> {
+    /// Marks the persisted completion obligation acknowledged exactly once.
+    ///
+    /// The caller must have obtained the durable acknowledgement for this record
+    /// from the committed System Log assignment before calling this.
+    pub fn acknowledge_completion(
+        mut self,
+        record_identifier: StateIdentifier,
+    ) -> Result<AcknowledgedWorkflow<'arbiter>, WorkflowError> {
+        let deployment_identifier = self.store.record().deployment_identifier();
+        self.database
+            .acknowledge_completion(deployment_identifier, record_identifier)
+            .map_err(map_database_completion_error)?;
+
+        Ok(AcknowledgedWorkflow {
+            store: self.store,
+            database: self.database,
+        })
+    }
+}
+
+/// Acknowledged application state eligible to seal the deployment.
+pub struct AcknowledgedWorkflow<'arbiter> {
+    store: MutexGuard<'arbiter, LifecycleStore>,
+    database: Box<dyn ApplicationDatabase>,
+}
+
+impl AcknowledgedWorkflow<'_> {
+    /// Seals the deployment record `Initialized` and returns the loaded state.
+    ///
+    /// Every fallible step runs before the record is written, so the record
+    /// advances only once the deployment is known to be complete, acknowledged,
+    /// and loadable.
+    pub fn seal(mut self) -> Result<InitializedState, WorkflowError> {
+        let deployment_identifier = self.store.record().deployment_identifier();
+        if self.store.record().state() != LifecycleState::InitializationPending {
+            return Err(WorkflowError::NotAllowed);
+        }
+        match self
+            .database
+            .inspect(deployment_identifier)
+            .map_err(map_database_error)?
+        {
+            DatabaseInspection::Initialized {
+                deployment_identifier: initialized,
+            } if initialized == deployment_identifier => {}
+            _ => return Err(WorkflowError::StateMismatch),
+        }
+
+        let state = self
+            .database
+            .load_initialized_state(deployment_identifier)
+            .map_err(map_database_error)?;
+        if !state.completion_acknowledged() {
+            return Err(WorkflowError::StateMismatch);
+        }
+
+        let generation = self
+            .store
+            .locator()
+            .map(DatabaseLocator::generation)
+            .ok_or(WorkflowError::DatabaseNotSelected)?;
+        let sealed = DeploymentRecord::new(
+            deployment_identifier,
+            LifecycleState::Initialized,
+            Some(generation),
+        )
+        .map_err(|_| WorkflowError::Lifecycle(LifecycleError::InvalidState))?;
+        self.store
+            .replace_record(&RecordPersistencePermit, sealed)
+            .map_err(WorkflowError::Lifecycle)?;
+
+        Ok(state)
     }
 }
 
@@ -132,6 +282,24 @@ fn project(store: &LifecycleStore) -> LifecycleProjection {
     LifecycleProjection::new(store.locator().is_some())
 }
 
+macro_rules! redacted_debug {
+    ($($stage:ident),+ $(,)?) => {
+        $(
+            impl fmt::Debug for $stage<'_> {
+                fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str(concat!(stringify!($stage), "(REDACTED)"))
+                }
+            }
+        )+
+    };
+}
+
+redacted_debug!(
+    WorkflowPermit,
+    PendingWorkflow,
+    CommittedWorkflow,
+    AcknowledgedWorkflow
+);
 fn map_database_error(error: DatabaseError) -> WorkflowError {
     WorkflowError::Lifecycle(match error {
         DatabaseError::DeploymentMismatch => LifecycleError::DeploymentMismatch,
@@ -146,6 +314,15 @@ fn map_database_checkpoint_error(error: DatabaseError) -> WorkflowError {
     match error {
         DatabaseError::InvalidState => WorkflowError::AlreadyPending,
         DatabaseError::AlreadyInitialized => WorkflowError::AlreadyInitialized,
+        _ => map_database_error(error),
+    }
+}
+
+fn map_database_completion_error(error: DatabaseError) -> WorkflowError {
+    match error {
+        DatabaseError::InvalidState | DatabaseError::AlreadyInitialized => {
+            WorkflowError::StateMismatch
+        }
         _ => map_database_error(error),
     }
 }

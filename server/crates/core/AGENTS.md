@@ -20,7 +20,10 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and Server core crate-boundary rules.
 - `weavelit-server/`: Weavelit Server executable crate.
 - `weavelit-server-log/`: Typed Log Module contract and compiled-in catalog.
+- `weavelit-server-log-authority/`: Server-owned capability key that gates minting of trusted logging authority.
 - `weavelit-server-lifecycle/`: Backend-neutral lifecycle domain, validation, and runtime-supplied Application Database catalog contract.
+- `weavelit-server-observability/`: Server-owned construction and pre-redaction of System Log records.
+- `weavelit-server-restore/`: Server-owned backup envelope, decryption, compatibility, and restored-state validation.
 
 ## Usage Guidance
 

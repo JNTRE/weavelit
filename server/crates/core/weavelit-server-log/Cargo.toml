@@ -7,5 +7,10 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# The capability key is deliberately not reexported, so an ordinary Log Module
+# cannot reach it through this crate.
+[dependencies]
+weavelit-server-log-authority = { path = "../weavelit-server-log-authority" }
+
 [dev-dependencies]
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }

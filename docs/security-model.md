@@ -303,14 +303,20 @@ per-backup data key, HMAC-SHA-256 authenticates the header, and the age STREAM
 construction with ChaCha20-Poly1305 encrypts the payload. A recovery key is
 accepted only in its canonical age Bech32 encoding: a lowercase `age1...`
 public recipient or an uppercase `AGE-SECRET-KEY-1...` private identity, as
-exactly one canonical line. Restore must not persist a private recovery key,
-unwrapped backup key, or decrypted backup plaintext. If temporary staging is
-required, the Server may persist only the bounded encrypted artifact in
-protected storage and must remove it after success or rejection before
-lifecycle interruption. Retained staging state after interruption must remain
-fail-closed without Server-managed cleanup or resumption. The Restore Design
-owns the concrete envelope format, validation order, staging mechanics, and
-cleanup flow that satisfy this profile.
+exactly one canonical line. For Milestone 1, Restore holds the encrypted
+artifact, the private recovery key, the unwrapped backup key, and decrypted
+backup plaintext entirely in bounded transient memory and must not persist any
+of them to temporary storage. Because at most one Restore operation may run
+and every input is bounded by this profile's approved transfer bounds, peak
+resident cost from this in-memory handling remains bounded. An interruption
+before a Restore checkpoint exists releases transient memory without
+Server-managed cleanup, resumption, or upload retry. On-disk staging of the
+bounded encrypted artifact in protected storage remains a possible future
+option if the artifact ceiling is raised or concurrent Restore is ever
+permitted, and would still require removal after success or rejection and
+fail-closed handling of any state retained after interruption. The Restore
+Design owns the concrete envelope format, validation order, and interruption
+handling that satisfy this profile.
 
 ## Log And Client Output Security Profile
 

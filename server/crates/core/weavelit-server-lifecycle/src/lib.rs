@@ -9,8 +9,11 @@ mod error;
 mod filesystem;
 mod format;
 mod persistence;
+mod protection;
 
-pub use arbitration::WorkflowArbiter;
+pub use arbitration::{
+    AcknowledgedWorkflow, CommittedWorkflow, PendingWorkflow, WorkflowArbiter, WorkflowPermit,
+};
 pub use catalog::{
     ApplicationDatabaseFactory, BackendCatalog, BackendDeclaration, BackendRegistration,
     ConnectionFieldDeclaration, ConnectionFieldInput, RetainedDatabaseInspection,
@@ -31,6 +34,7 @@ pub use error::{
 pub use persistence::{
     AnchorLoadState, LifecycleStore, LocatorPersistencePermit, RecordPersistencePermit,
 };
+pub use protection::{MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueKind, ProtectedValueSealer};
 pub use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection,
     DeploymentIdentifier, InitializedState, StateIdentifier, WorkflowCheckpoint, WorkflowKind,

@@ -3,7 +3,10 @@ resolver = "2"
 members = [
 	"crates/core/weavelit-server",
 	"crates/core/weavelit-server-log",
+	"crates/core/weavelit-server-log-authority",
 	"crates/core/weavelit-server-lifecycle",
+	"crates/core/weavelit-server-observability",
+	"crates/core/weavelit-server-restore",
 	"crates/database/weavelit-server-database",
 	"crates/database/weavelit-server-database-sqlite",
 	"crates/modules/client/weavelit-module-client-webui",

@@ -84,11 +84,39 @@ weavelit-server-init
 weavelit-server-restore
 ```
 
+The Server-owned logging producer crates are:
+
+```text
+weavelit-server-log-authority
+weavelit-server-observability
+```
+
 The shared Log Module contract is `weavelit-server-log`. It owns the Server
 core's typed record and dispatch boundary, not log-record construction or a
 destination implementation. `weavelit-module-log-sqlite` and a future
 `weavelit-module-log-mysql` may implement that contract while retaining their
 own persistence and delivery behavior.
+
+`weavelit-server-observability` is Server Observability: the only producer of
+complete, pre-redacted System Log records, including the Init and Restore
+completion results. It selects classifications, bounds and redacts every field,
+and builds a record together with the completion obligation persisted alongside
+it, so a post-commit record cannot drift from committed state. It owns no
+delivery, destination configuration, workflow orchestration, or Application
+Database access. A workflow crate asks Observability for a prepared record
+rather than constructing one.
+
+`weavelit-server-log-authority` carries the capability that separates
+Server-owned logging authority from an ordinary Log Module. Rust has no
+cross-crate friend visibility, so the log contract cannot make its
+authority-minting constructors reachable from Audit and Observability while
+keeping them unreachable from a module. Holding a `ServerLogAuthority` is that
+distinction, and obtaining one requires an explicit dependency edge that is
+visible in a manifest and reviewable on its own. The log contract keeps its
+original private constructors, does not reexport the capability, and its
+compile fixtures prove that an external consumer can register a module but
+cannot mint an issuer, trusted context, acknowledgement, dispatch, or the
+capability itself.
 
 `weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
 shared by **[Init](../glossary.md#states-and-requests)** and
@@ -404,6 +432,210 @@ package. Internal workspace members are not exceptions.
   sensitive-output tests pass. The locked graph contains only `alloc` and
   `zeroize` capabilities; `make -C server check` passes all 78 tests and the
   locked release build.
+
+#### `x25519-dalek`
+
+- **Source and version:** crates.io `=2.0.1`.
+- **Owner and behavior:** `weavelit-server-restore` uses X25519 Diffie-Hellman
+  to agree the key that unwraps a backup's file key from its age v1 recipient
+  stanza, and to derive the recipient public key that binds a submitted
+  recovery identity to the artifact it may open. The Rust standard library and
+  the approved dependencies provide no elliptic-curve key agreement;
+  `chacha20poly1305` is symmetric only.
+- **Features:** default features are disabled; only `static_secrets` and
+  `zeroize` are enabled. `static_secrets` exposes the reusable `StaticSecret`
+  the recovery identity requires, because an ephemeral secret cannot be
+  reconstructed from a submitted recovery key. `zeroize` makes `StaticSecret`
+  zeroize on drop. `serde`, `getrandom`, `reusable_secrets`, `precomputed-tables`,
+  and `alloc` are excluded; Restore never serializes key material, never
+  generates keys, and does not need the larger precomputed basepoint tables.
+- **Maintenance and license:** the crate declares Rust 1.60 and later and uses
+  the BSD-3-Clause license. Its only non-development dependencies in the locked
+  graph are `curve25519-dalek` 4.1.3 and `zeroize` 1.9.0, both already resolved
+  in `server/Cargo.lock`.
+- **Advisory review:** the August 10, 2026 GitHub Advisory Database review found
+  no advisory matching `x25519-dalek` 2.0.1. `curve25519-dalek` has
+  GHSA-x4gp-pqpj-f43q, a low-severity timing variability in `Scalar29::sub` and
+  `Scalar52::sub` affecting versions before 4.1.3; the resolved 4.1.3 is exactly
+  that advisory's first patched version, so the locked graph is unaffected.
+  GHSA-4hff-hh47-7788 is a duplicate of it. The review also found no advisory
+  matching the resolved `curve25519-dalek-derive` 0.1.1, `fiat-crypto` 0.2.9,
+  `cpufeatures` 0.2.17, or `subtle`, and confirmed that the two `zeroize_derive`
+  advisories (GHSA-c5hx-w945-j4pq, GHSA-r45x-ghr2-qjxc, both fixed in 1.1.1) and
+  the two `rand_core` advisories (GHSA-w7j2-35mf-95p7 fixed in 0.6.2,
+  GHSA-mmc9-pwm7-qj5w fixed in 0.4.2) predate the resolved `zeroize_derive`
+  1.5.0 and `rand_core` 0.6.4.
+- **Safe failure:** the agreed secret is rejected when it is non-contributory,
+  which refuses a low-order or all-zero ephemeral share before it can produce a
+  predictable wrap key. The agreed secret, the wrap key, and the unwrapped file
+  key are held in zeroizing buffers, never logged, and never rendered; the
+  identity's `Debug` output is redacted. Every agreement or unwrap failure
+  collapses to the single `backup_invalid` result.
+- **Validation:** the crate's recovery-key, parameter-policy, STREAM, and
+  end-to-end validation tests cover identity parsing, recipient derivation,
+  a wrong recovery key, a low-order ephemeral share, and redaction. See the age
+  v1 Recipient Profile Implementation record for the cross-implementation
+  evidence and the locked-workspace result.
+
+#### `hkdf`
+
+- **Source and version:** crates.io `=0.13.0`.
+- **Owner and behavior:** `weavelit-server-restore` uses HKDF-SHA-256 to derive
+  the three keys the age v1 profile defines: the stanza wrap key from the X25519
+  shared secret, the header authenticator key from the file key, and the payload
+  key from the file key and payload nonce. The approved `sha2` dependency
+  provides only the hash; the extract-and-expand construction with its salt and
+  info binding is exactly the kind of primitive that must not be hand-rolled in
+  production code.
+- **Features:** default features are disabled and no optional feature is
+  enabled. `std` is excluded. The locked graph adds only the approved `hmac` and
+  `digest` traits the construction is defined over.
+- **Maintenance and license:** the crate declares Rust 1.85 and later, uses the
+  MIT or Apache-2.0 license, and is published by the RustCrypto KDFs project.
+  Version 0.13.0 is required rather than 0.12: 0.12 is defined over `digest`
+  0.10, which cannot consume the approved `sha2` 0.11.
+- **Advisory review:** the August 10, 2026 GitHub Advisory Database review found
+  no advisory matching `hkdf` 0.13.0.
+- **Safe failure:** every derivation uses a fixed output length and a
+  format-defined label, so no attacker-supplied value selects a derivation
+  parameter. Derived keys are held in zeroizing buffers and never leave the
+  crate. A derivation cannot fail for the fixed 32-byte output this crate
+  requests, and no derived value is ever compared or reported.
+- **Validation:** covered by the same Restore test suite and the
+  cross-implementation evidence recorded below; the test-only fixture generator
+  derives the same three keys independently from `sha2` alone, so a divergence
+  in either implementation fails the committed fixture tests.
+
+#### `hmac`
+
+- **Source and version:** crates.io `=0.13.0`.
+- **Owner and behavior:** `weavelit-server-restore` uses HMAC-SHA-256 to verify
+  the age v1 header authenticator, which is what binds the recipient stanza and
+  every declared parameter to the file key before any payload byte is read. It
+  is also the primitive `hkdf` is defined over. The approved `sha2` dependency
+  provides only the bare hash.
+- **Features:** default features are disabled and only `zeroize` is enabled, so
+  the authenticator's internal key state is cleared on drop; `std` and `reset`
+  are excluded.
+- **Maintenance and license:** the crate declares Rust 1.85 and later, uses the
+  MIT or Apache-2.0 license, and is published by the RustCrypto MACs project.
+  Version 0.13.0 is required for the same `digest` 0.11 compatibility reason as
+  `hkdf`.
+- **Advisory review:** the August 10, 2026 GitHub Advisory Database review found
+  no advisory matching `hmac` 0.13.0 or its `digest` 0.11.3 abstraction.
+- **Safe failure:** verification uses the crate's constant-time `verify_slice`
+  rather than a byte comparison, the authenticator key is a zeroizing buffer,
+  and a mismatch collapses to the single `backup_invalid` result with nothing
+  distinguishing it from a wrong recovery key or altered ciphertext. The header
+  is authenticated before the payload nonce or any chunk is interpreted.
+- **Validation:** the parameter-policy tests assert that an altered header is
+  indistinguishable from every other failure, and the cross-implementation
+  evidence below exercises the published bad-authenticator vectors.
+
+#### `bech32`
+
+- **Source and version:** crates.io `=0.11.1`.
+- **Owner and behavior:** `weavelit-server-restore` uses Bech32 to decode the
+  canonical age recovery-key syntax: the lowercase `age1…` recipient with the
+  `age` human-readable part and the uppercase `AGE-SECRET-KEY-1…` identity with
+  the `AGE-SECRET-KEY-` human-readable part. The standard library and approved
+  dependencies provide no Bech32 codec, and the checksum is a correctness
+  control, not an encoding convenience.
+- **Features:** default features are disabled and only `alloc` is enabled, which
+  the checked-encoding entry points require. `std` is excluded.
+- **Maintenance and license:** the crate uses the MIT license and is published
+  by the rust-bitcoin project. It has no non-development dependencies in the
+  locked graph.
+- **Advisory review:** the August 10, 2026 GitHub Advisory Database review found
+  no advisory matching `bech32` 0.11.1.
+- **Safe failure:** decoding uses the checksum-specific `Bech32` entry point
+  rather than the permissive decoder, so a Bech32m checksum is rejected. The
+  crate additionally requires the exact expected human-readable part, an exact
+  32-byte decoded payload, a single case throughout, and byte-for-byte equality
+  with a re-encoding of the decoded value, so a mixed-case or otherwise
+  non-canonical key is refused as a recovery-key failure before any decryption
+  is attempted. Rejected text is never included in an error.
+- **Validation:** the crate's recovery-key tests cover canonical identity and
+  recipient lines, non-canonical text, mixed case, surrounding whitespace, a
+  multi-line submission, an oversize submission rejected before decoding, and
+  redacted rendering.
+
+#### age v1 Recipient Profile Implementation
+
+`weavelit-server-restore` implements the [Security Model](../security-model.md)'s
+approved age v1 X25519 recipient profile directly on the approved primitives
+above rather than depending on the `age` crate.
+
+- **Rationale:** the `age` crate cannot be configured down to the profile
+  Weavelit supports. Even with default features disabled it resolves an
+  unconditional localization stack (`fluent`, `i18n-embed`, `rust-embed`,
+  `walkdir`, `mime_guess`) and unused cryptography (`hpke`, `ml-kem`, `p256`,
+  `aes-gcm`, `scrypt`, `pbkdf2`, `sha3`) that Weavelit neither calls nor
+  audits. Adopting `age` added 116 package entries to `server/Cargo.lock`,
+  resolving the workspace from 143 to 259 entries. Implementing the profile on
+  the approved primitives instead adds 13 entries, for 156 in total, so it
+  avoids 103 packages. This directly serves the requirement that every
+  production dependency be minimal, justified, and reviewable.
+- **Scope:** the implementation is a reader only; the Server never encrypts a
+  backup. It accepts exactly one X25519 recipient stanza. An `scrypt` stanza,
+  any other or unknown stanza type, an absent recipient stanza, an additional
+  stanza, and an unsupported version line are refused as `backup_incompatible`
+  before key agreement, because Weavelit's backup format defines a single
+  recovery recipient. This is deliberately narrower than the age specification,
+  which permits additional and unknown stanzas.
+- **Composition:** no cryptographic primitive is hand-written. Key agreement,
+  key derivation, authentication, and encryption come from `x25519-dalek`,
+  `hkdf`, `hmac`, `sha2`, and `chacha20poly1305`; the crate contributes only the
+  format framing, bounds, and policy. `#![forbid(unsafe_code)]` remains in
+  force.
+- **Safe failure:** the header is bounded before it is scanned and the payload
+  is authenticated chunk by chunk, so no allocation and no plaintext are
+  produced from unauthenticated attacker-controlled length. A wrong recovery
+  key, an altered header, altered ciphertext, an altered tag, a truncated
+  stream, a dropped or unflagged final chunk, and trailing garbage all collapse
+  to one indistinguishable `backup_invalid` result.
+- **Cross-implementation validation:** the committed fixtures in `tests/fixtures/`
+  are produced by a deliberately independent second implementation of the same
+  profile in `tests/support/`, which derives HKDF and HMAC by hand from `sha2`
+  and shares no code with the reader, so the committed fixture bytes bind the
+  two together. Because both live in this repository, they are not external
+  validation on their own. External validation comes from the C2SP Community
+  Cryptography Test Vectors for age, vendored under `tests/vectors/` from
+  <https://github.com/C2SP/CCTV> path `age/testdata` at commit
+  `1e3d2860d46e94e777e1b17c7a6f2436387e3ecc`, retrieved August 10, 2026 under
+  the Zero-Clause BSD option of the upstream license. Upstream holds 143
+  vectors; the 33 `armored: yes` vectors are excluded because the Weavelit
+  backup format defines no ASCII armor, and the remaining 110 are vendored byte
+  for byte with a `vectors.json` manifest pinning each file's length and
+  SHA-256. `src/vectors.rs`, compiled only under `cfg(test)`, wraps each age
+  body in the fixed outer envelope and runs the production reader over all 110,
+  pinning the outcome of every one:
+  - Upstream partition: 19 `success`, 60 `header failure`, 18 `payload failure`,
+    12 `no match`, and 1 `HMAC failure`.
+  - Reader partition: 9 decrypt and match their expected payload SHA-256, 58 are
+    refused as `backup_invalid`, and 43 are refused as `backup_incompatible`.
+  - All 43 `backup_incompatible` results are the deliberate policy exclusions
+    above: 25 `scrypt` passphrase vectors, 12 `stanza_*` vectors carrying an
+    additional or unknown recipient stanza, 3 grease or multi-recipient vectors
+    (`hybrid_grease`, `x25519_grease`, `x25519_multiple_recipients`), the
+    non-canonically cased stanza type in `x25519_lowercase`, and the two
+    rejected version lines in `version_unsupported` and `header_crlf`.
+  - Ten of the 19 upstream `success` vectors are refused because they are
+    outside the approved profile: 7 as `backup_incompatible` (`scrypt`,
+    additional stanzas, or multiple recipients) and the 3 hybrid post-quantum
+    vectors as `backup_invalid`, because their single recipient stanza line is
+    longer than the reader's 1024-byte bounded header scan and so is refused as
+    malformed before the stanza type is examined.
+  - The multi-chunk STREAM vectors up to 258 chunks all execute, including the
+    unflagged final chunk, duplicate final chunk, short second chunk, empty last
+    chunk, and trailing-garbage cases that the single-chunk fixture generator
+    cannot reach. No vector revealed a correctness or safety failure in the
+    reader, and no production bound was relaxed to accommodate one.
+- **Validation:** `make -C server check` passes formatting, Clippy with warnings
+  denied, all locked workspace tests, and locked release builds. The locked
+  feature graph was reviewed on August 10, 2026 for the excluded capabilities
+  named in each record above; that review used `cargo tree`, `server/Cargo.lock`,
+  and the vendored crate manifests only.
 
 #### `rustls`
 

@@ -1,17 +1,18 @@
 use std::{fmt, path::Path};
 
-use weavelit_server_database::{DatabaseError, DatabaseInspection};
+use weavelit_server_database::{DatabaseError, DatabaseInspection, ProtectedValue};
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
     LifecycleClassification, LifecycleError, LifecycleState, LocatorConnectionSettings,
-    RetainedDatabaseInspection, SelectionError, TrustedBackendContext, ValidatedConnectionSettings,
+    ProtectedValueKind, ProtectedValueSealer, RetainedDatabaseInspection, SelectionError,
+    TrustedBackendContext, ValidatedConnectionSettings,
     filesystem::{Inventory, StateRoot},
     format::{
         AnchorKey, KEY_FILE_LIMIT, KEY_FILE_NAME, LOCATOR_ENVELOPE_LIMIT, RECORD_ENVELOPE_LIMIT,
-        RECORD_FILE_NAME, decrypt_locator, decrypt_record, encrypt_locator, encrypt_record,
-        generate_deployment_identifier, generate_key, generate_locator_generation, generate_nonce,
-        locator_file_name, parse_key, serialize_key,
+        RECORD_FILE_NAME, decrypt_locator, decrypt_record, encrypt_locator,
+        encrypt_protected_value, encrypt_record, generate_deployment_identifier, generate_key,
+        generate_locator_generation, generate_nonce, locator_file_name, parse_key, serialize_key,
     },
 };
 
@@ -408,6 +409,18 @@ impl LifecycleStore {
     fn persist_record(&self, record: &DeploymentRecord) -> Result<(), LifecycleError> {
         let bytes = encrypt_record(&self.key, record, generate_nonce()?)?;
         self.root.replace(RECORD_FILE_NAME, &bytes)
+    }
+}
+
+impl ProtectedValueSealer for LifecycleStore {
+    fn seal(
+        &self,
+        kind: ProtectedValueKind,
+        plaintext: &[u8],
+    ) -> Result<ProtectedValue, LifecycleError> {
+        let envelope =
+            encrypt_protected_value(&self.key, kind.label(), plaintext, generate_nonce()?)?;
+        ProtectedValue::new(envelope).map_err(|_| LifecycleError::IntegrityFailure)
     }
 }
 

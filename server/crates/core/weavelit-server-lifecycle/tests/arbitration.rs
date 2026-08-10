@@ -6,14 +6,20 @@ use std::{
     thread,
 };
 
-use weavelit_server_database::{CheckpointMetadata, DatabaseInspection};
+use weavelit_server_database::{
+    ApplicationStateInput, CheckpointMetadata, CompletionObligation, CorrelationIdentifier,
+    DatabaseInspection, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
+    LogType, Name, RecoveryPublicKey,
+};
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
-    AnchorLoadState, ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog,
-    BackendIdentifier, BackendRegistration, CheckpointMetadata as LifecycleCheckpointMetadata,
+    AnchorLoadState, ApplicationDatabase, ApplicationDatabaseFactory, ApplicationState,
+    BackendCatalog, BackendIdentifier, BackendRegistration,
+    CheckpointMetadata as LifecycleCheckpointMetadata, DeploymentIdentifier, InitializedState,
     LifecycleClassification, LifecycleError, LifecycleState, LifecycleStore,
-    RetainedDatabaseInspection, SelectionError, SelectionFailureKind, TrustedBackendContext,
-    ValidatedConnectionSettings, WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
+    MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueKind, RetainedDatabaseInspection, SelectionError,
+    SelectionFailureKind, StateIdentifier, TrustedBackendContext, ValidatedConnectionSettings,
+    WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -140,6 +146,176 @@ fn metadata(value: &[u8]) -> LifecycleCheckpointMetadata {
     CheckpointMetadata::from_bytes(value).unwrap()
 }
 
+const RECORD_BYTE: u8 = 0x5A;
+
+fn identifier(byte: u8) -> StateIdentifier {
+    StateIdentifier::from_bytes([byte; 16]).unwrap()
+}
+
+/// Builds the smallest state the Application Database contract accepts.
+fn application_state() -> ApplicationState {
+    let configuration_identifier = identifier(0x11);
+    ApplicationState::new(ApplicationStateInput {
+        configuration: vec![],
+        protected_secrets: vec![],
+        accounts: vec![],
+        password_verifiers: vec![],
+        groups: vec![],
+        group_memberships: vec![],
+        group_grants: vec![],
+        mfa_factors: vec![],
+        service_connections: vec![],
+        recovery_public_key: RecoveryPublicKey::new("age1recoverypublickeyvalue").unwrap(),
+        log_module_configurations: vec![LogModuleConfiguration {
+            identifier: configuration_identifier,
+            module: Name::new("log-sqlite").unwrap(),
+            name: Name::new("local").unwrap(),
+            enabled: true,
+            settings: vec![],
+        }],
+        log_assignments: LogType::ALL
+            .into_iter()
+            .map(|log_type| LogAssignment {
+                log_type,
+                configuration: configuration_identifier,
+            })
+            .collect(),
+        completion_obligation: CompletionObligation::new(
+            identifier(RECORD_BYTE),
+            WorkflowKind::Restore,
+            LogClassification::new("lifecycle.restore").unwrap(),
+            CorrelationIdentifier::new("correlation-identifier").unwrap(),
+            1_700_000_000_000,
+            LogDetail::new("restore completed").unwrap(),
+        )
+        .unwrap(),
+    })
+    .unwrap()
+}
+
+/// How a non-conforming backend misreports its own durable state.
+#[derive(Clone, Copy)]
+enum LyingBackend {
+    /// Reports initialized state whose obligation is never acknowledged.
+    NeverAcknowledges,
+    /// Reports itself uninitialized after completing a checkpoint.
+    NeverInitializes,
+}
+
+/// A backend that accepts every mutation but misreports the resulting state, so
+/// sealing must depend on what the database reports rather than on the calls
+/// that appeared to succeed.
+struct LyingDatabase {
+    behavior: LyingBackend,
+    deployment_identifier: Option<DeploymentIdentifier>,
+    state: Option<ApplicationState>,
+}
+
+impl ApplicationDatabase for LyingDatabase {
+    fn inspect(
+        &mut self,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, weavelit_server_database::DatabaseError> {
+        Ok(match (self.state.is_some(), self.behavior) {
+            (true, LyingBackend::NeverInitializes) | (false, _) => {
+                DatabaseInspection::Uninitialized
+            }
+            (true, LyingBackend::NeverAcknowledges) => DatabaseInspection::Initialized {
+                deployment_identifier: expected_deployment_identifier,
+            },
+        })
+    }
+
+    fn create_checkpoint(
+        &mut self,
+        checkpoint: &WorkflowCheckpoint,
+    ) -> Result<(), weavelit_server_database::DatabaseError> {
+        self.deployment_identifier = Some(checkpoint.deployment_identifier());
+        Ok(())
+    }
+
+    fn complete_checkpoint(
+        &mut self,
+        _checkpoint: &WorkflowCheckpoint,
+        state: &ApplicationState,
+    ) -> Result<(), weavelit_server_database::DatabaseError> {
+        self.state = Some(state.clone());
+        Ok(())
+    }
+
+    fn load_initialized_state(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<InitializedState, weavelit_server_database::DatabaseError> {
+        let state = self
+            .state
+            .clone()
+            .ok_or(weavelit_server_database::DatabaseError::InvalidState)?;
+        Ok(InitializedState::new(
+            self.deployment_identifier
+                .ok_or(weavelit_server_database::DatabaseError::InvalidState)?,
+            state,
+            false,
+        ))
+    }
+
+    fn acknowledge_completion(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+        _record_identifier: StateIdentifier,
+    ) -> Result<(), weavelit_server_database::DatabaseError> {
+        Ok(())
+    }
+}
+
+struct LyingFactory(LyingBackend);
+
+impl ApplicationDatabaseFactory for LyingFactory {
+    fn open(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+    ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+        Ok(Box::new(LyingDatabase {
+            behavior: self.0,
+            deployment_identifier: None,
+            state: None,
+        }))
+    }
+
+    fn inspect_retained(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        Err(LifecycleError::DependencyUnavailable)
+    }
+}
+
+fn lying_setup(
+    path: &Path,
+    behavior: LyingBackend,
+) -> (WorkflowArbiter, BackendCatalog, TrustedBackendContext) {
+    let catalog = BackendCatalog::new(vec![BackendRegistration::new(
+        "lying-backend",
+        vec![],
+        Box::new(LyingFactory(behavior)),
+    )])
+    .unwrap();
+    let context = sqlite_context(path);
+    let mut store = LifecycleStore::open_or_create(path).unwrap();
+    store
+        .select_database(
+            &catalog,
+            &context,
+            &BackendIdentifier::new("lying-backend").unwrap(),
+            vec![],
+        )
+        .unwrap();
+    (WorkflowArbiter::new(store), catalog, context)
+}
+
 fn empty_metadata() -> LifecycleCheckpointMetadata {
     metadata(b"")
 }
@@ -164,6 +340,21 @@ fn setup(path: &Path) -> (WorkflowArbiter, BackendCatalog, TrustedBackendContext
     (WorkflowArbiter::new(store), catalog, context)
 }
 
+/// Authorizes a workflow and takes it to its durable checkpoint, releasing the
+/// exclusive permit so the caller can observe the resulting durable state.
+fn begin_workflow(
+    arbiter: &WorkflowArbiter,
+    catalog: &BackendCatalog,
+    context: &TrustedBackendContext,
+    kind: WorkflowKind,
+    metadata: LifecycleCheckpointMetadata,
+) -> Result<(), WorkflowError> {
+    arbiter
+        .authorize_workflow(catalog, context)?
+        .create_checkpoint(kind, metadata)
+        .map(|_| ())
+}
+
 // ---------------------------------------------------------------------------
 // Tests: begin_workflow
 // ---------------------------------------------------------------------------
@@ -173,9 +364,14 @@ fn begin_init_creates_checkpoint_and_advances_record() {
     let (_dir, path) = state_root();
     let (arbiter, catalog, context) = setup(&path);
 
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .expect("begin Init must succeed");
+    begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Init,
+        init_metadata(),
+    )
+    .expect("begin Init must succeed");
 
     assert_eq!(
         arbiter.record_state(),
@@ -209,14 +405,14 @@ fn begin_restore_creates_checkpoint_and_advances_record() {
     let (_dir, path) = state_root();
     let (arbiter, catalog, context) = setup(&path);
 
-    arbiter
-        .begin_workflow(
-            &catalog,
-            &context,
-            WorkflowKind::Restore,
-            restore_metadata(),
-        )
-        .expect("begin Restore must succeed");
+    begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Restore,
+        restore_metadata(),
+    )
+    .expect("begin Restore must succeed");
 
     assert_eq!(
         arbiter.record_state(),
@@ -242,18 +438,23 @@ fn begin_rejected_when_record_is_not_uninitialized() {
     let (_dir, path) = state_root();
     let (arbiter, catalog, context) = setup(&path);
 
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
+    begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Init,
+        init_metadata(),
+    )
+    .unwrap();
 
-    let error = arbiter
-        .begin_workflow(
-            &catalog,
-            &context,
-            WorkflowKind::Restore,
-            restore_metadata(),
-        )
-        .unwrap_err();
+    let error = begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Restore,
+        restore_metadata(),
+    )
+    .unwrap_err();
 
     assert_eq!(error, WorkflowError::NotAllowed);
 }
@@ -266,9 +467,14 @@ fn begin_rejected_when_no_database_is_selected() {
     let catalog = sqlite_catalog();
     let context = sqlite_context(&path);
 
-    let error = arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, empty_metadata())
-        .unwrap_err();
+    let error = begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Init,
+        empty_metadata(),
+    )
+    .unwrap_err();
 
     assert_eq!(error, WorkflowError::DatabaseNotSelected);
 }
@@ -278,18 +484,23 @@ fn conflicting_workflow_rejected_when_checkpoint_exists() {
     let (_dir, path) = state_root();
     let (arbiter, catalog, context) = setup(&path);
 
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
+    begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Init,
+        init_metadata(),
+    )
+    .unwrap();
 
-    let error = arbiter
-        .begin_workflow(
-            &catalog,
-            &context,
-            WorkflowKind::Restore,
-            restore_metadata(),
-        )
-        .unwrap_err();
+    let error = begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Restore,
+        restore_metadata(),
+    )
+    .unwrap_err();
 
     assert_eq!(error, WorkflowError::NotAllowed);
 }
@@ -359,7 +570,13 @@ fn at_most_one_workflow_checkpoint_becomes_durable_under_contention() {
         let barrier = Arc::clone(&barrier);
         thread::spawn(move || {
             barrier.wait();
-            arbiter.begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
+            begin_workflow(
+                &arbiter,
+                &catalog,
+                &context,
+                WorkflowKind::Init,
+                init_metadata(),
+            )
         })
     };
     let handle2 = {
@@ -369,7 +586,8 @@ fn at_most_one_workflow_checkpoint_becomes_durable_under_contention() {
         let barrier = Arc::clone(&barrier);
         thread::spawn(move || {
             barrier.wait();
-            arbiter.begin_workflow(
+            begin_workflow(
+                &arbiter,
                 &catalog,
                 &context,
                 WorkflowKind::Restore,
@@ -416,13 +634,23 @@ fn begin_rejected_when_checkpoint_already_exists_for_same_workflow() {
     let (_dir, path) = state_root();
     let (arbiter, catalog, context) = setup(&path);
 
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
+    begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Init,
+        init_metadata(),
+    )
+    .unwrap();
 
-    let error = arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap_err();
+    let error = begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Init,
+        init_metadata(),
+    )
+    .unwrap_err();
 
     assert_eq!(error, WorkflowError::NotAllowed);
 }
@@ -454,9 +682,14 @@ fn retained_eligible_store_can_begin_init_or_restore() {
         assert_eq!(store.load_state(), AnchorLoadState::Retained);
         let arbiter = WorkflowArbiter::new(store);
 
-        arbiter
-            .begin_workflow(&sqlite_catalog(), &sqlite_context(&path), kind, metadata)
-            .expect("retained eligible store must permit a new workflow");
+        begin_workflow(
+            &arbiter,
+            &sqlite_catalog(),
+            &sqlite_context(&path),
+            kind,
+            metadata,
+        )
+        .expect("retained eligible store must permit a new workflow");
         assert_eq!(
             arbiter.record_state(),
             LifecycleState::InitializationPending
@@ -591,7 +824,13 @@ fn selection_contending_with_a_workflow_serializes_rather_than_failing() {
         let barrier = Arc::clone(&barrier);
         thread::spawn(move || {
             barrier.wait();
-            arbiter.begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
+            begin_workflow(
+                &arbiter,
+                &catalog,
+                &context,
+                WorkflowKind::Init,
+                init_metadata(),
+            )
         })
     };
 
@@ -613,9 +852,14 @@ fn selection_contending_with_a_workflow_serializes_rather_than_failing() {
 fn selection_after_the_record_advances_reports_a_conflict_not_unavailability() {
     let (_dir, path) = state_root();
     let (arbiter, catalog, context) = setup(&path);
-    arbiter
-        .begin_workflow(&catalog, &context, WorkflowKind::Init, init_metadata())
-        .unwrap();
+    begin_workflow(
+        &arbiter,
+        &catalog,
+        &context,
+        WorkflowKind::Init,
+        init_metadata(),
+    )
+    .unwrap();
 
     let error = arbiter
         .select_database(&catalog, &context, &sqlite_backend(), vec![])
@@ -696,4 +940,196 @@ fn workflow_errors_do_not_expose_sensitive_values() {
             "must not expose metadata: {output}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: completion, acknowledgement, and sealing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_workflow_seals_the_deployment_only_after_the_full_ordered_path() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let permit = arbiter
+        .authorize_workflow(&catalog, &context)
+        .expect("an eligible deployment must authorize a workflow");
+    let deployment_identifier = permit.deployment_identifier();
+    let state = application_state();
+
+    let sealed = permit
+        .create_checkpoint(WorkflowKind::Restore, restore_metadata())
+        .expect("the checkpoint must be created")
+        .complete_checkpoint(&state)
+        .expect("the checkpoint must be replaced by complete state")
+        .acknowledge_completion(identifier(RECORD_BYTE))
+        .expect("the completion obligation must be acknowledged")
+        .seal()
+        .expect("an acknowledged deployment must seal");
+
+    assert!(sealed.completion_acknowledged());
+    assert_eq!(sealed.deployment_identifier(), deployment_identifier);
+    assert_eq!(arbiter.record_state(), LifecycleState::Initialized);
+    drop(arbiter);
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    assert_eq!(store.record().state(), LifecycleState::Initialized);
+}
+
+#[test]
+fn a_sealed_deployment_admits_no_further_workflow() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
+    let state = application_state();
+    permit
+        .create_checkpoint(WorkflowKind::Restore, restore_metadata())
+        .unwrap()
+        .complete_checkpoint(&state)
+        .unwrap()
+        .acknowledge_completion(identifier(RECORD_BYTE))
+        .unwrap()
+        .seal()
+        .unwrap();
+
+    assert_eq!(
+        arbiter.authorize_workflow(&catalog, &context).unwrap_err(),
+        WorkflowError::NotAllowed
+    );
+}
+
+#[test]
+fn a_workflow_abandoned_after_its_checkpoint_leaves_retained_partial_state() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    drop(
+        arbiter
+            .authorize_workflow(&catalog, &context)
+            .unwrap()
+            .create_checkpoint(WorkflowKind::Restore, restore_metadata())
+            .unwrap(),
+    );
+
+    assert_eq!(
+        arbiter.record_state(),
+        LifecycleState::InitializationPending
+    );
+    assert_eq!(
+        arbiter.authorize_workflow(&catalog, &context).unwrap_err(),
+        WorkflowError::NotAllowed
+    );
+    drop(arbiter);
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    assert_eq!(
+        store.record().state(),
+        LifecycleState::InitializationPending
+    );
+}
+
+#[test]
+fn authorization_is_refused_before_any_durable_change_when_the_record_is_not_eligible() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    arbiter
+        .authorize_workflow(&catalog, &context)
+        .unwrap()
+        .create_checkpoint(WorkflowKind::Init, init_metadata())
+        .unwrap();
+
+    assert_eq!(
+        arbiter.authorize_workflow(&catalog, &context).unwrap_err(),
+        WorkflowError::NotAllowed
+    );
+}
+
+#[test]
+fn sealing_is_refused_when_the_database_reports_the_obligation_unacknowledged() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = lying_setup(&path, LyingBackend::NeverAcknowledges);
+
+    let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
+    let state = application_state();
+    let error = permit
+        .create_checkpoint(WorkflowKind::Restore, restore_metadata())
+        .unwrap()
+        .complete_checkpoint(&state)
+        .unwrap()
+        .acknowledge_completion(identifier(RECORD_BYTE))
+        .unwrap()
+        .seal()
+        .unwrap_err();
+
+    assert_eq!(error, WorkflowError::StateMismatch);
+    assert_eq!(
+        arbiter.record_state(),
+        LifecycleState::InitializationPending
+    );
+}
+
+#[test]
+fn sealing_is_refused_when_the_database_is_not_initialized() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = lying_setup(&path, LyingBackend::NeverInitializes);
+
+    let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
+    let state = application_state();
+    let error = permit
+        .create_checkpoint(WorkflowKind::Restore, restore_metadata())
+        .unwrap()
+        .complete_checkpoint(&state)
+        .unwrap()
+        .acknowledge_completion(identifier(RECORD_BYTE))
+        .unwrap()
+        .seal()
+        .unwrap_err();
+
+    assert_eq!(error, WorkflowError::StateMismatch);
+    assert_eq!(
+        arbiter.record_state(),
+        LifecycleState::InitializationPending
+    );
+}
+
+#[test]
+fn a_permit_seals_secrets_under_the_deployment_key_without_exposing_them() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+    let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
+
+    let plaintext = b"restored-provider-credential";
+    let first = permit
+        .sealer()
+        .seal(ProtectedValueKind::ServiceConnectionCredential, plaintext)
+        .expect("a bounded secret must seal");
+    let second = permit
+        .sealer()
+        .seal(ProtectedValueKind::ServiceConnectionCredential, plaintext)
+        .expect("a bounded secret must seal");
+
+    assert_ne!(first.as_bytes(), second.as_bytes());
+    for sealed in [&first, &second] {
+        let window = plaintext.len();
+        assert!(
+            !sealed
+                .as_bytes()
+                .windows(window)
+                .any(|candidate| candidate == plaintext),
+            "the sealed value must not contain its plaintext"
+        );
+    }
+
+    assert_eq!(
+        permit
+            .sealer()
+            .seal(
+                ProtectedValueKind::ComponentSecret,
+                &vec![0xA5; MAX_PROTECTED_PLAINTEXT_BYTES + 1]
+            )
+            .unwrap_err(),
+        LifecycleError::IntegrityFailure
+    );
 }
