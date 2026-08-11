@@ -188,6 +188,15 @@ pub trait ApplicationDatabase: Send {
         expected_deployment_identifier: DeploymentIdentifier,
         record_identifier: StateIdentifier,
     ) -> Result<(), DatabaseError>;
+
+    /// Returns this database's live session store, when it owns one.
+    ///
+    /// Live sessions are a separate contract from restorable application
+    /// state, so a backend answers for them separately. The method is required
+    /// rather than defaulted: a backend must state that it serves no session
+    /// store, and a caller that receives `None` refuses the request instead of
+    /// silently authenticating without durable sessions.
+    fn sessions(&mut self) -> Option<&mut dyn SessionStore>;
 }
 
 /// Invalid caller-provided value rejected before persistence access.

@@ -26,6 +26,12 @@ Use this section as the source of truth for what assets belong in this directory
   route paths, the ticket header, every header precondition, the recovery-key
   request schema, the payload-free rejection contract, the two typed success
   envelopes, and the Server-core hooks the declaration is composed over.
+- `src/authentication.rs`: The shared login, session-validation, and logout
+  route contract: the three canonical route paths, the login request schema,
+  every header and cookie precondition, the payload-free rejection contract,
+  and the Server-core hooks the declaration is composed over.
+- `src/cookie.rs`: The closed, bounded session and cross-site request forgery
+  cookie effect and its fixed rendered attribute text.
 - `src/typed_json.rs`: Bounded typed result and error envelopes for every route
   outside the frozen pre-operational allowlist.
 

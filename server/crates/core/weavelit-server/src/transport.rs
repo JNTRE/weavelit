@@ -343,6 +343,18 @@ impl TransportRegistry {
         self.registrations.is_empty()
     }
 
+    /// Returns every registered method and canonical target, in mount order.
+    ///
+    /// Exposed so a test asserts exactly which routes a surface registers
+    /// rather than only whether it registered any.
+    #[cfg(test)]
+    pub(crate) fn registered_routes(&self) -> Vec<(Method, &'static str)> {
+        self.registrations
+            .iter()
+            .map(|registration| (registration.method.clone(), registration.target))
+            .collect()
+    }
+
     /// Selects the registration for an exact canonical target and method.
     ///
     /// A query string, an absolute-form request target, a percent-encoded

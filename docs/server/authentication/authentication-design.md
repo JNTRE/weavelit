@@ -12,10 +12,14 @@ implements those requirements and profiles.
 
 This document defines the implementation design for
 **[Local Authentication](../../glossary.md#identities-and-access)** credential
-handling, sessions, and the compiled-in TOTP
+handling, sessions, the login, session-validation, and logout route layer that
+admits and decides those requests, and the compiled-in TOTP
 **[MFA Module](../../glossary.md#applications-and-interfaces)**.
 **[External Authentication](../../glossary.md#identities-and-access)**
-implementation design has not moved here yet.
+implementation design has not moved here yet. The version 1 route paths,
+stable error codes, and result-envelope shape are owned by the
+[Server API Contract](../api/api-contract-design.md); this document owns the
+decisions behind those routes.
 
 ## Password Hashing
 
@@ -84,6 +88,38 @@ This equal-work property is proved by counting the verification operations a
 decision performs through an injected verification seam, not by comparing
 elapsed time.
 
+The route layer preserves this indistinguishability at the wire. An unknown
+account, an inactive account, an account with no stored verifier, an account
+whose stored verifier is outside the allowlist, and a wrong password all
+produce the identical `401` response: the same stable error code, the same
+response body shape, the same absence of any cookie, and no response header
+that varies by cause.
+
+## Login Admission And Verification Concurrency
+
+Argon2 verification at the current profile reserves that profile's memory cost
+for the duration of one verification, and the listener otherwise admits up to
+15 concurrent connections. Running every admitted connection's login
+verification at once would let the route reserve that memory many times over,
+so the Server instead declares a single-permit admission lane for the login
+route: at most one Argon2 verification runs at any time, and the route's peak
+reserved verification memory is therefore one profile's cost rather than a
+multiple of the listener's connection allowance. This is a deliberate memory
+bound, not an incidental limit.
+
+The permit is acquired by the listener's admission stage, which runs before the
+request body is allocated, so a login request that cannot be admitted is
+rejected before its body exists rather than after it has already been read.
+The acquired permit travels with the request into the blocking task that
+performs the Argon2 verification and the session-issuance database work that
+follows a successful one, and is released only once that work has finished.
+
+The bound has a throughput consequence the Server does not hide: concurrent
+login attempts are serialized rather than parallelized, so a burst of
+simultaneous logins is verified one at a time and each waits for the
+verifications already admitted ahead of it. No other route shares this lane or
+is affected by it; only the login route's own concurrency is bounded this way.
+
 ## Session Representation
 
 A session token is an opaque 32-byte random value encoded as unpadded
@@ -99,6 +135,11 @@ or `Expires` attribute.
 The stored hash is domain-separated, so a session hash and a CSRF hash of the
 same bytes are different values. Neither a token nor a stored hash renders
 through `Debug` or `Display`; both produce a fixed redacted string instead.
+
+The session cookie carries no `Max-Age` or `Expires` attribute, so it is a
+browser-session cookie rather than a persistently stored one. The only place
+an expiry attribute appears anywhere in the cookie contract is the logout
+response, which deletes both cookies with `Max-Age=0`.
 
 A stored hash is never compared with an ordinary equality operator. The
 Application Database locates a candidate session by indexed digest equality,
@@ -138,11 +179,51 @@ and the
 Each session has a separate random per-session CSRF token of 32 random bytes
 encoded the same way; the Server stores only its SHA-256 hash alongside the
 session. The two tokens are independent random values, so disclosing the CSRF
-token to the browser cannot reveal the session token. The token is exposed to
-the browser through a secure, same-site readable cookie and is required in the
+token to the browser cannot reveal the session token. The token is issued in a
+`__Host-weavelit_csrf` cookie with `Secure`, `SameSite=Strict`, and `Path=/`,
+and no `Domain`, `Max-Age`, or `Expires` attribute. It is deliberately not
+`HttpOnly`, unlike the session cookie: the
+client application must be able to read it to echo it in the
 `X-Weavelit-CSRF` header on every mutating request, alongside same-origin
-validation. The Server rotates the CSRF token on login and on MFA or privilege
-elevation.
+validation. Reading it discloses nothing the cookie does not already carry,
+because it is never a bearer credential on its own without the `HttpOnly`
+session cookie it accompanies. The Server rotates the CSRF token on login and
+on MFA or privilege elevation.
+
+## Cookie Emission
+
+A response may carry only one of two closed, fixed cookie effects: issuing a
+session together with its paired CSRF token, or clearing both. There is no
+variant that sets a cookie the two effects above do not already describe, and
+no variant that sets one of the pair without the other. Login is the only
+response that issues a session, logout is the only response that clears one,
+and every other route, including session validation, emits no cookie at all.
+
+Each effect renders to exactly two `Set-Cookie` lines bounded at 512 aggregate
+bytes. An effect that would exceed either bound is not truncated: the response
+is replaced with the fixed unavailable failure and no cookie is emitted, so a
+future attribute change that grew the rendered text fails closed instead of
+shipping a partial `Set-Cookie` line.
+
+## Authentication-Failure System Log Recording
+
+A denied local authentication attempt is recorded as a System Log record
+before the denial is returned to the caller. The record carries a fresh
+Server-generated record identifier, the event time, and the same correlation
+identifier the denial response reports, so the two can be related without the
+record naming anything the caller submitted. Its classification and detail are
+fixed compile-time constants rather than derived from the request, so the
+record contains no username, account identifier, password, token, or other
+client-supplied text, and an unknown account, an inactive account, a verifier
+outside the allowlist, and a wrong password all produce the identical record.
+
+Recording is attempted, not guaranteed: an unconfigured System Log
+destination, a clock or randomness failure, and a delivery failure are all
+absorbed silently and leave the denial exactly as it would have been without
+recording. Delivery therefore can neither enrich, delay, nor change what the
+caller receives. The record's fixed classification, detail, and field binding
+are owned by the
+[Authentication-Failure System Log Record](../observability/authentication-failure-record-design.md).
 
 ## Implementation Boundary
 
@@ -153,8 +234,12 @@ listener, the Application Database, or a
 **[Client Module](../../glossary.md#applications-and-interfaces)**. A caller
 supplies the stored credential as an inbound value and persists the replacement
 verifier and the token hashes the crate returns. Session persistence and session
-lifetime enforcement are owned by the Application Database contract; cookie
-emission and route contracts are owned outside both.
+lifetime enforcement are owned by the Application Database contract. The login,
+session-validation, and logout route decisions, the single-permit login
+admission lane, and authentication-failure System Log recording are owned by
+the Server executable crate (`weavelit-server`); the shared route contract,
+every header and cookie precondition, and the closed cookie effect are owned by
+the shared Client Module contract crate (`weavelit-module-client`).
 
 The `argon2` and `subtle` dependency records, and the authentication crate's use
 of the already-approved `sha2`, `base64`, `getrandom`, and `zeroize`
@@ -188,4 +273,6 @@ enrollment prompt, and only when the required Module is enabled.
 - [Security Model](../../security-model.md)
 - [Technical Specification](../../spec.md)
 - [Server Architecture Design](../server-architecture-design.md)
+- [Server API Contract](../api/api-contract-design.md)
+- [Authentication-Failure System Log Record](../observability/authentication-failure-record-design.md)
 - [Glossary](../../glossary.md)

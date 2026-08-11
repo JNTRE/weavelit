@@ -55,6 +55,10 @@ impl ApplicationDatabase for FakeDatabase {
     ) -> Result<(), DatabaseError> {
         Err(DatabaseError::NotInitialized)
     }
+
+    fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
+        None
+    }
 }
 
 struct FakeFactory {

@@ -15,6 +15,8 @@ use std::fmt::Write;
 
 use axum::{body::Body, http::StatusCode, response::Response};
 
+use crate::cookie::CookieEffect;
+
 /// Longest stable code or result field name the typed profile serializes.
 pub const MAX_STABLE_CODE_BYTES: usize = 48;
 
@@ -234,13 +236,32 @@ impl TypedJsonEnvelope {
 /// Builds a route response the listener serializes under the typed profile.
 ///
 /// The response carries no header of its own: the listener supplies the media
-/// type from the response profile, so a route cannot emit a cookie, a
-/// cross-origin header, or any other header through this path.
+/// type from the response profile, so a route cannot emit a cross-origin
+/// header, a cache directive, or any other header through this path. The one
+/// exception is the closed cookie effect, which a route reaches only through
+/// [`typed_json_response_with_cookies`] and which the listener renders itself.
 #[must_use]
 pub fn typed_json_response(status: StatusCode, envelope: TypedJsonEnvelope) -> Response {
     let mut response = Response::new(Body::empty());
     *response.status_mut() = status;
     response.extensions_mut().insert(envelope);
+    response
+}
+
+/// Builds a typed response that also carries one closed cookie effect.
+///
+/// The effect is a value, not header text: the listener validates and renders
+/// it, and replaces the whole response with its fixed redacted failure if it
+/// does not render. A route therefore cannot emit a partially applied cookie
+/// effect, and cannot emit one at all without also emitting a typed envelope.
+#[must_use]
+pub fn typed_json_response_with_cookies(
+    status: StatusCode,
+    envelope: TypedJsonEnvelope,
+    cookies: CookieEffect,
+) -> Response {
+    let mut response = typed_json_response(status, envelope);
+    response.extensions_mut().insert(cookies);
     response
 }
 

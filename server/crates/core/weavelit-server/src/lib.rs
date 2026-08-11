@@ -41,7 +41,8 @@ use tokio::{
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use weavelit_module_client::{
-    DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource, SelectedBackend, SelectionCommit,
+    CookieEffect, CookieLines, DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource,
+    SelectedBackend, SelectionCommit,
 };
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
@@ -54,13 +55,14 @@ use weavelit_server_lifecycle::{
 use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::{AvailableComponents, Name};
 
+pub mod authentication;
 pub mod operational;
 pub mod restore;
 pub mod transport;
 
 pub use weavelit_module_client::typed_json;
 
-use operational::{OperationalComposer, OperationalDatabase, OperationalMount};
+use operational::{OperationalComposer, OperationalDatabase, OperationalMount, OperationalRuntime};
 use transport::{HeadRead, MountedSurface, TransportCapability};
 use typed_json::TypedJsonEnvelope;
 
@@ -255,6 +257,13 @@ struct BoundedResponse {
     profile: ResponseProfile,
     body: Bytes,
     allow: Option<AllowedMethod>,
+    /// Rendered `Set-Cookie` lines produced from a closed cookie effect.
+    ///
+    /// The listener renders these itself from a route's effect value; a route
+    /// never supplies header text. Only the typed profile can carry one, and
+    /// [`redacted_response`] leaves it absent, so a response that redacts
+    /// emits no cookie at all.
+    cookies: Option<CookieLines>,
 }
 
 impl BoundedResponse {
@@ -264,6 +273,7 @@ impl BoundedResponse {
             profile: ResponseProfile::Json,
             body: Bytes::from_static(body.as_bytes()),
             allow: None,
+            cookies: None,
         }
     }
 }
@@ -1490,20 +1500,40 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         .headers()
         .get(ALLOW)
         .and_then(AllowedMethod::from_header_value);
+    // A cookie effect is a value, not header text. It is read here and
+    // rendered by the listener, so the only cookies that can reach the wire
+    // are the two the closed effect names.
+    let effect = response.extensions().get::<CookieEffect>().cloned();
     // The typed profile serializes the route's envelope itself and ignores the
-    // response body and every header the route set, so it can emit no cookie,
+    // response body and every header the route set, so it can emit no
     // cross-origin header, message, path, trace, or dependency detail.
     if let Some(envelope) = response.extensions().get::<TypedJsonEnvelope>() {
         let body = envelope.serialize();
         if body.len() > ResponseProfile::TypedJson.max_body_bytes() {
             return redacted_response(status, allow);
         }
+        // An effect that does not render is not emitted partially: the whole
+        // response redacts to the fixed failure and carries no cookie.
+        let cookies = match effect {
+            Some(effect) => match effect.render() {
+                Some(cookies) => Some(cookies),
+                None => return redacted_response(status, allow),
+            },
+            None => None,
+        };
         return BoundedResponse {
             status,
             profile: ResponseProfile::TypedJson,
             body: Bytes::from(body),
             allow,
+            cookies,
         };
+    }
+    // Only the typed profile may carry a cookie effect. An effect on any other
+    // response is an invalid composition, so it redacts rather than silently
+    // dropping the cookie and returning the route's body.
+    if effect.is_some() {
+        return redacted_response(status, allow);
     }
     let Some(profile) = response
         .headers()
@@ -1524,6 +1554,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             profile,
             body: Bytes::from_static(body.as_bytes()),
             allow,
+            cookies: None,
         };
     }
     BoundedResponse {
@@ -1531,6 +1562,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         profile,
         body,
         allow,
+        cookies: None,
     }
 }
 
@@ -1579,11 +1611,13 @@ where
     S: AsyncWrite + Unpin,
 {
     let allow = response.allow.map_or("", AllowedMethod::allow_header);
+    let cookies = response.cookies.as_ref().map_or("", CookieLines::as_str);
     let head = format!(
-        "HTTP/1.1 {} \r\nContent-Type: {}\r\n{}{}\r\n",
+        "HTTP/1.1 {} \r\nContent-Type: {}\r\n{}{}{}\r\n",
         response.status.as_u16(),
         response.profile.media_type(),
         allow,
+        cookies,
         response.profile.security_headers(),
     );
     stream.write_all(head.as_bytes()).await?;
@@ -1774,29 +1808,44 @@ impl PreoperationalComposer {
         listener: SocketAddr,
         serving_modes: &Arc<ServingModeSwitch>,
     ) -> Arc<Self> {
+        let components = server_components();
+        // Both sealing paths compose their operational surface from this one
+        // value, so a deployment sealed at startup and a deployment sealed by a
+        // Restore serve the same routes against the same authority.
+        let operational_runtime = Arc::new(OperationalRuntime {
+            listener,
+            state_root: startup.state_root.clone(),
+            log_catalog: Arc::clone(&startup.log_catalog),
+            client_modules: components.client_modules.clone(),
+        });
+
         Arc::new(Self {
             composition: startup.composition.clone(),
             listener,
             orchestrator: restore::RestoreOrchestrator::new(
                 startup,
-                server_components(),
+                components,
                 Arc::clone(serving_modes),
+                Arc::clone(&operational_runtime),
             ),
             serving_modes: Arc::clone(serving_modes),
-            operational: startup
-                .sealed
-                .as_ref()
-                .map(|sealed| OperationalComposer::new(sealed.database.clone())),
+            operational: startup.sealed.as_ref().map(|sealed| {
+                OperationalComposer::new(
+                    Arc::clone(&operational_runtime),
+                    &sealed.state,
+                    sealed.database.clone(),
+                )
+            }),
         })
     }
 
     /// Publishes the surface a classified startup begins with.
     ///
-    /// Only the pre-operational mode may ever carry a transport registration in
-    /// this build. The fail-closed mode mounts no route at all, and the
-    /// operational mode is composed by the operational composer, which pairs
-    /// every Server-owned route it mounts with the registration that admits it.
-    /// Neither mounts Restore.
+    /// The fail-closed mode mounts no route at all and therefore carries no
+    /// transport registration. The pre-operational mode registers Restore when
+    /// the deployment is eligible for one, and the operational mode is composed
+    /// by the operational composer, which pairs every Server-owned route it
+    /// mounts with the registration that admits it. Neither mounts Restore.
     fn publish_initial(self: &Arc<Self>, outcome: StartupOutcome) {
         match outcome {
             StartupOutcome::UninitializedWithoutDatabase => self.publish(false),
@@ -2055,7 +2104,7 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         ffi::OsString,
         future::pending,
@@ -2087,9 +2136,9 @@ mod tests {
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
     use weavelit_module_client::{
-        APPLICATION_DATABASE_ROUTE, DatabaseSelectionRejection, ExpectedOrigin,
-        RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, RestoreDeclaration,
-        RestoreRejection, STATUS_ROUTE,
+        APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE,
+        DatabaseSelectionRejection, ExpectedOrigin, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
+        RESTORE_TICKET_HEADER_NAME, RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
     };
     use weavelit_server_database::{
         ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
@@ -2111,7 +2160,7 @@ mod tests {
         ResponseProfile, RestrictedStartup, ServingMode, ServingModeSwitch, StartupError,
         StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter, bounded_response_from_axum,
         classify_restricted_startup, fallback_router, gateway_timeout_response,
-        operational::{OperationalComposer, OperationalMount},
+        operational::{OperationalComposer, OperationalMount, OperationalRuntime},
         parse_http_request, processing_response, raw_header_section_bytes,
         read_default_profile_request, read_request_head_until, redacted_response,
         request_timeout_response,
@@ -2129,7 +2178,7 @@ mod tests {
     };
 
     /// Listener authority used by router-level tests that bind no socket.
-    const UNBOUND_LISTENER: &str = "127.0.0.1:8443";
+    pub(crate) const UNBOUND_LISTENER: &str = "127.0.0.1:8443";
 
     /// The exact accepted Application Database selection body.
     const SELECTION_BODY: &str = "{\"backend\":\"sqlite\",\"settings\":{}}";
@@ -2139,7 +2188,7 @@ mod tests {
     /// The listener creates its switch closed and lets the pre-operational
     /// composer publish the first real mode, so a test that needs the initial
     /// mode composes it exactly the same way.
-    fn published_serving_modes(
+    pub(crate) fn published_serving_modes(
         startup: &RestrictedStartup,
         listener: SocketAddr,
     ) -> (Arc<ServingModeSwitch>, watch::Receiver<ServingMode>) {
@@ -2157,13 +2206,53 @@ mod tests {
     /// The startup must be a genuinely sealed one, because the composer owns
     /// the Application Database that startup handed over.
     fn operational_mount(startup: &RestrictedStartup) -> OperationalMount {
+        operational_composer(startup, "127.0.0.1:8443".parse().unwrap()).mount()
+    }
+
+    /// The exact transport registrations a sealed deployment's surface carries.
+    ///
+    /// This build serves one Server-owned operational family, authentication,
+    /// and each of its three routes is registered for `PUT` alone.
+    fn operational_registrations() -> Vec<(Method, &'static str)> {
+        vec![
+            (Method::PUT, AUTH_LOGIN_ROUTE),
+            (Method::PUT, AUTH_SESSION_ROUTE),
+            (Method::PUT, AUTH_LOGOUT_ROUTE),
+        ]
+    }
+
+    /// Composes the Server-wide operational values a startup composes from.
+    ///
+    /// This is the same value `PreoperationalComposer` builds, so a test drives
+    /// startup sealing and Restore sealing against one authority rather than
+    /// two that could disagree.
+    fn operational_runtime(
+        startup: &RestrictedStartup,
+        listener: SocketAddr,
+    ) -> Arc<OperationalRuntime> {
+        Arc::new(OperationalRuntime {
+            listener,
+            state_root: startup.state_root().to_path_buf(),
+            log_catalog: Arc::clone(&startup.log_catalog),
+            client_modules: server_components().client_modules,
+        })
+    }
+
+    /// Composes the operational surface a sealed startup hands over.
+    fn operational_composer(
+        startup: &RestrictedStartup,
+        listener: SocketAddr,
+    ) -> OperationalComposer {
         OperationalComposer::new(
+            operational_runtime(startup, listener),
+            startup
+                .initialized_state()
+                .expect("a sealed startup hands over its loaded state"),
             startup
                 .application_database()
                 .expect("a sealed startup hands over its open Application Database")
                 .clone(),
         )
-        .mount()
     }
 
     const SELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}";
@@ -2284,7 +2373,7 @@ mod tests {
         result
     }
 
-    async fn response_body(response: axum::response::Response) -> String {
+    pub(crate) async fn response_body(response: axum::response::Response) -> String {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.to_vec()).unwrap()
     }
@@ -2707,6 +2796,20 @@ mod tests {
     /// state. The arbiter is dropped before returning so the state-root lock is
     /// released for the startup path under test.
     fn seal_deployment(state_root: &Path) -> (DeploymentIdentifier, ApplicationState) {
+        let state = sealed_application_state();
+        let deployment_identifier = seal_deployment_with(state_root, &state);
+        (deployment_identifier, state)
+    }
+
+    /// Seals a deployment over an explicitly supplied application state.
+    ///
+    /// Exposed so a test that needs accounts, password verifiers, or any other
+    /// committed state seals a real deployment through the same typestate
+    /// chain rather than assembling a second sealing path of its own.
+    pub(crate) fn seal_deployment_with(
+        state_root: &Path,
+        state: &ApplicationState,
+    ) -> DeploymentIdentifier {
         let mut store = LifecycleStore::open_or_create(state_root).unwrap();
         let catalog = sqlite_catalog();
         let context = TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE));
@@ -2722,21 +2825,20 @@ mod tests {
         let arbiter = WorkflowArbiter::new(store);
         let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
         let deployment_identifier = permit.deployment_identifier();
-        let state = sealed_application_state();
         permit
             .create_checkpoint(
                 WorkflowKind::Restore,
                 CheckpointMetadata::from_bytes(b"restore-checkpoint-metadata".as_slice()).unwrap(),
             )
             .unwrap()
-            .complete_checkpoint(&state)
+            .complete_checkpoint(state)
             .unwrap()
             .acknowledge_completion(completion_record_identifier())
             .unwrap()
             .seal()
             .unwrap();
         drop(arbiter);
-        (deployment_identifier, state)
+        deployment_identifier
     }
 
     fn completion_record_identifier() -> StateIdentifier {
@@ -2745,12 +2847,21 @@ mod tests {
 
     /// Builds the smallest state the Application Database contract accepts.
     fn sealed_application_state() -> ApplicationState {
+        sealed_application_state_with(Vec::new(), Vec::new())
+    }
+
+    /// Builds the smallest accepted state that also carries the supplied
+    /// accounts and password verifiers.
+    pub(crate) fn sealed_application_state_with(
+        accounts: Vec<weavelit_server_database::Account>,
+        password_verifiers: Vec<weavelit_server_database::AccountPasswordVerifier>,
+    ) -> ApplicationState {
         let configuration_identifier = StateIdentifier::from_bytes([0x11; 16]).unwrap();
         ApplicationState::new(ApplicationStateInput {
             configuration: vec![],
             protected_secrets: vec![],
-            accounts: vec![],
-            password_verifiers: vec![],
+            accounts,
+            password_verifiers,
             groups: vec![],
             group_memberships: vec![],
             group_grants: vec![],
@@ -2823,12 +2934,7 @@ mod tests {
 
         let startup = classify_restricted_startup(&state_root)
             .expect("a sealed deployment must reach normal operation");
-        let composer = OperationalComposer::new(
-            startup
-                .application_database()
-                .expect("a sealed startup hands over its open Application Database")
-                .clone(),
-        );
+        let composer = operational_composer(&startup, "127.0.0.1:8443".parse().unwrap());
 
         // The composer and the startup name one shared handle rather than two
         // opens of the same file, so the composer keeps serving the sealed
@@ -5678,13 +5784,19 @@ mod tests {
                 &self.startup,
                 fixture_components(),
                 Arc::clone(&self.switch),
+                operational_runtime(&self.startup, UNBOUND_LISTENER.parse().unwrap()),
             )
         }
 
         /// An orchestration judged against the Server's own compiled-in
         /// inventory, exactly as the composed listener judges one.
         fn compiled_in_orchestrator(&self) -> Arc<RestoreOrchestrator> {
-            RestoreOrchestrator::new(&self.startup, server_components(), Arc::clone(&self.switch))
+            RestoreOrchestrator::new(
+                &self.startup,
+                server_components(),
+                Arc::clone(&self.switch),
+                operational_runtime(&self.startup, UNBOUND_LISTENER.parse().unwrap()),
+            )
         }
 
         /// Acquires the same Restore admission permit the listener holds before
@@ -6039,6 +6151,9 @@ mod tests {
             APPLICATION_DATABASE_ROUTE,
             RESTORE_ROUTE,
             RESTORE_ARTIFACT_ROUTE,
+            AUTH_LOGIN_ROUTE,
+            AUTH_SESSION_ROUTE,
+            AUTH_LOGOUT_ROUTE,
             "/unknown",
         ] {
             let restored_response = from_restore
@@ -6069,8 +6184,23 @@ mod tests {
         }
 
         // Neither path can publish a router that has shed its registrations,
-        // because each publishes one mounted surface carrying both.
-        assert!(restored.modes.borrow().surface().registry().is_empty());
+        // because each publishes one mounted surface carrying both. The two
+        // paths register the same routes under the same methods, so a restored
+        // deployment admits bodies exactly as a sealed startup does.
+        let restored_registry = restored
+            .modes
+            .borrow()
+            .surface()
+            .registry()
+            .registered_routes();
+        assert_eq!(restored_registry, operational_registrations());
+        assert_eq!(
+            restored_registry,
+            operational_mount(&sealed.startup)
+                .surface()
+                .registry()
+                .registered_routes()
+        );
     }
 
     #[tokio::test]
@@ -6501,7 +6631,17 @@ mod tests {
             .await
             .expect("the committed valid backup must restore");
 
-        assert!(surface.modes.borrow().surface().registry().is_empty());
+        // The operational surface registers only its authentication routes, so
+        // no Restore registration survives the transition either.
+        assert_eq!(
+            surface
+                .modes
+                .borrow()
+                .surface()
+                .registry()
+                .registered_routes(),
+            operational_registrations()
+        );
         assert_restore_unmounted(surface.served_router()).await;
     }
 
@@ -6621,7 +6761,7 @@ mod tests {
     }
 
     /// Drives one request through the production path over an in-memory stream.
-    async fn process_over_duplex(
+    pub(crate) async fn process_over_duplex(
         surface: MountedSurface,
         timeouts: ConnectionTimeouts,
         write: impl FnOnce(tokio::io::DuplexStream) -> tokio::task::JoinHandle<()>,
@@ -6751,9 +6891,13 @@ mod tests {
         assert_eq!(response.body.as_ref(), b"{\"error\":\"bad_request\"}");
     }
 
-    /// The modes that serve no large-body route carry no registration at all.
+    /// Each serving mode carries exactly the registrations its own routes need.
+    ///
+    /// The fail-closed mode mounts nothing and therefore registers nothing. The
+    /// operational mode registers only its authentication routes, and the
+    /// pre-operational mode registers Restore only where Restore is eligible.
     #[test]
-    fn the_fail_closed_and_operational_modes_carry_no_transport_registration() {
+    fn each_serving_mode_carries_exactly_the_registrations_its_routes_need() {
         let (modes, _receiver) = watch::channel(ServingMode::FailClosed(
             MountedSurface::without_registrations(fallback_router()),
         ));
@@ -6764,28 +6908,42 @@ mod tests {
 
         let sealed = Surface::new(StartupOutcome::Initialized);
         switch.publish_operational(operational_mount(&sealed.startup));
-        assert!(switch.modes.borrow().surface().registry().is_empty());
+        assert_eq!(
+            switch
+                .modes
+                .borrow()
+                .surface()
+                .registry()
+                .registered_routes(),
+            operational_registrations()
+        );
 
-        for outcome in [
-            StartupOutcome::UninitializedWithoutDatabase,
-            StartupOutcome::Initialized,
+        for (outcome, expected) in [
+            (StartupOutcome::UninitializedWithoutDatabase, Vec::new()),
+            (StartupOutcome::Initialized, operational_registrations()),
         ] {
             let surface = Surface::new(outcome);
             let (_switch, modes) =
                 published_serving_modes(&surface.startup, UNBOUND_LISTENER.parse().unwrap());
-            assert!(
-                modes.borrow().surface().registry().is_empty(),
+            assert_eq!(
+                modes.borrow().surface().registry().registered_routes(),
+                expected,
                 "{outcome:?}"
             );
         }
 
-        // The only initial mode that carries a registration is the
-        // pre-operational surface that mounts Restore, the one large-body
-        // route this Server serves.
+        // The only pre-operational mode that carries a registration is the one
+        // that mounts Restore, the one large-body route this Server serves.
         let with_restore = Surface::new(StartupOutcome::UninitializedWithDatabase);
         let (_switch, modes) =
             published_serving_modes(&with_restore.startup, UNBOUND_LISTENER.parse().unwrap());
-        assert!(!modes.borrow().surface().registry().is_empty());
+        assert_eq!(
+            modes.borrow().surface().registry().registered_routes(),
+            vec![
+                (Method::PUT, RESTORE_ROUTE),
+                (Method::PUT, RESTORE_ARTIFACT_ROUTE),
+            ]
+        );
     }
 
     // -----------------------------------------------------------------------

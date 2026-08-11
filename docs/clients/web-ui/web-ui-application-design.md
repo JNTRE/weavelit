@@ -191,6 +191,19 @@ beyond requiring that both are present. It does not parse, preview, or inspect
 backup content, and it does not claim that any client-side check establishes
 validity.
 
+## Authentication
+
+This application does not yet implement a sign-in interface or issue any
+request to the Server's shared authentication routes. In the current build,
+the Web UI **[Client Module](../../glossary.md#applications-and-interfaces)**
+is the only registered `client_module` value the login route accepts, so this
+application is the sole eligible client for a session once a sign-in interface
+is added. The route contract, the session and cross-site request forgery
+cookies it would rely on, and the login admission bound are owned by the
+[Server Authentication Design](../../server/authentication/authentication-design.md)
+and the [Server API Contract](../../server/api/api-contract-design.md); this
+document does not restate them.
+
 ## Same-Origin Requests
 
 The application issues exactly four outbound request kinds, all same-origin, all
@@ -221,6 +234,8 @@ cross-origin call.
 - [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
 - [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md)
+- [Server Authentication Design](../../server/authentication/authentication-design.md)
+- [Server API Contract](../../server/api/api-contract-design.md)
 - [Web UI Agent Guide](AGENTS.md)
 - [Server Restore Design](../../server/lifecycle/restore/restore-design.md)
 - [Testing and Validation Policy](../../testing.md)

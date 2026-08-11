@@ -77,7 +77,19 @@ Route groups:
   capability is eligible.
 - `/api/v1/auth/` carries authentication bootstrap. These routes are neither
   User Plane nor Administration Plane, because a principal does not yet exist
-  when they are invoked.
+  when they are invoked. Three routes are defined, all `PUT`:
+  - `/api/v1/auth/login` exchanges a `client_module` identity and local
+    credentials for a session, subject to the single-permit admission lane
+    the [Server Authentication Design](../authentication/authentication-design.md#login-admission-and-verification-concurrency)
+    owns.
+  - `/api/v1/auth/session` validates the session cookie already presented and
+    reports whether it is still active, issuing no new cookie.
+  - `/api/v1/auth/logout` revokes the presented session and clears both
+    cookies.
+  The shared `weavelit-module-client` crate owns every stable error code and
+  header precondition for these three routes; the decisions behind them are
+  owned by the
+  [Server Authentication Design](../authentication/authentication-design.md).
 - `/api/v1/user/` and `/api/v1/administration/` carry the two normal planes.
 
 ### Client Module Identity
@@ -85,7 +97,10 @@ Route groups:
 Because Client Modules share routes, a request does not name its Client Module
 in its path. The Server determines the Client Module from the authenticated
 session, which records the Client Module the session was established for. A
-request to create a session declares its Client Module explicitly.
+request to create a session declares its Client Module explicitly through the
+login route's `client_module` field. In the current build, the Web UI Client
+Module is the only registered value the login route accepts; a login request
+naming any other value is denied.
 
 This preserves per-Client-Module Group grants. Grants apply only to
 authenticated requests, and pre-operational contracts run before any Human User
@@ -129,8 +144,13 @@ The typed profile's bound is derived from the envelope's own maxima rather than
 inherited from the fixed profile: a stable code, a correlation identifier at its
 canonical bound, and the result fields a route may return. The Server re-checks
 each serialized envelope against that bound and redacts rather than truncating,
-so a route cannot emit a partial envelope that still parses as valid JSON. No
-route emits a session or cross-site request forgery cookie yet.
+so a route cannot emit a partial envelope that still parses as valid JSON. The
+login route emits the approved session-issuing cookie effect and the logout
+route emits the approved session-clearing cookie effect; every other route,
+including session validation, emits no cookie. Each cookie effect is itself
+bounded and fails closed rather than emitting a partial `Set-Cookie` line; see
+the [Server Authentication Design](../authentication/authentication-design.md#cookie-emission)
+for the exact bound.
 
 ## Pagination
 

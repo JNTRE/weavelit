@@ -174,6 +174,10 @@ impl ApplicationDatabase for FakeDatabase {
     ) -> Result<(), DatabaseError> {
         Err(DatabaseError::NotInitialized)
     }
+
+    fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
+        None
+    }
 }
 
 struct FakeFactory {
@@ -577,6 +581,10 @@ fn deployment_mismatch_on_database_fails_closed() {
             _: StateIdentifier,
         ) -> Result<(), DatabaseError> {
             Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
+            None
         }
     }
     let catalog = BackendCatalog::new(vec![BackendRegistration::new(

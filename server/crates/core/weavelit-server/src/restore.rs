@@ -61,7 +61,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     RestrictedStartup, ServingModeSwitch,
-    operational::{OperationalComposer, OperationalDatabase},
+    operational::{OperationalComposer, OperationalDatabase, OperationalRuntime},
     transport::{
         AdmittedCheck, BodyAdmission, PreBodyCheck, PreBodyGrant, PreBodyGrantValue,
         PreBodyRejection, TransportProfile, TransportRegistration,
@@ -111,6 +111,8 @@ pub struct RestoreOrchestrator {
     /// Retained privately so no caller outside this composition can mint a
     /// trusted Log Module context or a trusted record issuer.
     log_authority: ServerLogAuthority,
+    /// The Server-wide values the handed-over operational surface composes from.
+    operational_runtime: Arc<OperationalRuntime>,
     /// The operational composition a completed Restore hands over.
     ///
     /// Sealing returns the database the workflow committed through, so this
@@ -126,11 +128,16 @@ impl RestoreOrchestrator {
     /// site supplies the Server's compiled-in Client, MFA, Service, and Log
     /// Module names; a test may supply a narrower or wider inventory to drive
     /// a compatibility decision it wants to observe.
+    ///
+    /// `operational_runtime` is the same value startup composes its own
+    /// operational surface from, so a deployment sealed by a Restore serves the
+    /// routes a deployment sealed at startup serves.
     #[must_use]
     pub fn new(
         startup: &RestrictedStartup,
         components: AvailableComponents,
         serving_modes: Arc<ServingModeSwitch>,
+        operational_runtime: Arc<OperationalRuntime>,
     ) -> Arc<Self> {
         let log_authority = ServerLogAuthority::new();
         let observability =
@@ -148,6 +155,7 @@ impl RestoreOrchestrator {
             validator: RestoreValidator::new(components),
             observability,
             log_authority,
+            operational_runtime,
             operational: Mutex::new(None),
         })
     }
@@ -434,7 +442,11 @@ impl RestoreOrchestrator {
             .operational
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(OperationalComposer::new(database))
+            .insert(OperationalComposer::new(
+                Arc::clone(&self.operational_runtime),
+                &state,
+                database,
+            ))
             .mount();
         self.serving_modes.publish_operational(mount);
         Ok(state)
@@ -766,7 +778,7 @@ fn system_log_module(validated: &ValidatedBackup) -> Result<LogModuleIdentifier,
 }
 
 /// Returns the enabled configuration assigned to one log type.
-fn assigned_configuration<'backup>(
+pub(crate) fn assigned_configuration<'backup>(
     configurations: &'backup [LogModuleConfiguration],
     assignments: &[LogAssignment],
     log_type: LogType,
@@ -790,22 +802,12 @@ fn map_workflow_error(error: WorkflowError) -> RestoreError {
 
 /// Fills a fixed-size buffer from operating-system randomness.
 fn random_bytes<const BYTES: usize>() -> Result<[u8; BYTES], RestoreError> {
-    let mut bytes = [0_u8; BYTES];
-    getrandom::fill(&mut bytes).map_err(|_| RestoreError::RestoreFailed)?;
-    Ok(bytes)
+    crate::authentication::random_bytes().ok_or(RestoreError::RestoreFailed)
 }
 
 /// Generates a correlation identifier that carries no request content.
 fn correlation_identifier() -> Result<String, RestoreError> {
-    const HEX: [u8; 16] = *b"0123456789abcdef";
-
-    let entropy = random_bytes::<16>()?;
-    let mut identifier = String::with_capacity(entropy.len() * 2);
-    for byte in entropy {
-        identifier.push(char::from(HEX[usize::from(byte >> 4)]));
-        identifier.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    Ok(identifier)
+    crate::authentication::correlation_identifier().ok_or(RestoreError::RestoreFailed)
 }
 
 /// Reads the current UTC event time in Unix milliseconds.

@@ -266,6 +266,10 @@ impl ApplicationDatabase for LyingDatabase {
     ) -> Result<(), weavelit_server_database::DatabaseError> {
         Ok(())
     }
+
+    fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
+        None
+    }
 }
 
 struct LyingFactory(LyingBackend);

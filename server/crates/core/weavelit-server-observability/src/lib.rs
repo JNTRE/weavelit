@@ -6,12 +6,14 @@
 //! for a prepared completion and receives both the record to deliver and the
 //! matching obligation to persist.
 //!
-//! Milestone 1 needs only the Restore completion result. The crate is
-//! nonetheless the long-term owner of Server-produced operational telemetry, so
-//! each event family lives in its own module.
+//! Milestone 1 needs the Restore completion result and the local
+//! authentication failure result. The crate is nonetheless the long-term owner
+//! of Server-produced operational telemetry, so each event family lives in its
+//! own module.
 
 #![forbid(unsafe_code)]
 
+mod authentication;
 mod restore;
 
 pub use restore::PreparedRestoreCompletion;

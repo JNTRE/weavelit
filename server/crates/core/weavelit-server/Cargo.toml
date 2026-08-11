@@ -22,6 +22,8 @@ tokio.workspace = true
 tokio-rustls = { version = "=0.26.4", default-features = false }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+weavelit-server-authentication = { path = "../weavelit-server-authentication" }
+weavelit-server-database = { path = "../../database/weavelit-server-database" }
 weavelit-server-database-sqlite = { path = "../../database/weavelit-server-database-sqlite" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
 weavelit-server-log = { path = "../weavelit-server-log" }
@@ -37,4 +39,3 @@ rcgen = "=0.14.8"
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
-weavelit-server-database = { path = "../../database/weavelit-server-database" }

@@ -2,8 +2,9 @@
 
 This crate assembles the trusted restricted lifecycle startup runtime, composes
 the SQLite backend catalog, and classifies startup state before any capability
-is exposed. Normal authenticated operation, HTTPS API, authorization,
-authentication configuration, and provider integrations are deferred to later
+is exposed. It also owns the Server-core local authentication route layer
+(login, session validation, and logout) once a deployment is sealed.
+Authorization policy, MFA, and provider integrations remain deferred to later
 epics.
 
 ## Purpose and Scope
@@ -26,10 +27,16 @@ Use this section as the source of truth for what assets belong in this directory
 - `src/lib.rs`: Restricted lifecycle startup composition, SQLite backend factory,
   state-root configuration reading, `classify_restricted_startup`, the listener's
   serving-mode switch, and stable error presentation.
+- `src/authentication.rs`: The local login, session-validation, and logout route
+  decisions: account and password-verifier resolution, the equal-work denial
+  path, the single-permit login admission lane, session issuance and
+  revocation, and best-effort authentication-failure System Log dispatch before
+  a denial is returned.
 - `src/operational.rs`: The single operational composition seam: the shared
   Application Database handle a sealed workflow hands over, the operational
-  composer that mounts the Web UI operational surface with its transport
-  registrations, and the mounted surface value the serving-mode switch accepts.
+  composer that mounts the Web UI operational surface and the authentication
+  routes together with their transport registrations, and the mounted surface
+  value the serving-mode switch accepts.
 - `src/restore.rs`: Server-owned Restore orchestration that joins backup
   validation to the lifecycle typestate chain, the one-time ticket store and
   admission registrations behind the two-step submission protocol, the System

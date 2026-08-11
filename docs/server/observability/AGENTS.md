@@ -16,6 +16,9 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and future-scope rules for Server observability.
+- `authentication-failure-record-design.md`: Fixed classification, detail, and
+  delivery-timing design for the local authentication-failure System Log
+  record.
 
 ## Usage Guidance
 

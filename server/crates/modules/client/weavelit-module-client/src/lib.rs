@@ -30,9 +30,22 @@ use axum::{
 use serde::Deserialize;
 use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
 
+pub mod authentication;
+pub mod cookie;
 pub mod restore;
 pub mod typed_json;
 
+pub use authentication::{
+    AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE, AuthenticationCapability,
+    AuthenticationDeclaration, AuthenticationRejection, CorrelationSource, LoginCommit,
+    LoginSubmission, MAX_LOGIN_BODY_BYTES, SessionEstablished, SessionIdentity, SessionRevoke,
+    SessionSubmission, SessionValidate, submitted_csrf_token, submitted_session_token,
+    validate_login_request, validate_session_request,
+};
+pub use cookie::{
+    CSRF_COOKIE_NAME, CookieEffect, CookieLines, CookieValue, MAX_COOKIE_HEADER_BYTES,
+    MAX_COOKIE_LINES, MAX_COOKIE_VALUE_BYTES, SESSION_COOKIE_NAME,
+};
 pub use restore::{
     MAX_RESTORE_KEY_BODY_BYTES, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME,
     RestoreArtifactCommit, RestoreArtifactSubmission, RestoreCapability, RestoreCompleted,
@@ -486,6 +499,16 @@ impl ExpectedOrigin {
             return false;
         }
 
+        self.is_same_origin(headers)
+    }
+
+    /// Reports whether the request's `Origin` and `Host` are this authority.
+    ///
+    /// This is the origin half of [`Self::is_trusted`] alone. A route uses it
+    /// only when it carries its own cross-site request forgery token instead
+    /// of the pre-session literal, so the two checks cannot drift apart.
+    #[must_use]
+    pub fn is_same_origin(self, headers: &HeaderMap) -> bool {
         let (Some(origin), Some(host)) =
             (single_header(headers, ORIGIN), single_header(headers, HOST))
         else {

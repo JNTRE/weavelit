@@ -13,18 +13,43 @@
 //! is not a value that can be published.
 
 use std::{
+    collections::BTreeSet,
     fmt,
+    net::SocketAddr,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
+use weavelit_module_client::ExpectedOrigin;
+use weavelit_server_authentication::RustCryptoArgon2;
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, SealedDeployment,
 };
+use weavelit_server_log::LogModuleCatalog;
+use weavelit_server_restore::Name;
 
 use crate::{
+    authentication::AuthenticationRuntime,
     fallback_router,
     transport::{MountedSurface, TransportCapability},
 };
+
+/// The Server-wide values every operational composition is built against.
+///
+/// A sealed deployment reaches operation from startup or from a completed
+/// Restore, and both compose from this one value, so the two paths cannot
+/// disagree about the trusted authority, the state root, the Log Module
+/// catalog, or the Client Modules this build can serve.
+pub struct OperationalRuntime {
+    /// The authority every operational request must target.
+    pub listener: SocketAddr,
+    /// The Server's local state root.
+    pub state_root: PathBuf,
+    /// The Log Modules this build can open.
+    pub log_catalog: Arc<LogModuleCatalog>,
+    /// The Client Modules this build can issue a session for.
+    pub client_modules: BTreeSet<Name>,
+}
 
 /// The one open Application Database a sealed deployment hands to its
 /// operational runtime.
@@ -101,13 +126,36 @@ impl fmt::Debug for OperationalMount {
 /// The composer owns the deployment's open Application Database, so a route it
 /// mounts shares that one handle instead of reopening the target per request.
 pub struct OperationalComposer {
+    runtime: Arc<OperationalRuntime>,
     database: OperationalDatabase,
+    /// The authentication runtime, when one could be composed.
+    ///
+    /// Its absence is the declaration that this deployment serves no
+    /// authentication route, so a Server that cannot deny safely serves no
+    /// login at all rather than one that decides on a broken authenticator.
+    authentication: Option<Arc<AuthenticationRuntime<RustCryptoArgon2>>>,
 }
 
 impl OperationalComposer {
     /// Composes over the database a sealed deployment handed over.
-    pub(crate) const fn new(database: OperationalDatabase) -> Self {
-        Self { database }
+    pub(crate) fn new(
+        runtime: Arc<OperationalRuntime>,
+        state: &InitializedState,
+        database: OperationalDatabase,
+    ) -> Self {
+        let authentication = AuthenticationRuntime::new(
+            database.clone(),
+            state,
+            runtime.client_modules.clone(),
+            runtime.state_root.clone(),
+            &runtime.log_catalog,
+        );
+
+        Self {
+            runtime,
+            database,
+            authentication,
+        }
     }
 
     /// Returns the single open database every operational route shares.
@@ -135,10 +183,15 @@ impl OperationalComposer {
     /// Returns every Server-owned operational route, each paired with the
     /// transport registration that admits it.
     ///
-    /// This build serves none yet, so the sealed deployment's surface carries
-    /// only its Client Module's declared asset delivery.
+    /// Authentication is the only family this build serves. Each of its three
+    /// routes arrives as a [`TransportCapability`], so login's single-permit
+    /// admission lane travels with the route it bounds.
     fn capabilities(&self) -> Vec<TransportCapability> {
-        Vec::new()
+        self.authentication
+            .as_ref()
+            .map_or_else(Vec::new, |runtime| {
+                runtime.capabilities(ExpectedOrigin::from_listener(self.runtime.listener))
+            })
     }
 }
 
