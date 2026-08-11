@@ -22,21 +22,31 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), StartupError> {
-    let listener = read_trusted_https_listener()?;
-    let state_root = read_state_root()?;
-    let startup = classify_restricted_startup(&state_root)?;
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_io()
         .enable_time()
         .build()
         .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-    let result = runtime.block_on(async move {
-        // Registered before anything is served, so a signal that arrives during
-        // the very first request is still delivered to the listener.
-        let signalled = termination_signal().map_err(|_| StartupError::HttpsListenerUnavailable)?;
-        run_restricted_https_listener(listener, startup, ShutdownSignal::new(signalled)).await
-    });
+
+    // Registered before the listening socket exists, and so before any host can
+    // observe this process as started. Registering it after the bind would open
+    // a window in which a supervisor's `SIGTERM` could already reach a
+    // connectable Server that still carried the default disposition, killing it
+    // rather than draining it.
+    let signalled = {
+        let _runtime_context = runtime.enter();
+        termination_signal().map_err(|_| StartupError::HttpsListenerUnavailable)?
+    };
+
+    let listener = read_trusted_https_listener()?;
+    let state_root = read_state_root()?;
+    let startup = classify_restricted_startup(&state_root)?;
+
+    let result = runtime.block_on(run_restricted_https_listener(
+        listener,
+        startup,
+        ShutdownSignal::new(signalled),
+    ));
     // The listener has already spent its whole shutdown budget by this point,
     // so anything still running deliberately outlived it and is terminated
     // rather than left holding the process open.
