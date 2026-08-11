@@ -488,9 +488,25 @@ each startup rather than issuing, renewing, or replacing it.
 | `InitializationPending` | Matching locator and Init checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_new`; expose no route. |
 | `InitializationPending` | Matching locator and Restore checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_restore`; expose no route. |
 | `InitializationPending` | Matching locator and initialized database | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required`; expose no route. |
-| `Initialized` | Matching locator and initialized database | Load application state and start normal authenticated operation. |
-| Any record requiring retained SQLite inspection | Existing `application.sqlite3-wal` | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required` without opening the Application Database; expose no route. |
+| `Initialized` | Matching locator | Load the sealed deployment through its authoritative read-write open, recovering any retained SQLite write-ahead log, then start normal authenticated operation. |
+| `Uninitialized` or `InitializationPending` | Matching locator and existing `application.sqlite3-wal` | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required` without opening the Application Database; expose no route. |
+| `Initialized` | Database that cannot be opened or recovered, fails integrity validation, is bound to another deployment, or holds incomplete or unacknowledged initialized state | Fail startup closed before binding a listener; report no redeployment action. |
 | Any existing record | Missing required locator, identifier mismatch, unexpected state combination, unsafe or malformed state, unavailable database, or integrity failure | Fail startup closed without exposing Init or Restore. |
+
+The write-ahead log rule differs by record state because the two states are
+classified by different means. A pre-operational record is classified by
+non-mutating retained inspection, which opens the main database file immutably
+and therefore ignores the log; classifying past a log would read stale state,
+and no automatic reconciliation of an interrupted Init or Restore is safe. A
+sealed record is not inspected at all. It is classified from the deployment
+record alone and verified by the authoritative sealed load, which reopens the
+database read-write so SQLite recovers the log exactly as it does for any other
+client. An operational Server retains its Application Database open, so a log is
+present at every abrupt termination; treating that log as a redeployment
+condition would make an initialized deployment unable to start again. The
+lifecycle crate still deletes no sidecar, and the sealed load still fails closed
+on every genuine failure rather than translating it into an operator
+redeployment action.
 
 An unavailable, missing, malformed, unsafe, mismatched, or integrity-failing
 configured database never causes the Server to expose a pre-operational
@@ -513,10 +529,15 @@ An `Initialized` record maps to the Web UI Client Module's operational surface.
 The runtime loads the sealed deployment's application state through the same
 exclusive mutation permit before it serves anything, and that load re-reads the
 deployment record and re-inspects the database independently of the
-classification that selected it. Because the pre-operational status and
-Application Database contracts cannot be expressed in an operational capability
-declaration, they are absent from the sealed surface rather than mounted and
-denied; every request for them receives the same fixed JSON `404` result. The
+classification that selected it. Because classification of a sealed record
+consults only the deployment record, that load is the sole authority over the
+database: it reopens the database read-write, so SQLite recovers any retained
+write-ahead log, and it fails startup closed before binding rather than serving
+anything if recovery, integrity, deployment binding, or completeness fails.
+Because the pre-operational status and Application Database contracts cannot be
+expressed in an operational capability declaration, they are absent from the
+sealed surface rather than mounted and denied; every request for them receives
+the same fixed JSON `404` result. The
 [Server Architecture Design](../server-architecture-design.md#serving-mode-switch)
 defines how the runtime changes the surface a running listener serves.
 
@@ -710,9 +731,12 @@ The `lifecycle_interrupted` pairs are stable action-class diagnostics. They
 identify only whether the operator must redeploy for a new deployment, redeploy
 before a new Restore using independently retained material, or redeploy before
 determining a fresh supported workflow. `operator_redeploy_required` also
-covers retained SQLite WAL state that cannot be inspected without touching
-source artifacts. These pairs do not disclose retained payloads, host paths,
-deployment identifiers, state contents, or internal errors.
+covers pre-operational retained SQLite write-ahead log state that cannot be
+inspected without touching source artifacts. It never covers a sealed
+deployment, whose write-ahead log is recovered by its authoritative read-write
+load and whose failures use the storage and deployment-state pairs instead.
+These pairs do not disclose retained payloads, host paths, deployment
+identifiers, state contents, or internal errors.
 
 For example, a missing environment variable produces exactly:
 
@@ -824,11 +848,20 @@ and orphan classification, interrupted bootstrap classification, every invalid
 partial anchor set, and failure handling for file synchronization, rename,
 record commit, directory synchronization, and cleanup. Tests retain real SQLite
 `-journal`, `-wal`, and `-shm` sidecars rather than deleting them as lifecycle
-orphans. A retained WAL is classified through the generic operator action
-without opening SQLite, and raw directory snapshots prove that the original
-database and sidecars remain unchanged. They do not assert power-cut or abrupt
-termination survival as a Weavelit guarantee; where the Server can restart,
-they assert fail-closed classification and redacted operator-action output.
+orphans. A write-ahead log retained over either pre-operational record state is
+classified through the generic operator action without opening SQLite, and raw
+directory snapshots prove that the original database and sidecars remain
+unchanged. A sealed record is classified `Initialized` without any retained
+inspection at all, proved by a backend that counts inspection calls and would
+otherwise report the generic operator action. A composed startup test in
+`weavelit-server` leaves a real, unrecovered write-ahead log by committing a
+probe write from a synchronized child process and killing it, then proves the
+sealed startup recovers that write and loads its application state, while an
+unopenable database and one bound to another deployment still fail closed before
+any listener binds. They do not
+assert power-cut or abrupt termination survival as a Weavelit guarantee; where
+the Server can restart, they assert fail-closed classification and redacted
+operator-action output.
 
 Format and cryptographic negative vectors change one property at a time:
 oversized, empty, truncated, invalid UTF-8, non-canonical, duplicate, unknown,

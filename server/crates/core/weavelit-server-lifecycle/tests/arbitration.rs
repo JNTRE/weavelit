@@ -2,7 +2,10 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::{Arc, Barrier},
+    sync::{
+        Arc, Barrier,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
 };
 
@@ -105,6 +108,34 @@ fn locator_files(path: &Path) -> Vec<(String, Vec<u8>)> {
         .collect();
     files.sort();
     files
+}
+
+/// Counts retained-inspection calls and reports the generic redeploy action.
+///
+/// A classification path that must not inspect retained state is proved by the
+/// zero count; one that does inspect would visibly change its result.
+struct CountingRedeployFactory(Arc<AtomicUsize>);
+
+impl ApplicationDatabaseFactory for CountingRedeployFactory {
+    fn open(
+        &self,
+        context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+    ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+        SqliteDatabase::open(context.application_database_path())
+            .map(|db| Box::new(db) as Box<dyn ApplicationDatabase>)
+            .map_err(|_| LifecycleError::DependencyUnavailable)
+    }
+
+    fn inspect_retained(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(RetainedDatabaseInspection::RedeployRequired)
+    }
 }
 
 /// Panics inside the permit so a test can observe poisoning rather than simulate it.
@@ -990,6 +1021,44 @@ fn a_workflow_seals_the_deployment_only_after_the_full_ordered_path() {
 
     let store = LifecycleStore::open_or_create(&path).unwrap();
     assert_eq!(store.record().state(), LifecycleState::Initialized);
+}
+
+#[test]
+fn a_sealed_record_classifies_initialized_without_any_retained_inspection() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+    arbiter
+        .authorize_workflow(&catalog, &context)
+        .unwrap()
+        .create_checkpoint(WorkflowKind::Restore, restore_metadata())
+        .unwrap()
+        .complete_checkpoint(&application_state())
+        .unwrap()
+        .acknowledge_completion(identifier(RECORD_BYTE))
+        .unwrap()
+        .seal()
+        .unwrap();
+    drop(arbiter);
+
+    // Retained inspection cannot reconcile a write-ahead log, so a sealed
+    // record must never consult it: this backend would report the generic
+    // redeploy action if it were ever asked.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let catalog = BackendCatalog::new(vec![BackendRegistration::new(
+        SQLITE_BACKEND,
+        vec![],
+        Box::new(CountingRedeployFactory(Arc::clone(&calls))),
+    )])
+    .unwrap();
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    assert_eq!(
+        store
+            .classify_startup(&catalog, &sqlite_context(&path))
+            .unwrap(),
+        LifecycleClassification::Initialized
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]

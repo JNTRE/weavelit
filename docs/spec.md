@@ -464,12 +464,33 @@ resume, retry, complete logging for, seal, delete, recreate, or otherwise make
 the retained state usable. It MUST NOT expose normal operation or a
 Pre-Operational fallback over that ambiguous state.
 
-When retained **[Application Database](glossary.md#applications-and-interfaces)**
-state includes a SQLite write-ahead log (WAL), the Server MUST classify it as
-`lifecycle_interrupted` / `operator_redeploy_required` without opening,
+How the Server MUST treat a SQLite write-ahead log (WAL) in retained
+**[Application Database](glossary.md#applications-and-interfaces)** state
+depends on the deployment's recorded lifecycle state, because the two are
+classified by different means. A pre-operational deployment is classified by
+non-mutating inspection that deliberately cannot reconcile a WAL and would
+otherwise read stale main-file state, so it must refuse. An initialized
+deployment is classified from its deployment record alone and then verified by
+the authoritative read-write open that loads it, which lets SQLite recover the
+WAL as it normally does.
+
+When the deployment record is uninitialized or has an initialization pending
+and retained Application Database state includes a WAL, the Server MUST classify
+it as `lifecycle_interrupted` / `operator_redeploy_required` without opening,
 copying, inspecting, recovering, checkpointing, or otherwise modifying the
 original database, WAL, or shared-memory artifacts. It MUST NOT derive an
 Init- or Restore-specific action from WAL-bearing retained state.
+
+When the deployment record is initialized, the Server MUST NOT classify the
+deployment through that non-mutating inspection, and MUST NOT treat the presence
+of a WAL or any other SQLite recovery sidecar as a redeployment condition. It
+MUST load the sealed deployment through its authoritative read-write open,
+letting SQLite recover the WAL, and MUST NOT delete or otherwise alter WAL or
+shared-memory artifacts itself. That load remains the authority and MUST fail
+startup closed, before any listener binds, when the database cannot be opened or
+recovered, fails integrity or schema validation, is bound to a different
+deployment, or holds incomplete or unacknowledged initialized state. The Server
+MUST NOT report any of those failures as `operator_redeploy_required`.
 
 The operator MAY preserve the failed state root for diagnosis or evidence, or
 discard it and rebuild or redeploy the host. A failed fresh Init requires a new

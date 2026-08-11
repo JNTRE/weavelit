@@ -225,6 +225,11 @@ impl LifecycleStore {
     }
 
     /// Classifies startup state from the current anchor set without mutating retained state.
+    ///
+    /// A pre-operational record is classified through non-mutating retained
+    /// inspection, which cannot reconcile a write-ahead log and therefore
+    /// refuses to guess past one. A sealed record is classified from the record
+    /// alone and verified by the authoritative sealed load instead.
     pub fn classify_startup(
         &self,
         catalog: &BackendCatalog,
@@ -293,30 +298,18 @@ impl LifecycleStore {
                     DatabaseInspection::Uninitialized => Err(LifecycleError::IntegrityFailure),
                 }
             }
+            // A sealed record is classified as a sealed candidate without any
+            // retained inspection. Immutable inspection deliberately refuses to
+            // read past a write-ahead log, and an operational deployment always
+            // leaves one, so consulting it here would brick every restart. The
+            // authoritative sealed load reopens the database read-write, which
+            // lets SQLite recover that log normally, and re-verifies the
+            // deployment binding and initialized state before anything serves.
             LifecycleState::Initialized => {
-                let locator = self
-                    .locator
-                    .as_ref()
-                    .ok_or(LifecycleError::IntegrityFailure)?;
-                let inspection = catalog.inspect_retained(
-                    locator.settings(),
-                    context,
-                    self.record.deployment_identifier(),
-                )?;
-                let inspection = match inspection {
-                    RetainedDatabaseInspection::Inspected(inspection) => inspection,
-                    RetainedDatabaseInspection::RedeployRequired => {
-                        return Ok(LifecycleClassification::Interrupted(
-                            crate::InterruptedLifecycleAction::RedeployRequired,
-                        ));
-                    }
-                };
-                match inspection {
-                    DatabaseInspection::Initialized { .. } => {
-                        Ok(LifecycleClassification::Initialized)
-                    }
-                    _ => Err(LifecycleError::InvalidState),
+                if self.locator.is_none() {
+                    return Err(LifecycleError::IntegrityFailure);
                 }
+                Ok(LifecycleClassification::Initialized)
             }
         }
     }

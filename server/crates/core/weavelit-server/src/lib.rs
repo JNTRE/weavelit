@@ -2055,10 +2055,16 @@ fn startup_outcome(
 /// Composes the lifecycle crate and SQLite backend, opens or creates the anchor
 /// set, and classifies startup state.
 ///
-/// Returns a `StartupOutcome` for every supported state. A sealed deployment
-/// additionally loads its application state under the lifecycle mutation permit
-/// and retains its open Application Database. `PostCommitReconciliationRequired`
-/// fails closed because reconciliation is not implemented.
+/// Returns a `StartupOutcome` for every supported state. A sealed deployment is
+/// classified from its record alone and then loads its application state under
+/// the lifecycle mutation permit, which reopens the Application Database
+/// read-write so a retained write-ahead log is recovered by the backend rather
+/// than treated as an uninspectable artifact. That load is the authority: a
+/// database that cannot be recovered, is corrupt, is bound to another
+/// deployment, or is not completely initialized fails startup closed before any
+/// listener binds. The retained open database is kept for the process lifetime.
+/// `PostCommitReconciliationRequired` fails closed because reconciliation is not
+/// implemented.
 pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartup, StartupError> {
     let store = LifecycleStore::open_or_create(state_root).map_err(map_open_error)?;
 

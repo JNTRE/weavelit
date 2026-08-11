@@ -251,15 +251,24 @@ symbolic link in the supplied database path. The lifecycle boundary must supply
 a symlink-free path beneath the protected Server state directory; protection of
 those parent directories remains a Server deployment responsibility.
 
-Before retained inspection opens SQLite, the backend checks the trusted derived
-WAL path through non-mutating filesystem metadata. An existing WAL returns an
-uninspectable retained-state result to the lifecycle boundary, which classifies
-it as the generic `lifecycle_interrupted` / `operator_redeploy_required` action.
-The backend does not open, copy, inspect, recover, checkpoint, clean up, or
-otherwise modify the original database, WAL, or shared-memory artifacts in that
-case.
+Retained inspection exists only for a pre-operational deployment, whose
+lifecycle state must be classified without mutating anything. Before it opens
+SQLite, the backend checks the trusted derived WAL path through non-mutating
+filesystem metadata. An existing WAL returns an uninspectable retained-state
+result to the lifecycle boundary, which classifies it as the generic
+`lifecycle_interrupted` / `operator_redeploy_required` action. The backend does
+not open, copy, inspect, recover, checkpoint, clean up, or otherwise modify the
+original database, WAL, or shared-memory artifacts in that case. This refusal is
+required rather than conservative: the inspection open below is immutable, so it
+would silently ignore the WAL and report stale main-file state as though it were
+the retained state, and no automatic reconciliation of an interrupted Init or
+Restore is safe.
 
-does not configure pragmas or WAL, apply migrations, create files or sidecars,
+A sealed deployment never reaches this path. The lifecycle boundary classifies
+an initialized record from the record alone and loads it through the ordinary
+read-write `SqliteDatabase::open` above, which lets SQLite recover the WAL
+normally before the deployment binding and initialized state are re-verified.
+
 Only when no WAL is present does retained inspection open a private absolute
 `file:` URI for the same trusted path. It percent-encodes every
 non-unreserved path byte while retaining separators and appends the fixed
