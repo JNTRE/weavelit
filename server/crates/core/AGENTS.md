@@ -22,11 +22,14 @@ Use this section as the source of truth for what assets belong in this directory
 - `weavelit-server/`: Weavelit Server executable crate.
 - `weavelit-server-authentication/`: Local password authentication core, the closed Argon2 profile allowlist, and session and CSRF secret material.
 - `weavelit-server-authorization/`: Group-based authorization decision, the additive effective-grant union, and the unforgeable decision proofs.
+- `weavelit-server-components/`: Neutral compiled-in component inventory shared by the workflows that check a deployment's declared components against what this build can actually serve.
+- `weavelit-server-init/`: Server-owned new-state workflow: the normalized initialization request, its semantic validation, recovery-key preparation and proof of possession, and construction of complete initial application state.
 - `weavelit-server-log/`: Typed Log Module contract and compiled-in catalog.
 - `weavelit-server-log-authority/`: Server-owned capability key that gates minting of trusted logging authority.
 - `weavelit-server-lifecycle/`: Backend-neutral lifecycle domain, validation, and runtime-supplied Application Database catalog contract.
 - `weavelit-server-observability/`: Server-owned construction and pre-redaction of System Log records.
 - `weavelit-server-operation/`: Post-authorization Service Connection selection and provider execution, structured so an authorization proof is spent at most once.
+- `weavelit-server-recovery-key/`: Canonical age recovery-key encoding shared by Init and Restore, and the delivery-nonce proof of possession that confirms a newly generated private key was retained.
 - `weavelit-server-restore/`: Server-owned backup envelope, decryption, compatibility, and restored-state validation.
 
 ## Usage Guidance

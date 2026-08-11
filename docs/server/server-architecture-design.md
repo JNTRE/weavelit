@@ -83,6 +83,8 @@ The pre-operational Server crates are:
 
 ```text
 weavelit-server-lifecycle
+weavelit-server-components
+weavelit-server-recovery-key
 weavelit-server-init
 weavelit-server-restore
 ```
@@ -171,6 +173,37 @@ settings and returns only the backend-neutral Application Database contract.
 This initial boundary contains no persistence, serialization, cryptography,
 SQLite implementation, Client Module, or runtime-composition dependency.
 
+`weavelit-server-components` owns the neutral compiled-in component inventory
+that **[Init](../glossary.md#states-and-requests)** and
+**[Restore](../glossary.md#states-and-requests)** are both judged against: the
+sets of **[Client Module](../glossary.md#applications-and-interfaces)**,
+**[MFA Module](../glossary.md#applications-and-interfaces)**,
+**[Service Module](../glossary.md#applications-and-interfaces)**, and
+**[Log Module](../glossary.md#applications-and-interfaces)** names, and the
+named operations, a build can actually serve. It owns the inventory value and
+its membership queries only. It takes no dependency on any module crate, so a
+core validation crate never acquires a Client Module's asset build or a Log
+Module's persistence toolchain, and the dependency direction from core crate to
+module implementation is never inverted. The `weavelit-server` runtime derives
+the inventory once from the compiled-in module crates' own identifier
+constants and supplies it to a workflow as an inbound value, so a build cannot
+report a module it does not compile in or omit one it does.
+
+`weavelit-server-recovery-key` owns the canonical
+**[Recovery Key](../glossary.md#states-and-requests)** representation shared by
+Init and Restore. It owns the accepted key syntax — a single canonical Bech32
+line, lowercase `age1` for a recipient and uppercase `AGE-SECRET-KEY-1` for an
+identity, with surrounding content, additional lines, wrong case, and
+non-canonical encoding rejected — the X25519 key agreement Restore performs
+against a submitted identity, key-pair generation and canonical delivery-line
+encoding for Init, delivery-nonce generation, the expected delivery proof, and
+its constant-time verification. The private value is non-cloneable, redacts in
+`Debug`, and clears on drop. The crate persists nothing and never exposes the
+private key bytes outside its own boundary, including as an HMAC key: only the
+public recipient, the delivery nonce, and the expected proof value are
+recordable. It owns no application state, backup interpretation, database
+access, or workflow orchestration.
+
 `weavelit-server-init` owns only the new-state workflow. It uses the lifecycle
 crate to select and reopen the Application Database and to validate and advance
 trusted lifecycle state. It owns initialization requests, first-user and
@@ -190,7 +223,10 @@ durable acknowledgement through the restored System Log assignment. It never exp
 recovery key or decrypted backup contents outside its Server-owned boundary.
 
 The Init and Restore crates depend on the lifecycle and Application Database
-contracts but do not depend on each other. Each mutating workflow entry point
+contracts and on the shared `weavelit-server-components` and
+`weavelit-server-recovery-key` crates, but do not depend on each other. Neither
+shared crate depends on a workflow crate, so the shared boundary carries no
+workflow behavior. Each mutating workflow entry point
 calls the lifecycle authority itself before reading secrets or backup content
 or causing side effects; a prior runtime or routing check is not sufficient.
 This dependency direction keeps lifecycle enforcement consistent without
