@@ -60,6 +60,7 @@ use weavelit_server_restore::Name;
 
 pub mod authentication;
 pub mod authorization;
+pub mod init;
 pub mod operational;
 pub mod restore;
 pub mod transport;
@@ -2061,8 +2062,8 @@ fn server_components() -> AvailableComponents {
 /// Composes and publishes the pre-operational surface of a running listener.
 ///
 /// The Web UI Client Module declares which capabilities it supplies; this
-/// composer supplies the trusted lifecycle authority and the Restore
-/// collaborators behind them, and pairs each Restore route with the transport
+/// composer supplies the trusted lifecycle authority and the Init and Restore
+/// collaborators behind them, and pairs each mounted route with the transport
 /// registration that admits its body. Every mounted path is exact, so an
 /// unknown target, including any `/api/` target, falls through to the fixed
 /// not-found response.
@@ -2070,6 +2071,9 @@ struct PreoperationalComposer {
     composition: PreoperationalComposition,
     listener: SocketAddr,
     orchestrator: Arc<restore::RestoreOrchestrator>,
+    /// Absent only for a build whose administration Client Module is not
+    /// compiled in, which can declare no Init at all.
+    init: Option<Arc<init::InitOrchestrator>>,
     serving_modes: Arc<ServingModeSwitch>,
     /// Present only for a startup that classified an already-sealed record.
     /// It owns the Application Database that startup handed over, so the
@@ -2084,10 +2088,26 @@ impl PreoperationalComposer {
         listener: SocketAddr,
         serving_modes: &Arc<ServingModeSwitch>,
     ) -> Arc<Self> {
+        Self::with_clock(startup, listener, serving_modes, init::system_event_clock())
+    }
+
+    /// Composes against an explicit event clock.
+    ///
+    /// Production always supplies the host clock through [`Self::new`]. The
+    /// clock is a parameter only so a test can assert the exact time an Init
+    /// completion record carries without reading the wall clock it is
+    /// asserting against.
+    fn with_clock(
+        startup: &RestrictedStartup,
+        listener: SocketAddr,
+        serving_modes: &Arc<ServingModeSwitch>,
+        clock: init::EventClock,
+    ) -> Arc<Self> {
         let components = server_components();
-        // Both sealing paths compose their operational surface from this one
-        // value, so a deployment sealed at startup and a deployment sealed by a
-        // Restore serve the same routes against the same authority.
+        // Every sealing path composes its operational surface from this one
+        // value, so a deployment sealed at startup, a deployment sealed by an
+        // Init, and a deployment sealed by a Restore serve the same routes
+        // against the same authority.
         let operational_runtime = Arc::new(OperationalRuntime {
             listener,
             state_root: startup.state_root.clone(),
@@ -2102,9 +2122,16 @@ impl PreoperationalComposer {
             listener,
             orchestrator: restore::RestoreOrchestrator::new(
                 startup,
+                components.clone(),
+                Arc::clone(serving_modes),
+                Arc::clone(&operational_runtime),
+            ),
+            init: init::InitOrchestrator::with_clock(
+                startup,
                 components,
                 Arc::clone(serving_modes),
                 Arc::clone(&operational_runtime),
+                clock,
             ),
             serving_modes: Arc::clone(serving_modes),
             operational: startup.sealed.as_ref().map(|sealed| {
@@ -2120,10 +2147,15 @@ impl PreoperationalComposer {
     /// Publishes the surface a classified startup begins with.
     ///
     /// The fail-closed mode mounts no route at all and therefore carries no
-    /// transport registration. The pre-operational mode registers Restore when
-    /// the deployment is eligible for one, and the operational mode is composed
-    /// by the operational composer, which pairs every Server-owned route it
-    /// mounts with the registration that admits it. Neither mounts Restore.
+    /// transport registration. The pre-operational mode registers Init
+    /// preparation and Restore when the deployment is eligible for them, and
+    /// the operational mode is composed by the operational composer, which
+    /// pairs every Server-owned route it mounts with the registration that
+    /// admits it. Neither mounts Init or Restore.
+    ///
+    /// A record already inside an Init cannot be resumed. A restart over one
+    /// never reaches this composer at all, because startup classification fails
+    /// closed before a listener is bound.
     fn publish_initial(self: &Arc<Self>, outcome: StartupOutcome) {
         match outcome {
             StartupOutcome::UninitializedWithoutDatabase => self.publish(false),
@@ -2145,18 +2177,32 @@ impl PreoperationalComposer {
             .publish_preoperational(self.surface(database_selected));
     }
 
-    /// Composes the pre-operational surface, mounting Restore only when the
-    /// deployment has already selected an Application Database.
+    /// Composes the pre-operational surface, mounting Init preparation and
+    /// Restore only when the deployment has already selected an Application
+    /// Database.
+    ///
+    /// Init finalization is deliberately absent here. It becomes reachable only
+    /// once a recovery key has actually been written to a client, through
+    /// [`Self::publish_finalization`].
     fn surface(self: &Arc<Self>, database_selected: bool) -> MountedSurface {
         let expected_origin = ExpectedOrigin::from_listener(self.listener);
         let restore = database_selected.then(|| self.orchestrator.capability(expected_origin));
+        let init = database_selected
+            .then(|| {
+                self.init
+                    .as_ref()
+                    .map(|init| init.capability(expected_origin))
+            })
+            .flatten();
         let (declared, restore) = weavelit_module_client_webui::preoperational_surface(
             self.composition.projection_source(),
             expected_origin,
             self.selection_commit(),
             restore,
+            init,
         )
         .split_restore();
+        let (declared, init) = declared.split_init();
 
         let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
         if let Some(restore) = restore {
@@ -2177,11 +2223,79 @@ impl PreoperationalComposer {
                     },
                 ));
         }
+        if let (Some(init), Some(orchestrator)) = (init, self.init.as_ref()) {
+            // The declared route is wrapped so the one response that really
+            // delivered a key, and no other, carries the post-write action that
+            // publishes finalization.
+            let key_route =
+                init::delivering_route(init.recovery_key_route(), self.delivery_publication());
+            surface = surface.with_capability(TransportCapability::new(
+                orchestrator.recovery_key_registration(expected_origin),
+                move |router| {
+                    router.route(weavelit_module_client::INIT_RECOVERY_KEY_ROUTE, key_route)
+                },
+            ));
+        }
         surface
     }
 
+    /// Composes the surface this Server serves while a delivered recovery key
+    /// awaits its finalization request.
+    ///
+    /// Only finalization is mounted. The status projection, Application
+    /// Database selection, Restore, and browser asset delivery are absent, so
+    /// the already-loaded page that holds the key has exactly one call left to
+    /// make and a new client has none.
+    fn finalization_surface(
+        self: &Arc<Self>,
+        orchestrator: &Arc<init::InitOrchestrator>,
+    ) -> MountedSurface {
+        let expected_origin = ExpectedOrigin::from_listener(self.listener);
+        let (declared, init) = weavelit_module_client_webui::finalization_surface(
+            orchestrator.capability(expected_origin),
+        )
+        .split_init();
+
+        let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
+        if let Some(init) = init {
+            let route = init.finalize_route();
+            surface = surface.with_capability(TransportCapability::new(
+                orchestrator.finalization_registration(expected_origin),
+                move |router| router.route(weavelit_module_client::INIT_ROUTE, route),
+            ));
+        }
+        surface
+    }
+
+    /// Returns the action the listener runs once a key response is written.
+    ///
+    /// This is the same republication mechanism a committed database selection
+    /// uses: a commit that changes what may be mounted republishes the surface
+    /// rather than mounting a route that then denies itself.
+    fn delivery_publication(self: &Arc<Self>) -> init::DeliveryPublication {
+        let composer = Arc::clone(self);
+        Arc::new(move || composer.publish_finalization())
+    }
+
+    /// Promotes a written delivery and publishes the finalization surface.
+    ///
+    /// Nothing is published unless the delivery was actually promoted, so a
+    /// write failure, a disconnect, and an expired budget all leave this Server
+    /// fail closed with no finalization route at all.
+    fn publish_finalization(self: &Arc<Self>) {
+        let Some(orchestrator) = self.init.clone() else {
+            return;
+        };
+        if !orchestrator.acknowledge_delivery() {
+            return;
+        }
+        self.serving_modes
+            .publish_preoperational(self.finalization_surface(&orchestrator));
+    }
+
     /// Wraps the lifecycle selection commit so a successful selection also
-    /// republishes the surface that selection made Restore eligible on.
+    /// republishes the surface that selection made Init and Restore eligible
+    /// on.
     fn selection_commit(self: &Arc<Self>) -> SelectionCommit {
         let composer = Arc::clone(self);
         let commit = self.composition.selection_commit();
@@ -2431,9 +2545,9 @@ pub(crate) mod tests {
         APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
         AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
         AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_SESSION_ROUTE,
-        DatabaseSelectionRejection, ExpectedOrigin, InitRejection, RESTORE_ARTIFACT_ROUTE,
-        RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, RestoreDeclaration, RestoreRejection,
-        STATUS_ROUTE,
+        DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE,
+        InitRejection, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME,
+        RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
     };
     use weavelit_server_database::{
         ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
@@ -2627,7 +2741,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn anchor_snapshot(state_root: &Path) -> Vec<(OsString, Vec<u8>, i64, i64)> {
+    pub(crate) fn anchor_snapshot(state_root: &Path) -> Vec<(OsString, Vec<u8>, i64, i64)> {
         let mut entries = std::fs::read_dir(state_root)
             .unwrap()
             .filter_map(|entry| {
@@ -7718,7 +7832,8 @@ pub(crate) mod tests {
     ///
     /// The fail-closed mode mounts nothing and therefore registers nothing. The
     /// operational mode registers only its authentication routes, and the
-    /// pre-operational mode registers Restore only where Restore is eligible.
+    /// pre-operational mode registers Init preparation and Restore only where a
+    /// selected Application Database makes them eligible.
     #[test]
     fn each_serving_mode_carries_exactly_the_registrations_its_routes_need() {
         let (modes, _receiver) = watch::channel(ServingMode::FailClosed(
@@ -7756,16 +7871,28 @@ pub(crate) mod tests {
         }
 
         // The only pre-operational mode that carries a registration is the one
-        // that mounts Restore, the one large-body route this Server serves.
+        // a selected Application Database makes eligible: the two Restore
+        // routes and Init's recovery-key preparation. Init finalization is
+        // deliberately absent until a key has actually been delivered.
         let with_restore = Surface::new(StartupOutcome::UninitializedWithDatabase);
         let (_switch, modes) =
             published_serving_modes(&with_restore.startup, UNBOUND_LISTENER.parse().unwrap());
+        let registered = modes.borrow().surface().registry().registered_routes();
         assert_eq!(
-            modes.borrow().surface().registry().registered_routes(),
+            registered,
             vec![
                 (Method::PUT, RESTORE_ROUTE),
                 (Method::PUT, RESTORE_ARTIFACT_ROUTE),
+                (Method::PUT, INIT_RECOVERY_KEY_ROUTE),
             ]
+        );
+        // Named explicitly rather than left to the equality above, so that
+        // adding a registration to this surface cannot quietly bring
+        // finalization with it. Its body profile comes from its registration,
+        // so an unregistered finalization route is also an unadmitted one.
+        assert!(
+            !registered.iter().any(|(_, route)| *route == INIT_ROUTE),
+            "finalization must not be registered before a key is delivered"
         );
     }
 

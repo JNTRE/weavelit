@@ -73,9 +73,9 @@ Route groups:
 - `/api/v1/init/recovery-key` and `/api/v1/init` are the two requests of the
   Init submission protocol. Their behavior is fixed by the
   [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md).
-  The shared `weavelit-module-client` crate implements this contract, but no
-  Client Module declares it yet and no runtime orchestrator mounts it, so
-  Init is not yet reachable end to end.
+  The Web UI Client Module declares this contract and the `weavelit-server`
+  runtime mounts it, so Init is reachable end to end over the API; no Web UI
+  browser workflow drives it yet.
 - `/api/v1/restore` and `/api/v1/restore/artifact` are the two requests of the
   Restore submission protocol. Their behavior is fixed by the
   [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md).

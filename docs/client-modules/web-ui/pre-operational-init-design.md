@@ -44,13 +44,20 @@ The `weavelit-module-client` crate implements both routes, their request
 schemas, and the complete rejection contract described below, with direct
 tests for schema validation, header preconditions, proof-of-possession shape
 checking, both success envelopes, and redaction of every submitted or
-delivered secret. Neither route is yet declared by a compiled-in Client Module
-nor composed and mounted by the `weavelit-server` runtime: no Client Module
-supplies an `InitCapability`, and no orchestrator joins these routes to the
-Server-owned Init contract the way `weavelit-server`'s Restore composition
-joins the Restore routes. This document fixes the contract the implemented
-crate already serves; it does not describe a currently reachable Server
-interface, and Init is not yet usable end to end.
+delivered secret. The Web UI Client Module declares this contract by supplying
+an `InitCapability`, and the `weavelit-server` runtime composes and mounts it
+the way it composes Restore: the recovery-key route is mounted whenever an
+Application Database is selected, and the finalization route is mounted only
+after the recovery-key response has actually been written, as the
+[Server Init Design](../../server/lifecycle/init/init-design.md#recovery-key-delivery-and-finalization)
+defines. Init is reachable and fully tested over the API this contract
+describes.
+
+No browser workflow drives Init yet. The
+[Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
+does not yet implement the first-launch screens that would submit these two
+requests, so a person cannot complete Init through the Web UI until that
+application work exists.
 
 ## Ownership And Capability
 
@@ -268,16 +275,16 @@ and CSRF rejection; an absent, empty, and malformed proof of possession; both
 success envelopes; and the absence of any submitted secret or delivered key
 from a rendered rejection, request, or debug form.
 
-Implementation must add contract tests proving the mounting behavior once a
-Client Module declares this capability and a runtime orchestrator composes it
-with the Server-owned Init contract: that the finalization route is reachable
-only after the recovery-key route has responded, that a proof mismatch and a
-lifecycle state that no longer permits Init are correctly mapped, that neither
-route is mounted before an Application Database is selected or after the
-deployment is sealed, and that a stale surface still mounting both routes is
-rejected at request time rather than by route absence. Web UI end-to-end tests
-must drive both requests through the real release Server binary once that
-composition exists. The Server quality gate remains `make -C server check`.
+`weavelit-server`'s composition tests now prove the mounting behavior: that
+the finalization route is reachable only after the recovery-key route has
+actually written its response, that a proof mismatch and a lifecycle state
+that no longer permits Init are correctly mapped, that neither route is
+mounted before an Application Database is selected or after the deployment is
+sealed, and that a stale surface still mounting both routes is rejected at
+request time rather than by route absence. Web UI end-to-end tests must still
+drive both requests through the real release Server binary once the Web UI
+application implements a first-launch workflow; no such coverage exists yet.
+The Server quality gate remains `make -C server check`.
 
 ## Related Documents
 

@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+base64 = { version = "=0.23.0", default-features = false, features = ["alloc"] }
 getrandom = { version = "=0.4.3", default-features = false }
 http-body-util = "=0.1.4"
 httparse = "=1.10.1"
@@ -27,10 +28,12 @@ weavelit-server-authorization = { path = "../weavelit-server-authorization" }
 weavelit-server-components = { path = "../weavelit-server-components" }
 weavelit-server-database = { path = "../../database/weavelit-server-database" }
 weavelit-server-database-sqlite = { path = "../../database/weavelit-server-database-sqlite" }
+weavelit-server-init = { path = "../weavelit-server-init" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
 weavelit-server-log = { path = "../weavelit-server-log" }
 weavelit-server-log-authority = { path = "../weavelit-server-log-authority" }
 weavelit-server-observability = { path = "../weavelit-server-observability" }
+weavelit-server-recovery-key = { path = "../weavelit-server-recovery-key" }
 weavelit-server-restore = { path = "../weavelit-server-restore" }
 weavelit-module-client = { path = "../../modules/client/weavelit-module-client" }
 weavelit-module-client-webui = { path = "../../modules/client/weavelit-module-client-webui" }

@@ -1429,6 +1429,7 @@ name = "weavelit-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.0",
  "getrandom 0.4.3",
  "http-body-util",
  "httparse",
@@ -1449,10 +1450,12 @@ dependencies = [
  "weavelit-server-components",
  "weavelit-server-database",
  "weavelit-server-database-sqlite",
+ "weavelit-server-init",
  "weavelit-server-lifecycle",
  "weavelit-server-log",
  "weavelit-server-log-authority",
  "weavelit-server-observability",
+ "weavelit-server-recovery-key",
  "weavelit-server-restore",
  "zeroize",
 ]

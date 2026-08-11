@@ -145,6 +145,14 @@ pub enum PreBodyRejection {
     /// The deployment lifecycle no longer permits the workflow the route
     /// serves, even though the router that accepted the connection mounts it.
     RestoreNotAllowed,
+    /// The deployment lifecycle no longer permits the Init operation the route
+    /// serves, even though the router that accepted the connection mounts it.
+    ///
+    /// This is the pre-body form of
+    /// [`weavelit_module_client::InitRejection::AlreadyInitialized`], so a
+    /// stale Init request is refused with exactly the code the mounted route
+    /// would have returned, before any submitted secret is read or allocated.
+    AlreadyInitialized,
 }
 
 impl PreBodyRejection {
@@ -164,6 +172,9 @@ impl PreBodyRejection {
             ),
             Self::RestoreNotAllowed => {
                 json_fixed_response(StatusCode::CONFLICT, "{\"error\":\"restore_not_allowed\"}")
+            }
+            Self::AlreadyInitialized => {
+                json_fixed_response(StatusCode::CONFLICT, "{\"error\":\"already_initialized\"}")
             }
         }
     }

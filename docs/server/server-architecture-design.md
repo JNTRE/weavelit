@@ -342,35 +342,49 @@ that reads the projection live on every request, and the selection route
 delegates its decision to a Server-supplied commit hook that returns the
 projection observed under the same exclusive mutation permit that committed the
 selection. A status read therefore cannot report a value captured at startup or
-disagree with a completed selection. A future Init workflow must reuse this same
-arbiter; composing a second one would defeat serialization between selection and
-Init. The expected same-origin authority passed to the selection route is the
-socket address the listener actually bound, never a request header or a
-certificate subject alternative name.
+disagree with a completed selection. Init and Restore each reuse this same
+arbiter; composing a second one would defeat serialization between selection,
+Init, and Restore. The expected same-origin authority passed to the selection
+route is the socket address the listener actually bound, never a request
+header or a certificate subject alternative name.
 
-### Restore Orchestration Composition
+### Init And Restore Orchestration Composition
 
-The `weavelit-server` runtime owns the only composition that joins the Restore
-validation crate to the lifecycle typestate chain. Neither crate depends on the
-other, so the ordering that makes a Restore safe is a runtime responsibility
-rather than a property either crate can enforce alone. The orchestration takes
+The `weavelit-server` runtime owns the only composition that joins the Init and
+Restore validation crates to the lifecycle typestate chain. Neither crate
+depends on the other or on its counterpart workflow crate, so the ordering that
+makes each workflow safe is a runtime responsibility rather than a property
+either crate can enforce alone. The Restore orchestration takes
 already-received bytes instead of a request, so the transport that delivers a
-backup is composed over it without being able to change that ordering.
+backup is composed over it without being able to change that ordering. The
+Init orchestration instead gates one of its own two routes on a
+runtime-observed event: the recovery-key route is mounted whenever the
+deployment has selected an Application Database, but the finalization route is
+mounted only after the recovery-key response has actually been written, so a
+route the transport declares is not necessarily a route this composition has
+made reachable. The
+[Server Init Design](lifecycle/init/init-design.md#recovery-key-delivery-and-finalization)
+owns this delivery-gated mounting and Init's asymmetric failure handling in
+detail.
 
-The orchestration shares the startup composition's workflow arbiter and its
-single-permit mutation lane, so a Restore serializes against pre-operational
-Application Database selection instead of racing it. It acquires that lane
-without waiting: a Restore that queued would hold its artifact and recovery key
-resident for the whole wait, and the Restore contract already admits one
-operation at a time.
+Each orchestration shares the startup composition's workflow arbiter and its
+single-permit mutation lane, so Init and Restore each serialize against
+pre-operational Application Database selection, and against each other,
+instead of racing it. Both acquire that lane without waiting: a queued Restore
+would hold its artifact and recovery key resident for the whole wait, and a
+queued Init would hold prepared key material resident the same way; both
+contracts already admit one operation at a time.
 
-The whole authorize-through-seal chain runs in one blocking task. That keeps the
-exclusive workflow permit, the checkpoint, the durable acknowledgement, and the
-seal on a single thread with no cancellation point between them, so no caller
-timeout can abandon a deployment mid-replacement. The runtime constructs the
-Server Log Authority and Server Observability inside this composition and
-retains the authority privately, so no other caller can mint a trusted record
-issuer or a trusted Log Module context.
+Each workflow's whole authorize-through-seal chain runs in one blocking task.
+That keeps the exclusive workflow permit, the checkpoint, the durable
+acknowledgement, and the seal on a single thread with no cancellation point
+between them, so no caller timeout can abandon a deployment mid-replacement;
+Init's finalization additionally reacquires its own permit through a fresh
+reauthorization rather than holding the one preparation used across the
+person's key-saving pause. The runtime constructs the Server Log Authority and
+Server Observability inside this composition and retains the authority
+privately, so no other caller can mint a trusted record issuer or a trusted Log
+Module context.
 
 A sealed startup uses that same arbiter to load the deployment's application
 state. The load runs under the exclusive mutation permit and independently
@@ -385,9 +399,9 @@ Operational routes read through that same handed-over handle rather than
 reopening the target, so a running deployment never holds two open handles to
 one Application Database file. The handle is shared behind an exclusive lane, so
 concurrent operational requests serialize on it exactly as lifecycle mutations
-serialize on the workflow arbiter's lane. A completed in-process Restore hands
-over the handle it committed through in the same way, so activation without a
-restart does not reopen the database it just replaced.
+serialize on the workflow arbiter's lane. A completed in-process Init or
+Restore hands over the handle it committed through in the same way, so
+activation without a restart does not reopen the database it just replaced.
 
 The implementation selects minimal features and exact crates.io versions for
 Axum, Hyper, Tokio, and their required adapters under the dependency policy

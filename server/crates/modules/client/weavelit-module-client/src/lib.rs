@@ -121,6 +121,7 @@ pub struct PreoperationalSurface {
     status: Option<ProjectionSource>,
     database_selection: Option<(ExpectedOrigin, SelectionCommit)>,
     restore: Option<RestoreDeclaration>,
+    init: Option<InitDeclaration>,
     assets: Option<Router>,
 }
 
@@ -165,6 +166,30 @@ impl PreoperationalSurface {
         (self, restore)
     }
 
+    /// Declares the two-step Init submission capability.
+    ///
+    /// Init is declared only where it is eligible, exactly as Restore is. A
+    /// surface composed before an Application Database has been selected, a
+    /// fail-closed surface, and an operational surface carry no declaration at
+    /// all, so neither Init route exists to be denied.
+    pub fn with_init(mut self, capability: InitCapability) -> Self {
+        self.init = Some(InitDeclaration::new(capability));
+        self
+    }
+
+    /// Separates the declared Init capability from the rest of the surface.
+    ///
+    /// Both Init routes need a transport registration the Server core owns,
+    /// and the two are never published together: the finalization route
+    /// becomes reachable only once the recovery key has actually been
+    /// delivered. Handing the declaration back is what lets the core mount
+    /// each route with its own registration at its own moment.
+    #[must_use]
+    pub fn split_init(mut self) -> (Self, Option<InitDeclaration>) {
+        let init = self.init.take();
+        (self, init)
+    }
+
     /// Declares client-specific asset delivery, which owns its own exact paths.
     pub fn with_assets(mut self, assets: Router) -> Self {
         self.assets = Some(assets);
@@ -180,7 +205,11 @@ impl PreoperationalSurface {
     /// a transport registration, which grants it only the listener's default
     /// body bound. A composer that must serve real artifact uploads takes the
     /// declaration through [`PreoperationalSurface::split_restore`] first and
-    /// mounts each route together with its registration.
+    /// mounts each route together with its registration. An Init declaration
+    /// this surface still holds is mounted the same way, and mounts both Init
+    /// routes at once; a composer that must publish finalization only after a
+    /// delivered key takes the declaration through
+    /// [`PreoperationalSurface::split_init`] first.
     pub fn mount(self, router: Router) -> Router {
         let router = match self.status {
             Some(projection) => router.route(STATUS_ROUTE, preoperational_status_route(projection)),
@@ -197,6 +226,12 @@ impl PreoperationalSurface {
             Some(restore) => router
                 .route(restore::RESTORE_ROUTE, restore.key_route())
                 .route(restore::RESTORE_ARTIFACT_ROUTE, restore.artifact_route()),
+            None => router,
+        };
+        let router = match self.init {
+            Some(init) => router
+                .route(init::INIT_RECOVERY_KEY_ROUTE, init.recovery_key_route())
+                .route(init::INIT_ROUTE, init.finalize_route()),
             None => router,
         };
         match self.assets {

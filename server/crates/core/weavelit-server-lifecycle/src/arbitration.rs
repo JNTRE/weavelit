@@ -451,6 +451,22 @@ pub struct PendingWorkflow<'arbiter> {
 }
 
 impl<'arbiter> PendingWorkflow<'arbiter> {
+    /// Returns the deployment identifier this pending workflow is bound to.
+    pub fn deployment_identifier(&self) -> DeploymentIdentifier {
+        self.store.record().deployment_identifier()
+    }
+
+    /// Returns the capability that protects application secrets at rest.
+    ///
+    /// This is the store itself rather than the arbiter, because a pending
+    /// workflow already holds the store's exclusive guard: sealing through the
+    /// arbiter would take the same lock a second time and deadlock. A paused
+    /// Init therefore seals its submitted secrets through the exact permit it
+    /// is about to complete its checkpoint under.
+    pub fn sealer(&self) -> &dyn ProtectedValueSealer {
+        &*self.store
+    }
+
     /// Atomically replaces this exact checkpoint with complete application state.
     pub fn complete_checkpoint(
         mut self,

@@ -2,11 +2,15 @@
 
 This crate assembles the trusted restricted lifecycle startup runtime, composes
 the SQLite backend catalog, and classifies startup state before any capability
-is exposed. It also owns the Server-core local authentication route layer
-(login, session validation, logout, TOTP second-factor verification, and TOTP
-enrollment) and the live authorization composition that evaluates every User
-Plane and Administration Plane request once a deployment is sealed. Provider
-integrations remain deferred to later epics.
+is exposed. It composes the Init and Restore orchestrations that join their
+validation crates to the lifecycle typestate chain, gate each workflow's route
+mounting on lifecycle eligibility and, for Init finalization, on a written
+recovery-key response, and activate normal operation in-process. It also owns
+the Server-core local authentication route layer (login, session validation,
+logout, TOTP second-factor verification, and TOTP enrollment) and the live
+authorization composition that evaluates every User Plane and Administration
+Plane request once a deployment is sealed. Provider integrations remain
+deferred to later epics.
 
 ## Purpose and Scope
 
@@ -46,6 +50,14 @@ Use this section as the source of truth for what assets belong in this directory
   uncached reads of the account's grants and component enablement on every
   call, and best-effort authorization-denial System Log dispatch before a
   denial is returned.
+- `src/init.rs`: Server-owned Init orchestration and its two-request submission
+  protocol: the delivery stage that prepares the recovery-key checkpoint and
+  releases the lifecycle mutex, database handle, and mutation-lane permit
+  before the key is saved, the post-write publication that mounts finalization
+  only after the key response is actually written, reauthorization and
+  proof-of-possession verification, Log Module assignment preflight, the one
+  blocking commit-through-activation chain, and the asymmetric
+  actionable-versus-fail-closed failure handling.
 - `src/operational.rs`: The single operational composition seam: the shared
   Application Database handle a sealed workflow hands over, the operational
   composer that mounts the Web UI operational surface and the authentication

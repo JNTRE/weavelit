@@ -153,6 +153,22 @@ key long enough to finalize Init; safeguarding the downloaded private key
 outside Weavelit remains the responsibility of the person completing Init. The
 Server never redisplays a private key associated with an existing checkpoint.
 
+The runtime mounts the recovery-key route whenever the deployment has already
+selected an Application Database, the same eligibility Restore uses. It mounts
+the finalization route only after the recovery-key response has actually been
+written to the requesting client, confirmed by a listener-owned response-write
+acknowledgement rather than by the checkpoint's existence alone. A write
+failure, a client disconnect, or an expired response budget leaves this
+process fail closed with no finalization route at all, even though the
+checkpoint already exists; nothing reopens, discards, or retries that
+checkpoint automatically. A written response is the one observable event the
+runtime treats as ruling out the Server having failed to send the key; it is
+not proof that a person received or retained it. Preparation itself retains no
+lifecycle mutex, Application Database handle, or mutation-lane permit once the
+checkpoint is durable: the permit, the handle, and the lane are all released
+before the recovery-key response is produced, so none of them is held while
+the person saves that key outside Weavelit.
+
 The delivered key remains a canonical age key, unchanged; only the proof
 mechanism above is Init-specific, and it does not alter Restore's accepted key
 syntax or backup recovery. This design stores the expected HMAC-SHA-256 proof
@@ -162,24 +178,41 @@ finalize Init on a retained `InitializationPending` checkpoint. Such a reader
 already possesses the database and the deployment's retained state, so this
 does not lower the effective boundary the design otherwise relies on.
 
-If delivery, validation, final persistence, System Log completion,
-deployment-record sealing, or in-process activation is interrupted after the
-checkpoint exists, the Server exposes no routes and fails closed. On restart,
-the shared lifecycle classifies the retained state with the stable
-`lifecycle_interrupted` / `operator_redeploy_new` diagnostic; it does not
-redisplay a key, resume Init, retry a request or completion log, reset the
-checkpoint, delete retained state, or seal the deployment. The operator may
-preserve the failed root for diagnosis or evidence, or discard it and redeploy
-before beginning a new Init. An external Log Module destination may retain a
-non-application artifact created during validation; cleanup remains that
-module's design and is not a lifecycle recovery action.
+If delivery, final persistence, System Log completion, deployment-record
+sealing, or in-process activation fails after the checkpoint exists, this
+process's Init ends permanently: the runtime fails closed immediately, exposing
+no route at all, and does not retry, reset, or reconcile the retained state.
+Request or proof validation failing is different and deliberately asymmetric:
+a malformed or non-matching proof, or a submitted request the Log Module or
+backend confirmation rejects, preserves same-process finalization with the
+existing checkpoint and delivered key intact, so a person corrects their input
+and retries the same finalization request without being issued another key.
+
+Restart behavior does not depend on that in-process distinction. A restart
+over any Init checkpoint — whether a recovery key was ever delivered, whether
+a person had already retried an actionable rejection, or whether this process
+had already failed closed — classifies the retained state with the stable
+`lifecycle_interrupted` / `operator_redeploy_new` diagnostic and exposes no
+route. It does not redisplay a key, resume Init, retry a request or completion
+log, reset the checkpoint, delete retained state, or seal the deployment. Init
+is deliberately not restart-resumable: only a fresh deployment, never this
+Server process resuming its own retained state, can complete an interrupted
+Init. The operator may preserve the failed root for diagnosis or evidence, or
+discard it and redeploy before beginning a new Init. An external Log Module
+destination may retain a non-application artifact created during a failed
+finalization attempt; cleanup remains that module's design and is not a
+lifecycle recovery action.
 
 ## Concurrency, Lifecycle, And Errors
 
 The lifecycle crate serializes deployment-record and locator mutation across
 **[Init](../../../glossary.md#states-and-requests)** and Restore. Recovery-key
 preparation and finalization run only under its exclusive workflow mutation
-permit. The
+permit. Finalization's reauthorization, proof verification, request
+validation, Log Module preflight, checkpoint replacement, completion delivery,
+sealing, and activation all run in one blocking task with no cancellation
+point between them, so no caller timeout can abandon a deployment
+mid-replacement. The
 **[Application Database](../../../glossary.md#applications-and-interfaces)**'s atomic
 state transitions remain the final one-time guard. Concurrent or stale requests
 are rechecked against current trusted state; at most one workflow can commit,
@@ -228,11 +261,17 @@ new-state persistence. Init-capable
 verify one-time private-key delivery, finalization, normalized errors, rejection
 of normal functions before Init, and rejection of Init after completion. Shared
 lifecycle tests own status, database selection, startup classification, and seal
-interruption classification. Server process tests verify the in-process
-transition to normal operation.
-**[Web UI](../../../glossary.md#applications-and-interfaces)** end-to-end tests cover
-the complete first-launch workflow and fail-closed handling of an interrupted
-delivery.
+interruption classification. `weavelit-server`'s own composition tests drive
+Init through its production route composition end to end: recovery-key and
+finalization route mounting eligibility, the finalization route staying
+unmounted until the recovery-key response is actually written, the asymmetric
+actionable-versus-fail-closed outcome at every failure stage, the one-time
+`AlreadyInitialized` guard at the mounted routes, restart's
+`lifecycle_interrupted` / `operator_redeploy_new` reclassification over a
+retained checkpoint, and the in-process transition to normal operation. No Web
+UI browser workflow exercises first-launch Init yet; Init is reachable and
+fully tested over the API, but no browser affordance drives it, so no Web UI
+end-to-end coverage exists for it.
 
 ## Related Documents
 

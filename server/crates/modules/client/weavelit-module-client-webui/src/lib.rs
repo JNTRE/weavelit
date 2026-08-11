@@ -18,8 +18,8 @@ use axum::{
     routing::any,
 };
 pub use weavelit_module_client::{
-    ExpectedOrigin, OperationalSurface, PreoperationalSurface, ProjectionSource, RestoreCapability,
-    SelectionCommit,
+    ExpectedOrigin, InitCapability, OperationalSurface, PreoperationalSurface, ProjectionSource,
+    RestoreCapability, SelectionCommit,
 };
 use weavelit_module_client::{has_request_body, json_response, json_response_with_allow};
 
@@ -40,20 +40,42 @@ pub const MODULE_IDENTIFIER: &str = "web-ui";
 /// which it does only once an Application Database has been selected. Before
 /// that, and on the fail-closed and operational surfaces, neither Restore route
 /// exists.
+///
+/// Init is declared on exactly the same terms and from the same eligibility:
+/// the Web UI is the Init-capable Client Module of this build, so it declares
+/// the capability whenever the Server core supplies it, and declares nothing
+/// when it does not.
 pub fn preoperational_surface(
     projection: ProjectionSource,
     expected_origin: ExpectedOrigin,
     commit: SelectionCommit,
     restore: Option<RestoreCapability>,
+    init: Option<InitCapability>,
 ) -> PreoperationalSurface {
     let surface = PreoperationalSurface::default()
         .with_status(projection)
         .with_database_selection(expected_origin, commit)
         .with_assets(embedded_asset_routes());
-    match restore {
+    let surface = match restore {
         Some(restore) => surface.with_restore(restore),
         None => surface,
+    };
+    match init {
+        Some(init) => surface.with_init(init),
+        None => surface,
     }
+}
+
+/// Returns the surface this Client Module declares while a delivered recovery
+/// key awaits its finalization request.
+///
+/// The one-time private key has already left the Server, so the deployment is
+/// committed to finishing that Init or to nothing at all. The Web UI therefore
+/// declares only Init: the status projection, Application Database selection,
+/// Restore, and browser asset delivery are absent rather than mounted and
+/// denied, and the already-loaded page has exactly one call left to make.
+pub fn finalization_surface(init: InitCapability) -> PreoperationalSurface {
+    PreoperationalSurface::default().with_init(init)
 }
 
 /// Returns the operational surface this Client Module declares.
