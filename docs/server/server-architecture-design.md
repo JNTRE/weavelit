@@ -1033,14 +1033,18 @@ every dependency-resolution change.
 
 #### `subtle`
 
-- **Source and version:** crates.io `=2.6.1`.
+- **Source and version:** crates.io `=2.6.1`, pinned in `[workspace.dependencies]`.
 - **Owner and behavior:** `weavelit-server-authentication` compares a stored
   session or CSRF token digest against a submitted one without a
-  data-dependent branch or early return. The standard library's `PartialEq` for
-  byte arrays is permitted to short-circuit, which would leak digest prefix
-  agreement through timing. The package is already in the locked graph as a
-  transitive dependency of `password-hash` and `curve25519-dalek`; this record
-  approves it as a direct dependency.
+  data-dependent branch or early return. `weavelit-server-database` uses the
+  same trait for the stored session and CSRF digest types in its live session
+  contract, so the decision to accept a stored row as the presented session is
+  constant time. Two workspace crates now require the package, so its shared
+  configuration is owned by the workspace manifest. The standard library's
+  `PartialEq` for byte arrays is permitted to short-circuit, which would leak
+  digest prefix agreement through timing. The package is already in the locked
+  graph as a transitive dependency of `password-hash` and `curve25519-dalek`;
+  this record approves it as a direct dependency.
 - **Features:** default features are disabled and no optional feature is
   enabled. `std`, `i128`, `const-generics`, and the nightly
   `core_hint_black_box` feature are excluded; the crate uses only the

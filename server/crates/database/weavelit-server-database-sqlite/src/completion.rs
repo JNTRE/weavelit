@@ -7,6 +7,7 @@ use weavelit_server_database::{
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::inspection::inspect_connection;
+use crate::session;
 use crate::state;
 
 impl SqliteDatabase {
@@ -33,6 +34,10 @@ impl SqliteDatabase {
             DatabaseInspection::Pending(_) => return Err(DatabaseError::InvalidState),
         }
 
+        // Live sessions are cleared inside the replacement itself, so a
+        // Restore cannot leave a session that authenticates against replaced
+        // state and no interruption can land between the two.
+        session::clear(&transaction)?;
         state::write(&transaction, application_state)?;
         let replaced = transaction
             .execute(

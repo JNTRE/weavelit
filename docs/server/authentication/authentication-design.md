@@ -97,9 +97,41 @@ The session uses a balanced lifetime policy: a 30-minute idle timeout, a
 or `Expires` attribute.
 
 The stored hash is domain-separated, so a session hash and a CSRF hash of the
-same bytes are different values. A stored hash is compared only in constant
-time, and neither a token nor a stored hash renders through `Debug` or
-`Display`; both produce a fixed redacted string instead.
+same bytes are different values. Neither a token nor a stored hash renders
+through `Debug` or `Display`; both produce a fixed redacted string instead.
+
+A stored hash is never compared with an ordinary equality operator. The
+Application Database locates a candidate session by indexed digest equality,
+which compares stored digests rather than bearer values, and the decision to
+accept that row as the presented session is a constant-time comparison of the
+two digests.
+
+## Session Storage And Lifetime
+
+A session lives in the Application Database's `SessionStore`, which is a
+separate contract from restorable application state. A stored session holds the
+session and CSRF digests, the owning account, the issuing
+**[Client Module](../../glossary.md#applications-and-interfaces)**, the issue
+instant, the last-seen instant, and an absolute expiry instant, and nothing
+else. It caches no Group, grant, or other authorization data.
+
+Sessions therefore survive an ordinary Server restart, and they never appear in
+normalized state or in a backup. A Restore clears every session inside the same
+atomic state replacement that installs the restored state, so session
+invalidation cannot be skipped by an interruption between two steps.
+
+The absolute expiry is derived once from the issue instant and is never
+extended by activity. The clock is injected, so every boundary is enforced and
+tested deterministically. If the clock moves backwards so that the present
+instant precedes the issue or last-seen instant, the session is refused before
+any lifetime arithmetic runs and its recorded activity is not advanced.
+
+The storage and lifetime rules, including the schema constraints that make a
+plaintext value unpersistable and the absolute expiry immutable, are specified
+in the
+[Application Database Design](../database/application-database-design.md#live-session-storage)
+and the
+[SQLite Application Database Design](../database/sqlite/sqlite-application-database-design.md#live-session-schema).
 
 ## Cross-Site Request Forgery Protection
 
@@ -120,9 +152,9 @@ takes no workspace path dependency, so it cannot reach the transport, the
 listener, the Application Database, or a
 **[Client Module](../../glossary.md#applications-and-interfaces)**. A caller
 supplies the stored credential as an inbound value and persists the replacement
-verifier and the token hashes the crate returns. Session persistence, session
-lifetime enforcement, cookie emission, and route contracts are owned outside
-this crate.
+verifier and the token hashes the crate returns. Session persistence and session
+lifetime enforcement are owned by the Application Database contract; cookie
+emission and route contracts are owned outside both.
 
 The `argon2` and `subtle` dependency records, and the authentication crate's use
 of the already-approved `sha2`, `base64`, `getrandom`, and `zeroize`

@@ -9,6 +9,7 @@ pub(super) enum ErrorContext {
     Health,
     Inspect,
     Migration,
+    Session,
     State,
 }
 
@@ -24,6 +25,7 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
             | ErrorContext::Health
             | ErrorContext::Inspect
             | ErrorContext::Migration
+            | ErrorContext::Session
             | ErrorContext::State => DatabaseError::IntegrityFailure,
         },
     }

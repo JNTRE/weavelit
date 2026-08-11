@@ -8,8 +8,9 @@ use weavelit_server_database::{
     ConfigurationValue, CorrelationIdentifier, DatabaseError, DatabaseInspection,
     DeploymentIdentifier, Group, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
     LogClassification, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor,
-    Name, PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey, ServiceConnection,
-    StateIdentifier, WorkflowCheckpoint, WorkflowKind,
+    Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey,
+    SESSION_DIGEST_LENGTH, ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore,
+    SessionTokenHash, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -21,8 +22,9 @@ const RECOVERY_KEY: &str = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
 const USERNAME: &str = "first-admin";
 const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
+const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 16] = [
+const EXPECTED_TABLES: [&str; 17] = [
     "weavelit_account",
     "weavelit_completion_obligation",
     "weavelit_configuration",
@@ -39,6 +41,19 @@ const EXPECTED_TABLES: [&str; 16] = [
     "weavelit_protected_secret",
     "weavelit_recovery_public_key",
     "weavelit_service_connection",
+    "weavelit_session",
+];
+
+/// The complete live session table, which may hold only digests, the owning
+/// account and Client Module, and the three lifetime instants.
+const EXPECTED_SESSION_COLUMNS: [&str; 7] = [
+    "weavelit_session.absolute_expires_at_milliseconds",
+    "weavelit_session.account_id",
+    "weavelit_session.client_module",
+    "weavelit_session.csrf_hash",
+    "weavelit_session.issued_at_milliseconds",
+    "weavelit_session.last_seen_at_milliseconds",
+    "weavelit_session.token_hash",
 ];
 
 fn database_path(temporary_directory: &TempDir) -> PathBuf {
@@ -59,6 +74,25 @@ fn identifier(byte: u8) -> StateIdentifier {
 
 fn name(value: &str) -> Name {
     Name::new(value).unwrap()
+}
+
+fn session(token_byte: u8, csrf_byte: u8) -> NewSession {
+    NewSession::new(
+        SessionTokenHash::from_bytes([token_byte; SESSION_DIGEST_LENGTH]).unwrap(),
+        SessionCsrfHash::from_bytes([csrf_byte; SESSION_DIGEST_LENGTH]).unwrap(),
+        identifier(1),
+        name(SESSION_CLIENT_MODULE),
+        SessionInstant::from_unix_milliseconds(1_000).unwrap(),
+    )
+}
+
+fn session_count(path: &Path) -> i64 {
+    Connection::open(path)
+        .unwrap()
+        .query_row("SELECT count(*) FROM weavelit_session", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
 }
 
 fn restore_checkpoint(deployment_identifier: DeploymentIdentifier) -> WorkflowCheckpoint {
@@ -286,8 +320,13 @@ fn assert_redacted(error: DatabaseError) {
     assert!(message.starts_with("application database"));
 }
 
+/// Proves the same intent the previous exact-column-name test carried: that
+/// sessions, log records, and Log Module credentials are not part of restorable
+/// state and cannot ride in a backup. It no longer conflates that intent with
+/// "no session table exists", because the specification requires the Server to
+/// store live sessions in the Application Database.
 #[test]
-fn migrated_schema_excludes_sessions_log_records_and_log_credentials() {
+fn only_the_live_session_table_may_name_session_data_and_no_table_stores_log_records() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     drop(SqliteDatabase::open(&path).unwrap());
@@ -299,11 +338,23 @@ fn migrated_schema_excludes_sessions_log_records_and_log_credentials() {
     expected.sort();
 
     assert_eq!(table_names(&path), expected);
+
+    let mut session_columns = column_names(&path)
+        .into_iter()
+        .filter(|column| column.starts_with("weavelit_session."))
+        .collect::<Vec<_>>();
+    session_columns.sort();
+    assert_eq!(session_columns, EXPECTED_SESSION_COLUMNS);
+
     for column in column_names(&path) {
         let lower_column = column.to_ascii_lowercase();
+        assert!(!lower_column.contains("log_record"));
+        if lower_column.starts_with("weavelit_session.") {
+            continue;
+        }
         assert!(!lower_column.contains("session"));
         assert!(!lower_column.contains("token"));
-        assert!(!lower_column.contains("log_record"));
+        assert!(!lower_column.contains("csrf"));
     }
     let log_module_columns = column_names(&path)
         .into_iter()
@@ -315,6 +366,89 @@ fn migrated_schema_excludes_sessions_log_records_and_log_credentials() {
         assert!(!lower_column.contains("secret"));
         assert!(!lower_column.contains("password"));
     }
+}
+
+#[test]
+fn a_restore_clears_every_live_session_inside_the_state_replacement() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(12);
+    let mut database = pending_database(&path, deployment_identifier);
+    database.create(&session(0x21, 0x22)).unwrap();
+    database.create(&session(0x23, 0x24)).unwrap();
+    assert_eq!(session_count(&path), 2);
+
+    database
+        .complete_checkpoint(
+            &restore_checkpoint(deployment_identifier),
+            &application_state(WorkflowKind::Restore),
+        )
+        .unwrap();
+
+    assert_eq!(session_count(&path), 0);
+    assert_eq!(
+        database
+            .load_initialized_state(deployment_identifier)
+            .unwrap()
+            .state(),
+        &application_state(WorkflowKind::Restore)
+    );
+}
+
+#[test]
+fn a_rejected_state_replacement_leaves_live_sessions_untouched() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(13);
+    let mut database = pending_database(&path, deployment_identifier);
+    database.create(&session(0x25, 0x26)).unwrap();
+
+    let error = database
+        .complete_checkpoint(
+            &WorkflowCheckpoint::new(
+                deployment_identifier,
+                WorkflowKind::Restore,
+                CheckpointMetadata::from_bytes(b"other-metadata".as_slice()).unwrap(),
+            ),
+            &application_state(WorkflowKind::Restore),
+        )
+        .unwrap_err();
+
+    assert_eq!(error, DatabaseError::InvalidState);
+    assert_eq!(
+        session_count(&path),
+        1,
+        "a replacement that did not commit must not have cleared sessions"
+    );
+}
+
+#[test]
+fn normalized_state_and_backup_content_carry_no_session_data() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(14);
+    let mut database = restored_database(&path, deployment_identifier);
+    database.create(&session(0x27, 0x28)).unwrap();
+    database.create(&session(0x29, 0x2A)).unwrap();
+
+    let loaded = database
+        .load_initialized_state(deployment_identifier)
+        .unwrap();
+    let rendered = format!("{:?}", loaded.state());
+
+    assert_eq!(
+        session_count(&path),
+        2,
+        "the live sessions must still be stored"
+    );
+    assert_eq!(
+        loaded.state(),
+        &application_state(WorkflowKind::Restore),
+        "stored sessions must not change the normalized aggregate a backup is built from"
+    );
+    assert!(!rendered.contains(SESSION_CLIENT_MODULE));
+    assert!(!rendered.to_ascii_lowercase().contains("session"));
+    assert!(!rendered.to_ascii_lowercase().contains("csrf"));
 }
 
 #[test]

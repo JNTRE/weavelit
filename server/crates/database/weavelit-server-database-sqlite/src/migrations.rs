@@ -30,6 +30,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0003_create_application_state",
         sql: include_str!("../migrations/0003_create_application_state.sql"),
     },
+    Migration {
+        sequence: 4,
+        identifier: "0004_create_session_store",
+        sql: include_str!("../migrations/0004_create_session_store.sql"),
+    },
 ];
 
 struct AppliedMigration {

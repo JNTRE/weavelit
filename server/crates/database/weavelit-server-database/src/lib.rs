@@ -2,8 +2,14 @@
 
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
+mod session;
 mod state;
 
+pub use session::{
+    MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
+    SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SessionCsrfHash, SessionInstant,
+    SessionRejection, SessionStore, SessionTokenHash, SessionValidation, StoredSession,
+};
 pub use state::{
     Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
     CompletionObligation, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
@@ -207,6 +213,10 @@ pub enum ContractInputError {
     InvalidPasswordVerifier,
     /// The encoded recovery public key is not canonical.
     InvalidRecoveryPublicKey,
+    /// The session or CSRF digest is the reserved all-zero value.
+    InvalidSessionDigest,
+    /// The session instant is negative or outside the accepted range.
+    InvalidSessionInstant,
     /// The completion-record event time is negative.
     InvalidEventTime,
     /// Two state entries share an identifier or unique key.
@@ -232,6 +242,8 @@ impl fmt::Display for ContractInputError {
             Self::ProtectedValueTooLarge => "protected value is too large",
             Self::InvalidPasswordVerifier => "password verifier is invalid",
             Self::InvalidRecoveryPublicKey => "recovery public key is invalid",
+            Self::InvalidSessionDigest => "session digest is invalid",
+            Self::InvalidSessionInstant => "session instant is invalid",
             Self::InvalidEventTime => "completion event time is invalid",
             Self::DuplicateEntry => "application state contains a duplicate entry",
             Self::UnknownReference => "application state contains an unknown reference",

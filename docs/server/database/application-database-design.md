@@ -131,8 +131,49 @@ assignments, and the workflow completion obligation.
 The aggregate has no session, Log Module destination data, or Log Module
 credential member. Active sessions, System Logs and Audit Logs, other Log Module
 destination data, and Log Module authentication or connection credentials
-therefore cannot enter persisted application state through this contract, and a
-backend has no schema in which to record them.
+therefore cannot enter persisted application state through this contract.
+
+Live sessions are still stored in the Application Database, through the separate
+`SessionStore` contract described in [Live Session Storage](#live-session-storage).
+They are live operational data rather than restorable state: they survive an
+ordinary restart, they never appear in normalized state or in a backup, and a
+Restore clears them. A backend has no schema in which to record log records, Log
+Module destination data, or Log Module credentials at all.
+
+## Live Session Storage
+
+`SessionStore` is a separate backend-neutral contract from `ApplicationState`,
+so session data cannot reach a backup or a normalized state document by
+construction. A stored session holds the session token digest, the per-session
+CSRF digest, the owning account, the issuing
+**[Client Module](../../glossary.md#applications-and-interfaces)**, the issue
+instant, the last-seen instant, and an absolute expiry instant. It caches no
+Group, grant, or other authorization data; authorization is evaluated live.
+
+A digest is a distinct 32-byte type with one constructor that accepts a
+`[u8; 32]` and rejects the reserved all-zero value. There is no constructor from
+a string or from any variable-length input and no conversion from one, so no
+plaintext token or CSRF value can inhabit the type or be persisted through it.
+Neither digest type implements `Display`, and `Debug` renders a fixed redacted
+string. A digest is compared through a constant-time equality method; the types
+implement no ordinary equality.
+
+The absolute expiry is derived once from the issue instant using the approved
+profile's 12-hour maximum. It is not a caller-supplied field and is never
+extended. A session is expired when the clock reaches `last_seen_at` plus the
+30-minute idle timeout or reaches the absolute expiry; the instant one unit
+before each boundary is still valid. If the clock has moved backwards so that
+the present instant precedes either recorded instant, the session is refused
+before any lifetime arithmetic is performed and its recorded activity is not
+advanced, so a rolled-back clock fails closed rather than granting a longer
+lifetime. A session refused for a backwards clock is not destroyed, because the
+clock rather than the session is what is wrong.
+
+The contract provides atomic `create`, `validate_and_touch`, `rotate_csrf`,
+`revoke`, `revoke_for_account`, and `purge_expired` operations.
+`validate_and_touch` and `rotate_csrf` remove a session they find expired.
+Completing a state replacement clears every stored session inside the same
+atomic replacement.
 
 Every text field is bounded, non-empty, and free of control characters. A state
 identifier is an opaque 16-byte value that rejects the reserved all-zero

@@ -117,7 +117,9 @@ normalized state type defined by the shared
 `weavelit_log_module_setting`, `weavelit_log_assignment`, and
 `weavelit_completion_obligation`. The migration creates no session table, no Log
 Module destination-data or log-record table, and no Log Module credential
-column, so excluded data has no place to be written.
+column, so excluded data has no place to be written. Live sessions are created
+by a separate migration described in
+[Live Session Schema](#live-session-schema) and are not part of this aggregate.
 
 Each table restates the contract's bounds as SQL `CHECK` constraints so durable
 data cannot drift from the typed contract: 16-byte nonzero identifier BLOBs,
@@ -128,6 +130,41 @@ log settings, and log assignments to their owning rows. The recovery public key
 and the completion obligation each use a singleton row. Protected values and
 protected credentials are stored as opaque BLOBs; the backend never inspects,
 derives, or transforms them.
+
+## Live Session Schema
+
+`0004_create_session_store.sql` creates the single `STRICT` table
+`weavelit_session`, which implements the shared contract's `SessionStore`. The
+table holds `token_hash` as the primary key, `csrf_hash`, `account_id`,
+`client_module`, `issued_at_milliseconds`, `last_seen_at_milliseconds`, and
+`absolute_expires_at_milliseconds`, and nothing else. It carries no foreign key
+into restorable state, because a live session must never bind the durability of
+operational data to an aggregate a Restore replaces.
+
+The digest columns `CHECK` that a value is exactly 32 bytes and is not
+`zeroblob(32)`, so a plaintext token or CSRF value, whose encoded form is 43
+characters, cannot be stored even by a direct statement.
+`absolute_expires_at_milliseconds` is constrained to equal
+`issued_at_milliseconds + 43200000`, and a `BEFORE UPDATE` trigger aborts any
+statement that changes the token digest, the account, the Client Module, the
+issue instant, or the absolute expiry. A second trigger aborts any update that
+moves recorded activity backwards. The absolute expiry is therefore fixed at
+creation by the schema, not only by the calling code. An index on `account_id`
+serves account-wide revocation.
+
+Every store operation runs in its own `BEGIN IMMEDIATE` transaction, so
+validation, activity update, CSRF rotation, expiry removal, revocation, and
+purging are atomic. Validation locates a candidate row by indexed digest
+equality and then confirms the stored digest against the presented digest in
+constant time; the accept decision rests on that constant-time comparison rather
+on the storage engine's own byte comparison. A row whose stored bytes cannot be
+rebuilt into the contract's types is refused as `IntegrityFailure` rather than
+accepted.
+
+Completing a checkpoint deletes every session row inside the same transaction
+that installs the replacement state, so a Restore's session invalidation commits
+or rolls back with the replacement itself and no interruption can land between
+the two.
 
 Group grants encode their kind in `grant_kind` and their subject in
 `grant_value`. A `server_administration` grant carries no subject and requires
@@ -283,8 +320,20 @@ across reopen, one-time checkpoint replacement, mismatched-checkpoint and
 mismatched-deployment rejection without writing state, complete rollback of a
 partially written replacement, malformed persisted state, one-time obligation
 acknowledgement, and an explicit assertion over the installed `weavelit_*`
-tables and columns that no session, log-record, or Log Module credential
-storage exists.
+tables and columns that no log-record or Log Module credential storage exists
+and that `weavelit_session` is the only table naming session, token, or CSRF
+data and holds exactly its seven expected columns. Further tests prove that
+completing a checkpoint clears every stored session, that a rejected completion
+leaves stored sessions untouched, and that stored sessions do not change the
+normalized aggregate a backup is built from.
+
+Session tests inject every instant, so no assertion depends on wall-clock timing
+or on a sleep. They cover survival across reopen, the exact idle and absolute
+boundaries in both directions, refusal without destruction or activity update
+when the clock moves backwards, CSRF rotation on a usable session and refusal on
+an expired one, scoped revocation, purging at each boundary, and schema refusal
+of a plaintext-sized digest, of the reserved all-zero digest, and of any direct
+statement that would extend or reassign a stored lifetime.
 
 The MVP scope does not defer quality obligations: every selected behavior has
 its required security, diagnostics, safe failure, and automated test evidence

@@ -8,6 +8,7 @@ mod connection;
 mod error;
 mod inspection;
 mod migrations;
+mod session;
 mod state;
 
 pub use connection::{RetainedSqliteInspection, SqliteDatabase};

@@ -82,6 +82,29 @@ fn malformed_or_unknown_content_is_rejected_without_detail() {
 }
 
 #[test]
+fn backup_content_cannot_carry_session_data() {
+    assert_eq!(
+        reject(&replaced(
+            "\"accounts\":[",
+            "\"sessions\":[],\"accounts\":["
+        )),
+        ContentError::Malformed
+    );
+    assert_eq!(
+        reject(&replaced(
+            "\"accounts\":[",
+            "\"sessions\":[{\"token_hash\":\"AgMEBQYHCAkKCwwNDg8QEQ\"}],\"accounts\":["
+        )),
+        ContentError::Malformed
+    );
+    assert!(
+        !plaintext().to_ascii_lowercase().contains("session"),
+        "the committed backup fixture must contain no session data"
+    );
+    assert!(!plaintext().to_ascii_lowercase().contains("csrf"));
+}
+
+#[test]
 fn a_reference_to_a_missing_account_is_unresolved() {
     // Rewrite only the account record's own identifier so every reference to it
     // becomes unresolved.

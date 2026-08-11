@@ -9,6 +9,7 @@ use weavelit_server_database_sqlite::SqliteDatabase;
 const LEDGER_TABLE: &str = "weavelit_migration_ledger";
 const LIFECYCLE_TABLE: &str = "weavelit_lifecycle_state";
 const ACCOUNT_TABLE: &str = "weavelit_account";
+const SESSION_TABLE: &str = "weavelit_session";
 const UPDATE_TRIGGER: &str = "weavelit_migration_ledger_reject_update";
 const DELETE_TRIGGER: &str = "weavelit_migration_ledger_reject_delete";
 
@@ -91,16 +92,19 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     let first_schema = schema_rows(&connection);
     drop(connection);
 
-    assert_eq!(first_ledger.len(), 3);
+    assert_eq!(first_ledger.len(), 4);
     assert_eq!(first_ledger[0].0, 1);
     assert_eq!(first_ledger[0].1, "0001_create_migration_ledger");
     assert_eq!(first_ledger[1].0, 2);
     assert_eq!(first_ledger[1].1, "0002_create_lifecycle_state");
     assert_eq!(first_ledger[2].0, 3);
     assert_eq!(first_ledger[2].1, "0003_create_application_state");
+    assert_eq!(first_ledger[3].0, 4);
+    assert_eq!(first_ledger[3].1, "0004_create_session_store");
     assert_eq!(first_ledger[0].2.len(), 32);
     assert_eq!(first_ledger[1].2.len(), 32);
     assert_eq!(first_ledger[2].2.len(), 32);
+    assert_eq!(first_ledger[3].2.len(), 32);
     assert_eq!(
         first_ledger[0].2,
         Sha256::digest(include_bytes!(
@@ -122,6 +126,13 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         ))
         .to_vec()
     );
+    assert_eq!(
+        first_ledger[3].2,
+        Sha256::digest(include_bytes!(
+            "../migrations/0004_create_session_store.sql"
+        ))
+        .to_vec()
+    );
     assert!(first_schema.iter().any(|(_, name, _)| name == LEDGER_TABLE));
     assert!(
         first_schema
@@ -132,6 +143,11 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         first_schema
             .iter()
             .any(|(_, name, _)| name == ACCOUNT_TABLE)
+    );
+    assert!(
+        first_schema
+            .iter()
+            .any(|(_, name, _)| name == SESSION_TABLE)
     );
 
     bootstrap(&path);
@@ -171,7 +187,7 @@ fn unknown_extra_history_is_rejected() {
     connection
         .execute(
             "INSERT INTO weavelit_migration_ledger \
-             (sequence_number, identifier, checksum) VALUES (4, '0004_unknown', ?1)",
+             (sequence_number, identifier, checksum) VALUES (5, '0005_unknown', ?1)",
             [vec![0_u8; 32]],
         )
         .unwrap();
@@ -196,7 +212,7 @@ fn missing_applied_history_is_rejected_without_new_ledger_row() {
     drop(connection);
 
     assert_integrity_failure_is_redacted(open_error(&path), &path);
-    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 2);
+    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 3);
 }
 
 #[test]

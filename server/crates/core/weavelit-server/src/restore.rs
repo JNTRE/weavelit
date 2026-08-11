@@ -415,6 +415,11 @@ impl RestoreOrchestrator {
     /// A failure anywhere in this chain leaves the Server fail-closed with the
     /// interrupted state retained. No rollback is attempted, because the
     /// replaced state is exactly what an operator asked to discard.
+    ///
+    /// Completing the checkpoint also clears every live session, inside the
+    /// same commit that installs the replacement state. Session invalidation is
+    /// therefore not a follow-up step that an interruption could skip: either
+    /// the replacement and the clearing both commit, or neither does.
     fn replace_state(
         &self,
         permit: WorkflowPermit<'_>,
