@@ -6,7 +6,10 @@ mod mfa;
 mod session;
 mod state;
 
-pub use mfa::{MAX_MFA_TIME_STEP, MfaAcceptance, MfaStore, MfaTimeStep};
+pub use mfa::{
+    MAX_MFA_TIME_STEP, MfaAcceptance, MfaEnablementOutcome, MfaEnrollment, MfaModuleTarget,
+    MfaStore, MfaTimeStep,
+};
 pub use session::{
     MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
     SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SessionCsrfHash, SessionInstant,

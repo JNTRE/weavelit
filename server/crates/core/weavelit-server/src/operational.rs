@@ -23,7 +23,7 @@ use std::{
 use weavelit_module_client::ExpectedOrigin;
 use weavelit_server_authentication::RustCryptoArgon2;
 use weavelit_server_lifecycle::{
-    ApplicationDatabase, DatabaseError, InitializedState, SealedDeployment,
+    ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
 };
 use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::Name;
@@ -52,6 +52,8 @@ pub struct OperationalRuntime {
     pub client_modules: BTreeSet<Name>,
     /// The process-wide owner shutdown closes the database through.
     pub active_database: ActiveDatabase,
+    /// The deployment's at-rest protection for enrolled MFA factor data.
+    pub protection: Arc<dyn ProtectedValueAccess>,
 }
 
 /// The process-wide owner of whichever Application Database is serving.
@@ -231,6 +233,7 @@ impl OperationalComposer {
             runtime.client_modules.clone(),
             runtime.state_root.clone(),
             &runtime.log_catalog,
+            Arc::clone(&runtime.protection),
         );
 
         Self {

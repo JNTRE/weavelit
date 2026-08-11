@@ -34,9 +34,16 @@ weavelit-server-restore = { path = "../weavelit-server-restore" }
 weavelit-module-client = { path = "../../modules/client/weavelit-module-client" }
 weavelit-module-client-webui = { path = "../../modules/client/weavelit-module-client-webui" }
 weavelit-module-log-sqlite = { path = "../../modules/log/weavelit-module-log-sqlite" }
+weavelit-module-mfa-totp = { path = "../../modules/mfa/weavelit-module-mfa-totp" }
 
 [dev-dependencies]
 rcgen = "=0.14.8"
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
+# Enables the TOTP Module's code generator for this crate's tests only, so an
+# enrollment confirmation can be exercised end to end. The generator is absent
+# from the shipped binary because the production edge above does not enable it.
+weavelit-module-mfa-totp = { path = "../../modules/mfa/weavelit-module-mfa-totp", features = [
+    "test-support",
+] }

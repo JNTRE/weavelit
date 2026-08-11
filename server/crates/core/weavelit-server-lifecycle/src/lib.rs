@@ -35,7 +35,10 @@ pub use error::{
 pub use persistence::{
     AnchorLoadState, LifecycleStore, LocatorPersistencePermit, RecordPersistencePermit,
 };
-pub use protection::{MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueKind, ProtectedValueSealer};
+pub use protection::{
+    MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueAccess, ProtectedValueKind, ProtectedValueOpener,
+    ProtectedValueSealer,
+};
 pub use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection,
     DeploymentIdentifier, InitializedState, StateIdentifier, WorkflowCheckpoint, WorkflowKind,

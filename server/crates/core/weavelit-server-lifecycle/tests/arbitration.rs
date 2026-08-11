@@ -20,9 +20,10 @@ use weavelit_server_lifecycle::{
     BackendCatalog, BackendIdentifier, BackendRegistration,
     CheckpointMetadata as LifecycleCheckpointMetadata, DeploymentIdentifier, InitializedState,
     LifecycleClassification, LifecycleError, LifecycleState, LifecycleStore,
-    MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueKind, RetainedDatabaseInspection, SelectionError,
-    SelectionFailureKind, StateIdentifier, TrustedBackendContext, ValidatedConnectionSettings,
-    WorkflowArbiter, WorkflowCheckpoint, WorkflowError, WorkflowKind,
+    MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueKind, ProtectedValueOpener, ProtectedValueSealer,
+    RetainedDatabaseInspection, SelectionError, SelectionFailureKind, StateIdentifier,
+    TrustedBackendContext, ValidatedConnectionSettings, WorkflowArbiter, WorkflowCheckpoint,
+    WorkflowError, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -1318,6 +1319,31 @@ fn a_permit_seals_secrets_under_the_deployment_key_without_exposing_them() {
                 ProtectedValueKind::ComponentSecret,
                 &vec![0xA5; MAX_PROTECTED_PLAINTEXT_BYTES + 1]
             )
+            .unwrap_err(),
+        LifecycleError::IntegrityFailure
+    );
+}
+
+#[test]
+fn the_arbiter_opens_only_what_it_sealed_for_that_exact_kind() {
+    let (_dir, path) = state_root();
+    let (arbiter, _catalog, _context) = setup(&path);
+
+    let plaintext = b"20-byte-totp-secret!";
+    let sealed = arbiter
+        .seal(ProtectedValueKind::MfaFactorData, plaintext)
+        .expect("a bounded factor must seal");
+
+    assert_eq!(
+        arbiter
+            .open(ProtectedValueKind::MfaFactorData, &sealed)
+            .expect("the sealed factor must open")
+            .as_slice(),
+        plaintext
+    );
+    assert_eq!(
+        arbiter
+            .open(ProtectedValueKind::ComponentSecret, &sealed)
             .unwrap_err(),
         LifecycleError::IntegrityFailure
     );

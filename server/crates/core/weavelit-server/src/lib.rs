@@ -51,8 +51,8 @@ use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
     BackendRegistration, DatabaseError, DeploymentIdentifier, InitializedState,
     InterruptedLifecycleAction, LifecycleClassification, LifecycleError, LifecycleProjection,
-    LifecycleStore, RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
-    WorkflowArbiter, WorkflowError, WorkflowKind,
+    LifecycleStore, ProtectedValueAccess, RetainedDatabaseInspection, TrustedBackendContext,
+    ValidatedConnectionSettings, WorkflowArbiter, WorkflowError, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::{AvailableComponents, Name};
@@ -795,6 +795,15 @@ impl RestrictedStartup {
     /// Returns the process-wide owner of whichever database is serving.
     pub fn active_database(&self) -> &ActiveDatabase {
         &self.active_database
+    }
+
+    /// Returns the deployment's at-rest protection capability.
+    ///
+    /// It is the arbiter itself, so sealing or opening an enrolled factor
+    /// passes through the same serialized lifecycle authority a Restore holds
+    /// while it replaces state.
+    pub(crate) fn protection(&self) -> Arc<dyn ProtectedValueAccess> {
+        Arc::clone(&self.composition.adapter.arbiter) as Arc<dyn ProtectedValueAccess>
     }
 }
 
@@ -1969,6 +1978,7 @@ impl PreoperationalComposer {
             log_catalog: Arc::clone(&startup.log_catalog),
             client_modules: components.client_modules.clone(),
             active_database: startup.active_database.clone(),
+            protection: startup.protection(),
         });
 
         Arc::new(Self {
@@ -2296,7 +2306,9 @@ pub(crate) mod tests {
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
     use weavelit_module_client::{
-        APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE,
+        APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
+        AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
+        AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_SESSION_ROUTE,
         DatabaseSelectionRejection, ExpectedOrigin, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
         RESTORE_TICKET_HEADER_NAME, RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
     };
@@ -2382,6 +2394,10 @@ pub(crate) mod tests {
             (Method::PUT, AUTH_LOGIN_ROUTE),
             (Method::PUT, AUTH_SESSION_ROUTE),
             (Method::PUT, AUTH_LOGOUT_ROUTE),
+            (Method::PUT, AUTH_MFA_VERIFY_ROUTE),
+            (Method::PUT, AUTH_MFA_ENROLLMENT_ROUTE),
+            (Method::PUT, AUTH_MFA_SELF_ENROLLMENT_ROUTE),
+            (Method::PUT, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE),
         ]
     }
 
@@ -2400,6 +2416,7 @@ pub(crate) mod tests {
             log_catalog: Arc::clone(&startup.log_catalog),
             client_modules: server_components().client_modules,
             active_database: startup.active_database.clone(),
+            protection: startup.protection(),
         })
     }
 
@@ -2987,6 +3004,20 @@ pub(crate) mod tests {
         state_root: &Path,
         state: &ApplicationState,
     ) -> DeploymentIdentifier {
+        seal_deployment_from(state_root, |_sealer| state.clone())
+    }
+
+    /// Seals a deployment whose state is built against the deployment's own key.
+    ///
+    /// An enrolled factor carries protected data sealed under the anchor key,
+    /// and that key exists only once the lifecycle store for this state root
+    /// has been opened. The state is therefore built inside the workflow rather
+    /// than handed in already built, so a test cannot produce a factor sealed
+    /// against a key no deployment holds.
+    pub(crate) fn seal_deployment_from(
+        state_root: &Path,
+        build: impl FnOnce(&dyn weavelit_server_lifecycle::ProtectedValueSealer) -> ApplicationState,
+    ) -> DeploymentIdentifier {
         let mut store = LifecycleStore::open_or_create(state_root).unwrap();
         let catalog = sqlite_catalog();
         let context = TrustedBackendContext::new(state_root.join(APPLICATION_DATABASE_FILE));
@@ -3002,13 +3033,14 @@ pub(crate) mod tests {
         let arbiter = WorkflowArbiter::new(store);
         let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
         let deployment_identifier = permit.deployment_identifier();
+        let state = build(permit.sealer());
         permit
             .create_checkpoint(
                 WorkflowKind::Restore,
                 CheckpointMetadata::from_bytes(b"restore-checkpoint-metadata".as_slice()).unwrap(),
             )
             .unwrap()
-            .complete_checkpoint(state)
+            .complete_checkpoint(&state)
             .unwrap()
             .acknowledge_completion(completion_record_identifier())
             .unwrap()
@@ -3055,6 +3087,7 @@ pub(crate) mod tests {
         pub(crate) groups: Vec<weavelit_server_database::Group>,
         pub(crate) group_memberships: Vec<weavelit_server_database::GroupMembership>,
         pub(crate) group_grants: Vec<weavelit_server_database::GroupGrantRecord>,
+        pub(crate) mfa_factors: Vec<weavelit_server_database::MfaFactor>,
     }
 
     /// Builds the smallest accepted state that carries the supplied parts.
@@ -3066,6 +3099,7 @@ pub(crate) mod tests {
             groups,
             group_memberships,
             group_grants,
+            mfa_factors,
         } = parts;
         let configuration_identifier = StateIdentifier::from_bytes([0x11; 16]).unwrap();
         ApplicationState::new(ApplicationStateInput {
@@ -3076,7 +3110,7 @@ pub(crate) mod tests {
             groups,
             group_memberships,
             group_grants,
-            mfa_factors: vec![],
+            mfa_factors,
             service_connections: vec![],
             recovery_public_key: RecoveryPublicKey::new("age1recoverypublickeyvalue").unwrap(),
             log_module_configurations: vec![LogModuleConfiguration {

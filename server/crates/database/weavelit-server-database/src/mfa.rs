@@ -8,7 +8,7 @@
 //! watermark that could accept or refuse a code on evidence from another
 //! deployment's history.
 
-use crate::{ContractInputError, DatabaseError, StateIdentifier};
+use crate::{ContractInputError, DatabaseError, MfaFactor, Name, StateIdentifier};
 
 /// Largest accepted time step.
 ///
@@ -55,6 +55,50 @@ pub enum MfaAcceptance {
     Replayed,
 }
 
+/// The result of persisting one newly confirmed enrollment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MfaEnrollment {
+    /// The factor and its opening watermark were both written.
+    Enrolled,
+    /// The account already holds a factor for that MFA Module.
+    AlreadyEnrolled,
+}
+
+/// The two names one MFA Module is addressed by.
+///
+/// A factor records the module that owns its encoding, while the module's
+/// enabled state is a setting owned by the module's own configuration
+/// component. The two are different strings, so an operation that spans both
+/// is given both rather than deriving one from the other.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MfaModuleTarget {
+    /// The module name an enrolled factor records.
+    pub module: Name,
+    /// The configuration component that owns the module's enabled setting.
+    pub component: Name,
+}
+
+/// The result of changing one MFA Module's enabled state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MfaEnablementOutcome {
+    /// The setting was written, revoking `revoked_sessions` live sessions.
+    Applied {
+        /// Sessions removed because their account holds a factor for the module.
+        ///
+        /// Always zero when the module was enabled rather than disabled.
+        revoked_sessions: usize,
+    },
+    /// The caller's enrolled-user preview did not match the stored count.
+    ///
+    /// The reported count is the number of accounts currently holding a factor
+    /// for the module, which the caller already asked for by previewing it.
+    /// Nothing was written.
+    EnrolledCountChanged {
+        /// The enrolled-account count observed inside the rejecting transaction.
+        enrolled: usize,
+    },
+}
+
 /// Durable live MFA replay watermarks available during normal operation.
 ///
 /// The store owns the replay decision rather than reporting the stored value
@@ -78,6 +122,35 @@ pub trait MfaStore {
         factor: StateIdentifier,
         step: MfaTimeStep,
     ) -> Result<MfaAcceptance, DatabaseError>;
+
+    /// Persists one confirmed factor together with its opening watermark.
+    ///
+    /// Both writes are one atomic operation. A factor that existed without its
+    /// watermark would accept the very code that confirmed it a second time,
+    /// and a watermark without its factor would refuse a later code on
+    /// evidence of an enrollment this deployment never completed.
+    fn enroll(
+        &mut self,
+        factor: &MfaFactor,
+        accepted_step: MfaTimeStep,
+    ) -> Result<MfaEnrollment, DatabaseError>;
+
+    /// Sets one MFA Module's enabled state against a previewed enrolled count.
+    ///
+    /// The count, the setting write, and the session revocation are one atomic
+    /// operation. The count is checked inside it so an administrator cannot be
+    /// shown one number, decide against it, and have a concurrent enrollment
+    /// change what the decision actually turns off.
+    ///
+    /// Disabling removes every live session of every account holding a factor
+    /// for the module, because those sessions were established behind a factor
+    /// the deployment is no longer willing to verify.
+    fn set_module_enabled(
+        &mut self,
+        target: &MfaModuleTarget,
+        enabled: bool,
+        expected_enrolled: usize,
+    ) -> Result<MfaEnablementOutcome, DatabaseError>;
 }
 
 #[cfg(test)]

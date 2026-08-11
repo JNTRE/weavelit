@@ -124,13 +124,37 @@ pub struct SessionIdentity {
     pub client_module: String,
 }
 
-/// Server-core hook that verifies a submission and issues a session.
+/// What the Server core decided a submitted password entitles the request to.
+///
+/// A login answers with exactly one of these, and the choice is made only
+/// after a password has actually verified. A denied submission is not a
+/// variant here: it is an [`AuthenticationRejection`], so nothing about second
+/// factors is observable until a password is correct.
+pub enum LoginOutcome {
+    /// The password verified and no second factor applies, so a session is
+    /// issued in this response.
+    SessionEstablished(SessionEstablished),
+    /// The password verified and an enrolled second factor must be presented
+    /// before a session exists.
+    SecondFactorRequired {
+        /// The one-time value that resumes this login.
+        continuation: Zeroizing<String>,
+    },
+    /// The password verified and the account must enroll a second factor
+    /// before a session exists.
+    EnrollmentRequired {
+        /// The one-time value that opens the enrollment for this login.
+        continuation: Zeroizing<String>,
+    },
+}
+
+/// Server-core hook that verifies a submission and decides its outcome.
 pub type LoginCommit = Arc<
     dyn Fn(
             LoginSubmission,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<SessionEstablished, AuthenticationRejection>> + Send>,
-        > + Send
+        )
+            -> Pin<Box<dyn Future<Output = Result<LoginOutcome, AuthenticationRejection>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -304,7 +328,7 @@ impl fmt::Display for AuthenticationRejection {
 /// It uses the fixed profile's already-approved unavailable body, so a failure
 /// to render a correlation identifier still answers within the frozen fixed
 /// allowlist rather than inventing a shape.
-fn unrenderable_response() -> Response {
+pub(crate) fn unrenderable_response() -> Response {
     json_response_body(
         StatusCode::SERVICE_UNAVAILABLE,
         "{\"error\":\"service_unavailable\"}",
@@ -532,7 +556,21 @@ async fn login_response(request: Request, capability: Arc<AuthenticationCapabili
     })
     .await
     {
-        Ok(established) => session_established_response(&established, &correlation_id),
+        Ok(LoginOutcome::SessionEstablished(established)) => {
+            session_established_response(&established, &correlation_id)
+        }
+        Ok(LoginOutcome::SecondFactorRequired { continuation }) => {
+            crate::mfa::continuation_response(
+                crate::mfa::MFA_REQUIRED_CODE,
+                &continuation,
+                &correlation_id,
+            )
+        }
+        Ok(LoginOutcome::EnrollmentRequired { continuation }) => crate::mfa::continuation_response(
+            crate::mfa::MFA_ENROLLMENT_REQUIRED_CODE,
+            &continuation,
+            &correlation_id,
+        ),
         Err(rejection) => rejection.response(&correlation_id),
     }
 }
@@ -591,7 +629,7 @@ fn session_submission(
 /// The session and CSRF values are returned in cookies alone. Neither is
 /// placed in the envelope, so neither can be read from a response body, a
 /// redirect target, or a browser history entry.
-fn session_established_response(
+pub(crate) fn session_established_response(
     established: &SessionEstablished,
     correlation_id: &str,
 ) -> Response {
@@ -698,8 +736,9 @@ mod tests {
 
     use super::{
         AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE, AuthenticationCapability,
-        AuthenticationDeclaration, AuthenticationRejection, LoginSubmission, MAX_LOGIN_BODY_BYTES,
-        SessionEstablished, SessionIdentity, SessionSubmission, parse_login_body,
+        AuthenticationDeclaration, AuthenticationRejection, LoginOutcome, LoginSubmission,
+        MAX_LOGIN_BODY_BYTES, SessionEstablished, SessionIdentity, SessionSubmission,
+        parse_login_body,
     };
     use crate::{
         ExpectedOrigin,
@@ -751,9 +790,11 @@ mod tests {
                 Box::pin(async move {
                     recorder.logins.fetch_add(1, Ordering::Relaxed);
                     drop(submission);
-                    login.map(|(session, csrf)| SessionEstablished {
-                        session_token: Zeroizing::new(session.to_owned()),
-                        csrf_token: Zeroizing::new(csrf.to_owned()),
+                    login.map(|(session, csrf)| {
+                        LoginOutcome::SessionEstablished(SessionEstablished {
+                            session_token: Zeroizing::new(session.to_owned()),
+                            csrf_token: Zeroizing::new(csrf.to_owned()),
+                        })
                     })
                 })
             }),

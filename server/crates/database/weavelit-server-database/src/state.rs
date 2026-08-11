@@ -251,6 +251,12 @@ pub struct Account {
     pub display_name: Option<Name>,
     /// Whether the account may authenticate.
     pub active: bool,
+    /// Whether this account may authenticate only with a second factor.
+    ///
+    /// The flag is restorable state carried with the account rather than live
+    /// data, so a Restore reinstates the requirement together with the account
+    /// it constrains.
+    pub mfa_required: bool,
 }
 
 /// Password verifier bound to exactly one account.
@@ -935,6 +941,7 @@ mod tests {
                 username: name("first-admin"),
                 display_name: Some(name("First Admin")),
                 active: true,
+                mfa_required: false,
             }],
             password_verifiers: vec![AccountPasswordVerifier {
                 account: identifier(1),
@@ -1115,6 +1122,7 @@ mod tests {
             username: name("second-admin"),
             display_name: None,
             active: true,
+            mfa_required: false,
         });
 
         let mut duplicate_username = valid_input();
@@ -1123,6 +1131,7 @@ mod tests {
             username: name("first-admin"),
             display_name: None,
             active: true,
+            mfa_required: false,
         });
 
         let mut duplicate_group_name = valid_input();

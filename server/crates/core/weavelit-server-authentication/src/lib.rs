@@ -10,6 +10,7 @@
 //! caller supplies the stored credential as a value and persists what this
 //! crate returns.
 
+mod continuation;
 mod engine;
 mod error;
 mod password;
@@ -18,6 +19,9 @@ mod profile;
 mod random;
 mod session;
 
+pub use continuation::{
+    CONTINUATION_ENTROPY_BYTES, CONTINUATION_TEXT_BYTES, Continuation, ContinuationDigest,
+};
 pub use engine::{Argon2Engine, RustCryptoArgon2};
 pub use error::AuthenticationError;
 pub use password::{PasswordAuthenticator, PasswordVerdict, ReplacementVerifier, StoredCredential};

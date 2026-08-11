@@ -33,15 +33,16 @@ use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
 pub mod authentication;
 pub mod authorization;
 pub mod cookie;
+pub mod mfa;
 pub mod restore;
 pub mod typed_json;
 
 pub use authentication::{
     AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE, AuthenticationCapability,
     AuthenticationDeclaration, AuthenticationRejection, CorrelationSource, LoginCommit,
-    LoginSubmission, MAX_LOGIN_BODY_BYTES, SessionEstablished, SessionIdentity, SessionRevoke,
-    SessionSubmission, SessionValidate, submitted_csrf_token, submitted_session_token,
-    validate_login_request, validate_session_request,
+    LoginOutcome, LoginSubmission, MAX_LOGIN_BODY_BYTES, SessionEstablished, SessionIdentity,
+    SessionRevoke, SessionSubmission, SessionValidate, submitted_csrf_token,
+    submitted_session_token, validate_login_request, validate_session_request,
 };
 pub use authorization::{
     AUTHORIZATION_DENIED_CODE, AUTHORIZATION_DENIED_STATUS, AuthorizationRejection,
@@ -49,6 +50,13 @@ pub use authorization::{
 pub use cookie::{
     CSRF_COOKIE_NAME, CookieEffect, CookieLines, CookieValue, MAX_COOKIE_HEADER_BYTES,
     MAX_COOKIE_LINES, MAX_COOKIE_VALUE_BYTES, SESSION_COOKIE_NAME,
+};
+pub use mfa::{
+    AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE, AUTH_MFA_SELF_ENROLLMENT_ROUTE,
+    AUTH_MFA_VERIFY_ROUTE, MAX_MFA_BODY_BYTES, MFA_CODE_DIGITS, MFA_ENROLLMENT_REQUIRED_CODE,
+    MFA_REQUIRED_CODE, MfaCapability, MfaCodeCommit, MfaCodeSubmission, MfaDeclaration,
+    MfaEnrollmentCommit, MfaEnrollmentConfirmCommit, MfaEnrollmentOpened, MfaEnrollmentSubmission,
+    MfaSelfEnrollmentCommit, MfaSelfEnrollmentSubmission,
 };
 pub use restore::{
     MAX_RESTORE_KEY_BODY_BYTES, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME,

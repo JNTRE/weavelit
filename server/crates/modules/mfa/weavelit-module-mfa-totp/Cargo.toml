@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+# Compiles a code generator for callers' tests only. A Weavelit deployment never
+# generates a code, so enabling this on a production dependency edge would be a
+# reviewable manifest change rather than an accident.
+test-support = []
+
 [dependencies]
 percent-encoding.workspace = true
 totp-rs = { version = "=6.0.0", default-features = false, features = ["alloc", "zeroize"] }

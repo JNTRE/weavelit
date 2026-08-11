@@ -6,6 +6,7 @@
 //! seal-only capability and the sealed value's opaque bytes.
 
 use weavelit_server_database::ProtectedValue;
+use zeroize::Zeroizing;
 
 use crate::{LifecycleError, format::PROTECTED_PLAINTEXT_LIMIT};
 
@@ -63,4 +64,36 @@ pub trait ProtectedValueSealer {
         kind: ProtectedValueKind,
         plaintext: &[u8],
     ) -> Result<ProtectedValue, LifecycleError>;
+}
+
+/// Capability to recover a secret this deployment previously sealed.
+///
+/// The recovered plaintext is returned in zeroizing form and the key stays
+/// inside this crate exactly as it does for sealing, so holding this capability
+/// grants no access to the key itself.
+pub trait ProtectedValueOpener {
+    /// Recovers one sealed value that was sealed for this exact kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleError::IntegrityFailure`] when the envelope is
+    /// malformed, was sealed under another key, or was sealed for another
+    /// kind. The failure never reports which of those it was.
+    fn open(
+        &self,
+        kind: ProtectedValueKind,
+        value: &ProtectedValue,
+    ) -> Result<Zeroizing<Vec<u8>>, LifecycleError>;
+}
+
+/// Both at-rest capabilities as one shareable object.
+///
+/// An enrolled factor is sealed when it is confirmed and opened when a code is
+/// verified, so the runtime that owns both operations holds one capability
+/// rather than two that could be wired to different keys.
+pub trait ProtectedValueAccess: ProtectedValueSealer + ProtectedValueOpener + Send + Sync {}
+
+impl<T: ProtectedValueSealer + ProtectedValueOpener + Send + Sync + ?Sized> ProtectedValueAccess
+    for T
+{
 }

@@ -41,6 +41,17 @@ pub const MAX_RESPONSE_CORRELATION_BYTES: usize = 64;
 /// Most fields one typed result object may carry.
 pub const MAX_TYPED_RESULT_FIELDS: usize = 4;
 
+/// Longest provisioning URI the typed profile serializes.
+///
+/// A provisioning URI is the only result value that is neither a code nor a
+/// bearer token: it is a structured `otpauth://` value an authenticator reads,
+/// so it carries reserved URI punctuation a code or token may not. The bound is
+/// what remains of the typed envelope's own byte bound once the largest
+/// enrollment envelope's other parts are accounted for, so disclosing one can
+/// never push a response past a bound the listener would redact it for. A URI
+/// that would exceed it is refused rather than shortened.
+pub const MAX_PROVISIONING_URI_BYTES: usize = 288;
+
 /// A stable, lowercase, dependency-neutral code or result field name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StableCode(String);
@@ -98,6 +109,43 @@ impl OpaqueToken {
     }
 }
 
+/// A bounded `otpauth://` provisioning URI disclosed exactly once.
+///
+/// The accepted set is the unreserved URI characters plus the percent sign and
+/// the delimiters this workspace's provisioning URI is built from. It excludes
+/// the quote, the backslash, and every control character, so a URI is
+/// serialized without escaping and no value outside the shape a provisioning
+/// URI can take is returnable at all.
+///
+/// The wrapped value is one-time provisioning data, so this type renders
+/// nothing: it implements neither `Debug` nor `Display`, and no comparison.
+#[derive(Clone)]
+pub struct ProvisioningUri(String);
+
+impl ProvisioningUri {
+    /// Accepts only `[A-Za-z0-9-._~%:/?&=]` within the provisioning bound.
+    #[must_use]
+    pub fn new(value: &str) -> Option<Self> {
+        if value.is_empty() || value.len() > MAX_PROVISIONING_URI_BYTES {
+            return None;
+        }
+        if !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'-' | b'.' | b'_' | b'~' | b'%' | b':' | b'/' | b'?' | b'&' | b'='
+                )
+        }) {
+            return None;
+        }
+        Some(Self(value.to_owned()))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// The response-envelope rendering of a correlation identifier.
 ///
 /// The canonical correlation identifier permits any bounded printable text,
@@ -139,6 +187,8 @@ pub enum TypedValue {
     Code(StableCode),
     /// An opaque single-use token emitted as a JSON string.
     Token(OpaqueToken),
+    /// A one-time provisioning URI emitted as a JSON string.
+    Uri(ProvisioningUri),
 }
 
 /// The bounded object a typed success envelope carries as `result`.
@@ -212,6 +262,9 @@ impl TypedJsonEnvelope {
                         TypedValue::Token(token) => {
                             let _ = write!(text, "\"{}\"", token.as_str());
                         }
+                        TypedValue::Uri(uri) => {
+                            let _ = write!(text, "\"{}\"", uri.as_str());
+                        }
                     }
                 }
                 let _ = write!(
@@ -268,9 +321,9 @@ pub fn typed_json_response_with_cookies(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_OPAQUE_TOKEN_BYTES, MAX_RESPONSE_CORRELATION_BYTES, MAX_STABLE_CODE_BYTES,
-        MAX_TYPED_RESULT_FIELDS, OpaqueToken, ResponseCorrelation, StableCode, TypedJsonEnvelope,
-        TypedResult, TypedValue,
+        MAX_OPAQUE_TOKEN_BYTES, MAX_PROVISIONING_URI_BYTES, MAX_RESPONSE_CORRELATION_BYTES,
+        MAX_STABLE_CODE_BYTES, MAX_TYPED_RESULT_FIELDS, OpaqueToken, ProvisioningUri,
+        ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
     };
 
     fn correlation() -> ResponseCorrelation {
@@ -322,6 +375,31 @@ mod tests {
             assert!(OpaqueToken::new(rejected).is_none(), "{rejected}");
         }
         assert!(OpaqueToken::new(&"a".repeat(MAX_OPAQUE_TOKEN_BYTES + 1)).is_none());
+    }
+
+    #[test]
+    fn provisioning_uris_accept_only_the_closed_character_set() {
+        assert!(
+            ProvisioningUri::new(
+                "otpauth://totp/Weavelit:first%2Dadmin?secret=GEZDGNBVGY3TQOJQ\
+                 &issuer=Weavelit&algorithm=SHA1&digits=6&period=30"
+            )
+            .is_some()
+        );
+        assert!(ProvisioningUri::new(&"a".repeat(MAX_PROVISIONING_URI_BYTES)).is_some());
+        for rejected in [
+            "",
+            "with space",
+            "with\"quote",
+            "with\\escape",
+            "with{brace}",
+            "with\nnewline",
+            "with+plus",
+            "with#fragment",
+            &"a".repeat(MAX_PROVISIONING_URI_BYTES + 1),
+        ] {
+            assert!(ProvisioningUri::new(rejected).is_none(), "{rejected}");
+        }
     }
 
     #[test]

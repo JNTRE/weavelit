@@ -71,6 +71,25 @@ impl TotpSecret {
         self.engine().check(code, unix_seconds).map(TimeStep)
     }
 
+    /// Returns the code this secret produces at `unix_seconds`.
+    ///
+    /// A Weavelit deployment never needs to produce a code: only the user's
+    /// authenticator does that, and the Server only ever verifies. Generation
+    /// is therefore not part of the shipped surface, and is compiled only when
+    /// the `test-support` feature is enabled so that a caller's tests can
+    /// exercise an enrollment confirmation end to end. Enabling the feature in
+    /// a production dependency edge would be a reviewable manifest change.
+    ///
+    /// Without this, testing a successful enrollment would mean either
+    /// brute-forcing a million candidates through [`Self::verify`] against the
+    /// Server's random secret, or leaving the confirmation's success path
+    /// uncovered.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn code_at(&self, unix_seconds: u64) -> String {
+        format!("{}", self.engine().generate(unix_seconds))
+    }
+
     /// Builds the profile-bound engine used for one operation.
     ///
     /// Every parameter comes from this module's profile constants, so the

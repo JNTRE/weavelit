@@ -15,7 +15,7 @@ const CONFIGURATION_QUERY: &str = "SELECT component, setting_key, setting_value 
      FROM weavelit_configuration ORDER BY component, setting_key";
 const PROTECTED_SECRET_QUERY: &str = "SELECT component, secret_key, protected_value \
      FROM weavelit_protected_secret ORDER BY component, secret_key";
-const ACCOUNT_QUERY: &str = "SELECT account_id, username, display_name, active \
+const ACCOUNT_QUERY: &str = "SELECT account_id, username, display_name, active, mfa_required \
      FROM weavelit_account ORDER BY account_id";
 const PASSWORD_VERIFIER_QUERY: &str = "SELECT account_id, encoded_verifier \
      FROM weavelit_password_verifier ORDER BY account_id";
@@ -66,7 +66,7 @@ const DISABLED_COMPONENT_QUERY: &str = "SELECT component, setting_key \
 
 type ConfigurationRow = (String, String, String);
 type ProtectedSecretRow = (String, String, Vec<u8>);
-type AccountRow = (Vec<u8>, String, Option<String>, i64);
+type AccountRow = (Vec<u8>, String, Option<String>, i64, i64);
 type PasswordVerifierRow = (Vec<u8>, String);
 type GroupRow = (Vec<u8>, String, Option<String>);
 type GroupMembershipRow = (Vec<u8>, Vec<u8>);
@@ -201,13 +201,15 @@ pub(super) fn write(
     for account in state.accounts() {
         execute(
             connection,
-            "INSERT INTO weavelit_account (account_id, username, display_name, active) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO weavelit_account \
+             (account_id, username, display_name, active, mfa_required) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 account.identifier.as_bytes().as_slice(),
                 account.username.as_str(),
                 account.display_name.as_ref().map(BoundedText::as_str),
                 i64::from(account.active),
+                i64::from(account.mfa_required),
             ],
         )?;
     }
@@ -360,16 +362,19 @@ pub(super) fn read(connection: &Connection) -> Result<(ApplicationState, bool), 
             })
             .collect::<Result<Vec<_>, DatabaseError>>()?;
 
-    let accounts = rows::<AccountRow>(connection, ACCOUNT_QUERY, four_columns)?
+    let accounts = rows::<AccountRow>(connection, ACCOUNT_QUERY, five_columns)?
         .into_iter()
-        .map(|(account_id, username, display_name, active)| {
-            Ok(Account {
-                identifier: identifier(&account_id)?,
-                username: text(username)?,
-                display_name: display_name.map(text).transpose()?,
-                active: boolean(active)?,
-            })
-        })
+        .map(
+            |(account_id, username, display_name, active, mfa_required)| {
+                Ok(Account {
+                    identifier: identifier(&account_id)?,
+                    username: text(username)?,
+                    display_name: display_name.map(text).transpose()?,
+                    active: boolean(active)?,
+                    mfa_required: boolean(mfa_required)?,
+                })
+            },
+        )
         .collect::<Result<Vec<_>, DatabaseError>>()?;
 
     let password_verifiers =
@@ -654,6 +659,24 @@ fn four_columns<
     row: &Row<'_>,
 ) -> rusqlite::Result<(A, B, C, D)> {
     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+}
+
+fn five_columns<
+    A: rusqlite::types::FromSql,
+    B: rusqlite::types::FromSql,
+    C: rusqlite::types::FromSql,
+    D: rusqlite::types::FromSql,
+    E: rusqlite::types::FromSql,
+>(
+    row: &Row<'_>,
+) -> rusqlite::Result<(A, B, C, D, E)> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
 }
 
 fn identifier(bytes: &[u8]) -> Result<StateIdentifier, DatabaseError> {

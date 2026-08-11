@@ -423,10 +423,11 @@ pub(crate) fn encrypt_protected_value(
     Ok(envelope)
 }
 
-// Sealing is the only capability exposed outside this crate, so recovering a
-// sealed value is exercised by this crate's own tests rather than reachable
-// from production code.
-#[cfg(test)]
+/// Recovers one sealed value, refusing an envelope sealed for another kind.
+///
+/// The kind is bound as additional authenticated data, so a value sealed as an
+/// enrolled factor cannot be recovered as a component secret and the other way
+/// round.
 pub(crate) fn decrypt_protected_value(
     key: &AnchorKey,
     kind: &str,

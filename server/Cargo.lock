@@ -1443,6 +1443,7 @@ dependencies = [
  "weavelit-module-client",
  "weavelit-module-client-webui",
  "weavelit-module-log-sqlite",
+ "weavelit-module-mfa-totp",
  "weavelit-server-authentication",
  "weavelit-server-authorization",
  "weavelit-server-database",

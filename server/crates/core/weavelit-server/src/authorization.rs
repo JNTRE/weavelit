@@ -492,6 +492,7 @@ mod tests {
                 BTreeSet::from([name(CLIENT_MODULE)]),
                 Arc::clone(&clock),
                 None,
+                startup.protection(),
             )
             .expect("the authentication runtime must compose");
             let runtime = AuthorizationRuntime::new(
@@ -616,12 +617,14 @@ mod tests {
                     username: name("operator"),
                     display_name: None,
                     active: true,
+                    mfa_required: false,
                 },
                 Account {
                     identifier: identifier(ADMINISTRATOR_BYTES),
                     username: name("administrator"),
                     display_name: None,
                     active: true,
+                    mfa_required: false,
                 },
             ],
             groups: vec![

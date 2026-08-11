@@ -260,6 +260,12 @@ struct AccountV1 {
     username: String,
     display_name: Option<String>,
     active: bool,
+    /// Absent in a document written before the requirement existed.
+    ///
+    /// A missing flag restores an account that is not required to use a second
+    /// factor, which is what such a document actually described.
+    #[serde(default)]
+    mfa_required: bool,
 }
 
 #[derive(Deserialize)]
@@ -399,6 +405,7 @@ pub fn normalize(
             username: name(entry.username)?,
             display_name: entry.display_name.map(name).transpose()?,
             active: entry.active,
+            mfa_required: entry.mfa_required,
         })
     })?;
     let password_verifiers = map_collection(document.password_verifiers, |entry| {

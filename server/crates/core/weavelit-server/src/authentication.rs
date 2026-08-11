@@ -28,7 +28,7 @@
 use std::{
     collections::BTreeSet,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -38,19 +38,28 @@ use axum::{
 };
 use tokio::{sync::Semaphore, task};
 use weavelit_module_client::{
-    AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE, AuthenticationCapability,
-    AuthenticationDeclaration, AuthenticationRejection, ExpectedOrigin, LoginSubmission,
-    SessionEstablished, SessionIdentity, SessionSubmission, validate_login_request,
+    AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+    AUTH_MFA_ENROLLMENT_ROUTE, AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE,
+    AUTH_SESSION_ROUTE, AuthenticationCapability, AuthenticationDeclaration,
+    AuthenticationRejection, ExpectedOrigin, LoginOutcome, LoginSubmission, MfaCapability,
+    MfaCodeSubmission, MfaDeclaration, MfaEnrollmentOpened, MfaEnrollmentSubmission,
+    MfaSelfEnrollmentSubmission, SessionEstablished, SessionIdentity, SessionSubmission,
+    mfa::{validate_mfa_request, validate_mfa_session_request},
+    validate_login_request,
 };
+use weavelit_module_mfa_totp::{SECRET_LENGTH, TotpSecret};
 use weavelit_server_authentication::{
-    ACCEPTED_ARGON2_PROFILES, Argon2Engine, CsrfTokenDigest, PasswordAuthenticator, PasswordPolicy,
-    PasswordVerdict, RustCryptoArgon2, SessionSecrets, SessionTokenDigest, StoredCredential,
+    ACCEPTED_ARGON2_PROFILES, Argon2Engine, Continuation, ContinuationDigest, CsrfTokenDigest,
+    PasswordAuthenticator, PasswordPolicy, PasswordVerdict, RustCryptoArgon2, SessionSecrets,
+    SessionTokenDigest, StoredCredential,
 };
 use weavelit_server_database::{
-    ApplicationState, DatabaseError, DeploymentIdentifier, InitializedState, LogType, Name,
-    NewSession, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash, SessionValidation,
-    StateIdentifier, StoredSession,
+    Account, ApplicationState, DatabaseError, DeploymentIdentifier, InitializedState, LogType,
+    MfaAcceptance, MfaEnablementOutcome, MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore,
+    MfaTimeStep, Name, NewSession, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
+    SessionValidation, StateIdentifier, StoredSession,
 };
+use weavelit_server_lifecycle::{ProtectedValueAccess, ProtectedValueKind};
 use weavelit_server_log::{
     ConfiguredLogDestination, LogModuleCatalog, LogModuleIdentifier, TrustedLogModuleContext,
     TrustedRecordIssuer,
@@ -86,6 +95,47 @@ const _: () = assert!(
      no path that persists one; add that path before widening the allowlist"
 );
 
+/// The MFA Module this build verifies second factors through.
+///
+/// A factor records this name, so a factor enrolled for another module is not
+/// a second factor this Server can verify and is not treated as enrollment.
+const TOTP_MODULE: &str = weavelit_module_mfa_totp::MODULE_IDENTIFIER;
+
+/// The configuration component that owns the TOTP Module's enabled setting.
+pub const TOTP_COMPONENT: &str = "mfa.totp";
+
+/// The setting key an MFA Module's enabled state is stored under.
+const MFA_ENABLED_KEY: &str = "enabled";
+
+/// The stored value that enables an MFA Module.
+///
+/// Anything else, including a missing entry, leaves the module disabled, so a
+/// deployment whose configuration was truncated or never written verifies no
+/// second factor rather than failing open in either direction.
+const MFA_ENABLED_VALUE: &str = "true";
+
+/// The issuer label an enrollment's provisioning URI carries.
+const PROVISIONING_ISSUER: &str = "Weavelit";
+
+/// How long a continuation stays claimable, in milliseconds.
+///
+/// A continuation is a verified password waiting for its second factor, so it
+/// is short-lived: past this window the caller logs in again rather than
+/// holding an indefinitely resumable half-authentication.
+const CONTINUATION_LIFETIME_MILLISECONDS: i64 = 5 * 60 * 1000;
+
+/// Continuations retained at one time.
+///
+/// Each one is issued only by a verified password or a verified enrollment
+/// step, so the bound is reached only by real successful verifications. It
+/// exists so the store cannot grow without limit.
+const MAX_OUTSTANDING_CONTINUATIONS: usize = 256;
+
+const _: () = assert!(
+    CONTINUATION_LIFETIME_MILLISECONDS > 0 && MAX_OUTSTANDING_CONTINUATIONS > 0,
+    "a continuation store that retains nothing, or retains forever, is not a bounded handoff"
+);
+
 /// Reads the current UTC time in Unix milliseconds.
 ///
 /// Injected so a test observes session lifetime decisions at chosen instants
@@ -115,6 +165,14 @@ pub struct AuthenticationRuntime<E> {
     login_lane: Arc<Semaphore>,
     clock: WallClock,
     observability: ServerObservability,
+    /// The deployment's at-rest protection for enrolled factor data.
+    ///
+    /// Sealing and opening pass through the same lifecycle authority a Restore
+    /// holds while it replaces state, so a factor cannot be sealed against a
+    /// key generation a running workflow is replacing.
+    protection: Arc<dyn ProtectedValueAccess>,
+    /// The half-authenticated logins waiting for their second factor.
+    continuations: ContinuationStore,
     /// The System Log destination denials are recorded to, when one is
     /// configured and could be opened.
     ///
@@ -136,6 +194,7 @@ impl AuthenticationRuntime<RustCryptoArgon2> {
         client_modules: BTreeSet<Name>,
         state_root: PathBuf,
         log_catalog: &LogModuleCatalog,
+        protection: Arc<dyn ProtectedValueAccess>,
     ) -> Option<Arc<Self>> {
         Self::with_engine(
             RustCryptoArgon2::new(PasswordPolicy::approved()),
@@ -144,6 +203,7 @@ impl AuthenticationRuntime<RustCryptoArgon2> {
             client_modules,
             system_clock(),
             open_system_log(state, state_root, log_catalog).map(Arc::new),
+            protection,
         )
     }
 }
@@ -161,6 +221,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         client_modules: BTreeSet<Name>,
         clock: WallClock,
         system_log: Option<Arc<ConfiguredLogDestination>>,
+        protection: Arc<dyn ProtectedValueAccess>,
     ) -> Option<Arc<Self>> {
         let log_authority = ServerLogAuthority::new();
 
@@ -174,12 +235,19 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             observability: ServerObservability::new(TrustedRecordIssuer::from_server_authority(
                 &log_authority,
             )),
+            protection,
+            continuations: ContinuationStore::default(),
             system_log,
         }))
     }
 
-    /// Returns the three authentication routes, each paired with the transport
+    /// Returns the authentication routes, each paired with the transport
     /// registration that admits it.
+    ///
+    /// Only the two routes that verify a password declare the single-permit
+    /// admission lane. A second-factor verification costs one HMAC rather than
+    /// one Argon2 profile ceiling, so admitting it into that lane would make a
+    /// held password verification block a code that reserves no such memory.
     pub(crate) fn capabilities(
         self: &Arc<Self>,
         expected_origin: ExpectedOrigin,
@@ -189,6 +257,11 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         ));
         let session = Arc::clone(&declaration);
         let logout = Arc::clone(&declaration);
+
+        let mfa = Arc::new(MfaDeclaration::new(self.mfa_capability(expected_origin)));
+        let enrollment = Arc::clone(&mfa);
+        let self_enrollment = Arc::clone(&mfa);
+        let confirm = Arc::clone(&mfa);
 
         vec![
             TransportCapability::new(
@@ -219,6 +292,57 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                 ),
                 move |router: Router| router.route(AUTH_LOGOUT_ROUTE, logout.logout_route()),
             ),
+            TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    AUTH_MFA_VERIFY_ROUTE,
+                    TransportProfile::DEFAULT,
+                )
+                .with_pre_body_check(Arc::new(MfaPreconditions { expected_origin })),
+                move |router: Router| router.route(AUTH_MFA_VERIFY_ROUTE, mfa.verify_route()),
+            ),
+            TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    AUTH_MFA_ENROLLMENT_ROUTE,
+                    TransportProfile::DEFAULT,
+                )
+                .with_pre_body_check(Arc::new(MfaPreconditions { expected_origin })),
+                move |router: Router| {
+                    router.route(AUTH_MFA_ENROLLMENT_ROUTE, enrollment.enrollment_route())
+                },
+            ),
+            TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    AUTH_MFA_SELF_ENROLLMENT_ROUTE,
+                    TransportProfile::DEFAULT,
+                )
+                .with_pre_body_check(Arc::new(MfaSessionPreconditions { expected_origin }))
+                // Self-enrollment re-verifies the account's password, so it
+                // enters the same single verification lane a login does.
+                .with_admission(Arc::clone(&self.login_lane)),
+                move |router: Router| {
+                    router.route(
+                        AUTH_MFA_SELF_ENROLLMENT_ROUTE,
+                        self_enrollment.self_enrollment_route(),
+                    )
+                },
+            ),
+            TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+                    TransportProfile::DEFAULT,
+                )
+                .with_pre_body_check(Arc::new(MfaPreconditions { expected_origin })),
+                move |router: Router| {
+                    router.route(
+                        AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+                        confirm.enrollment_confirm_route(),
+                    )
+                },
+            ),
         ]
     }
 
@@ -246,6 +370,35 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         }
     }
 
+    /// Binds this runtime's second-factor decisions to the route contract.
+    fn mfa_capability(self: &Arc<Self>, expected_origin: ExpectedOrigin) -> MfaCapability {
+        let verifying = Arc::clone(self);
+        let opening = Arc::clone(self);
+        let self_opening = Arc::clone(self);
+        let confirming = Arc::clone(self);
+
+        MfaCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            verify: Arc::new(move |submission| {
+                let runtime = Arc::clone(&verifying);
+                Box::pin(async move { runtime.verify_second_factor(submission).await })
+            }),
+            open_enrollment: Arc::new(move |submission| {
+                let runtime = Arc::clone(&opening);
+                Box::pin(async move { runtime.open_enrollment(submission).await })
+            }),
+            open_self_enrollment: Arc::new(move |submission| {
+                let runtime = Arc::clone(&self_opening);
+                Box::pin(async move { runtime.open_self_enrollment(submission).await })
+            }),
+            confirm_enrollment: Arc::new(move |submission| {
+                let runtime = Arc::clone(&confirming);
+                Box::pin(async move { runtime.confirm_enrollment(submission).await })
+            }),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Login
     // -----------------------------------------------------------------------
@@ -260,7 +413,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     async fn login(
         self: Arc<Self>,
         submission: LoginSubmission,
-    ) -> Result<SessionEstablished, AuthenticationRejection> {
+    ) -> Result<LoginOutcome, AuthenticationRejection> {
         let Some(admission) = submission.context.get::<BodyAdmission>().cloned() else {
             return Err(AuthenticationRejection::ServiceUnavailable);
         };
@@ -287,7 +440,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         password: &str,
         client_module: &str,
         correlation_id: &str,
-    ) -> Result<SessionEstablished, AuthenticationRejection> {
+    ) -> Result<LoginOutcome, AuthenticationRejection> {
         // Rejected before any credential work, and independently of the
         // submitted account, so it discloses nothing about an account.
         let Some(client_module) = Name::new(client_module)
@@ -296,14 +449,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         else {
             return Err(AuthenticationRejection::BadRequest);
         };
-        let state = self
-            .database
-            .with(|database| database.load_initialized_state(self.deployment))
-            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?
-            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+        let state = self.initialized_state()?;
 
         match self.verify_password(state.state(), username, password.as_bytes()) {
-            PasswordOutcome::Verified { account } => self.issue_session(account, &client_module),
+            PasswordOutcome::Verified { account } => {
+                self.admit(state.state(), account, &client_module, correlation_id)
+            }
             PasswordOutcome::Denied => {
                 // Delivery is attempted before the denial is returned, and every
                 // failure inside is absorbed, so the System Log records the
@@ -311,6 +462,55 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                 self.record_denial(correlation_id);
                 Err(AuthenticationRejection::AuthenticationFailed)
             }
+        }
+    }
+
+    /// Decides what a verified password is admitted to.
+    ///
+    /// The decision is exactly three inputs: whether the MFA Module is enabled
+    /// for the deployment, whether this account holds a factor for it, and
+    /// whether this account is required to hold one. Every combination is
+    /// decided here, so no caller can reach session issuance by skipping one.
+    ///
+    /// A required account whose module is disabled is denied. The deployment
+    /// stated that the account must present a second factor and it currently
+    /// cannot verify one, so admitting the account would silently drop a
+    /// requirement rather than enforce it.
+    fn admit(
+        &self,
+        state: &ApplicationState,
+        account: StateIdentifier,
+        client_module: &Name,
+        correlation_id: &str,
+    ) -> Result<LoginOutcome, AuthenticationRejection> {
+        let enabled = module_enabled(state);
+        let enrolled = enrolled_factor(state, account).is_some();
+        let required = state
+            .accounts()
+            .iter()
+            .find(|candidate| candidate.identifier == account)
+            .is_some_and(|candidate| candidate.mfa_required);
+
+        match (enabled, enrolled, required) {
+            (true, true, _) => self
+                .continuation(PendingClaim::SecondFactor {
+                    account,
+                    client_module: client_module.clone(),
+                })
+                .map(|continuation| LoginOutcome::SecondFactorRequired { continuation }),
+            (true, false, true) => self
+                .continuation(PendingClaim::Enrollment {
+                    account,
+                    client_module: client_module.clone(),
+                })
+                .map(|continuation| LoginOutcome::EnrollmentRequired { continuation }),
+            (false, _, true) => {
+                self.record_denial(correlation_id);
+                Err(AuthenticationRejection::AuthenticationFailed)
+            }
+            (true | false, _, false) => self
+                .issue_session(account, client_module)
+                .map(LoginOutcome::SessionEstablished),
         }
     }
 
@@ -393,6 +593,355 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             session_token: Zeroizing::new(secrets.session().as_str().to_owned()),
             csrf_token: Zeroizing::new(secrets.csrf().as_str().to_owned()),
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Second factor
+    // -----------------------------------------------------------------------
+
+    /// Verifies a time-based code against the continuation that requires it.
+    ///
+    /// No admission permit is taken. The work here is one decryption and one
+    /// HMAC, neither of which reserves the memory the login lane exists to
+    /// bound, so a code is answered while a password verification is running.
+    async fn verify_second_factor(
+        self: Arc<Self>,
+        submission: MfaCodeSubmission,
+    ) -> Result<SessionEstablished, AuthenticationRejection> {
+        let MfaCodeSubmission {
+            continuation,
+            code,
+            correlation_id,
+            ..
+        } = submission;
+
+        task::spawn_blocking(move || {
+            self.verify_second_factor_blocking(&continuation, &code, &correlation_id)
+        })
+        .await
+        .unwrap_or(Err(AuthenticationRejection::ServiceUnavailable))
+    }
+
+    fn verify_second_factor_blocking(
+        &self,
+        continuation: &str,
+        code: &str,
+        correlation_id: &str,
+    ) -> Result<SessionEstablished, AuthenticationRejection> {
+        let now = self.milliseconds()?;
+        // Claimed before the code is examined, so one continuation admits one
+        // attempt whether or not the code was right.
+        let Some(PendingClaim::SecondFactor {
+            account,
+            client_module,
+        }) = self.continuations.claim(continuation, now)
+        else {
+            return Err(self.deny(correlation_id));
+        };
+
+        let state = self.initialized_state()?;
+        if !module_enabled(state.state()) {
+            return Err(self.deny(correlation_id));
+        }
+        let Some(factor) = enrolled_factor(state.state(), account) else {
+            return Err(self.deny(correlation_id));
+        };
+        let secret = self.open_factor(factor)?;
+        let Some(step) = secret.verify(code, unix_seconds(now)?) else {
+            return Err(self.deny(correlation_id));
+        };
+        let step = MfaTimeStep::from_step(step.as_u64())
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+
+        // The watermark decides replay atomically, so a code presented twice
+        // inside its own step is accepted at most once.
+        match self.with_mfa(|store| store.accept_step(factor.identifier, step))? {
+            MfaAcceptance::Accepted => self.issue_session(account, &client_module),
+            MfaAcceptance::Replayed => Err(self.deny(correlation_id)),
+        }
+    }
+
+    /// Opens an enrollment for a login that must enroll before it may proceed.
+    async fn open_enrollment(
+        self: Arc<Self>,
+        submission: MfaEnrollmentSubmission,
+    ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
+        let MfaEnrollmentSubmission {
+            continuation,
+            correlation_id,
+            ..
+        } = submission;
+
+        task::spawn_blocking(move || self.open_enrollment_blocking(&continuation, &correlation_id))
+            .await
+            .unwrap_or(Err(AuthenticationRejection::ServiceUnavailable))
+    }
+
+    fn open_enrollment_blocking(
+        &self,
+        continuation: &str,
+        correlation_id: &str,
+    ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
+        let now = self.milliseconds()?;
+        let Some(PendingClaim::Enrollment {
+            account,
+            client_module,
+        }) = self.continuations.claim(continuation, now)
+        else {
+            return Err(self.deny(correlation_id));
+        };
+
+        let state = self.initialized_state()?;
+        if !module_enabled(state.state()) {
+            return Err(self.deny(correlation_id));
+        }
+        // An account that already holds a factor enrolls no second one, so an
+        // enrollment continuation cannot be used to replace a live factor.
+        if enrolled_factor(state.state(), account).is_some() {
+            return Err(self.deny(correlation_id));
+        }
+        let Some(username) = account_username(state.state(), account) else {
+            return Err(self.deny(correlation_id));
+        };
+
+        self.open_secret(account, client_module, &username, now)
+    }
+
+    /// Opens an enrollment for an account that is already signed in.
+    ///
+    /// The account re-enters its password, which is verified through the same
+    /// single call every login uses, so enrolling a factor from a stolen
+    /// session still costs the account's password.
+    async fn open_self_enrollment(
+        self: Arc<Self>,
+        submission: MfaSelfEnrollmentSubmission,
+    ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
+        let Some(admission) = submission.context.get::<BodyAdmission>().cloned() else {
+            return Err(AuthenticationRejection::ServiceUnavailable);
+        };
+        let MfaSelfEnrollmentSubmission {
+            session_token,
+            csrf_token,
+            password,
+            correlation_id,
+            ..
+        } = submission;
+
+        task::spawn_blocking(move || {
+            let _admission = admission;
+            self.open_self_enrollment_blocking(
+                &session_token,
+                &csrf_token,
+                &password,
+                &correlation_id,
+            )
+        })
+        .await
+        .unwrap_or(Err(AuthenticationRejection::ServiceUnavailable))
+    }
+
+    fn open_self_enrollment_blocking(
+        &self,
+        session_token: &str,
+        csrf_token: &str,
+        password: &str,
+        correlation_id: &str,
+    ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
+        let session = self.authorized_session(session_token, csrf_token)?.1;
+        let now = self.milliseconds()?;
+        let state = self.initialized_state()?;
+
+        // Resolved before verification and handed to the same call even when it
+        // resolves to nothing, so a session naming an account this state no
+        // longer holds still costs exactly one verification.
+        let username = account_username(state.state(), session.account());
+        let submitted = username.as_ref().map_or("", Name::as_str);
+        let verified = match self.verify_password(state.state(), submitted, password.as_bytes()) {
+            PasswordOutcome::Verified { account } if account == session.account() => account,
+            PasswordOutcome::Verified { .. } | PasswordOutcome::Denied => {
+                self.record_denial(correlation_id);
+                return Err(AuthenticationRejection::AuthenticationFailed);
+            }
+        };
+
+        if !module_enabled(state.state()) || enrolled_factor(state.state(), verified).is_some() {
+            return Err(self.deny(correlation_id));
+        }
+        let Some(username) = username else {
+            return Err(self.deny(correlation_id));
+        };
+
+        self.open_secret(verified, session.client_module().clone(), &username, now)
+    }
+
+    /// Generates one enrollment secret and the ticket that confirms it.
+    ///
+    /// The secret is disclosed here and nowhere else. It is held only in the
+    /// continuation this returns and is written to the database only once a
+    /// code proves the caller holds it, so an abandoned enrollment leaves no
+    /// factor behind.
+    fn open_secret(
+        &self,
+        account: StateIdentifier,
+        client_module: Name,
+        username: &Name,
+        now: i64,
+    ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
+        let unavailable = AuthenticationRejection::ServiceUnavailable;
+        let bytes = random_bytes::<SECRET_LENGTH>().ok_or(unavailable)?;
+        let secret = TotpSecret::from_bytes(bytes);
+        let base32 = secret.base32();
+        let uri = secret
+            .provisioning_uri(PROVISIONING_ISSUER, username.as_str())
+            .map_err(|_| unavailable)?;
+
+        let enrollment = self.continuations.issue(
+            PendingClaim::EnrollmentConfirm {
+                account,
+                client_module,
+                secret: Zeroizing::new(bytes),
+            },
+            now,
+        )?;
+
+        Ok(MfaEnrollmentOpened {
+            secret: Zeroizing::new(base32.expose().to_owned()),
+            provisioning_uri: Zeroizing::new(uri.expose().to_owned()),
+            enrollment: Zeroizing::new(enrollment.as_str().to_owned()),
+        })
+    }
+
+    /// Confirms an opened enrollment by verifying a code from its secret.
+    async fn confirm_enrollment(
+        self: Arc<Self>,
+        submission: MfaCodeSubmission,
+    ) -> Result<SessionEstablished, AuthenticationRejection> {
+        let MfaCodeSubmission {
+            continuation,
+            code,
+            correlation_id,
+            ..
+        } = submission;
+
+        task::spawn_blocking(move || {
+            self.confirm_enrollment_blocking(&continuation, &code, &correlation_id)
+        })
+        .await
+        .unwrap_or(Err(AuthenticationRejection::ServiceUnavailable))
+    }
+
+    fn confirm_enrollment_blocking(
+        &self,
+        enrollment: &str,
+        code: &str,
+        correlation_id: &str,
+    ) -> Result<SessionEstablished, AuthenticationRejection> {
+        let now = self.milliseconds()?;
+        let Some(PendingClaim::EnrollmentConfirm {
+            account,
+            client_module,
+            secret,
+        }) = self.continuations.claim(enrollment, now)
+        else {
+            return Err(self.deny(correlation_id));
+        };
+
+        let unavailable = AuthenticationRejection::ServiceUnavailable;
+        let Some(step) = TotpSecret::from_bytes(*secret).verify(code, unix_seconds(now)?) else {
+            return Err(self.deny(correlation_id));
+        };
+        let step = MfaTimeStep::from_step(step.as_u64()).map_err(|_| unavailable)?;
+
+        let identifier = StateIdentifier::from_bytes(random_bytes::<16>().ok_or(unavailable)?)
+            .map_err(|_| unavailable)?;
+        let module = Name::new(TOTP_MODULE).map_err(|_| unavailable)?;
+        let protected_factor_data = self
+            .protection
+            .seal(ProtectedValueKind::MfaFactorData, secret.as_slice())
+            .map_err(|_| unavailable)?;
+        let factor = MfaFactor {
+            identifier,
+            account,
+            module,
+            protected_factor_data,
+        };
+
+        // The factor and the watermark that already consumed the confirming
+        // code are written together, so the code that enrolled the factor
+        // cannot immediately be replayed against it.
+        match self.with_mfa(|store| store.enroll(&factor, step))? {
+            MfaEnrollment::Enrolled => self.issue_session(account, &client_module),
+            MfaEnrollment::AlreadyEnrolled => Err(self.deny(correlation_id)),
+        }
+    }
+
+    /// Reports how many accounts currently hold a factor for the MFA Module.
+    ///
+    /// This is the preview an administrator decides against before disabling
+    /// the module, and the same number is presented back to
+    /// [`Self::set_module_enabled`] so the decision is checked against the
+    /// count that was actually shown.
+    pub fn enrolled_accounts(&self) -> Result<usize, AuthenticationRejection> {
+        let state = self.initialized_state()?;
+        let mut accounts: Vec<_> = state
+            .state()
+            .mfa_factors()
+            .iter()
+            .filter(|factor| factor.module.as_str() == TOTP_MODULE)
+            .map(|factor| factor.account)
+            .collect();
+        accounts.sort_unstable_by_key(|account| *account.as_bytes());
+        accounts.dedup();
+        Ok(accounts.len())
+    }
+
+    /// Enables or disables the MFA Module against a previewed enrolled count.
+    ///
+    /// Disabling revokes every live session of every enrolled account, because
+    /// those sessions were established behind a factor this deployment is no
+    /// longer willing to verify.
+    pub fn set_module_enabled(
+        &self,
+        enabled: bool,
+        expected_enrolled: usize,
+    ) -> Result<MfaEnablementOutcome, AuthenticationRejection> {
+        let unavailable = AuthenticationRejection::ServiceUnavailable;
+        let target = MfaModuleTarget {
+            module: Name::new(TOTP_MODULE).map_err(|_| unavailable)?,
+            component: Name::new(TOTP_COMPONENT).map_err(|_| unavailable)?,
+        };
+        self.with_mfa(|store| store.set_module_enabled(&target, enabled, expected_enrolled))
+    }
+
+    /// Recovers the enrolled secret one factor holds.
+    fn open_factor(&self, factor: &MfaFactor) -> Result<TotpSecret, AuthenticationRejection> {
+        let unavailable = AuthenticationRejection::ServiceUnavailable;
+        let opened = self
+            .protection
+            .open(
+                ProtectedValueKind::MfaFactorData,
+                &factor.protected_factor_data,
+            )
+            .map_err(|_| unavailable)?;
+        let bytes: [u8; SECRET_LENGTH] = opened.as_slice().try_into().map_err(|_| unavailable)?;
+        Ok(TotpSecret::from_bytes(bytes))
+    }
+
+    /// Issues one continuation for a claim this runtime already decided.
+    fn continuation(
+        &self,
+        claim: PendingClaim,
+    ) -> Result<Zeroizing<String>, AuthenticationRejection> {
+        let now = self.milliseconds()?;
+        self.continuations
+            .issue(claim, now)
+            .map(|continuation| Zeroizing::new(continuation.as_str().to_owned()))
+    }
+
+    /// Records one denial and returns the single rejection every one answers.
+    fn deny(&self, correlation_id: &str) -> AuthenticationRejection {
+        self.record_denial(correlation_id);
+        AuthenticationRejection::AuthenticationFailed
     }
 
     // -----------------------------------------------------------------------
@@ -511,11 +1060,41 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             .map_err(|_| AuthenticationRejection::ServiceUnavailable)
     }
 
+    /// Runs one operation against the live MFA store.
+    ///
+    /// A backend that serves no MFA store is refused rather than verifying a
+    /// second factor without a durable replay watermark.
+    fn with_mfa<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn MfaStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, AuthenticationRejection> {
+        self.database
+            .with(|database| {
+                database
+                    .mfa()
+                    .map_or(Err(DatabaseError::Unavailable), operation)
+            })
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)
+    }
+
+    /// Loads the deployment's initialized application state.
+    fn initialized_state(&self) -> Result<InitializedState, AuthenticationRejection> {
+        self.database
+            .with(|database| database.load_initialized_state(self.deployment))
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)
+    }
+
     /// Reads the current instant sessions are decided against.
     fn now(&self) -> Result<SessionInstant, AuthenticationRejection> {
-        (self.clock)()
-            .and_then(|milliseconds| SessionInstant::from_unix_milliseconds(milliseconds).ok())
-            .ok_or(AuthenticationRejection::ServiceUnavailable)
+        SessionInstant::from_unix_milliseconds(self.milliseconds()?)
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)
+    }
+
+    /// Reads the current instant in Unix milliseconds.
+    fn milliseconds(&self) -> Result<i64, AuthenticationRejection> {
+        (self.clock)().ok_or(AuthenticationRejection::ServiceUnavailable)
     }
 
     /// Attempts to record one denial in the System Log.
@@ -558,6 +1137,96 @@ enum PasswordOutcome {
     },
     /// The submission was denied, for a reason this value cannot report.
     Denied,
+}
+
+// ---------------------------------------------------------------------------
+// Continuations
+// ---------------------------------------------------------------------------
+
+/// What one continuation entitles its holder to do next.
+///
+/// The claim is held here rather than encoded into the continuation itself, so
+/// the value handed to the caller carries no account, no Client Module, and no
+/// secret, and cannot be edited into a claim on something else.
+enum PendingClaim {
+    /// A verified password waiting for a code from an enrolled factor.
+    SecondFactor {
+        account: StateIdentifier,
+        client_module: Name,
+    },
+    /// A verified password that must enroll a factor before it may proceed.
+    Enrollment {
+        account: StateIdentifier,
+        client_module: Name,
+    },
+    /// An opened enrollment waiting for a code proving its secret was stored.
+    EnrollmentConfirm {
+        account: StateIdentifier,
+        client_module: Name,
+        /// Held only here until a code confirms it, so an abandoned enrollment
+        /// leaves nothing durable behind.
+        secret: Zeroizing<[u8; SECRET_LENGTH]>,
+    },
+}
+
+/// One outstanding continuation and the instant it stops being claimable.
+struct Pending {
+    digest: ContinuationDigest,
+    expires_at: i64,
+    claim: PendingClaim,
+}
+
+/// The half-authenticated logins this Server is currently holding.
+///
+/// Only the digest is retained, so the store cannot reproduce a continuation it
+/// issued. Claiming removes the entry before its caller examines any code, so
+/// one continuation admits exactly one attempt. The store lives in memory: a
+/// restart therefore invalidates every outstanding continuation, which is the
+/// safe direction for a partially completed authentication.
+#[derive(Default)]
+struct ContinuationStore {
+    pending: Mutex<Vec<Pending>>,
+}
+
+impl ContinuationStore {
+    /// Issues one continuation for a claim the runtime already decided.
+    fn issue(
+        &self,
+        claim: PendingClaim,
+        now: i64,
+    ) -> Result<Continuation, AuthenticationRejection> {
+        let unavailable = AuthenticationRejection::ServiceUnavailable;
+        let expires_at = now
+            .checked_add(CONTINUATION_LIFETIME_MILLISECONDS)
+            .ok_or(unavailable)?;
+        let continuation = Continuation::generate().map_err(|_| unavailable)?;
+
+        let mut pending = self.pending.lock().map_err(|_| unavailable)?;
+        pending.retain(|entry| entry.expires_at > now);
+        if pending.len() >= MAX_OUTSTANDING_CONTINUATIONS {
+            return Err(unavailable);
+        }
+        pending.push(Pending {
+            digest: continuation.digest(),
+            expires_at,
+            claim,
+        });
+        Ok(continuation)
+    }
+
+    /// Consumes the claim a submitted continuation entitles, when it is live.
+    ///
+    /// The entry is removed whatever the caller then decides, so a wrong code
+    /// costs the continuation rather than allowing another attempt against it.
+    fn claim(&self, submitted: &str, now: i64) -> Option<PendingClaim> {
+        let submitted = ContinuationDigest::of(submitted);
+        let mut pending = self.pending.lock().ok()?;
+        pending.retain(|entry| entry.expires_at > now);
+        let found = pending
+            .iter()
+            .position(|entry| entry.digest.matches(&submitted))?;
+        Some(pending.swap_remove(found).claim)
+    }
 }
 
 /// One session that has already passed validation.
@@ -628,9 +1297,91 @@ impl PreBodyCheck for LoginPreconditions {
     }
 }
 
+/// The continuation-bearing second-factor checks that run before a body exists.
+struct MfaPreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+impl PreBodyCheck for MfaPreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _target: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_mfa_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::default()),
+            Err(AuthenticationRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
+/// The session-bearing self-enrollment checks that run before a body exists.
+///
+/// Running here means a request that carries no session or no cross-site
+/// request forgery header is refused before it can occupy the single
+/// verification permit this route shares with login.
+struct MfaSessionPreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+impl PreBodyCheck for MfaSessionPreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _target: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_mfa_session_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::default()),
+            Err(AuthenticationRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
+
+/// Reports whether the deployment currently verifies second factors.
+///
+/// Any value other than the exact enabled value, including a missing entry,
+/// leaves the module disabled.
+fn module_enabled(state: &ApplicationState) -> bool {
+    state.configuration().iter().any(|entry| {
+        entry.component.as_str() == TOTP_COMPONENT
+            && entry.key.as_str() == MFA_ENABLED_KEY
+            && entry.value.as_str() == MFA_ENABLED_VALUE
+    })
+}
+
+/// Returns the factor one account holds for the MFA Module, when it holds one.
+fn enrolled_factor(state: &ApplicationState, account: StateIdentifier) -> Option<&MfaFactor> {
+    state
+        .mfa_factors()
+        .iter()
+        .find(|factor| factor.account == account && factor.module.as_str() == TOTP_MODULE)
+}
+
+/// Returns the username one account is addressed by, when the state holds it.
+fn account_username(state: &ApplicationState, account: StateIdentifier) -> Option<Name> {
+    state
+        .accounts()
+        .iter()
+        .find(|candidate: &&Account| candidate.identifier == account)
+        .map(|candidate| candidate.username.clone())
+}
+
+/// Converts Unix milliseconds into the whole seconds a time step counts from.
+fn unix_seconds(milliseconds: i64) -> Result<u64, AuthenticationRejection> {
+    u64::try_from(milliseconds / 1_000).map_err(|_| AuthenticationRejection::ServiceUnavailable)
+}
 
 /// Opens the System Log destination the initialized state assigns.
 ///
@@ -700,13 +1451,15 @@ pub(crate) mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use weavelit_module_client::{
         cookie::{CSRF_COOKIE_NAME, CookieEffect, CookieValue, SESSION_COOKIE_NAME},
+        mfa::{MFA_ENROLLMENT_REQUIRED_CODE, MFA_REQUIRED_CODE},
         typed_json::{
             MAX_STABLE_CODE_BYTES, ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult,
             TypedValue,
         },
     };
+    use weavelit_module_mfa_totp::STEP_SECONDS;
     use weavelit_server_authentication::{
-        Argon2Profile, AuthenticationError, SESSION_TOKEN_TEXT_BYTES,
+        Argon2Profile, AuthenticationError, CONTINUATION_TEXT_BYTES, SESSION_TOKEN_TEXT_BYTES,
     };
     use weavelit_server_database::{
         Account, AccountPasswordVerifier, PasswordVerifier, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
@@ -724,8 +1477,7 @@ pub(crate) mod tests {
         REQUEST_READ_TIMEOUT, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, bounded_response_from_axum,
         classify_restricted_startup, fallback_router,
         tests::{
-            UNBOUND_LISTENER, process_over_duplex, published_serving_modes, seal_deployment_with,
-            sealed_application_state_with,
+            UNBOUND_LISTENER, process_over_duplex, published_serving_modes, seal_deployment_from,
         },
         transport::MountedSurface,
         write_bounded_response,
@@ -749,6 +1501,42 @@ pub(crate) mod tests {
 
     const ACTIVE_ACCOUNT_BYTES: [u8; 16] = [0xa1; 16];
     const INACTIVE_ACCOUNT_BYTES: [u8; 16] = [0xd0; 16];
+
+    /// The identifier of the factor an already-enrolled fixture account holds.
+    const ENROLLED_FACTOR_BYTES: [u8; 16] = [0xf1; 16];
+
+    /// The shared secret an already-enrolled fixture account holds.
+    ///
+    /// This is the twenty-byte secret RFC 6238 publishes its vectors against,
+    /// so a fixture code can be derived from the same values the TOTP Module's
+    /// own tests pin rather than from a second, unverified secret.
+    const ENROLLED_SECRET: [u8; 20] = *b"12345678901234567890";
+
+    /// The instant, in whole Unix seconds, a published RFC 6238 vector for
+    /// [`ENROLLED_SECRET`] was issued at.
+    ///
+    /// The instant divides exactly by [`STEP_SECONDS`], so it is the first
+    /// second of its own time step and an offset of whole steps stays inside
+    /// the step it names.
+    const ENROLLED_VECTOR_SECONDS: u64 = 1_234_567_890;
+
+    /// The six digits that vector publishes for [`ENROLLED_VECTOR_SECONDS`].
+    const ENROLLED_VECTOR_CODE: &str = "005924";
+
+    const _: () = assert!(
+        ENROLLED_VECTOR_SECONDS.is_multiple_of(STEP_SECONDS),
+        "the fixture instant must sit on a time step boundary"
+    );
+
+    /// A well-shaped code [`ENROLLED_SECRET`] does not verify at that instant.
+    ///
+    /// Every test that presents it first asserts that refusal through the TOTP
+    /// Module's own verification path, so the fixture cannot silently become a
+    /// code the Server accepts.
+    const REFUSED_CODE: &str = "000000";
+
+    /// A well-shaped bearer value this Server never issued.
+    const UNISSUED_TICKET: &str = "not-a-continuation-this-server-ever-issued";
 
     /// The instant every seeded session is issued at.
     const ISSUED_AT: i64 = 1_700_000_000_000;
@@ -1019,18 +1807,27 @@ pub(crate) mod tests {
 
     impl AuthSurface {
         fn new() -> Self {
-            Self::build(true, None)
+            Self::build(true, None, MfaFixture::default())
         }
 
         fn gated() -> Self {
-            Self::build(false, None)
+            Self::build(false, None, MfaFixture::default())
         }
 
         fn with_log(system_log: Arc<ConfiguredLogDestination>) -> Self {
-            Self::build(true, Some(system_log))
+            Self::build(true, Some(system_log), MfaFixture::default())
         }
 
-        fn build(open_engine: bool, system_log: Option<Arc<ConfiguredLogDestination>>) -> Self {
+        /// Builds a surface whose sealed state carries the described MFA setup.
+        fn with_mfa(fixture: MfaFixture) -> Self {
+            Self::build(true, None, fixture)
+        }
+
+        fn build(
+            open_engine: bool,
+            system_log: Option<Arc<ConfiguredLogDestination>>,
+            fixture: MfaFixture,
+        ) -> Self {
             let root = tempfile::tempdir().expect("the test state root must be created");
             fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
                 .expect("the test state root must be private");
@@ -1038,7 +1835,7 @@ pub(crate) mod tests {
                 .path()
                 .canonicalize()
                 .expect("the test state root must resolve");
-            seal_deployment_with(&state_root, &authentication_state());
+            seal_deployment_from(&state_root, |sealer| authentication_state(&fixture, sealer));
 
             let startup = classify_restricted_startup(&state_root)
                 .expect("a sealed state root must classify");
@@ -1061,6 +1858,7 @@ pub(crate) mod tests {
                 client_modules(),
                 Arc::new(move || Some(reading.load(Ordering::SeqCst))),
                 system_log,
+                startup.protection(),
             )
             .expect("the authentication runtime must compose");
 
@@ -1073,7 +1871,7 @@ pub(crate) mod tests {
             }
         }
 
-        /// Builds the mounted surface the three authentication routes serve on.
+        /// Builds the mounted surface the authentication routes serve on.
         fn surface(&self) -> MountedSurface {
             let mut surface = MountedSurface::without_registrations(fallback_router());
             for capability in self.runtime.capabilities(expected_origin()) {
@@ -1087,29 +1885,94 @@ pub(crate) mod tests {
         }
     }
 
+    /// The MFA setup one sealed deployment is built with.
+    ///
+    /// Enablement is deployment-wide configuration while the requirement and
+    /// the enrolled secret belong to the one active account this state holds,
+    /// so a single fixture describes exactly one combination of the three
+    /// inputs admission decides against. A test that decides several
+    /// combinations seals a fresh deployment from a fresh fixture for each one.
+    #[derive(Default)]
+    struct MfaFixture {
+        /// Whether the deployment's configuration enables the MFA Module.
+        enabled: bool,
+        /// Whether the active account is required to hold a second factor.
+        required: bool,
+        /// The secret the active account is enrolled with, when it is enrolled.
+        secret: Option<[u8; SECRET_LENGTH]>,
+    }
+
+    impl MfaFixture {
+        fn enabled() -> Self {
+            Self {
+                enabled: true,
+                ..Self::default()
+            }
+        }
+
+        const fn requiring(mut self) -> Self {
+            self.required = true;
+            self
+        }
+
+        const fn enrolled(mut self) -> Self {
+            self.secret = Some(ENROLLED_SECRET);
+            self
+        }
+    }
+
     /// The sealed application state every authentication test decides against.
-    fn authentication_state() -> ApplicationState {
+    fn authentication_state(
+        fixture: &MfaFixture,
+        sealer: &dyn weavelit_server_lifecycle::ProtectedValueSealer,
+    ) -> ApplicationState {
         let active = StateIdentifier::from_bytes(ACTIVE_ACCOUNT_BYTES)
             .expect("the active account identifier must be accepted");
         let inactive = StateIdentifier::from_bytes(INACTIVE_ACCOUNT_BYTES)
             .expect("the inactive account identifier must be accepted");
 
-        sealed_application_state_with(
-            vec![
+        let configuration = if fixture.enabled {
+            vec![weavelit_server_database::ConfigurationEntry {
+                component: name(TOTP_COMPONENT),
+                key: weavelit_server_database::ConfigurationKey::new(MFA_ENABLED_KEY)
+                    .expect("the enablement key must be accepted"),
+                value: weavelit_server_database::ConfigurationValue::new(MFA_ENABLED_VALUE)
+                    .expect("the enablement value must be accepted"),
+            }]
+        } else {
+            Vec::new()
+        };
+        let mfa_factors = fixture.secret.map_or_else(Vec::new, |secret| {
+            vec![MfaFactor {
+                identifier: StateIdentifier::from_bytes(ENROLLED_FACTOR_BYTES)
+                    .expect("the factor identifier must be accepted"),
+                account: active,
+                module: name(TOTP_MODULE),
+                protected_factor_data: sealer
+                    .seal(ProtectedValueKind::MfaFactorData, &secret)
+                    .expect("the enrolled secret must seal"),
+            }]
+        });
+
+        crate::tests::sealed_application_state_from(crate::tests::SealedStateParts {
+            configuration,
+            accounts: vec![
                 Account {
                     identifier: active,
                     username: name(ACTIVE_USERNAME),
                     display_name: None,
                     active: true,
+                    mfa_required: fixture.required,
                 },
                 Account {
                     identifier: inactive,
                     username: name(INACTIVE_USERNAME),
                     display_name: None,
                     active: false,
+                    mfa_required: false,
                 },
             ],
-            vec![
+            password_verifiers: vec![
                 AccountPasswordVerifier {
                     account: active,
                     verifier: verifier(),
@@ -1119,7 +1982,9 @@ pub(crate) mod tests {
                     verifier: verifier(),
                 },
             ],
-        )
+            mfa_factors,
+            ..crate::tests::SealedStateParts::default()
+        })
     }
 
     fn verifier() -> PasswordVerifier {
@@ -1240,6 +2105,298 @@ pub(crate) mod tests {
             body,
         )
         .await
+    }
+
+    /// Builds a continuation-bearing second-factor request head.
+    ///
+    /// These routes carry no session, exactly as login does not, so they are
+    /// trusted by the same exact origin plus the literal CSRF header value.
+    fn mfa_head(target: &str, body_length: usize) -> String {
+        format!(
+            "PUT {target} HTTP/1.1\r\n\
+             Host: {UNBOUND_LISTENER}\r\n\
+             Origin: https://{UNBOUND_LISTENER}\r\n\
+             X-Weavelit-CSRF: 1\r\n\
+             Accept: application/json\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {body_length}\r\n\r\n"
+        )
+    }
+
+    /// Submits one code against the ticket the named body field carries.
+    async fn submit_code(
+        surface: &AuthSurface,
+        timeouts: ConnectionTimeouts,
+        target: &str,
+        ticket: (&str, &str),
+        code: &str,
+    ) -> BoundedResponse {
+        let (field, value) = ticket;
+        let body = format!("{{\"{field}\":\"{value}\",\"code\":\"{code}\"}}");
+        request(
+            surface.surface(),
+            timeouts,
+            mfa_head(target, body.len()),
+            body,
+        )
+        .await
+    }
+
+    /// Submits one code against a login continuation.
+    async fn verify_code(surface: &AuthSurface, continuation: &str, code: &str) -> BoundedResponse {
+        submit_code(
+            surface,
+            default_timeouts(),
+            AUTH_MFA_VERIFY_ROUTE,
+            ("continuation", continuation),
+            code,
+        )
+        .await
+    }
+
+    /// Submits one code against an opened enrollment.
+    async fn confirm_code(surface: &AuthSurface, enrollment: &str, code: &str) -> BoundedResponse {
+        submit_code(
+            surface,
+            default_timeouts(),
+            AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+            ("enrollment", enrollment),
+            code,
+        )
+        .await
+    }
+
+    /// Opens an enrollment against a login continuation.
+    async fn opened_enrollment(surface: &AuthSurface, continuation: &str) -> BoundedResponse {
+        let body = format!("{{\"continuation\":\"{continuation}\"}}");
+        request(
+            surface.surface(),
+            default_timeouts(),
+            mfa_head(AUTH_MFA_ENROLLMENT_ROUTE, body.len()),
+            body,
+        )
+        .await
+    }
+
+    /// Builds a session-bearing self-enrollment request head.
+    ///
+    /// The session and the token are optional so a test can present a request
+    /// that carries neither, which is the shape the route must refuse before it
+    /// allocates a body.
+    fn self_enrollment_head(
+        origin: &str,
+        session_token: Option<&str>,
+        csrf_token: Option<&str>,
+        body_length: usize,
+    ) -> String {
+        let cookie = session_token.map_or_else(String::new, |value| {
+            format!("Cookie: {SESSION_COOKIE_NAME}={value}\r\n")
+        });
+        let csrf =
+            csrf_token.map_or_else(String::new, |value| format!("X-Weavelit-CSRF: {value}\r\n"));
+        format!(
+            "PUT {AUTH_MFA_SELF_ENROLLMENT_ROUTE} HTTP/1.1\r\n\
+             Host: {UNBOUND_LISTENER}\r\n\
+             Origin: {origin}\r\n\
+             {csrf}\
+             {cookie}\
+             Accept: application/json\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {body_length}\r\n\r\n"
+        )
+    }
+
+    /// Opens an enrollment from a live session and a re-entered password.
+    async fn self_enrollment(
+        surface: &AuthSurface,
+        session_token: Option<&str>,
+        csrf_token: Option<&str>,
+        password: &str,
+    ) -> BoundedResponse {
+        let body = format!("{{\"password\":\"{password}\"}}");
+        request(
+            surface.surface(),
+            default_timeouts(),
+            self_enrollment_head(
+                &format!("https://{UNBOUND_LISTENER}"),
+                session_token,
+                csrf_token,
+                body.len(),
+            ),
+            body,
+        )
+        .await
+    }
+
+    /// Builds the fixture one row of the admission matrix is decided against.
+    fn mfa_fixture(enabled: bool, enrolled: bool, required: bool) -> MfaFixture {
+        let mut fixture = if enabled {
+            MfaFixture::enabled()
+        } else {
+            MfaFixture::default()
+        };
+        if enrolled {
+            fixture = fixture.enrolled();
+        }
+        if required {
+            fixture = fixture.requiring();
+        }
+        fixture
+    }
+
+    /// Returns the instant, in Unix milliseconds, `steps` time steps away from
+    /// the instant [`ENROLLED_VECTOR_CODE`] was published for.
+    fn vector_milliseconds(steps: i64) -> i64 {
+        let step = i64::try_from(STEP_SECONDS).expect("the step length fits a signed instant");
+        let published = i64::try_from(ENROLLED_VECTOR_SECONDS)
+            .expect("the vector instant fits a signed instant");
+        (published + steps * step) * 1_000
+    }
+
+    /// Reports whether the TOTP Module itself verifies the fixture code at an
+    /// instant `steps` time steps from the published one.
+    ///
+    /// Every expectation about skew is read from the Module's own verification
+    /// path here rather than restated by hand, so a fixture that stopped
+    /// matching fails the assertion instead of silently passing.
+    fn module_verifies_fixture_code(steps: i64) -> bool {
+        let seconds = u64::try_from(vector_milliseconds(steps) / 1_000)
+            .expect("every fixture instant is after the Unix epoch");
+        TotpSecret::from_bytes(ENROLLED_SECRET)
+            .verify(ENROLLED_VECTOR_CODE, seconds)
+            .is_some()
+    }
+
+    /// Returns the length of `steps` whole time steps in milliseconds.
+    fn step_milliseconds(steps: i64) -> i64 {
+        let step = i64::try_from(STEP_SECONDS).expect("the step length fits a signed instant");
+        steps * step * 1_000
+    }
+
+    /// Returns the whole Unix seconds one injected instant names.
+    fn seconds_at(milliseconds: i64) -> u64 {
+        u64::try_from(milliseconds / 1_000).expect("every test instant is after the Unix epoch")
+    }
+
+    /// Rebuilds the secret one enrollment response disclosed.
+    ///
+    /// The rebuilt secret is re-encoded and compared with the disclosed text,
+    /// so a decoding mistake fails here rather than silently producing codes
+    /// for a secret other than the one the Server is about to bind.
+    fn disclosed_secret(base32: &str) -> TotpSecret {
+        /// The unpadded RFC 4648 alphabet a disclosed secret is written in.
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+        assert_eq!(
+            base32.len(),
+            SECRET_LENGTH * 8 / 5,
+            "a disclosed secret is one whole unpadded Base32 encoding"
+        );
+        let mut bytes = [0_u8; SECRET_LENGTH];
+        let mut accumulator = 0_u16;
+        let mut bits = 0_u8;
+        let mut written = 0_usize;
+        for symbol in base32.bytes() {
+            let value = ALPHABET
+                .iter()
+                .position(|candidate| *candidate == symbol)
+                .expect("a disclosed secret carries only Base32 symbols");
+            accumulator = (accumulator << 5)
+                | u16::try_from(value).expect("a Base32 symbol value is under thirty-two");
+            bits += 5;
+            if bits >= 8 {
+                bits -= 8;
+                bytes[written] = u8::try_from((accumulator >> bits) & 0xff)
+                    .expect("a masked octet fits in a byte");
+                written += 1;
+            }
+        }
+
+        let secret = TotpSecret::from_bytes(bytes);
+        assert_eq!(
+            secret.base32().expose(),
+            base32,
+            "the rebuilt secret must re-encode to the text that was disclosed"
+        );
+        secret
+    }
+
+    /// Reads the secret and the confirming ticket one opened enrollment
+    /// disclosed.
+    fn opened_parts(response: &BoundedResponse) -> (TotpSecret, String) {
+        let body = body_text(response);
+        (
+            disclosed_secret(&string_field(&body, "secret")),
+            string_field(&body, "enrollment"),
+        )
+    }
+
+    /// Returns the code one secret produces at an injected instant.
+    ///
+    /// The generated code is offered back to the Module's own verification path
+    /// before it is returned, so a test that presents it is presenting a code
+    /// this profile really accepts rather than one it assumed was current.
+    fn current_code(secret: &TotpSecret, milliseconds: i64) -> String {
+        let seconds = seconds_at(milliseconds);
+        let code = secret.code_at(seconds);
+        assert!(
+            secret.verify(&code, seconds).is_some(),
+            "a generated code must verify at the instant it was generated for"
+        );
+        code
+    }
+
+    /// Returns a well-shaped code produced by a secret other than this one.
+    ///
+    /// The candidates are fixed variations of the RFC 6238 test secret and each
+    /// is decided by the Module's own verification path first, so the returned
+    /// code is one this secret really refuses rather than one assumed to be
+    /// wrong. That keeps the refusal deterministic even though the secret the
+    /// Server disclosed is drawn at random.
+    fn code_from_another_secret(secret: &TotpSecret, milliseconds: i64) -> String {
+        let seconds = seconds_at(milliseconds);
+        (0..u8::MAX)
+            .find_map(|nonce| {
+                let mut bytes = ENROLLED_SECRET;
+                bytes[0] ^= nonce;
+                let code = TotpSecret::from_bytes(bytes).code_at(seconds);
+                secret.verify(&code, seconds).is_none().then_some(code)
+            })
+            .expect("some other secret must produce a code this one refuses")
+    }
+
+    /// Reads one JSON string field out of a typed response body.
+    fn string_field(body: &str, name: &str) -> String {
+        let field = format!("\"{name}\":\"");
+        let start = body
+            .find(&field)
+            .unwrap_or_else(|| panic!("the body must carry {name}: {body}"))
+            + field.len();
+        let rest = &body[start..];
+        let end = rest
+            .find('"')
+            .expect("a JSON string field must be terminated");
+        rest[..end].to_owned()
+    }
+
+    /// Logs in and returns the continuation a login stopped at `stage` issued.
+    async fn stopped_login(surface: &AuthSurface, stage: &str) -> String {
+        let response = login(surface, ACTIVE_USERNAME, CORRECT_PASSWORD).await;
+        assert_eq!(response.status, StatusCode::ACCEPTED);
+        let body = body_text(&response);
+        assert_eq!(string_field(&body, "mfa"), stage);
+        string_field(&body, "continuation")
+    }
+
+    /// Renders every text field one delivered System Log record carries.
+    ///
+    /// The two remaining fields are a Server-drawn record identifier and the
+    /// event time, neither of which is built from request content.
+    fn record_text(record: &DeliveredRecord) -> String {
+        format!(
+            "{}\n{}\n{}",
+            record.correlation_id, record.classification, record.detail
+        )
     }
 
     /// Renders a bounded response exactly as the listener writes it.
@@ -2149,6 +3306,759 @@ pub(crate) mod tests {
             wire[0],
             "HTTP/1.1 401 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n\
              {\"error\":\"authentication_failed\",\"correlation_id\":\"<correlation>\"}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Second-factor admission
+    // -----------------------------------------------------------------------
+
+    /// What one row of the admission matrix must produce.
+    #[derive(Clone, Copy)]
+    enum Admitted {
+        /// A `202` naming the stage, carrying a continuation and no cookie.
+        Continuation(&'static str),
+        /// A `200` carrying the session and the CSRF cookie.
+        Session,
+        /// A `401` indistinguishable from the denial a wrong password produces.
+        Denied,
+    }
+
+    /// Every combination of enablement, enrollment, and requirement is decided.
+    ///
+    /// The three inputs are independent, so all eight rows are stated here
+    /// rather than sampled. Each row asserts the status, the code the body
+    /// carries, and the presence or absence of both cookies, because a row that
+    /// answered the right status while still issuing a session would otherwise
+    /// pass.
+    ///
+    /// The two rows that deny a required account whose Module is disabled also
+    /// assert byte identity with a wrong-password denial on the same
+    /// deployment, so a disabled Module is not detectable from the response.
+    #[tokio::test]
+    async fn login_admission_decides_every_enablement_enrollment_and_requirement_row() {
+        for (enabled, enrolled, required, expected) in [
+            (true, true, true, Admitted::Continuation(MFA_REQUIRED_CODE)),
+            (true, true, false, Admitted::Continuation(MFA_REQUIRED_CODE)),
+            (
+                true,
+                false,
+                true,
+                Admitted::Continuation(MFA_ENROLLMENT_REQUIRED_CODE),
+            ),
+            (true, false, false, Admitted::Session),
+            (false, true, true, Admitted::Denied),
+            (false, true, false, Admitted::Session),
+            (false, false, true, Admitted::Denied),
+            (false, false, false, Admitted::Session),
+        ] {
+            let row = format!("enabled={enabled} enrolled={enrolled} required={required}");
+            let surface = AuthSurface::with_mfa(mfa_fixture(enabled, enrolled, required));
+            let response = login(&surface, ACTIVE_USERNAME, CORRECT_PASSWORD).await;
+            let wire = rendered(&response).await;
+            let correlation = correlation_of(&response);
+            assert!(is_correlation_identifier(&correlation), "{row}");
+
+            match expected {
+                Admitted::Continuation(stage) => {
+                    assert_eq!(response.status, StatusCode::ACCEPTED, "{row}");
+                    let continuation = string_field(&body_text(&response), "continuation");
+                    assert_eq!(continuation.len(), CONTINUATION_TEXT_BYTES, "{row}");
+                    assert_eq!(
+                        body_text(&response),
+                        format!(
+                            "{{\"result\":{{\"mfa\":\"{stage}\",\"continuation\":\"{continuation}\"}},\
+                             \"correlation_id\":\"{correlation}\"}}"
+                        ),
+                        "{row}"
+                    );
+                    assert!(response.cookies.is_none(), "{row}");
+                    assert!(!wire.contains("Set-Cookie"), "{row}");
+                }
+                Admitted::Session => {
+                    assert_eq!(response.status, StatusCode::OK, "{row}");
+                    assert_eq!(set_cookie_lines(&wire).len(), 2, "{row}");
+                    assert_eq!(
+                        cookie_value(&wire, SESSION_COOKIE_NAME).len(),
+                        SESSION_TOKEN_TEXT_BYTES,
+                        "{row}"
+                    );
+                    assert_eq!(
+                        cookie_value(&wire, CSRF_COOKIE_NAME).len(),
+                        SESSION_TOKEN_TEXT_BYTES,
+                        "{row}"
+                    );
+                    assert_eq!(
+                        body_text(&response),
+                        format!(
+                            "{{\"result\":{{\"authenticated\":true}},\
+                             \"correlation_id\":\"{correlation}\"}}"
+                        ),
+                        "{row}"
+                    );
+                }
+                Admitted::Denied => {
+                    assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{row}");
+                    assert_eq!(
+                        body_text(&response),
+                        format!(
+                            "{{\"error\":\"authentication_failed\",\
+                             \"correlation_id\":\"{correlation}\"}}"
+                        ),
+                        "{row}"
+                    );
+                    assert!(response.cookies.is_none(), "{row}");
+                    assert!(!wire.contains("Set-Cookie"), "{row}");
+
+                    let wrong = login(&surface, ACTIVE_USERNAME, WRONG_PASSWORD).await;
+                    let wrong_correlation = correlation_of(&wrong);
+                    assert!(is_correlation_identifier(&wrong_correlation), "{row}");
+                    assert_ne!(correlation, wrong_correlation, "{row}");
+                    assert_eq!(
+                        normalized(&wire, &correlation),
+                        normalized(&rendered(&wrong).await, &wrong_correlation),
+                        "{row}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every login path costs exactly one password verification.
+    ///
+    /// The five paths are an unknown username, a wrong password, an accepted
+    /// login with no second factor, an accepted password that stops at an
+    /// enrolled factor, and an accepted password that stops at enrollment. The
+    /// count comes from the injected engine, so nothing here measures time.
+    #[tokio::test]
+    async fn every_login_path_performs_exactly_one_password_verification() {
+        let mut counted = Vec::new();
+        for (fixture, username, password, expected) in [
+            (
+                mfa_fixture(false, false, false),
+                UNKNOWN_USERNAME,
+                CORRECT_PASSWORD,
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                mfa_fixture(false, false, false),
+                ACTIVE_USERNAME,
+                WRONG_PASSWORD,
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                mfa_fixture(false, false, false),
+                ACTIVE_USERNAME,
+                CORRECT_PASSWORD,
+                StatusCode::OK,
+            ),
+            (
+                mfa_fixture(true, true, true),
+                ACTIVE_USERNAME,
+                CORRECT_PASSWORD,
+                StatusCode::ACCEPTED,
+            ),
+            (
+                mfa_fixture(true, false, true),
+                ACTIVE_USERNAME,
+                CORRECT_PASSWORD,
+                StatusCode::ACCEPTED,
+            ),
+        ] {
+            let surface = AuthSurface::with_mfa(fixture);
+            let response = login(&surface, username, password).await;
+            assert_eq!(response.status, expected, "{username}");
+            assert_eq!(surface.engine.hashes(), 0, "{username}");
+            counted.push(surface.engine.verifications());
+        }
+
+        assert_eq!(
+            counted,
+            vec![1; 5],
+            "every login path must perform exactly one verification"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Replay and the continuation ticket
+    // -----------------------------------------------------------------------
+
+    /// A code accepted once is refused when it is presented again.
+    ///
+    /// The second attempt carries its own fresh continuation, so the only thing
+    /// left to refuse it is the factor's replay watermark.
+    #[tokio::test]
+    async fn an_accepted_code_is_refused_when_it_is_presented_again() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, true, true));
+        surface.set_clock(vector_milliseconds(0));
+
+        let first = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let accepted = verify_code(&surface, &first, ENROLLED_VECTOR_CODE).await;
+        assert_eq!(accepted.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+
+        let second = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        assert_ne!(first, second);
+        let replayed = verify_code(&surface, &second, ENROLLED_VECTOR_CODE).await;
+
+        assert_eq!(replayed.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body_text(&replayed),
+            format!(
+                "{{\"error\":\"authentication_failed\",\"correlation_id\":\"{}\"}}",
+                correlation_of(&replayed)
+            )
+        );
+        assert!(replayed.cookies.is_none());
+        assert!(!rendered(&replayed).await.contains("Set-Cookie"));
+    }
+
+    /// An invalid code consumes the continuation it was presented with.
+    ///
+    /// This is deliberate: one continuation admits one attempt, so retrying the
+    /// correct code against the same ticket fails. The last step presents the
+    /// same correct code against a fresh continuation and succeeds, which is
+    /// what makes the retry failure the ticket rather than the code.
+    #[tokio::test]
+    async fn an_invalid_code_consumes_the_continuation_it_was_presented_with() {
+        assert!(
+            TotpSecret::from_bytes(ENROLLED_SECRET)
+                .verify(REFUSED_CODE, ENROLLED_VECTOR_SECONDS)
+                .is_none(),
+            "the refused fixture code must be one the enrolled secret does not verify"
+        );
+
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, true, true));
+        surface.set_clock(vector_milliseconds(0));
+
+        let continuation = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let refused = verify_code(&surface, &continuation, REFUSED_CODE).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        assert!(refused.cookies.is_none());
+
+        let retried = verify_code(&surface, &continuation, ENROLLED_VECTOR_CODE).await;
+        assert_eq!(retried.status, StatusCode::UNAUTHORIZED);
+        assert!(retried.cookies.is_none());
+        assert!(!rendered(&retried).await.contains("Set-Cookie"));
+
+        let fresh = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let accepted = verify_code(&surface, &fresh, ENROLLED_VECTOR_CODE).await;
+        assert_eq!(accepted.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+    }
+
+    /// One time step of skew is accepted on either side and no more.
+    ///
+    /// Each offset is decided against the TOTP Module's own verification path
+    /// first, so the route's answer is compared with what the Module itself
+    /// says rather than with a hand-written expectation.
+    #[tokio::test]
+    async fn a_code_is_accepted_one_step_either_side_and_refused_two_steps_away() {
+        for (steps, accepted) in [
+            (-2_i64, false),
+            (-1, true),
+            (0, true),
+            (1, true),
+            (2, false),
+        ] {
+            assert_eq!(
+                module_verifies_fixture_code(steps),
+                accepted,
+                "the TOTP Module must decide {steps} steps away as this row states"
+            );
+
+            let surface = AuthSurface::with_mfa(mfa_fixture(true, true, true));
+            surface.set_clock(vector_milliseconds(steps));
+            let continuation = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+            let response = verify_code(&surface, &continuation, ENROLLED_VECTOR_CODE).await;
+            let wire = rendered(&response).await;
+
+            if accepted {
+                assert_eq!(response.status, StatusCode::OK, "{steps}");
+                assert_eq!(set_cookie_lines(&wire).len(), 2, "{steps}");
+            } else {
+                assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{steps}");
+                assert!(response.cookies.is_none(), "{steps}");
+                assert!(!wire.contains("Set-Cookie"), "{steps}");
+            }
+        }
+    }
+
+    /// A code submission does not enter the single password verification lane.
+    ///
+    /// The permit is held for the whole submission. A code costs one decryption
+    /// and one HMAC rather than an Argon2 profile ceiling, so admitting it into
+    /// that lane would make a held password verification block it; the engine's
+    /// count proves the submission performed no verification of its own.
+    #[tokio::test]
+    async fn a_second_factor_submission_does_not_take_the_password_verification_lane() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, true, true));
+        surface.set_clock(vector_milliseconds(0));
+        let continuation = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        assert_eq!(surface.engine.verifications(), 1);
+
+        let held = Arc::clone(&surface.runtime.login_lane)
+            .try_acquire_owned()
+            .expect("the single login permit must be free once the login returned");
+        let response = submit_code(
+            &surface,
+            ConnectionTimeouts {
+                handshake: TLS_HANDSHAKE_TIMEOUT,
+                request_read: REQUEST_READ_TIMEOUT,
+                processing: SHORT_PROCESSING,
+            },
+            AUTH_MFA_VERIFY_ROUTE,
+            ("continuation", &continuation),
+            ENROLLED_VECTOR_CODE,
+        )
+        .await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&response).await).len(), 2);
+        assert_eq!(
+            surface.engine.verifications(),
+            1,
+            "a code submission must cost no password verification"
+        );
+        drop(held);
+    }
+
+    // -----------------------------------------------------------------------
+    // One-time provisioning disclosure
+    // -----------------------------------------------------------------------
+
+    /// Provisioning data is disclosed in one response and nowhere else.
+    ///
+    /// The secret and the URI are taken from the response that discloses them
+    /// and are proved present there first, so every later search is for a real
+    /// non-empty value that could have matched. Nothing asserts that any log
+    /// output was captured, because a correct Server may legitimately emit
+    /// none.
+    ///
+    /// The searches run over rendered bytes rather than a `Debug` rendering,
+    /// because the bounded text types redact themselves in `Debug` and a scan
+    /// of that rendering could never match.
+    #[tokio::test]
+    async fn opened_provisioning_data_is_disclosed_exactly_once() {
+        let (destination, delivered) = recording_log(false);
+        let surface = AuthSurface::build(true, Some(destination), mfa_fixture(true, false, true));
+
+        let continuation = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let opened = opened_enrollment(&surface, &continuation).await;
+        assert_eq!(opened.status, StatusCode::OK);
+        let opened_wire = rendered(&opened).await;
+        let secret = string_field(&body_text(&opened), "secret");
+        let uri = string_field(&body_text(&opened), "provisioning_uri");
+        let ticket = string_field(&body_text(&opened), "enrollment");
+
+        // Every needle is a real observed value, so a later search that finds
+        // nothing is a real absence rather than an empty pattern.
+        assert!(!secret.is_empty());
+        assert!(!uri.is_empty());
+        assert_eq!(ticket.len(), CONTINUATION_TEXT_BYTES);
+        assert!(opened_wire.contains(&secret));
+        assert!(opened_wire.contains(&uri));
+        assert!(uri.starts_with("otpauth://totp/Weavelit:"));
+        assert!(uri.contains(&format!("secret={secret}")));
+
+        // Each of these is refused for a reason the code never reaches, so the
+        // rejections are decided rather than drawn against a random secret.
+        let later = [
+            opened_enrollment(&surface, &continuation).await,
+            verify_code(&surface, &ticket, REFUSED_CODE).await,
+            confirm_code(&surface, &ticket, REFUSED_CODE).await,
+            confirm_code(&surface, UNISSUED_TICKET, REFUSED_CODE).await,
+        ];
+        for (index, response) in later.iter().enumerate() {
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{index}");
+            let wire = rendered(response).await;
+            assert!(!wire.contains(&secret), "{index} disclosed the secret");
+            assert!(
+                !wire.contains(&uri),
+                "{index} disclosed the provisioning URI"
+            );
+        }
+
+        // A fresh enrollment discloses fresh values, so the first pair is gone
+        // rather than reissued to whoever asks next.
+        let resumed = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let reopened = opened_enrollment(&surface, &resumed).await;
+        assert_eq!(reopened.status, StatusCode::OK);
+        let reopened_wire = rendered(&reopened).await;
+        assert_ne!(string_field(&body_text(&reopened), "secret"), secret);
+        assert_ne!(string_field(&body_text(&reopened), "provisioning_uri"), uri);
+        assert!(!reopened_wire.contains(&secret));
+        assert!(!reopened_wire.contains(&uri));
+
+        for record in delivered
+            .lock()
+            .expect("the delivered record log must not poison")
+            .iter()
+        {
+            let text = record_text(record);
+            assert!(!text.contains(&secret), "a record disclosed the secret");
+            assert!(!text.contains(&uri), "a record disclosed the URI");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Enrollment confirmation
+    // -----------------------------------------------------------------------
+
+    /// Confirming an enrollment costs a verified password and a current code.
+    ///
+    /// The password half is the login that issues the enrollment continuation,
+    /// so a wrong password reaches no enrollment at all; the code half is
+    /// decided against the secret that enrollment disclosed. The correct code
+    /// is refused when it is presented without the enrollment a verified
+    /// password opened, and the same code is accepted once it is presented with
+    /// it, so neither half is doing the other's work.
+    ///
+    /// Each refusal is followed by a login that still stops at enrollment, so a
+    /// refusal that answered the right status while still writing a factor
+    /// would not pass.
+    #[tokio::test]
+    async fn confirming_an_enrollment_requires_a_verified_password_and_a_current_code() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, true));
+
+        // A wrong password issues no continuation, so nothing an unissued
+        // ticket names can be opened.
+        let denied = login(&surface, ACTIVE_USERNAME, WRONG_PASSWORD).await;
+        assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
+        assert!(!body_text(&denied).contains("continuation"));
+        let unopened = opened_enrollment(&surface, UNISSUED_TICKET).await;
+        assert_eq!(unopened.status, StatusCode::UNAUTHORIZED);
+        assert!(!body_text(&unopened).contains("secret"));
+
+        let stopped = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let opened = opened_enrollment(&surface, &stopped).await;
+        assert_eq!(opened.status, StatusCode::OK);
+        let (disclosed, ticket) = opened_parts(&opened);
+        let code = current_code(&disclosed, ISSUED_AT);
+
+        // The right code, with no enrollment a verified password opened.
+        let unbacked = confirm_code(&surface, UNISSUED_TICKET, &code).await;
+        assert_eq!(unbacked.status, StatusCode::UNAUTHORIZED);
+        assert!(unbacked.cookies.is_none());
+        assert!(!rendered(&unbacked).await.contains("Set-Cookie"));
+        stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+
+        // A verified password's enrollment, with the wrong code.
+        let stopped = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let second = opened_enrollment(&surface, &stopped).await;
+        assert_eq!(second.status, StatusCode::OK);
+        let (other_secret, other_ticket) = opened_parts(&second);
+        let wrong = code_from_another_secret(&other_secret, ISSUED_AT);
+        let rejected = confirm_code(&surface, &other_ticket, &wrong).await;
+        assert_eq!(rejected.status, StatusCode::UNAUTHORIZED);
+        assert!(rejected.cookies.is_none());
+        assert!(!rendered(&rejected).await.contains("Set-Cookie"));
+        stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+
+        // Both halves, on the enrollment the first verified password opened.
+        let confirmed = confirm_code(&surface, &ticket, &code).await;
+        assert_eq!(confirmed.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&confirmed).await).len(), 2);
+        assert_eq!(
+            body_text(&confirmed),
+            format!(
+                "{{\"result\":{{\"authenticated\":true}},\"correlation_id\":\"{}\"}}",
+                correlation_of(&confirmed)
+            )
+        );
+
+        // The account holds a factor from here on, so a login stops at the
+        // second factor rather than at enrollment or at a session.
+        stopped_login(&surface, MFA_REQUIRED_CODE).await;
+    }
+
+    /// A confirmed enrollment binds exactly the secret it disclosed.
+    ///
+    /// The secret is rebuilt from the response that disclosed it, so the code
+    /// presented at the second-factor step is derived from that exact value.
+    /// A code from another secret is refused at the same instant, and the
+    /// disclosed secret's code is then accepted at that same instant, so the
+    /// refusal is the secret rather than the clock.
+    #[tokio::test]
+    async fn a_confirmed_enrollment_binds_the_disclosed_secret_and_no_other() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, true));
+        let stopped = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let opened = opened_enrollment(&surface, &stopped).await;
+        assert_eq!(opened.status, StatusCode::OK);
+        let (disclosed, ticket) = opened_parts(&opened);
+
+        let confirmed = confirm_code(&surface, &ticket, &current_code(&disclosed, ISSUED_AT)).await;
+        assert_eq!(confirmed.status, StatusCode::OK);
+
+        // A later step, because the confirming code's own step is spent.
+        let later = ISSUED_AT + step_milliseconds(1);
+        surface.set_clock(later);
+
+        let stopped = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let foreign = code_from_another_secret(&disclosed, later);
+        let refused = verify_code(&surface, &stopped, &foreign).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        assert!(refused.cookies.is_none());
+        assert!(!rendered(&refused).await.contains("Set-Cookie"));
+
+        let stopped = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let accepted = verify_code(&surface, &stopped, &current_code(&disclosed, later)).await;
+        assert_eq!(accepted.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+    }
+
+    /// The code that confirmed an enrollment cannot then satisfy a login.
+    ///
+    /// The enrollment writes the factor and the watermark that consumed the
+    /// confirming code together, so presenting that same code inside its own
+    /// time step is a replay. The last step presents the next step's code from
+    /// the same secret and succeeds, which is what makes the refusal the spent
+    /// step rather than the code or the factor.
+    #[tokio::test]
+    async fn the_code_that_confirmed_an_enrollment_cannot_satisfy_a_later_login() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, true));
+        let stopped = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let opened = opened_enrollment(&surface, &stopped).await;
+        assert_eq!(opened.status, StatusCode::OK);
+        let (disclosed, ticket) = opened_parts(&opened);
+        let code = current_code(&disclosed, ISSUED_AT);
+
+        let confirmed = confirm_code(&surface, &ticket, &code).await;
+        assert_eq!(confirmed.status, StatusCode::OK);
+
+        let stopped = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let replayed = verify_code(&surface, &stopped, &code).await;
+        assert_eq!(replayed.status, StatusCode::UNAUTHORIZED);
+        assert!(replayed.cookies.is_none());
+        assert!(!rendered(&replayed).await.contains("Set-Cookie"));
+
+        let later = ISSUED_AT + step_milliseconds(1);
+        surface.set_clock(later);
+        let stopped = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let accepted = verify_code(&surface, &stopped, &current_code(&disclosed, later)).await;
+        assert_eq!(accepted.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Self-enrollment from a live session
+    // -----------------------------------------------------------------------
+
+    /// Self-enrollment costs a live session, its own token, and the password.
+    ///
+    /// The two header preconditions are refused before a body exists, so they
+    /// answer with the fixed pre-body body that carries no correlation
+    /// identifier. Every refusal is followed by the engine's verification
+    /// count, so a refusal that still paid for a verification would not pass.
+    #[tokio::test]
+    async fn self_enrollment_requires_a_live_session_its_token_and_the_current_password() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, false));
+        let (session, csrf) = established_session(&surface).await;
+        let verified = surface.engine.verifications();
+        assert_eq!(
+            verified, 1,
+            "establishing the session costs one verification"
+        );
+
+        for (row, presented_session, presented_csrf) in [
+            ("no session", None, Some(csrf.as_str())),
+            ("no token", Some(session.as_str()), None),
+            ("neither", None, None),
+        ] {
+            let response = self_enrollment(
+                &surface,
+                presented_session,
+                presented_csrf,
+                CORRECT_PASSWORD,
+            )
+            .await;
+            assert_eq!(response.status, StatusCode::BAD_REQUEST, "{row}");
+            assert_eq!(body_text(&response), "{\"error\":\"bad_request\"}", "{row}");
+            assert!(response.cookies.is_none(), "{row}");
+            assert_eq!(surface.engine.verifications(), verified, "{row}");
+        }
+
+        let body = format!("{{\"password\":\"{CORRECT_PASSWORD}\"}}");
+        let foreign_origin = request(
+            surface.surface(),
+            default_timeouts(),
+            self_enrollment_head(
+                "https://weavelit.example:8443",
+                Some(&session),
+                Some(&csrf),
+                body.len(),
+            ),
+            body,
+        )
+        .await;
+        assert_eq!(foreign_origin.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body_text(&foreign_origin),
+            "{\"error\":\"request_origin_denied\"}"
+        );
+        assert_eq!(surface.engine.verifications(), verified);
+
+        for (row, presented_session, presented_csrf) in [
+            ("wrong token", session.as_str(), "not-this-sessions-token"),
+            (
+                "unknown session",
+                "not-a-session-this-server-issued",
+                csrf.as_str(),
+            ),
+        ] {
+            let response = self_enrollment(
+                &surface,
+                Some(presented_session),
+                Some(presented_csrf),
+                CORRECT_PASSWORD,
+            )
+            .await;
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{row}");
+            assert!(body_text(&response).contains("session_invalid"), "{row}");
+            assert!(response.cookies.is_none(), "{row}");
+            assert_eq!(surface.engine.verifications(), verified, "{row}");
+        }
+
+        // A live session with the wrong password still enrolls nothing, and is
+        // refused in the same vocabulary a wrong login password is.
+        let wrong = self_enrollment(&surface, Some(&session), Some(&csrf), WRONG_PASSWORD).await;
+        assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body_text(&wrong),
+            format!(
+                "{{\"error\":\"authentication_failed\",\"correlation_id\":\"{}\"}}",
+                correlation_of(&wrong)
+            )
+        );
+        assert!(!body_text(&wrong).contains("secret"));
+        assert_eq!(surface.engine.verifications(), verified + 1);
+
+        // The correct password on the same session succeeds, so every refusal
+        // above is its own check and not a broken request shape.
+        let opened = self_enrollment(&surface, Some(&session), Some(&csrf), CORRECT_PASSWORD).await;
+        assert_eq!(opened.status, StatusCode::OK);
+        assert_eq!(surface.engine.verifications(), verified + 2);
+
+        // A session outside its idle limit is no longer a session to enroll
+        // from, whatever the password is.
+        surface.set_clock(ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS);
+        let expired =
+            self_enrollment(&surface, Some(&session), Some(&csrf), CORRECT_PASSWORD).await;
+        assert_eq!(expired.status, StatusCode::UNAUTHORIZED);
+        assert!(body_text(&expired).contains("session_invalid"));
+        assert_eq!(surface.engine.verifications(), verified + 2);
+    }
+
+    /// A self-enrollment discloses fresh data and enrolls once it is confirmed.
+    ///
+    /// Every needle is a value the first response really carried, so the
+    /// searches over the second response's rendered bytes are for values that
+    /// could have matched. They run over rendered bytes rather than a `Debug`
+    /// rendering, because the bounded text types redact themselves there.
+    #[tokio::test]
+    async fn self_enrollment_discloses_fresh_provisioning_data_and_enrolls_on_confirmation() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, false));
+        let (session, csrf) = established_session(&surface).await;
+
+        let first = self_enrollment(&surface, Some(&session), Some(&csrf), CORRECT_PASSWORD).await;
+        assert_eq!(first.status, StatusCode::OK);
+        let first_body = body_text(&first);
+        let first_secret = string_field(&first_body, "secret");
+        let first_uri = string_field(&first_body, "provisioning_uri");
+        assert!(!first_secret.is_empty());
+        assert!(!first_uri.is_empty());
+        assert_eq!(
+            string_field(&first_body, "enrollment").len(),
+            CONTINUATION_TEXT_BYTES
+        );
+        let first_wire = rendered(&first).await;
+        assert!(first_wire.contains(&first_secret));
+        assert!(first_wire.contains(&first_uri));
+        assert!(first_uri.contains(&format!("secret={first_secret}")));
+
+        // Re-opening issues a new secret rather than redisclosing the first.
+        let second = self_enrollment(&surface, Some(&session), Some(&csrf), CORRECT_PASSWORD).await;
+        assert_eq!(second.status, StatusCode::OK);
+        let second_wire = rendered(&second).await;
+        let (disclosed, ticket) = opened_parts(&second);
+        assert_ne!(string_field(&body_text(&second), "secret"), first_secret);
+        assert_ne!(
+            string_field(&body_text(&second), "provisioning_uri"),
+            first_uri
+        );
+        assert!(!second_wire.contains(&first_secret));
+        assert!(!second_wire.contains(&first_uri));
+
+        // Confirming the second enrollment binds it and enrolls the account.
+        let confirmed = confirm_code(&surface, &ticket, &current_code(&disclosed, ISSUED_AT)).await;
+        assert_eq!(confirmed.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&confirmed).await).len(), 2);
+        assert!(!rendered(&confirmed).await.contains(&first_secret));
+
+        // The account holds a factor from here on, so its next login stops at
+        // the second factor rather than establishing a session directly.
+        stopped_login(&surface, MFA_REQUIRED_CODE).await;
+    }
+
+    /// Self-enrollment enters the single verification lane exactly once.
+    ///
+    /// The route re-verifies the account's password, so it takes the same
+    /// single permit a login takes: with that permit held the request is
+    /// refused at the admission deadline having verified nothing, and once it
+    /// is released each attempt costs exactly one verification whether the
+    /// password was right or wrong.
+    #[tokio::test]
+    async fn self_enrollment_takes_the_single_password_verification_lane_exactly_once() {
+        assert_eq!(MAX_CONCURRENT_LOGIN_VERIFICATIONS, 1);
+
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, false));
+        let (session, csrf) = established_session(&surface).await;
+        let verified = surface.engine.verifications();
+        assert_eq!(verified, 1);
+
+        let held = Arc::clone(&surface.runtime.login_lane)
+            .try_acquire_owned()
+            .expect("the single login permit must be free once the login returned");
+        let body = format!("{{\"password\":\"{CORRECT_PASSWORD}\"}}");
+        let unadmitted = request(
+            surface.surface(),
+            ConnectionTimeouts {
+                handshake: TLS_HANDSHAKE_TIMEOUT,
+                request_read: REQUEST_READ_TIMEOUT,
+                processing: SHORT_PROCESSING,
+            },
+            self_enrollment_head(
+                &format!("https://{UNBOUND_LISTENER}"),
+                Some(&session),
+                Some(&csrf),
+                body.len(),
+            ),
+            body,
+        )
+        .await;
+        assert_eq!(unadmitted.status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(body_text(&unadmitted), "{\"error\":\"gateway_timeout\"}");
+        assert_eq!(
+            surface.engine.verifications(),
+            verified,
+            "no verification may begin for a request that was never admitted"
+        );
+        drop(held);
+
+        let denied = self_enrollment(&surface, Some(&session), Some(&csrf), WRONG_PASSWORD).await;
+        assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(surface.engine.verifications(), verified + 1);
+
+        let opened = self_enrollment(&surface, Some(&session), Some(&csrf), CORRECT_PASSWORD).await;
+        assert_eq!(opened.status, StatusCode::OK);
+        assert_eq!(surface.engine.verifications(), verified + 2);
+        assert_eq!(surface.engine.hashes(), 0);
+
+        // The permit is released once the request has returned, so a held
+        // permit above was the admission lane and not a leak.
+        assert!(
+            surface.runtime.login_lane.try_acquire().is_ok(),
+            "the single permit must be free again once the request returned"
         );
     }
 

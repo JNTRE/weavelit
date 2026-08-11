@@ -1,18 +1,20 @@
 use std::{fmt, path::Path};
 
 use weavelit_server_database::{DatabaseError, DatabaseInspection, ProtectedValue};
+use zeroize::Zeroizing;
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
     LifecycleClassification, LifecycleError, LifecycleState, LocatorConnectionSettings,
-    ProtectedValueKind, ProtectedValueSealer, RetainedDatabaseInspection, SelectionError,
-    TrustedBackendContext, ValidatedConnectionSettings,
+    ProtectedValueKind, ProtectedValueOpener, ProtectedValueSealer, RetainedDatabaseInspection,
+    SelectionError, TrustedBackendContext, ValidatedConnectionSettings,
     filesystem::{Inventory, StateRoot},
     format::{
         AnchorKey, KEY_FILE_LIMIT, KEY_FILE_NAME, LOCATOR_ENVELOPE_LIMIT, RECORD_ENVELOPE_LIMIT,
-        RECORD_FILE_NAME, decrypt_locator, decrypt_record, encrypt_locator,
-        encrypt_protected_value, encrypt_record, generate_deployment_identifier, generate_key,
-        generate_locator_generation, generate_nonce, locator_file_name, parse_key, serialize_key,
+        RECORD_FILE_NAME, decrypt_locator, decrypt_protected_value, decrypt_record,
+        encrypt_locator, encrypt_protected_value, encrypt_record, generate_deployment_identifier,
+        generate_key, generate_locator_generation, generate_nonce, locator_file_name, parse_key,
+        serialize_key,
     },
 };
 
@@ -414,6 +416,16 @@ impl ProtectedValueSealer for LifecycleStore {
         let envelope =
             encrypt_protected_value(&self.key, kind.label(), plaintext, generate_nonce()?)?;
         ProtectedValue::new(envelope).map_err(|_| LifecycleError::IntegrityFailure)
+    }
+}
+
+impl ProtectedValueOpener for LifecycleStore {
+    fn open(
+        &self,
+        kind: ProtectedValueKind,
+        value: &ProtectedValue,
+    ) -> Result<Zeroizing<Vec<u8>>, LifecycleError> {
+        decrypt_protected_value(&self.key, kind.label(), value.as_bytes())
     }
 }
 

@@ -153,12 +153,14 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 username: name(USERNAME),
                 display_name: Some(name("First Admin")),
                 active: true,
+                mfa_required: true,
             },
             Account {
                 identifier: identifier(2),
                 username: name("disabled-user"),
                 display_name: None,
                 active: false,
+                mfa_required: false,
             },
         ],
         password_verifiers: vec![AccountPasswordVerifier {

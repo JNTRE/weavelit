@@ -5,13 +5,15 @@ use std::{
 
 use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, InitializedState, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
+    DeploymentIdentifier, InitializedState, ProtectedValue, StateIdentifier, WorkflowCheckpoint,
+    WorkflowKind,
 };
+use zeroize::Zeroizing;
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
-    LifecycleError, LifecycleProjection, LifecycleState, ProtectedValueSealer, SelectionError,
-    TrustedBackendContext, WorkflowError,
+    LifecycleError, LifecycleProjection, LifecycleState, ProtectedValueKind, ProtectedValueOpener,
+    ProtectedValueSealer, SelectionError, TrustedBackendContext, WorkflowError,
     persistence::{LifecycleStore, RecordPersistencePermit},
 };
 
@@ -157,6 +159,37 @@ impl WorkflowArbiter {
         }
 
         Ok(SealedDeployment { state, database })
+    }
+}
+
+/// At-rest protection reached through the same serialized lifecycle authority
+/// every durable mutation passes through.
+///
+/// An operational runtime that seals or opens an enrolled factor holds the
+/// arbiter rather than the store, so it reaches the deployment's key through
+/// the one lock a Restore also holds while it replaces state. It therefore
+/// cannot seal a value against a key generation a running workflow is
+/// replacing.
+impl ProtectedValueSealer for WorkflowArbiter {
+    fn seal(
+        &self,
+        kind: ProtectedValueKind,
+        plaintext: &[u8],
+    ) -> Result<ProtectedValue, LifecycleError> {
+        self.store
+            .lock()
+            .map_err(|_| POISONED)?
+            .seal(kind, plaintext)
+    }
+}
+
+impl ProtectedValueOpener for WorkflowArbiter {
+    fn open(
+        &self,
+        kind: ProtectedValueKind,
+        value: &ProtectedValue,
+    ) -> Result<Zeroizing<Vec<u8>>, LifecycleError> {
+        self.store.lock().map_err(|_| POISONED)?.open(kind, value)
     }
 }
 
