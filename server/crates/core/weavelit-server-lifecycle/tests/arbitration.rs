@@ -1185,7 +1185,7 @@ fn a_sealed_deployment_admits_no_further_workflow() {
 
     assert_eq!(
         arbiter.authorize_workflow(&catalog, &context).unwrap_err(),
-        WorkflowError::NotAllowed
+        WorkflowError::AlreadyInitialized
     );
 }
 

@@ -91,8 +91,16 @@ impl WorkflowArbiter {
             .lock()
             .map_err(|_| WorkflowError::Lifecycle(POISONED))?;
 
-        if store.record().state() != LifecycleState::Uninitialized {
-            return Err(WorkflowError::NotAllowed);
+        // A sealed record is reported as its own result rather than folded into
+        // the generic refusal, because a workflow that must answer
+        // "already initialized" to a direct in-process call cannot infer that
+        // from `NotAllowed` without re-reading the record it is not allowed to
+        // read. The match is exhaustive so a new lifecycle state fails to
+        // compile until this authority states how it answers for it.
+        match store.record().state() {
+            LifecycleState::Uninitialized => {}
+            LifecycleState::InitializationPending => return Err(WorkflowError::NotAllowed),
+            LifecycleState::Initialized => return Err(WorkflowError::AlreadyInitialized),
         }
         let locator = store.locator().ok_or(WorkflowError::DatabaseNotSelected)?;
 
