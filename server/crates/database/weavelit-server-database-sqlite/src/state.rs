@@ -1,10 +1,11 @@
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use weavelit_server_database::{
     Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
-    CompletionObligation, ConfigurationEntry, DatabaseError, Group, GroupGrant, GroupGrantRecord,
-    GroupMembership, HumanAuthorizationSnapshot, LogAssignment, LogModuleConfiguration,
-    LogModuleSetting, LogType, MfaFactor, PasswordVerifier, ProtectedSecret, ProtectedValue,
-    RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier, WorkflowKind,
+    COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
+    ConfigurationEntry, DatabaseError, Group, GroupGrant, GroupGrantRecord, GroupMembership,
+    HumanAuthorizationSnapshot, LogAssignment, LogModuleConfiguration, LogModuleSetting, LogType,
+    MfaFactor, PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey,
+    STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier, WorkflowKind,
 };
 
 use crate::SqliteDatabase;
@@ -51,6 +52,17 @@ const HUMAN_AUTHORIZATION_GRANT_QUERY: &str = "SELECT DISTINCT conferred.grant_k
      ON membership.group_id = conferred.group_id \
      WHERE membership.account_id = ?1 \
      ORDER BY conferred.grant_kind, conferred.grant_value";
+/// Reads only the enablement entries that disable a component.
+///
+/// The predicate is written as "not exactly the enabled value" rather than as
+/// an equality against a disabled value, so an unrecognized or corrupted flag
+/// disables the component instead of leaving it reachable. Only the owning
+/// component and the enablement key are selected; no other setting, and no
+/// setting value, leaves the database through this read.
+const DISABLED_COMPONENT_QUERY: &str = "SELECT component, setting_key \
+     FROM weavelit_configuration \
+     WHERE setting_key IN (?1, ?2, ?3, ?4) AND setting_value <> ?5 \
+     ORDER BY setting_key, component";
 
 type ConfigurationRow = (String, String, String);
 type ProtectedSecretRow = (String, String, Vec<u8>);
@@ -66,6 +78,7 @@ type LogModuleSettingRow = (Vec<u8>, String, String);
 type LogAssignmentRow = (String, Vec<u8>);
 type CompletionObligationRow = (Vec<u8>, String, String, String, i64, String, i64);
 type HumanAuthorizationGrantRow = (String, String);
+type DisabledComponentRow = (String, String);
 
 impl SqliteDatabase {
     /// Reads one account's active flag and joined Group grants consistently.
@@ -83,6 +96,44 @@ impl SqliteDatabase {
 
         read_human_authorization(&transaction, account)
     }
+
+    /// Reads which components are currently disabled.
+    pub(super) fn load_component_enablement_atomic(
+        &mut self,
+    ) -> Result<ComponentEnablement, DatabaseError> {
+        read_component_enablement(&self.connection)
+    }
+}
+
+fn read_component_enablement(
+    connection: &Connection,
+) -> Result<ComponentEnablement, DatabaseError> {
+    let [client_module, service_module, operation, mfa_module] =
+        ComponentKind::ALL.map(ComponentKind::enablement_key);
+    let disabled = parameterized_rows::<DisabledComponentRow>(
+        connection,
+        DISABLED_COMPONENT_QUERY,
+        params![
+            client_module,
+            service_module,
+            operation,
+            mfa_module,
+            COMPONENT_ENABLED_VALUE
+        ],
+        two_columns,
+    )?
+    .into_iter()
+    .map(|(component, key)| Ok((decode_component_kind(&key)?, text(component)?)))
+    .collect::<Result<Vec<_>, DatabaseError>>()?;
+
+    Ok(ComponentEnablement::new(disabled))
+}
+
+fn decode_component_kind(key: &str) -> Result<ComponentKind, DatabaseError> {
+    ComponentKind::ALL
+        .into_iter()
+        .find(|kind| kind.enablement_key() == key)
+        .ok_or(DatabaseError::IntegrityFailure)
 }
 
 fn read_human_authorization(

@@ -308,6 +308,15 @@ impl ApplicationDatabase for LyingDatabase {
         Ok(None)
     }
 
+    fn load_component_enablement(
+        &mut self,
+    ) -> Result<
+        weavelit_server_database::ComponentEnablement,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(weavelit_server_database::ComponentEnablement::default())
+    }
+
     fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
         None
     }

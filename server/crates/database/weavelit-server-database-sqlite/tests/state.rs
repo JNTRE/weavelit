@@ -4,13 +4,14 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
     Account, AccountPasswordVerifier, ApplicationDatabase, ApplicationState, ApplicationStateInput,
-    CheckpointMetadata, CompletionObligation, ConfigurationEntry, ConfigurationKey,
-    ConfigurationValue, CorrelationIdentifier, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, Group, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
-    LogClassification, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor,
-    Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey,
-    SESSION_DIGEST_LENGTH, ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore,
-    SessionTokenHash, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
+    COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation, ComponentEnablement,
+    ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
+    DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupGrant, GroupGrantRecord,
+    GroupMembership, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
+    LogModuleSetting, LogType, MfaFactor, Name, NewSession, PasswordVerifier, ProtectedSecret,
+    ProtectedValue, RecoveryPublicKey, SESSION_DIGEST_LENGTH, ServiceConnection, SessionCsrfHash,
+    SessionInstant, SessionStore, SessionTokenHash, StateIdentifier, WorkflowCheckpoint,
+    WorkflowKind,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -445,7 +446,7 @@ fn the_authorization_projection_separates_an_absent_account_from_a_grantless_one
 }
 
 #[test]
-fn the_authorization_projection_carries_no_other_application_state() {
+fn the_authorization_projection_renders_without_revealing_what_it_carries() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let mut database = restored_database(&path, deployment(22));
@@ -456,6 +457,16 @@ fn the_authorization_projection_carries_no_other_application_state() {
         .expect("a held account must project");
     let rendered = format!("{snapshot:?}");
 
+    // What the projection carries is asserted structurally by the two tests
+    // above. This one pins the separate property that rendering it cannot
+    // disclose it, because the snapshot is reachable from request-handling code
+    // that logs. The scan is anchored on a control value that must appear, so
+    // it cannot pass merely because the rendering redacted everything into
+    // nothing or failed to name the type at all.
+    assert!(
+        rendered.contains("HumanAuthorizationSnapshot"),
+        "the rendering names the projection"
+    );
     for excluded in [
         String::from_utf8_lossy(PROTECTED_SECRET_BYTES).to_string(),
         String::from_utf8_lossy(PROTECTED_FACTOR_BYTES).to_string(),
@@ -467,12 +478,96 @@ fn the_authorization_projection_carries_no_other_application_state() {
         String::from("Ticket Operators"),
         String::from("log-sqlite"),
         String::from("primary"),
+        // The grants the projection genuinely does carry are redacted too, so a
+        // later derived `Debug` on a name type cannot start leaking them.
+        String::from("web-ui"),
+        String::from("zendesk.ticket.create"),
     ] {
         assert!(
             !rendered.contains(&excluded),
             "the projection exposed {excluded}"
         );
     }
+}
+
+#[test]
+fn every_component_is_enabled_until_an_entry_disables_it() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = restored_database(&path, deployment(23));
+
+    // The seeded state carries component configuration but no enablement
+    // entry, so nothing is disabled.
+    assert_eq!(
+        database.load_component_enablement().unwrap(),
+        ComponentEnablement::default()
+    );
+
+    disable_component(&path, ComponentKind::ClientModule, "web-ui", "false");
+    disable_component(
+        &path,
+        ComponentKind::Operation,
+        "zendesk.ticket.create",
+        "false",
+    );
+    // A value the Server does not recognize disables rather than enables.
+    disable_component(&path, ComponentKind::ServiceModule, "zendesk", "yes");
+    // The exactly-enabled value leaves the component reachable.
+    disable_component(
+        &path,
+        ComponentKind::MfaModule,
+        "totp",
+        COMPONENT_ENABLED_VALUE,
+    );
+
+    let enablement = database.load_component_enablement().unwrap();
+
+    assert!(!enablement.is_enabled(ComponentKind::ClientModule, &name("web-ui")));
+    assert!(!enablement.is_enabled(ComponentKind::Operation, &name("zendesk.ticket.create")));
+    assert!(!enablement.is_enabled(ComponentKind::ServiceModule, &name("zendesk")));
+    assert!(enablement.is_enabled(ComponentKind::MfaModule, &name("totp")));
+    // A Client Module and a Service Module of the same name are separate.
+    assert!(enablement.is_enabled(ComponentKind::ServiceModule, &name("web-ui")));
+}
+
+#[test]
+fn the_enablement_projection_reads_no_other_component_setting() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = restored_database(&path, deployment(24));
+    disable_component(&path, ComponentKind::ClientModule, "web-ui", "false");
+
+    let enablement = database.load_component_enablement().unwrap();
+
+    // The projection is asserted through its own accessor rather than through a
+    // rendered `Debug`, because `Name` redacts its text: a scan of the rendering
+    // would pass against a projection carrying every secret in the deployment.
+    let disabled: Vec<(ComponentKind, String)> = enablement
+        .disabled()
+        .map(|(kind, name)| (kind, name.as_str().to_owned()))
+        .collect();
+
+    // The seeded state carries a display name, an MFA Module setting, an
+    // account, its verifier, and a recovery key. None of them is a component
+    // enablement entry, so exactly one entry is projected and nothing else is
+    // reachable through this read at all.
+    assert_eq!(
+        disabled,
+        vec![(ComponentKind::ClientModule, String::from("web-ui"))]
+    );
+}
+
+/// Writes one component enablement entry directly, as an administrator's
+/// enablement change would, without reopening or reloading the database.
+fn disable_component(path: &Path, kind: ComponentKind, component: &str, value: &str) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO weavelit_configuration \
+             (component, setting_key, setting_value) VALUES (?1, ?2, ?3)",
+            rusqlite::params![component, kind.enablement_key(), value],
+        )
+        .unwrap();
 }
 
 #[test]

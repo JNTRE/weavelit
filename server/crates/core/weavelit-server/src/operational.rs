@@ -359,6 +359,12 @@ pub(crate) mod test_support {
             Err(DatabaseError::Unavailable)
         }
 
+        fn load_component_enablement(
+            &mut self,
+        ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
+            Err(DatabaseError::Unavailable)
+        }
+
         fn sessions(&mut self) -> Option<&mut dyn SessionStore> {
             None
         }

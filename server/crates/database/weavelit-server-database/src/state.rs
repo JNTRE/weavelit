@@ -4,6 +4,7 @@
 //! or connection credentials are deliberately absent from every type here and
 //! therefore cannot enter persisted application state.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::{ContractInputError, DeploymentIdentifier, WorkflowKind};
@@ -301,6 +302,87 @@ pub struct GroupGrantRecord {
     pub group: StateIdentifier,
     /// Conferred grant.
     pub grant: GroupGrant,
+}
+
+/// Kind of component whose enablement one configuration entry governs.
+///
+/// The kind is carried by the configuration key rather than by the component
+/// name, so a Client Module and a Service Module that happen to share a name
+/// still hold separate enablement and neither can be disabled as the other.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ComponentKind {
+    /// A Client Module.
+    ClientModule,
+    /// A Service Module.
+    ServiceModule,
+    /// A named Operation.
+    Operation,
+    /// An MFA Module.
+    MfaModule,
+}
+
+impl ComponentKind {
+    /// Every kind whose enablement is persisted.
+    pub const ALL: [Self; 4] = [
+        Self::ClientModule,
+        Self::ServiceModule,
+        Self::Operation,
+        Self::MfaModule,
+    ];
+
+    /// Returns the configuration key this kind's enablement is recorded under.
+    ///
+    /// The key belongs to the component's own configuration, so the entry that
+    /// disables `web-ui` as a Client Module is owned by `web-ui`.
+    #[must_use]
+    pub const fn enablement_key(self) -> &'static str {
+        match self {
+            Self::ClientModule => "client-module.enabled",
+            Self::ServiceModule => "service-module.enabled",
+            Self::Operation => "operation.enabled",
+            Self::MfaModule => "mfa-module.enabled",
+        }
+    }
+}
+
+/// The only configuration value that leaves a component enabled.
+///
+/// A component with no enablement entry is enabled, because a compiled-in
+/// component no administrator has configured is still part of the deployment.
+/// Every other stored value disables it, so a corrupted or unrecognized flag
+/// closes access rather than opening it.
+pub const COMPONENT_ENABLED_VALUE: &str = "true";
+
+/// Narrow projection of which components an administrator has disabled.
+///
+/// This is read on every authorized request beside the account's grants, so it
+/// carries only the disabled components rather than a projection of loaded
+/// application state. It reports no setting value, no secret, and no component
+/// this deployment never disabled.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ComponentEnablement {
+    disabled: BTreeSet<(ComponentKind, Name)>,
+}
+
+impl ComponentEnablement {
+    /// Creates the projection from the components recorded as disabled.
+    #[must_use]
+    pub fn new(disabled: impl IntoIterator<Item = (ComponentKind, Name)>) -> Self {
+        Self {
+            disabled: disabled.into_iter().collect(),
+        }
+    }
+
+    /// Returns whether the named component of that kind is enabled.
+    #[must_use]
+    pub fn is_enabled(&self, kind: ComponentKind, name: &Name) -> bool {
+        !self.disabled.contains(&(kind, name.clone()))
+    }
+
+    /// Returns every disabled component in canonical order.
+    pub fn disabled(&self) -> impl ExactSizeIterator<Item = (ComponentKind, &Name)> {
+        self.disabled.iter().map(|(kind, name)| (*kind, name))
+    }
 }
 
 /// Narrow authorization projection for exactly one Human User account.
@@ -1179,5 +1261,54 @@ mod tests {
         assert!(!output.contains("first-admin"));
         assert!(!output.contains("Administrators"));
         assert!(!output.contains("session"));
+    }
+
+    #[test]
+    fn an_unlisted_component_is_enabled_and_a_listed_one_is_not() {
+        let enablement = ComponentEnablement::new([
+            (ComponentKind::ClientModule, name("web-ui")),
+            (ComponentKind::Operation, name("zendesk.ticket.create")),
+        ]);
+
+        assert!(!enablement.is_enabled(ComponentKind::ClientModule, &name("web-ui")));
+        assert!(!enablement.is_enabled(ComponentKind::Operation, &name("zendesk.ticket.create")));
+        assert!(enablement.is_enabled(ComponentKind::ClientModule, &name("cli")));
+        assert!(
+            ComponentEnablement::default().is_enabled(ComponentKind::ClientModule, &name("cli"))
+        );
+    }
+
+    #[test]
+    fn one_name_disabled_as_one_kind_stays_enabled_as_every_other_kind() {
+        let enablement =
+            ComponentEnablement::new([(ComponentKind::ServiceModule, name("shared-name"))]);
+
+        assert!(!enablement.is_enabled(ComponentKind::ServiceModule, &name("shared-name")));
+        for kind in [
+            ComponentKind::ClientModule,
+            ComponentKind::Operation,
+            ComponentKind::MfaModule,
+        ] {
+            assert!(
+                enablement.is_enabled(kind, &name("shared-name")),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_component_kind_records_its_enablement_under_a_distinct_bounded_key() {
+        let mut keys = ComponentKind::ALL
+            .map(ComponentKind::enablement_key)
+            .to_vec();
+        keys.sort_unstable();
+        let distinct = keys.len();
+        keys.dedup();
+
+        assert_eq!(keys.len(), distinct);
+        for key in keys {
+            assert!(ConfigurationKey::new(key).is_ok(), "{key}");
+        }
+        assert!(ConfigurationValue::new(COMPONENT_ENABLED_VALUE).is_ok());
     }
 }

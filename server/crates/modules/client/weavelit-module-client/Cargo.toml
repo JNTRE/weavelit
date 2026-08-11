@@ -14,3 +14,9 @@ zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 [dev-dependencies]
 tokio.workspace = true
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
+# The denial contract must be proved against every real denial cause the
+# evaluator produces, not against a restatement of them, so the tests drive the
+# evaluator itself. It stays a development dependency because rendering a
+# denial requires no evaluator type.
+weavelit-server-authorization = { path = "../../../core/weavelit-server-authorization" }
+weavelit-server-database = { path = "../../../database/weavelit-server-database" }

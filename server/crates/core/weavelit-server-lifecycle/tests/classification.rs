@@ -182,6 +182,12 @@ impl ApplicationDatabase for FakeDatabase {
         Err(DatabaseError::NotInitialized)
     }
 
+    fn load_component_enablement(
+        &mut self,
+    ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
     fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
         None
     }
@@ -599,6 +605,12 @@ fn deployment_mismatch_on_database_fails_closed() {
             _: StateIdentifier,
         ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError>
         {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_component_enablement(
+            &mut self,
+        ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
             Err(DatabaseError::DeploymentMismatch)
         }
 

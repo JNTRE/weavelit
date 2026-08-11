@@ -31,6 +31,7 @@ use serde::Deserialize;
 use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
 
 pub mod authentication;
+pub mod authorization;
 pub mod cookie;
 pub mod restore;
 pub mod typed_json;
@@ -41,6 +42,9 @@ pub use authentication::{
     LoginSubmission, MAX_LOGIN_BODY_BYTES, SessionEstablished, SessionIdentity, SessionRevoke,
     SessionSubmission, SessionValidate, submitted_csrf_token, submitted_session_token,
     validate_login_request, validate_session_request,
+};
+pub use authorization::{
+    AUTHORIZATION_DENIED_CODE, AUTHORIZATION_DENIED_STATUS, AuthorizationRejection,
 };
 pub use cookie::{
     CSRF_COOKIE_NAME, CookieEffect, CookieLines, CookieValue, MAX_COOKIE_HEADER_BYTES,

@@ -1,17 +1,18 @@
 # Server Core Crates Agent Guide
 
 This directory groups the Weavelit Server runtime and its core lifecycle, Init,
-Restore, authentication, and authorization crates. These crates own Server-wide
-composition, pre-operational application workflows, and Server-owned credential
-and access decisions rather than component-specific storage or module behavior.
+Restore, authentication, authorization, and operation crates. These crates own
+Server-wide composition, pre-operational application workflows, and
+Server-owned credential, access, and post-authorization execution decisions
+rather than component-specific storage or module behavior.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Server runtime, core orchestration, and Server-owned authentication and authorization crate boundaries.
+- This directory owns Server runtime, core orchestration, and Server-owned authentication, authorization, and post-authorization operation crate boundaries.
 - It does not own Application Database backends or Client, MFA, Log, and Service Module implementations.
-- Child paths own executable, lifecycle, Init, Restore, authentication, and authorization implementation guidance.
+- Child paths own executable, lifecycle, Init, Restore, authentication, authorization, and operation implementation guidance.
 
 ## Asset Inventory
 
@@ -25,6 +26,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `weavelit-server-log-authority/`: Server-owned capability key that gates minting of trusted logging authority.
 - `weavelit-server-lifecycle/`: Backend-neutral lifecycle domain, validation, and runtime-supplied Application Database catalog contract.
 - `weavelit-server-observability/`: Server-owned construction and pre-redaction of System Log records.
+- `weavelit-server-operation/`: Post-authorization Service Connection selection and provider execution, structured so an authorization proof is spent at most once.
 - `weavelit-server-restore/`: Server-owned backup envelope, decryption, compatibility, and restored-state validation.
 
 ## Usage Guidance

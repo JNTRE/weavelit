@@ -1,0 +1,22 @@
+[package]
+name = "weavelit-server-operation"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Operation execution begins where authorization ends. It depends on the
+# authorization proof and on the Application Database's Service Connection
+# contract, and deliberately on nothing else: no transport, no listener, no
+# Client Module, and no Service Module provider. That keeps the crate light
+# enough for its compile-fail fixtures to build as detached external crates,
+# and keeps the ordering property it pins independent of any of them.
+[dependencies]
+weavelit-server-authorization = { path = "../weavelit-server-authorization" }
+weavelit-server-database = { path = "../../database/weavelit-server-database" }
+
+# The proof-consumption fixtures are driven through Cargo's JSON diagnostics.
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }

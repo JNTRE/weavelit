@@ -58,6 +58,7 @@ use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::{AvailableComponents, Name};
 
 pub mod authentication;
+pub mod authorization;
 pub mod operational;
 pub mod restore;
 pub mod transport;
@@ -3032,15 +3033,49 @@ pub(crate) mod tests {
         accounts: Vec<weavelit_server_database::Account>,
         password_verifiers: Vec<weavelit_server_database::AccountPasswordVerifier>,
     ) -> ApplicationState {
+        sealed_application_state_from(SealedStateParts {
+            accounts,
+            password_verifiers,
+            ..SealedStateParts::default()
+        })
+    }
+
+    /// The parts of a sealed application state a test varies.
+    ///
+    /// Everything a sealed state must carry regardless of the test, which is
+    /// the recovery key, the Log Module configuration, its assignments, and the
+    /// completion obligation, is supplied by
+    /// [`sealed_application_state_from`], so a test states only what it decides
+    /// against.
+    #[derive(Default)]
+    pub(crate) struct SealedStateParts {
+        pub(crate) configuration: Vec<weavelit_server_database::ConfigurationEntry>,
+        pub(crate) accounts: Vec<weavelit_server_database::Account>,
+        pub(crate) password_verifiers: Vec<weavelit_server_database::AccountPasswordVerifier>,
+        pub(crate) groups: Vec<weavelit_server_database::Group>,
+        pub(crate) group_memberships: Vec<weavelit_server_database::GroupMembership>,
+        pub(crate) group_grants: Vec<weavelit_server_database::GroupGrantRecord>,
+    }
+
+    /// Builds the smallest accepted state that carries the supplied parts.
+    pub(crate) fn sealed_application_state_from(parts: SealedStateParts) -> ApplicationState {
+        let SealedStateParts {
+            configuration,
+            accounts,
+            password_verifiers,
+            groups,
+            group_memberships,
+            group_grants,
+        } = parts;
         let configuration_identifier = StateIdentifier::from_bytes([0x11; 16]).unwrap();
         ApplicationState::new(ApplicationStateInput {
-            configuration: vec![],
+            configuration,
             protected_secrets: vec![],
             accounts,
             password_verifiers,
-            groups: vec![],
-            group_memberships: vec![],
-            group_grants: vec![],
+            groups,
+            group_memberships,
+            group_grants,
             mfa_factors: vec![],
             service_connections: vec![],
             recovery_public_key: RecoveryPublicKey::new("age1recoverypublickeyvalue").unwrap(),

@@ -12,15 +12,16 @@ pub use session::{
 };
 pub use state::{
     Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
-    CompletionObligation, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
-    CorrelationIdentifier, Description, Group, GroupGrant, GroupGrantRecord, GroupMembership,
-    HumanAuthorizationSnapshot, InitializedState, LogAssignment, LogClassification, LogDetail,
-    LogModuleConfiguration, LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH,
-    MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH,
-    MAX_LOG_CORRELATION_IDENTIFIER_LENGTH, MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH,
-    MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH,
-    MfaFactor, Name, PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey,
-    STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier,
+    COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
+    ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier, Description,
+    Group, GroupGrant, GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot,
+    InitializedState, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
+    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
+    MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH,
+    MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
+    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier,
+    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
+    StateIdentifier,
 };
 
 use std::{error::Error as StdError, fmt};
@@ -201,6 +202,14 @@ pub trait ApplicationDatabase: Send {
         &mut self,
         account: StateIdentifier,
     ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError>;
+
+    /// Loads only which components an administrator has disabled.
+    ///
+    /// This runs on every authorized request beside the account's grants, so
+    /// it is a deliberately narrow read: it returns the disabled components
+    /// and nothing else. It is never captured at startup or carried in a
+    /// session, so disabling a component takes effect on the next request.
+    fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError>;
 
     /// Returns this database's live session store, when it owns one.
     ///

@@ -90,7 +90,7 @@ const _: () = assert!(
 ///
 /// Injected so a test observes session lifetime decisions at chosen instants
 /// without waiting for real time to pass.
-pub(crate) type WallClock = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
+pub type WallClock = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
 
 /// Returns the production clock.
 pub(crate) fn system_clock() -> WallClock {
@@ -107,7 +107,7 @@ pub(crate) fn system_clock() -> WallClock {
 // ---------------------------------------------------------------------------
 
 /// The Server-side collaborators the authentication routes decide through.
-pub(crate) struct AuthenticationRuntime<E> {
+pub struct AuthenticationRuntime<E> {
     database: OperationalDatabase,
     deployment: DeploymentIdentifier,
     client_modules: BTreeSet<Name>,
@@ -474,6 +474,21 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         Ok((token_hash, session))
     }
 
+    /// Validates a presented session for a later authorization decision.
+    ///
+    /// This is the only way to obtain a [`ValidatedSession`], so an
+    /// authorization decision reaches its account and Client Module through a
+    /// session this runtime validated rather than through a comment saying
+    /// validation should have happened first.
+    pub fn validated_session(
+        &self,
+        session_token: &str,
+        csrf_token: &str,
+    ) -> Result<ValidatedSession, AuthenticationRejection> {
+        self.authorized_session(session_token, csrf_token)
+            .map(|(_token_hash, session)| ValidatedSession::established(&session))
+    }
+
     // -----------------------------------------------------------------------
     // Shared plumbing
     // -----------------------------------------------------------------------
@@ -543,6 +558,44 @@ enum PasswordOutcome {
     },
     /// The submission was denied, for a reason this value cannot report.
     Denied,
+}
+
+/// One session that has already passed validation.
+///
+/// The fields and the constructor are private to this module and the only call
+/// site of that constructor is the success path of
+/// [`AuthenticationRuntime::validated_session`], so no other module can produce
+/// this value. An authorization decision that takes one therefore cannot be
+/// reached before session validation.
+///
+/// It carries the account and the issuing Client Module and nothing else. No
+/// Group, grant, or component enablement is captured here, because
+/// authorization reads all of those live on every request.
+#[derive(Debug)]
+pub struct ValidatedSession {
+    account: StateIdentifier,
+    client_module: Name,
+}
+
+impl ValidatedSession {
+    fn established(session: &StoredSession) -> Self {
+        Self {
+            account: session.account(),
+            client_module: session.client_module().clone(),
+        }
+    }
+
+    /// Returns the account the session authenticates.
+    #[must_use]
+    pub const fn account(&self) -> StateIdentifier {
+        self.account
+    }
+
+    /// Returns the Client Module the session was established for.
+    #[must_use]
+    pub const fn client_module(&self) -> &Name {
+        &self.client_module
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -632,7 +685,7 @@ pub(crate) fn correlation_identifier() -> Option<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
@@ -856,10 +909,10 @@ mod tests {
 
     /// The pre-redacted content of one delivered System Log record.
     #[derive(Clone, Debug, Eq, PartialEq)]
-    struct DeliveredRecord {
-        correlation_id: String,
-        classification: String,
-        detail: String,
+    pub(crate) struct DeliveredRecord {
+        pub(crate) correlation_id: String,
+        pub(crate) classification: String,
+        pub(crate) detail: String,
     }
 
     #[derive(Debug)]
@@ -910,7 +963,7 @@ mod tests {
     }
 
     /// Builds a System Log destination that records every delivered record.
-    fn recording_log(
+    pub(crate) fn recording_log(
         fails: bool,
     ) -> (
         Arc<ConfiguredLogDestination>,

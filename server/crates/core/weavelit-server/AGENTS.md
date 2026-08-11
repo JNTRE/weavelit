@@ -3,8 +3,9 @@
 This crate assembles the trusted restricted lifecycle startup runtime, composes
 the SQLite backend catalog, and classifies startup state before any capability
 is exposed. It also owns the Server-core local authentication route layer
-(login, session validation, and logout) once a deployment is sealed.
-Authorization policy, MFA, and provider integrations remain deferred to later
+(login, session validation, and logout) and the live authorization composition
+that evaluates every User Plane and Administration Plane request once a
+deployment is sealed. MFA and provider integrations remain deferred to later
 epics.
 
 ## Purpose and Scope
@@ -32,6 +33,13 @@ Use this section as the source of truth for what assets belong in this directory
   path, the single-permit login admission lane, session issuance and
   revocation, and best-effort authentication-failure System Log dispatch before
   a denial is returned.
+- `src/authorization.rs`: `AuthorizationRuntime`, the live composition point for
+  both authorization decisions: the compiled-in served-component inventory, the
+  catalog built from one live component-enablement read, the `ValidatedSession`
+  gate that makes skipping session validation a compile failure, the live,
+  uncached reads of the account's grants and component enablement on every
+  call, and best-effort authorization-denial System Log dispatch before a
+  denial is returned.
 - `src/operational.rs`: The single operational composition seam: the shared
   Application Database handle a sealed workflow hands over, the operational
   composer that mounts the Web UI operational surface and the authentication

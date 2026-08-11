@@ -1349,6 +1349,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "weavelit-server-authorization",
+ "weavelit-server-database",
  "weavelit-server-lifecycle",
  "zeroize",
 ]
@@ -1395,6 +1397,7 @@ dependencies = [
  "weavelit-module-client-webui",
  "weavelit-module-log-sqlite",
  "weavelit-server-authentication",
+ "weavelit-server-authorization",
  "weavelit-server-database",
  "weavelit-server-database-sqlite",
  "weavelit-server-lifecycle",
@@ -1479,6 +1482,15 @@ dependencies = [
  "weavelit-server-database",
  "weavelit-server-log",
  "weavelit-server-log-authority",
+]
+
+[[package]]
+name = "weavelit-server-operation"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "weavelit-server-authorization",
+ "weavelit-server-database",
 ]
 
 [[package]]

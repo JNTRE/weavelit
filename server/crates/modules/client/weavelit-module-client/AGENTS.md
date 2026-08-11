@@ -30,6 +30,10 @@ Use this section as the source of truth for what assets belong in this directory
   route contract: the three canonical route paths, the login request schema,
   every header and cookie precondition, the payload-free rejection contract,
   and the Server-core hooks the declaration is composed over.
+- `src/authorization.rs`: The shared operational authorization denial contract:
+  the single `AuthorizationRejection` value, the fixed `403` status and
+  `authorization_denied` code, and the byte-identical response every denial
+  cause renders, deliberately distinct from the `401` authentication contract.
 - `src/cookie.rs`: The closed, bounded session and cross-site request forgery
   cookie effect and its fixed rendered attribute text.
 - `src/typed_json.rs`: Bounded typed result and error envelopes for every route

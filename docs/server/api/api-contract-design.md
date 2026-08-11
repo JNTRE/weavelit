@@ -127,6 +127,32 @@ distinguish causes the Server deliberately treats as equivalent. The correlation
 identifier is the only supported way to relate a client-visible failure to
 Server-side records.
 
+### Authorization Denial
+
+Every request to `/api/v1/user/` or `/api/v1/administration/` that a
+[Server Authorization Design](../authorization/authorization-design.md)
+decision denies receives HTTP `403` with exactly:
+
+```json
+{"error":"authorization_denied","correlation_id":"<opaque-server-value>"}
+```
+
+The body is byte-identical whatever the denial cause: an inactive
+**[Human User](../../glossary.md#identities-and-access)**, a disabled or
+uncatalogued **[Client Module](../../glossary.md#applications-and-interfaces)**,
+**[Service Module](../../glossary.md#applications-and-interfaces)**, or
+**[Operation](../../glossary.md#applications-and-interfaces)**, and every
+missing grant are indistinguishable in the response. Only the correlation
+identifier varies, and it is the same value the corresponding System Log
+denial record carries.
+
+This is a distinct contract from the `401` session-validation failure a route
+returns when it cannot tell who is asking, documented in the
+[Server Authentication Design](../authentication/authentication-design.md).
+Authorization never runs unless session validation has already succeeded, so a
+given request is never denied by both contracts; the two are never
+alternatives for one request.
+
 ### Response Profiles
 
 The Server uses two response profiles.
