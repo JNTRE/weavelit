@@ -2,15 +2,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AUTH_LOGIN_PATH,
+  AUTH_MFA_ENROLLMENT_CONFIRM_PATH,
+  AUTH_MFA_ENROLLMENT_PATH,
+  AUTH_MFA_VERIFY_PATH,
   AUTH_SESSION_PATH,
   CSRF_COOKIE_NAME,
   CSRF_HEADER_NAME,
   LoginFailedError,
+  confirmEnrollment,
   isSessionEstablished,
   isSessionIdentity,
+  openEnrollment,
   probeSession,
   readCsrfToken,
+  readEnrollmentOpened,
+  readLoginContinuation,
   submitLogin,
+  submitSecondFactor,
 } from "./weavelit-authentication";
 
 const CORRELATION = "0123456789abcdef0123456789abcdef";
@@ -18,6 +26,13 @@ const CSRF_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyzABC-_";
 const ACCOUNT = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const USERNAME = "administrator";
 const PASSWORD = "fixture-administrator-password";
+const CONTINUATION = "Y29udGludWF0aW9uLXZhbHVlLWZvci10ZXN0aW5n";
+const ENROLLMENT = "ZW5yb2xsbWVudC12YWx1ZS1mb3ItdGVzdGluZw";
+const SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+const PROVISIONING_URI =
+  "otpauth://totp/Weavelit:administrator?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" +
+  "&issuer=Weavelit&algorithm=SHA1&digits=6&period=30";
+const CODE = "123456";
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -39,6 +54,20 @@ function identityResponse(): Response {
 
 function rejectionResponse(code: string, status: number): Response {
   return jsonResponse({ error: code, correlation_id: CORRELATION }, status);
+}
+
+function continuationResponse(stage: string, continuation = CONTINUATION): Response {
+  return jsonResponse({ result: { mfa: stage, continuation }, correlation_id: CORRELATION }, 202);
+}
+
+function enrollmentOpenedResponse(): Response {
+  return jsonResponse(
+    {
+      result: { secret: SECRET, provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT },
+      correlation_id: CORRELATION,
+    },
+    200,
+  );
 }
 
 /** Replaces the document's cookie jar for one test. */
@@ -183,6 +212,261 @@ describe("submitLogin", () => {
     // constant, so nothing derived from the response can be recovered from it.
     expect(Object.keys(error)).toEqual(["name"]);
     expect(JSON.stringify(error)).toBe('{"name":"LoginFailedError"}');
+  });
+
+  it("reports an established session for the documented 200", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(establishedResponse());
+
+    expect(await submitLogin(USERNAME, PASSWORD)).toEqual({ kind: "session" });
+  });
+
+  it.each([
+    ["mfa_required", "mfa_required"],
+    ["mfa_enrollment_required", "mfa_enrollment_required"],
+  ])("reports the %s continuation the 202 carries", async (_label, stage) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(continuationResponse(stage));
+
+    expect(await submitLogin(USERNAME, PASSWORD)).toEqual({
+      kind: stage,
+      continuation: CONTINUATION,
+    });
+  });
+
+  it.each([
+    ["an unknown stage", () => Promise.resolve(continuationResponse("password_required"))],
+    [
+      "a missing stage",
+      () => Promise.resolve(jsonResponse({ result: { continuation: "a" } }, 202)),
+    ],
+    ["a missing continuation", () => Promise.resolve(jsonResponse({ result: { mfa: "x" } }, 202))],
+    [
+      "a continuation outside the issued token shape",
+      () => Promise.resolve(continuationResponse("mfa_required", "not a token")),
+    ],
+    ["an unparseable 202 body", () => Promise.resolve(new Response("not json", { status: 202 }))],
+  ])("rejects %s with the same failure a denial produces", async (_label, response) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(response);
+
+    await expect(submitLogin(USERNAME, PASSWORD)).rejects.toBeInstanceOf(LoginFailedError);
+  });
+});
+
+describe("readLoginContinuation", () => {
+  it.each([["mfa_required"], ["mfa_enrollment_required"]])(
+    "accepts the documented %s envelope",
+    (stage) => {
+      expect(
+        readLoginContinuation({
+          result: { mfa: stage, continuation: CONTINUATION },
+          correlation_id: CORRELATION,
+        }),
+      ).toEqual({ kind: stage, continuation: CONTINUATION });
+    },
+  );
+
+  it.each([
+    ["null", null],
+    ["an array", [{ result: { mfa: "mfa_required", continuation: CONTINUATION } }]],
+    ["a bare result", { mfa: "mfa_required", continuation: CONTINUATION }],
+    ["an unknown stage", { result: { mfa: "elevation_required", continuation: CONTINUATION } }],
+    ["a non-string stage", { result: { mfa: 1, continuation: CONTINUATION } }],
+    ["an empty continuation", { result: { mfa: "mfa_required", continuation: "" } }],
+    [
+      "a continuation outside the token character set",
+      { result: { mfa: "mfa_required", continuation: "has space" } },
+    ],
+    [
+      "an over-long continuation",
+      { result: { mfa: "mfa_required", continuation: "a".repeat(49) } },
+    ],
+  ])("rejects %s", (_label, payload) => {
+    expect(readLoginContinuation(payload)).toBeNull();
+  });
+});
+
+describe("readEnrollmentOpened", () => {
+  it("accepts the documented disclosure envelope", () => {
+    expect(
+      readEnrollmentOpened({
+        result: { secret: SECRET, provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT },
+        correlation_id: CORRELATION,
+      }),
+    ).toEqual({ secret: SECRET, provisioningUri: PROVISIONING_URI, enrollment: ENROLLMENT });
+  });
+
+  it.each([
+    ["null", null],
+    [
+      "a missing secret",
+      { result: { provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT } },
+    ],
+    ["a missing URI", { result: { secret: SECRET, enrollment: ENROLLMENT } }],
+    ["a missing enrollment", { result: { secret: SECRET, provisioning_uri: PROVISIONING_URI } }],
+    [
+      "a secret outside the token character set",
+      {
+        result: { secret: "has space", provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT },
+      },
+    ],
+    [
+      "a URI outside the provisioning character set",
+      {
+        result: {
+          secret: SECRET,
+          provisioning_uri: "otpauth://totp/<script>",
+          enrollment: ENROLLMENT,
+        },
+      },
+    ],
+    [
+      "an over-long URI",
+      {
+        result: {
+          secret: SECRET,
+          provisioning_uri: `otpauth://${"a".repeat(289)}`,
+          enrollment: ENROLLMENT,
+        },
+      },
+    ],
+    [
+      "a non-string URI",
+      { result: { secret: SECRET, provisioning_uri: 1, enrollment: ENROLLMENT } },
+    ],
+  ])("rejects %s", (_label, payload) => {
+    expect(readEnrollmentOpened(payload)).toBeNull();
+  });
+});
+
+describe("submitSecondFactor", () => {
+  it("submits the continuation and the code in the body of a same-origin PUT", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(establishedResponse());
+
+    await submitSecondFactor(CONTINUATION, CODE);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(target).toBe(AUTH_MFA_VERIFY_PATH);
+    expect(init.method).toBe("PUT");
+    expect(init.credentials).toBe("same-origin");
+    expect(init.cache).toBe("no-store");
+    expect(init.redirect).toBe("error");
+    expect(init.body).toBe(JSON.stringify({ continuation: CONTINUATION, code: CODE }));
+    // The route carries no session, so it echoes the same pre-session literal
+    // the bootstrap login request does.
+    expect((init.headers as Record<string, string>)[CSRF_HEADER_NAME]).toBe("1");
+    expect(target).not.toContain(CONTINUATION);
+    expect(target).not.toContain(CODE);
+  });
+
+  it.each([
+    ["a refused code", () => Promise.resolve(rejectionResponse("authentication_failed", 401))],
+    [
+      "a spent continuation",
+      () => Promise.resolve(rejectionResponse("authentication_failed", 401)),
+    ],
+    ["a malformed submission", () => Promise.resolve(rejectionResponse("bad_request", 400))],
+    ["a continuation answer", () => Promise.resolve(continuationResponse("mfa_required"))],
+    ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
+    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
+    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
+  ])("rejects %s with one indistinguishable failure", async (_label, response) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(response);
+
+    const failure = await submitSecondFactor(CONTINUATION, CODE).catch((reason: unknown) => reason);
+
+    expect(failure).toBeInstanceOf(LoginFailedError);
+    expect(JSON.stringify(failure)).toBe('{"name":"LoginFailedError"}');
+  });
+});
+
+describe("openEnrollment", () => {
+  it("submits the continuation alone and returns the one disclosure", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(enrollmentOpenedResponse());
+
+    const opened = await openEnrollment(CONTINUATION);
+
+    expect(opened).toEqual({
+      secret: SECRET,
+      provisioningUri: PROVISIONING_URI,
+      enrollment: ENROLLMENT,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(target).toBe(AUTH_MFA_ENROLLMENT_PATH);
+    expect(init.method).toBe("PUT");
+    expect(init.body).toBe(JSON.stringify({ continuation: CONTINUATION }));
+    expect(target).not.toContain(CONTINUATION);
+  });
+
+  it("writes no disclosed value to browser storage or the cookie jar", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(enrollmentOpenedResponse());
+
+    await openEnrollment(CONTINUATION);
+
+    expect(globalThis.localStorage.length).toBe(0);
+    expect(globalThis.sessionStorage.length).toBe(0);
+    expect(globalThis.document.cookie).not.toContain(SECRET);
+    expect(globalThis.location.href).not.toContain(SECRET);
+    expect(globalThis.location.href).not.toContain(PROVISIONING_URI);
+  });
+
+  it.each([
+    [
+      "a spent continuation",
+      () => Promise.resolve(rejectionResponse("authentication_failed", 401)),
+    ],
+    ["a malformed submission", () => Promise.resolve(rejectionResponse("bad_request", 400))],
+    [
+      "a disclosure missing its enrollment value",
+      () =>
+        Promise.resolve(
+          jsonResponse({ result: { secret: SECRET, provisioning_uri: PROVISIONING_URI } }, 200),
+        ),
+    ],
+    ["an established-session body", () => Promise.resolve(establishedResponse())],
+    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
+    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
+  ])("rejects %s with one indistinguishable failure", async (_label, response) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(response);
+
+    const failure = await openEnrollment(CONTINUATION).catch((reason: unknown) => reason);
+
+    expect(failure).toBeInstanceOf(LoginFailedError);
+    expect(JSON.stringify(failure)).toBe('{"name":"LoginFailedError"}');
+  });
+});
+
+describe("confirmEnrollment", () => {
+  it("submits the enrollment value and the code in the body of a same-origin PUT", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(establishedResponse());
+
+    await confirmEnrollment(ENROLLMENT, CODE);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(target).toBe(AUTH_MFA_ENROLLMENT_CONFIRM_PATH);
+    expect(init.method).toBe("PUT");
+    expect(init.credentials).toBe("same-origin");
+    expect(init.body).toBe(JSON.stringify({ enrollment: ENROLLMENT, code: CODE }));
+    expect((init.headers as Record<string, string>)[CSRF_HEADER_NAME]).toBe("1");
+    expect(target).not.toContain(ENROLLMENT);
+  });
+
+  it.each([
+    ["a refused code", () => Promise.resolve(rejectionResponse("authentication_failed", 401))],
+    ["a malformed submission", () => Promise.resolve(rejectionResponse("bad_request", 400))],
+    ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
+    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
+    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
+  ])("rejects %s with one indistinguishable failure", async (_label, response) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(response);
+
+    const failure = await confirmEnrollment(ENROLLMENT, CODE).catch((reason: unknown) => reason);
+
+    expect(failure).toBeInstanceOf(LoginFailedError);
+    expect(JSON.stringify(failure)).toBe('{"name":"LoginFailedError"}');
   });
 });
 

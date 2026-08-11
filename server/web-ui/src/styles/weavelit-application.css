@@ -149,10 +149,21 @@ body {
 }
 
 .shell__login-username,
-.shell__login-password {
+.shell__login-password,
+.shell__login-code,
+.shell__login-setup-key,
+.shell__login-setup-link {
   display: block;
   font: inherit;
   max-width: 100%;
+}
+
+/* The disclosed values are long and must be readable exactly, so they are laid
+   out in a fixed-width face wide enough to show them without truncation. */
+.shell__login-setup-key,
+.shell__login-setup-link {
+  font-family: var(--ds-font-family-mono);
+  width: 100%;
 }
 
 .shell__login-action {
@@ -172,6 +183,8 @@ body {
 }
 
 .shell__login-authenticated,
-.shell__login-failure {
+.shell__login-failure,
+.shell__login-attempt-ended,
+.shell__login-disclosure {
   margin: var(--ds-space-md) 0 0;
 }

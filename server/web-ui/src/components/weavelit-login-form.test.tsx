@@ -7,6 +7,22 @@ const CORRELATION = "0123456789abcdef0123456789abcdef";
 const ACCOUNT = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const USERNAME = "administrator";
 const PASSWORD = "fixture-administrator-password";
+const CONTINUATION = "Y29udGludWF0aW9uLXZhbHVlLWZvci10ZXN0aW5n";
+const ENROLLMENT = "ZW5yb2xsbWVudC12YWx1ZS1mb3ItdGVzdGluZw";
+const SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+const PROVISIONING_URI =
+  "otpauth://totp/Weavelit:administrator?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" +
+  "&issuer=Weavelit&algorithm=SHA1&digits=6&period=30";
+const CODE = "123456";
+
+const SESSION_PATH = "/api/v1/auth/session";
+const LOGIN_PATH = "/api/v1/auth/login";
+const MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify";
+const MFA_ENROLLMENT_PATH = "/api/v1/auth/mfa/enrollment";
+const MFA_CONFIRM_PATH = "/api/v1/auth/mfa/enrollment/confirm";
+
+const ATTEMPT_ENDED_MESSAGE =
+  "That code was not accepted. This sign-in attempt has ended, so sign in again to start a new one.";
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -56,6 +72,56 @@ function mockRoutedFetch(routes: {
     );
 }
 
+function continuationLogin(stage: string): () => Promise<Response> {
+  return () =>
+    Promise.resolve(
+      jsonResponse(
+        { result: { mfa: stage, continuation: CONTINUATION }, correlation_id: CORRELATION },
+        202,
+      ),
+    );
+}
+
+function openedEnrollment(): Promise<Response> {
+  return Promise.resolve(
+    jsonResponse(
+      {
+        result: { secret: SECRET, provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT },
+        correlation_id: CORRELATION,
+      },
+      200,
+    ),
+  );
+}
+
+function refusal(): Promise<Response> {
+  return Promise.resolve(
+    jsonResponse({ error: "authentication_failed", correlation_id: CORRELATION }, 401),
+  );
+}
+
+/**
+ * Answers each route from its own handler and fails an unrouted request.
+ *
+ * Every request the panel makes is therefore either asserted here or a visible
+ * failure, so a step that quietly called a route this scenario did not expect
+ * cannot pass.
+ */
+function mockRoutes(routes: Readonly<Record<string, () => Promise<Response>>>) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown) => {
+    const handler = routes[requestTarget(input)];
+    return handler === undefined
+      ? Promise.reject(new Error(`unrouted request: ${requestTarget(input)}`))
+      : handler();
+  });
+}
+
+function requestsTo(fetchMock: ReturnType<typeof mockRoutes>, path: string): RequestInit[] {
+  return fetchMock.mock.calls
+    .filter(([target]) => requestTarget(target) === path)
+    .map(([, init]) => init!);
+}
+
 function panel(): HTMLElement {
   const section = document.querySelector("section[data-authentication-state]");
   if (section === null) {
@@ -88,6 +154,41 @@ async function renderUnauthenticated(login: () => Promise<Response>) {
 function fillCredentials(): void {
   fireEvent.change(usernameField(), { target: { value: USERNAME } });
   fireEvent.change(passwordField(), { target: { value: PASSWORD } });
+}
+
+function codeField(): HTMLInputElement {
+  return screen.getByLabelText("Authentication code");
+}
+
+function setupKeyField(): HTMLInputElement {
+  return screen.getByLabelText("Setup key");
+}
+
+function setupLinkField(): HTMLInputElement {
+  return screen.getByLabelText("Setup link");
+}
+
+/**
+ * Renders the panel against exactly the supplied routes and signs in once.
+ *
+ * The session probe is always routed, because the panel renders nothing until
+ * it settles; every other route belongs to the scenario under test.
+ */
+async function signInWith(routes: Readonly<Record<string, () => Promise<Response>>>) {
+  const fetchMock = mockRoutes({ [SESSION_PATH]: unauthenticatedProbe, ...routes });
+  render(<LoginPanel />);
+  await waitFor(() => {
+    expect(panel().dataset.authenticationState).toBe("unauthenticated");
+  });
+  fillCredentials();
+  fireEvent.click(submitButton());
+  return fetchMock;
+}
+
+async function reachState(state: string): Promise<void> {
+  await waitFor(() => {
+    expect(panel().dataset.authenticationState).toBe(state);
+  });
 }
 
 afterEach(() => {
@@ -279,5 +380,202 @@ describe("LoginPanel storage discipline", () => {
     expect(globalThis.sessionStorage.length).toBe(0);
     expect(globalThis.document.cookie).not.toContain(PASSWORD);
     expect(globalThis.location.href).not.toContain(PASSWORD);
+  });
+});
+
+describe("LoginPanel second factor", () => {
+  it("presents the code step after a 202 mfa_required and completes the login", async () => {
+    const fetchMock = await signInWith({
+      [LOGIN_PATH]: continuationLogin("mfa_required"),
+      [MFA_VERIFY_PATH]: establishedLogin,
+    });
+
+    await reachState("second-factor");
+    // The credential controls are gone, so the step cannot be confused with a
+    // second sign-in attempt.
+    expect(screen.queryByLabelText("Username")).toBeNull();
+    expect(screen.queryByLabelText("Password")).toBeNull();
+    expect(codeField().getAttribute("autocomplete")).toBe("one-time-code");
+    expect(codeField().getAttribute("inputmode")).toBe("numeric");
+    expect(codeField().maxLength).toBe(6);
+
+    const verify = screen.getByRole("button", { name: "Verify code" });
+    expect(verify.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(codeField(), { target: { value: "12345" } });
+    expect(verify.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    expect(verify.hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(verify);
+    await reachState("authenticated");
+    expect(screen.getByRole("status").textContent).toBe("You are signed in.");
+
+    const submitted = requestsTo(fetchMock, MFA_VERIFY_PATH);
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.body).toBe(JSON.stringify({ continuation: CONTINUATION, code: CODE }));
+    // The continuation travelled in the body of that one request and is not
+    // rendered, kept in the target, or written anywhere else.
+    expect(document.body.innerHTML).not.toContain(CONTINUATION);
+    expect(globalThis.location.href).not.toContain(CONTINUATION);
+  });
+
+  it("refuses to submit a code the routes would reject as malformed", async () => {
+    const fetchMock = await signInWith({
+      [LOGIN_PATH]: continuationLogin("mfa_required"),
+      [MFA_VERIFY_PATH]: establishedLogin,
+    });
+
+    await reachState("second-factor");
+    const verify = screen.getByRole("button", { name: "Verify code" });
+    for (const rejected of ["", "1234", "1234567", "12345a", "  1234"]) {
+      fireEvent.change(codeField(), { target: { value: rejected } });
+      expect(verify.hasAttribute("disabled")).toBe(true);
+      fireEvent.click(verify);
+    }
+
+    expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(0);
+  });
+
+  it("ends the attempt when the submitted code is refused", async () => {
+    const fetchMock = await signInWith({
+      [LOGIN_PATH]: continuationLogin("mfa_required"),
+      [MFA_VERIFY_PATH]: refusal,
+    });
+
+    await reachState("second-factor");
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+
+    await reachState("attempt-ended");
+    // The continuation is spent, so the panel states the attempt is over and
+    // offers the only thing that can follow it: a fresh sign-in.
+    expect(screen.getByRole("alert").textContent).toBe(ATTEMPT_ENDED_MESSAGE);
+    expect(screen.queryByLabelText("Authentication code")).toBeNull();
+    expect(usernameField().value).toBe(USERNAME);
+    expect(passwordField().value).toBe("");
+    expect(submitButton().disabled).toBe(true);
+    expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(CONTINUATION);
+    expect(document.body.innerHTML).not.toContain(CODE);
+    expect(document.body.innerHTML).not.toContain("authentication_failed");
+    expect(document.body.innerHTML).not.toContain(CORRELATION);
+  });
+});
+
+describe("LoginPanel enrollment", () => {
+  it("discloses the setup key and link exactly once and completes the login", async () => {
+    const fetchMock = await signInWith({
+      [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
+      [MFA_ENROLLMENT_PATH]: openedEnrollment,
+      [MFA_CONFIRM_PATH]: establishedLogin,
+    });
+
+    await reachState("enrollment");
+    expect(setupKeyField().value).toBe(SECRET);
+    expect(setupKeyField().readOnly).toBe(true);
+    expect(setupLinkField().value).toBe(PROVISIONING_URI);
+    expect(setupLinkField().readOnly).toBe(true);
+    // The single disclosure is stated as such, so the operator knows the values
+    // cannot be recovered after this step.
+    expect(screen.getByRole("alert").textContent).toContain("shown once");
+    // Nothing renders the disclosed values as a navigation target.
+    expect(document.querySelectorAll("a")).toHaveLength(0);
+
+    const opened = requestsTo(fetchMock, MFA_ENROLLMENT_PATH);
+    expect(opened, "the disclosure was requested exactly once").toHaveLength(1);
+    expect(opened[0]?.body).toBe(JSON.stringify({ continuation: CONTINUATION }));
+
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm authenticator app" }));
+    await reachState("authenticated");
+
+    const confirmed = requestsTo(fetchMock, MFA_CONFIRM_PATH);
+    expect(confirmed).toHaveLength(1);
+    expect(confirmed[0]?.body).toBe(JSON.stringify({ enrollment: ENROLLMENT, code: CODE }));
+    // The disclosure is still requested exactly once, and nothing it carried
+    // outlives the enrollment it belonged to.
+    expect(requestsTo(fetchMock, MFA_ENROLLMENT_PATH)).toHaveLength(1);
+    expect(screen.queryByLabelText("Setup key")).toBeNull();
+    expect(screen.queryByLabelText("Setup link")).toBeNull();
+    expect(document.body.innerHTML).not.toContain(SECRET);
+    expect(document.body.innerHTML).not.toContain(PROVISIONING_URI);
+    expect(document.body.innerHTML).not.toContain(ENROLLMENT);
+  });
+
+  it("ends the attempt when the enrollment confirmation is refused", async () => {
+    const fetchMock = await signInWith({
+      [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
+      [MFA_ENROLLMENT_PATH]: openedEnrollment,
+      [MFA_CONFIRM_PATH]: refusal,
+    });
+
+    await reachState("enrollment");
+    expect(setupKeyField().value).toBe(SECRET);
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm authenticator app" }));
+
+    await reachState("attempt-ended");
+    expect(screen.getByRole("alert").textContent).toBe(ATTEMPT_ENDED_MESSAGE);
+    expect(requestsTo(fetchMock, MFA_CONFIRM_PATH)).toHaveLength(1);
+    // The refused enrollment is gone: the secret it disclosed is not held for a
+    // retry, because the Server has already spent the value that confirms it.
+    expect(screen.queryByLabelText("Setup key")).toBeNull();
+    expect(document.body.innerHTML).not.toContain(SECRET);
+    expect(document.body.innerHTML).not.toContain(PROVISIONING_URI);
+    expect(document.body.innerHTML).not.toContain(ENROLLMENT);
+    expect(usernameField().value).toBe(USERNAME);
+  });
+
+  it("ends the attempt when the enrollment cannot be opened", async () => {
+    const fetchMock = await signInWith({
+      [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
+      [MFA_ENROLLMENT_PATH]: refusal,
+    });
+
+    await reachState("attempt-ended");
+    expect(screen.getByRole("alert").textContent).toBe(ATTEMPT_ENDED_MESSAGE);
+    expect(requestsTo(fetchMock, MFA_ENROLLMENT_PATH)).toHaveLength(1);
+    expect(screen.queryByLabelText("Setup key")).toBeNull();
+  });
+
+  it("keeps the disclosed values out of every browser store and the URL", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    // A sanity check that these assertions can fail against a real store.
+    globalThis.sessionStorage.setItem("probe", SECRET);
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.sessionStorage.clear();
+
+    await signInWith({
+      [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
+      [MFA_ENROLLMENT_PATH]: openedEnrollment,
+      [MFA_CONFIRM_PATH]: establishedLogin,
+    });
+
+    await reachState("enrollment");
+    // Asserted while the values are actually on screen, so this is an
+    // observation about a disclosure that really happened.
+    expect(setupKeyField().value).toBe(SECRET);
+    for (const disclosed of [SECRET, PROVISIONING_URI, ENROLLMENT, CONTINUATION]) {
+      expect(globalThis.localStorage.getItem("weavelit")).toBeNull();
+      expect(JSON.stringify(globalThis.localStorage)).not.toContain(disclosed);
+      expect(JSON.stringify(globalThis.sessionStorage)).not.toContain(disclosed);
+      expect(globalThis.document.cookie).not.toContain(disclosed);
+      expect(globalThis.location.href).not.toContain(disclosed);
+    }
+    expect(globalThis.localStorage.length).toBe(0);
+    expect(globalThis.sessionStorage.length).toBe(0);
+
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm authenticator app" }));
+    await reachState("authenticated");
+
+    expect(globalThis.localStorage.length).toBe(0);
+    expect(globalThis.sessionStorage.length).toBe(0);
+    for (const disclosed of [SECRET, PROVISIONING_URI, ENROLLMENT, CONTINUATION]) {
+      expect(globalThis.document.cookie).not.toContain(disclosed);
+      expect(globalThis.location.href).not.toContain(disclosed);
+      expect(document.body.innerHTML).not.toContain(disclosed);
+    }
   });
 });

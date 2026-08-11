@@ -22,7 +22,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and Server Web UI source-boundary rules.
 - `.node-version`: Pinned Node.js release used by local development, the development container, and CI.
 - `.npmrc`: npm client settings that force exact version pinning and engine enforcement.
-- `browser-tests/`: Playwright browser tests, covering the pre-operational status smoke test, the Application Database selection restart-persistence test, the two-request Restore submission test, and the sign-in and restart-persisted-session test, and the shared fixture that runs them against the release Server binary.
+- `browser-tests/`: Playwright browser tests, covering the pre-operational status smoke test, the Application Database selection restart-persistence test, the two-request Restore submission test, the sign-in and restart-persisted-session test, the second-factor and enrollment sign-in tests, and the shared fixture that runs them against the release Server binary.
 - `index.html`: Vite entry document for the single-page application.
 - `package.json`: Web UI manifest, exact dependency pins, and build, test, and validation scripts.
 - `package-lock.json`: Fully resolved npm dependency lock for reproducible installs.
