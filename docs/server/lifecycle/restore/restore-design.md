@@ -173,11 +173,13 @@ A private recovery key is accepted only in its canonical age Bech32 encoding —
 a lowercase `age1...` public recipient or an uppercase
 `AGE-SECRET-KEY-1...` private identity — and only as exactly one canonical
 line; a key with surrounding content, multiple lines, or non-canonical encoding
-is rejected as `recovery_key_invalid` before decryption. The same canonical
-encoding also carries an encrypted delivery-nonce challenge used to confirm
-proof of possession of a newly generated private key; the Restore crate does
-not perform that challenge and enforces only canonical syntax and
-cryptographic validity when a key is submitted with a backup.
+is rejected as `recovery_key_invalid` before decryption. This canonical
+encoding is the same one Init delivers; Init's separate HMAC-based proof of
+possession, defined in the
+[Server Init Design](../init/init-design.md#recovery-key-delivery-and-finalization),
+is not carried in the key encoding itself and has no bearing on Restore. The
+Restore crate enforces only canonical syntax and cryptographic validity when a
+key is submitted with a backup.
 
 ## Backup Validation And Restored State
 

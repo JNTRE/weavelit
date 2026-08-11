@@ -108,20 +108,27 @@ initialized before the requesting client proves possession of the private key:
 
 1. Recovery-key preparation requires a selected, uninitialized Application
    Database. Under the lifecycle authority's exclusive mutation permit, the
-   Init crate generates the recovery key pair and asks the database contract to
-   atomically record an Init checkpoint containing the deployment identifier,
-   public key, and a unique delivery nonce. The lifecycle crate advances the
-   deployment record to `InitializationPending`. Init returns the private key
-   once over HTTPS only after both writes complete their configured valid-run
-   commit paths. The private key exists only transiently in Server memory and
-   response handling and is never persisted.
-2. The client saves the private key outside Weavelit and derives the
-   key-format-defined proof of possession for the delivery nonce. It submits
-   that proof, but not the private key, with the complete normalized
-   `InitializeServer` request.
+   Init crate generates the recovery key pair and a unique delivery nonce, then
+   computes the expected proof value as HMAC-SHA-256 over the delivery nonce
+   keyed by the private key's raw bytes. Key generation and proof computation
+   complete before the Init crate asks the database contract to atomically
+   record an Init checkpoint containing the deployment identifier, the public
+   recipient, the delivery nonce, and the expected proof value. The checkpoint
+   never contains the private key in any form, including as an HMAC key. The
+   lifecycle crate advances the deployment record to `InitializationPending`.
+   Init returns the private key once over HTTPS only after both writes
+   complete their configured valid-run commit paths, and discards its copy of
+   the private key immediately after the response is written. The private key
+   exists only transiently in Server memory and response handling and is never
+   persisted in any form.
+2. The client saves the private key outside Weavelit and computes the same
+   HMAC-SHA-256 over the delivery nonce, keyed by the private key's raw bytes
+   it retained. It submits that proof, but not the private key, with the
+   complete normalized `InitializeServer` request.
 3. The Init crate obtains the reopened selected database from the lifecycle
-   authority, verifies that the deployment identifiers, checkpoint, and proof
-   match, validates the complete request, verifies the
+   authority, verifies that the deployment identifiers and checkpoint match,
+   compares the submitted proof to the checkpoint's stored expected proof value
+   in constant time, validates the complete request, verifies the
    **[Log Module](../../../glossary.md#applications-and-interfaces)** assignments
    and their ability to provide the durable acknowledgement defined in the
    [Technical Specification](../../../spec.md#logging-and-accountability) for
@@ -145,6 +152,15 @@ Proof of possession confirms that the requesting client retained the delivered
 key long enough to finalize Init; safeguarding the downloaded private key
 outside Weavelit remains the responsibility of the person completing Init. The
 Server never redisplays a private key associated with an existing checkpoint.
+
+The delivered key remains a canonical age key, unchanged; only the proof
+mechanism above is Init-specific, and it does not alter Restore's accepted key
+syntax or backup recovery. This design stores the expected HMAC-SHA-256 proof
+value, not the private key, in the pending checkpoint as a stated tradeoff: a
+reader with Application Database access could compute a matching proof and
+finalize Init on a retained `InitializationPending` checkpoint. Such a reader
+already possesses the database and the deployment's retained state, so this
+does not lower the effective boundary the design otherwise relies on.
 
 If delivery, validation, final persistence, System Log completion,
 deployment-record sealing, or in-process activation is interrupted after the
@@ -196,7 +212,8 @@ reach clients or logs.
 ## Test Evidence
 
 `weavelit-server-init` has direct tests for normalized-request validation,
-recovery-key generation, one-time delivery, proof, Init-checkpoint validation,
+recovery-key generation, one-time delivery, constant-time proof comparison,
+Init-checkpoint validation,
 atomic new-state creation, durable System Log completion during a
 valid run, retained-partial-state classification, absence of restart retry,
 reset, deletion, recreation, reconciliation, and sealing, redaction, rollback,
