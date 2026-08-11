@@ -14,6 +14,7 @@
 use std::fmt::Write;
 
 use axum::{body::Body, http::StatusCode, response::Response};
+use zeroize::Zeroizing;
 
 use crate::cookie::CookieEffect;
 
@@ -51,6 +52,21 @@ pub const MAX_TYPED_RESULT_FIELDS: usize = 4;
 /// never push a response past a bound the listener would redact it for. A URI
 /// that would exceed it is refused rather than shortened.
 pub const MAX_PROVISIONING_URI_BYTES: usize = 288;
+
+/// Longest canonical recovery-key line the typed profile serializes.
+///
+/// This matches the canonical recovery-key bound recorded by
+/// `weavelit_server_recovery_key::MAX_RECOVERY_KEY_LENGTH`, so the one Init
+/// response that delivers a key can carry any line this Server can encode. That
+/// crate is not a dependency here, so the bound is restated rather than
+/// imported.
+///
+/// Like [`MAX_PROVISIONING_URI_BYTES`], this bound is what the single envelope
+/// that discloses the value can afford rather than what four fields of the
+/// largest result object could carry. The delivery envelope carries exactly one
+/// recovery-key field and one token field, so disclosing one can never push a
+/// response past the bound the listener would redact it for.
+pub const MAX_RECOVERY_KEY_LINE_BYTES: usize = 128;
 
 /// A stable, lowercase, dependency-neutral code or result field name.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,6 +162,41 @@ impl ProvisioningUri {
     }
 }
 
+/// A canonical age recovery-key line delivered exactly once.
+///
+/// The accepted set is the canonical uppercase age identity alphabet: ASCII
+/// uppercase letters, digits, and the Bech32 separator. It excludes the quote,
+/// the backslash, and every control character, so a line is serialized without
+/// escaping and no value outside the shape a canonical identity can take is
+/// returnable at all.
+///
+/// The wrapped value is the delivered private recovery key, so this type
+/// renders nothing: it implements neither `Debug` nor `Display`, and no
+/// comparison. It is cleared when the last clone is dropped.
+#[derive(Clone)]
+pub struct RecoveryKeyLine(Zeroizing<String>);
+
+impl RecoveryKeyLine {
+    /// Accepts only `[A-Z0-9-]` within the recovery-key line bound.
+    #[must_use]
+    pub fn new(value: &str) -> Option<Self> {
+        if value.is_empty() || value.len() > MAX_RECOVERY_KEY_LINE_BYTES {
+            return None;
+        }
+        if !value
+            .bytes()
+            .all(|byte| matches!(byte, b'A'..=b'Z' | b'0'..=b'9' | b'-'))
+        {
+            return None;
+        }
+        Some(Self(Zeroizing::new(value.to_owned())))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// The response-envelope rendering of a correlation identifier.
 ///
 /// The canonical correlation identifier permits any bounded printable text,
@@ -189,6 +240,8 @@ pub enum TypedValue {
     Token(OpaqueToken),
     /// A one-time provisioning URI emitted as a JSON string.
     Uri(ProvisioningUri),
+    /// A one-time recovery-key line emitted as a JSON string.
+    RecoveryKey(RecoveryKeyLine),
 }
 
 /// The bounded object a typed success envelope carries as `result`.
@@ -265,6 +318,9 @@ impl TypedJsonEnvelope {
                         TypedValue::Uri(uri) => {
                             let _ = write!(text, "\"{}\"", uri.as_str());
                         }
+                        TypedValue::RecoveryKey(line) => {
+                            let _ = write!(text, "\"{}\"", line.as_str());
+                        }
                     }
                 }
                 let _ = write!(
@@ -321,9 +377,10 @@ pub fn typed_json_response_with_cookies(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_OPAQUE_TOKEN_BYTES, MAX_PROVISIONING_URI_BYTES, MAX_RESPONSE_CORRELATION_BYTES,
-        MAX_STABLE_CODE_BYTES, MAX_TYPED_RESULT_FIELDS, OpaqueToken, ProvisioningUri,
-        ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
+        MAX_OPAQUE_TOKEN_BYTES, MAX_PROVISIONING_URI_BYTES, MAX_RECOVERY_KEY_LINE_BYTES,
+        MAX_RESPONSE_CORRELATION_BYTES, MAX_STABLE_CODE_BYTES, MAX_TYPED_RESULT_FIELDS,
+        OpaqueToken, ProvisioningUri, RecoveryKeyLine, ResponseCorrelation, StableCode,
+        TypedJsonEnvelope, TypedResult, TypedValue,
     };
 
     fn correlation() -> ResponseCorrelation {
@@ -399,6 +456,27 @@ mod tests {
             &"a".repeat(MAX_PROVISIONING_URI_BYTES + 1),
         ] {
             assert!(ProvisioningUri::new(rejected).is_none(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn recovery_key_lines_accept_only_the_closed_character_set() {
+        assert!(
+            RecoveryKeyLine::new("AGE-SECRET-KEY-1QQPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L").is_some()
+        );
+        assert!(RecoveryKeyLine::new(&"A".repeat(MAX_RECOVERY_KEY_LINE_BYTES)).is_some());
+        for rejected in [
+            "",
+            "age1lowercase",
+            "with space",
+            "with\"quote",
+            "with\\escape",
+            "with{brace}",
+            "with\nnewline",
+            "WITH_UNDERSCORE",
+            &"A".repeat(MAX_RECOVERY_KEY_LINE_BYTES + 1),
+        ] {
+            assert!(RecoveryKeyLine::new(rejected).is_none(), "{rejected}");
         }
     }
 
@@ -516,5 +594,34 @@ mod tests {
             };
             assert_eq!(largest.serialize().len(), 504);
         }
+    }
+
+    /// The one envelope that discloses a recovery key stays inside the
+    /// derivation above rather than extending it.
+    ///
+    /// The delivery envelope costs `{"result":{` (11), plus a 48-byte quoted
+    /// name, a colon, and a 128-byte quoted line (181), plus a separating
+    /// comma, plus a 48-byte quoted name, a colon, and a 48-byte quoted token
+    /// (101), plus `},"correlation_id":"` (20), plus a 64-byte correlation,
+    /// plus `"}` (2): 380 bytes. A recovery-key field is therefore affordable
+    /// exactly where this envelope carries one, and the largest envelope the
+    /// listener must accept is unchanged at 504 bytes.
+    #[test]
+    fn the_recovery_key_delivery_envelope_stays_inside_the_derived_bound() {
+        let delivery = TypedJsonEnvelope::Result {
+            result: TypedResult::new()
+                .with_field(
+                    longest_code(),
+                    TypedValue::RecoveryKey(
+                        RecoveryKeyLine::new(&"A".repeat(MAX_RECOVERY_KEY_LINE_BYTES)).unwrap(),
+                    ),
+                )
+                .unwrap()
+                .with_field(longest_code(), TypedValue::Token(longest_token()))
+                .unwrap(),
+            correlation_id: correlation(),
+        };
+        assert_eq!(delivery.serialize().len(), 380);
+        assert!(delivery.serialize().len() <= 504);
     }
 }

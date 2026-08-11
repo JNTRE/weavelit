@@ -6,17 +6,19 @@
 //! for a prepared completion and receives both the record to deliver and the
 //! matching obligation to persist.
 //!
-//! Milestone 1 needs the Restore completion result, the local authentication
-//! failure result, and the authorization denial result. The crate is
-//! nonetheless the long-term owner of Server-produced operational telemetry, so
-//! each event family lives in its own module.
+//! Milestone 1 needs the Init and Restore completion results, the local
+//! authentication failure result, and the authorization denial result. The
+//! crate is nonetheless the long-term owner of Server-produced operational
+//! telemetry, so each event family lives in its own module.
 
 #![forbid(unsafe_code)]
 
 mod authentication;
 mod authorization;
+mod init;
 mod restore;
 
+pub use init::PreparedInitCompletion;
 pub use restore::PreparedRestoreCompletion;
 
 use weavelit_server_log::TrustedRecordIssuer;

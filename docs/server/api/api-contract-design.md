@@ -70,6 +70,12 @@ Route groups:
   [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
   and the
   [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md).
+- `/api/v1/init/recovery-key` and `/api/v1/init` are the two requests of the
+  Init submission protocol. Their behavior is fixed by the
+  [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md).
+  The shared `weavelit-module-client` crate implements this contract, but no
+  Client Module declares it yet and no runtime orchestrator mounts it, so
+  Init is not yet reachable end to end.
 - `/api/v1/restore` and `/api/v1/restore/artifact` are the two requests of the
   Restore submission protocol. Their behavior is fixed by the
   [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md).
@@ -237,9 +243,9 @@ and a nullable `next_cursor`.
 ## Idempotency
 
 Version 1 defines no global idempotency-key store. Existing contracts do not
-require one: Application Database selection is naturally idempotent, Restore is
-deliberately non-retryable once its checkpoint exists, and each authentication
-attempt is a distinct event.
+require one: Application Database selection is naturally idempotent, Init and
+Restore are each deliberately non-retryable once their checkpoint exists, and
+each authentication attempt is a distinct event.
 
 A future unsafe write Operation MUST declare its own duplicate protection before
 its route is added. Introducing keyed protection for a specific Operation is an
@@ -270,8 +276,10 @@ for this purpose.
 - [Server Authentication Design](../authentication/authentication-design.md)
 - [Server Authorization Design](../authorization/authorization-design.md)
 - [Server Lifecycle Design](../lifecycle/lifecycle-design.md)
+- [Server Init Design](../lifecycle/init/init-design.md)
 - [Server Restore Design](../lifecycle/restore/restore-design.md)
 - [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
 - [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
+- [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md)
 - [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Glossary](../../glossary.md)

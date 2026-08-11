@@ -1810,14 +1810,22 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
 
 fn fixed_json_body(body: &[u8]) -> Option<&'static str> {
     match body {
+        b"{\"error\":\"already_initialized\"}" => Some("{\"error\":\"already_initialized\"}"),
         b"{\"error\":\"backup_incompatible\"}" => Some("{\"error\":\"backup_incompatible\"}"),
         b"{\"error\":\"backup_invalid\"}" => Some("{\"error\":\"backup_invalid\"}"),
         b"{\"error\":\"bad_request\"}" => Some("{\"error\":\"bad_request\"}"),
         b"{\"error\":\"database_selection_not_allowed\"}" => {
             Some("{\"error\":\"database_selection_not_allowed\"}")
         }
+        b"{\"error\":\"initialization_failed\"}" => Some("{\"error\":\"initialization_failed\"}"),
         b"{\"error\":\"method_not_allowed\"}" => Some("{\"error\":\"method_not_allowed\"}"),
         b"{\"error\":\"not_found\"}" => Some("{\"error\":\"not_found\"}"),
+        b"{\"error\":\"recovery_key_confirmation_invalid\"}" => {
+            Some("{\"error\":\"recovery_key_confirmation_invalid\"}")
+        }
+        b"{\"error\":\"recovery_key_confirmation_required\"}" => {
+            Some("{\"error\":\"recovery_key_confirmation_required\"}")
+        }
         b"{\"error\":\"recovery_key_invalid\"}" => Some("{\"error\":\"recovery_key_invalid\"}"),
         b"{\"error\":\"request_header_fields_too_large\"}" => {
             Some("{\"error\":\"request_header_fields_too_large\"}")
@@ -2423,8 +2431,9 @@ pub(crate) mod tests {
         APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
         AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
         AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_SESSION_ROUTE,
-        DatabaseSelectionRejection, ExpectedOrigin, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
-        RESTORE_TICKET_HEADER_NAME, RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
+        DatabaseSelectionRejection, ExpectedOrigin, InitRejection, RESTORE_ARTIFACT_ROUTE,
+        RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, RestoreDeclaration, RestoreRejection,
+        STATUS_ROUTE,
     };
     use weavelit_server_database::{
         ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
@@ -2463,8 +2472,8 @@ pub(crate) mod tests {
             TransportRegistration,
         },
         typed_json::{
-            ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
-            typed_json_response,
+            RecoveryKeyLine, ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult,
+            TypedValue, typed_json_response,
         },
         write_response_and_acknowledge,
     };
@@ -5515,6 +5524,67 @@ pub(crate) mod tests {
                 "{rejection:?} was redacted instead of returned"
             );
         }
+    }
+
+    /// Every Init body a route handler can emit must be in the fixed-JSON
+    /// allowlist too.
+    ///
+    /// This walks the whole declared rejection contract rather than a
+    /// restatement of it, so a variant added to the contract without an
+    /// allowlist entry fails here instead of reaching a submitting client as
+    /// the redacted gateway-timeout body. That silent replacement is exactly
+    /// what happened to the Restore codes, and it went unnoticed because the
+    /// tests of the day only checked that the codes were defined.
+    #[tokio::test]
+    async fn init_bodies_survive_the_fixed_json_allowlist() {
+        assert_eq!(InitRejection::ALL.len(), 8);
+        for rejection in InitRejection::ALL {
+            let rejection = *rejection;
+            let expected = rejection.body();
+            let bounded = bounded_response_from_axum(rejection.response()).await;
+            assert_eq!(bounded.status, rejection.status(), "{rejection:?}");
+            assert_eq!(bounded.profile, ResponseProfile::Json, "{rejection:?}");
+            assert_eq!(
+                bounded.body.as_ref(),
+                expected.as_bytes(),
+                "{rejection:?} was redacted instead of returned"
+            );
+        }
+    }
+
+    /// The recovery-key delivery envelope must survive the bounding step.
+    ///
+    /// It is the only response in the product that ever carries a private
+    /// recovery key, and a bound that truncated or redacted it would strand the
+    /// deployment with a key it can never recover.
+    #[tokio::test]
+    async fn the_init_recovery_key_envelope_survives_the_bounding_step() {
+        const KEY: &str = "AGE-SECRET-KEY-1QQPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L";
+
+        let delivery = typed_json_response(
+            StatusCode::OK,
+            TypedJsonEnvelope::Result {
+                result: TypedResult::new()
+                    .with_field(
+                        StableCode::new("recovery_key").unwrap(),
+                        TypedValue::RecoveryKey(RecoveryKeyLine::new(KEY).unwrap()),
+                    )
+                    .unwrap(),
+                correlation_id: ResponseCorrelation::new("0123456789abcdef").unwrap(),
+            },
+        );
+        let bounded = bounded_response_from_axum(delivery).await;
+        assert_eq!(bounded.status, StatusCode::OK);
+        assert_eq!(bounded.profile, ResponseProfile::TypedJson);
+        assert!(bounded.body.len() <= MAX_TYPED_JSON_BODY_BYTES);
+        assert_eq!(
+            bounded.body.as_ref(),
+            format!(
+                "{{\"result\":{{\"recovery_key\":\"{KEY}\"}},\"correlation_id\":\"0123456789abcdef\"}}"
+            )
+            .as_bytes(),
+            "the delivered recovery key was redacted instead of returned"
+        );
     }
 
     #[tokio::test]

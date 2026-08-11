@@ -26,6 +26,12 @@ Use this section as the source of truth for what assets belong in this directory
   route paths, the ticket header, every header precondition, the recovery-key
   request schema, the payload-free rejection contract, the two typed success
   envelopes, and the Server-core hooks the declaration is composed over.
+- `src/init.rs`: The two-request Init submission contract: both canonical
+  route paths, the bounded request schema, every header precondition, the
+  proof-of-possession shape check, the payload-free rejection contract, the
+  two typed success envelopes, and the Server-core hooks the declaration is
+  composed over. Not yet declared by a per-client crate or mounted by a
+  runtime composition.
 - `src/authentication.rs`: The shared login, session-validation, and logout
   route contract: the three canonical route paths, the login request schema,
   every header and cookie precondition, the payload-free rejection contract,
@@ -51,7 +57,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then each parent `AGENTS.md` upward to the repository root.
 - Read `../../../../../docs/server/api/api-contract-design.md` before changing route organization, result and error representation, or capability declaration.
-- Read `../../../../../docs/server/lifecycle/lifecycle-design.md`, `../../../../../docs/client-modules/web-ui/pre-operational-status-design.md`, `../../../../../docs/client-modules/web-ui/pre-operational-database-selection-design.md`, and `../../../../../docs/client-modules/web-ui/pre-operational-restore-design.md` before changing a pre-operational contract.
+- Read `../../../../../docs/server/lifecycle/lifecycle-design.md`, `../../../../../docs/client-modules/web-ui/pre-operational-status-design.md`, `../../../../../docs/client-modules/web-ui/pre-operational-database-selection-design.md`, `../../../../../docs/client-modules/web-ui/pre-operational-restore-design.md`, and `../../../../../docs/client-modules/web-ui/pre-operational-init-design.md` before changing a pre-operational contract.
 - Keep client-specific behavior in its named per-client crate and add it here only when every Client Module must observe the same behavior.
 - Add contract and security tests for accepted requests, stable responses,
   declared capability presence, and denied access as required by
