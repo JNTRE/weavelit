@@ -301,6 +301,10 @@ impl ApplicationDatabase for LyingDatabase {
     fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
         None
     }
+
+    fn close(self: Box<Self>) -> Result<(), weavelit_server_database::DatabaseError> {
+        Ok(())
+    }
 }
 
 struct LyingFactory(LyingBackend);

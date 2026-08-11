@@ -51,6 +51,15 @@ mechanics. It supports only these capabilities:
    required by Server startup.
 6. Acknowledge the persisted completion obligation of a finished Init or
    Restore workflow exactly once.
+7. Close the open database, releasing it and leaving no work for recovery.
+
+Closing consumes the backend, so a use after close is not expressible rather
+than detected. The Server holds one open handle for the deployment's lifetime
+and closes it through a single process-wide owner during shutdown; that owner
+takes the handle out of every clone at once, so the backend's close runs exactly
+once however many times shutdown is requested, and every later operation is
+refused as unavailable. A backend that cannot leave its storage free of pending
+recovery work reports an unclean close rather than a clean one.
 
 The Rust contract is synchronous and object-safe. `ApplicationDatabase`
 requires a movable backend and takes exclusive mutable access for every call;

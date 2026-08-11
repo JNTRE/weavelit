@@ -2,10 +2,13 @@ use std::{
     fs,
     hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, BufReader, Read, Write},
-    net::{TcpListener, TcpStream},
-    os::unix::fs::{MetadataExt, PermissionsExt, symlink},
+    net::{SocketAddr, TcpListener, TcpStream},
+    os::unix::{
+        fs::{MetadataExt, PermissionsExt, symlink},
+        process::ExitStatusExt,
+    },
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -302,6 +305,29 @@ fn abandon_write_ahead_log(state_root: &Path) {
     );
 }
 
+/// Blocks until the spawned Server is really accepting on `address`.
+///
+/// The wait ends on an accepted connection rather than on elapsed time; the
+/// deadline only turns a Server that never binds into a failure instead of a
+/// hang.
+fn await_listener(address: SocketAddr) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while TcpStream::connect(address).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "the Server did not bind its listener"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Asks a running Server to stop exactly as a service supervisor does.
+fn terminate(server: &Child) {
+    let pid = rustix::process::Pid::from_raw(i32::try_from(server.id()).unwrap())
+        .expect("a spawned child has a valid process identifier");
+    rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+}
+
 fn tls_material() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
     let certificate = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
@@ -558,14 +584,7 @@ fn serving_process_retains_state_root_lock() {
         .env("WEAVELIT_STATE_ROOT", &state_root)
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while TcpStream::connect(first_address).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "first server did not bind in time"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    await_listener(first_address);
 
     let mut second = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
         .env(
@@ -610,6 +629,41 @@ fn serving_process_retains_state_root_lock() {
 // ---------------------------------------------------------------------------
 // Tests: fresh startup and restart
 // ---------------------------------------------------------------------------
+
+/// A real supervisor stop must end as a clean exit, not as a killed process,
+/// and must leave nothing of the stopped generation holding the host.
+#[test]
+fn a_terminating_signal_stops_the_server_cleanly_and_frees_what_it_held() {
+    let (_state_directory, state_root) = state_root();
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let mut server = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", &state_root)
+        .spawn()
+        .unwrap();
+    await_listener(address);
+
+    terminate(&server);
+    let status = server.wait().unwrap();
+
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(
+        status.signal(),
+        None,
+        "a signalled shutdown must not end as a terminated process"
+    );
+    // The next Server generation can take back both the listener address and
+    // the state root the stopped one held.
+    drop(TcpListener::bind(address).unwrap());
+    drop(LifecycleStore::open_or_create(&state_root).unwrap());
+}
 
 #[test]
 fn fresh_first_start_classifies_as_uninitialized_without_database() {
@@ -1000,6 +1054,7 @@ fn every_startup_error_has_well_formed_category_reason() {
         StartupError::LifecycleInterruptedRedeployNew,
         StartupError::LifecycleInterruptedRedeployRestore,
         StartupError::LifecycleInterruptedRedeployRequired,
+        StartupError::ShutdownIncomplete,
     ];
     let sensitive = "/private/weavelit/state-root/sensitive";
     for error in &errors {

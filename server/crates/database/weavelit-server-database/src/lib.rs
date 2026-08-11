@@ -197,6 +197,16 @@ pub trait ApplicationDatabase: Send {
     /// store, and a caller that receives `None` refuses the request instead of
     /// silently authenticating without durable sessions.
     fn sessions(&mut self) -> Option<&mut dyn SessionStore>;
+
+    /// Closes the database and releases its storage cleanly.
+    ///
+    /// Taking the box consumes the only handle to the backend, so an operation
+    /// against a closed database is not a value a caller can construct. The
+    /// method is required rather than defaulted so a backend states how it
+    /// releases storage instead of inheriting a silent success it may not be
+    /// able to support, and it returns the failure rather than reporting a
+    /// clean stop it did not achieve.
+    fn close(self: Box<Self>) -> Result<(), DatabaseError>;
 }
 
 /// Invalid caller-provided value rejected before persistence access.

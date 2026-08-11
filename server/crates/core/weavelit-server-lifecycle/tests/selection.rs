@@ -163,6 +163,10 @@ impl ApplicationDatabase for FakeDatabase {
     fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
         None
     }
+
+    fn close(self: Box<Self>) -> Result<(), DatabaseError> {
+        Ok(())
+    }
 }
 
 struct FakeFactory {

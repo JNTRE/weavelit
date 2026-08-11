@@ -178,6 +178,10 @@ impl ApplicationDatabase for FakeDatabase {
     fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
         None
     }
+
+    fn close(self: Box<Self>) -> Result<(), DatabaseError> {
+        Ok(())
+    }
 }
 
 struct FakeFactory {
@@ -585,6 +589,10 @@ fn deployment_mismatch_on_database_fails_closed() {
 
         fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
             None
+        }
+
+        fn close(self: Box<Self>) -> Result<(), DatabaseError> {
+            Ok(())
         }
     }
     let catalog = BackendCatalog::new(vec![BackendRegistration::new(

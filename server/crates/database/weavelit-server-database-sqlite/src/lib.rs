@@ -56,4 +56,8 @@ impl ApplicationDatabase for SqliteDatabase {
     fn sessions(&mut self) -> Option<&mut dyn SessionStore> {
         Some(self)
     }
+
+    fn close(self: Box<Self>) -> Result<(), DatabaseError> {
+        SqliteDatabase::close(*self)
+    }
 }

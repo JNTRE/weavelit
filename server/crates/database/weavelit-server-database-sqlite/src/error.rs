@@ -3,6 +3,7 @@ use weavelit_server_database::DatabaseError;
 
 pub(super) enum ErrorContext {
     Checkpoint,
+    Close,
     Completion,
     Open,
     Configure,
@@ -19,6 +20,9 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
         Error::SqliteFailure(failure, _) => map_error_code(failure.code),
         _ => match context {
             ErrorContext::Open => DatabaseError::ConfigurationInvalid,
+            // A failure to empty the log or release the connection is a
+            // cleanup failure; it is not evidence that stored state is unsound.
+            ErrorContext::Close => DatabaseError::Unavailable,
             ErrorContext::Checkpoint
             | ErrorContext::Completion
             | ErrorContext::Configure

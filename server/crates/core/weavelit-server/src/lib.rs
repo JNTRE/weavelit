@@ -5,9 +5,11 @@
 use std::{
     collections::{BTreeSet, HashMap},
     env, fmt, fs,
+    future::Future,
     io::{ErrorKind, Read},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -35,7 +37,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Semaphore, watch},
-    task,
+    task::{self, JoinSet},
     time::{Instant as Deadline, timeout, timeout_at},
 };
 use tokio_rustls::TlsAcceptor;
@@ -62,7 +64,9 @@ pub mod transport;
 
 pub use weavelit_module_client::typed_json;
 
-use operational::{OperationalComposer, OperationalDatabase, OperationalMount, OperationalRuntime};
+use operational::{
+    ActiveDatabase, OperationalComposer, OperationalDatabase, OperationalMount, OperationalRuntime,
+};
 use transport::{HeadRead, MountedSurface, TransportCapability};
 use typed_json::TypedJsonEnvelope;
 
@@ -77,6 +81,27 @@ const MAX_REJECTION_CONNECTIONS: usize = 1;
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a signalled shutdown may spend finishing accepted requests.
+///
+/// It exceeds the longest a single connection may occupy, which is the
+/// handshake, read, and processing budgets in sequence, so a request admitted
+/// just before the signal can still finish inside it.
+const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(25);
+/// How long a signalled shutdown may spend closing the Application Database.
+const SHUTDOWN_DATABASE_BUDGET: Duration = Duration::from_secs(5);
+/// The whole budget a host supervisor must allow before it kills the process.
+///
+/// A supervisor unit must set a stop timeout greater than this, or it would
+/// kill a shutdown that is still inside its own budget.
+pub const SHUTDOWN_BUDGET: Duration =
+    Duration::from_secs(SHUTDOWN_DRAIN_BUDGET.as_secs() + SHUTDOWN_DATABASE_BUDGET.as_secs());
+const _: () = assert!(
+    SHUTDOWN_DRAIN_BUDGET.as_secs()
+        > TLS_HANDSHAKE_TIMEOUT.as_secs()
+            + REQUEST_READ_TIMEOUT.as_secs()
+            + REQUEST_PROCESSING_TIMEOUT.as_secs(),
+    "draining must outlast the longest single connection the listener admits"
+);
 const MAX_REQUEST_TARGET_BYTES: usize = 2 * 1024;
 const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_HEAD_BYTES: usize = MAX_REQUEST_TARGET_BYTES + MAX_REQUEST_HEADER_BYTES + 128;
@@ -126,6 +151,48 @@ impl ConnectionSlots {
             rejection: Arc::new(Semaphore::new(MAX_REJECTION_CONNECTIONS)),
         }
     }
+}
+
+/// The future whose completion begins an orderly shutdown.
+///
+/// The listener is handed the trigger rather than installing one, so process
+/// signal policy stays at the process boundary and a test drives the same
+/// shutdown path the signal drives without raising a real signal. It is a
+/// concrete type rather than a parameter so the composed listener future stays
+/// free of caller-supplied lifetimes.
+pub struct ShutdownSignal(Pin<Box<dyn Future<Output = ()> + Send>>);
+
+impl ShutdownSignal {
+    /// Wraps the future whose completion asks the listener to stop.
+    pub fn new(signalled: impl Future<Output = ()> + Send + 'static) -> Self {
+        Self(Box::pin(signalled))
+    }
+}
+
+impl fmt::Debug for ShutdownSignal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ShutdownSignal")
+    }
+}
+
+/// How long each stage of a signalled shutdown may take.
+///
+/// The two stages are bounded separately because they fail differently: a
+/// request that will not finish must not consume the allowance the database
+/// close needs to leave no work for recovery.
+#[derive(Clone, Copy, Debug)]
+struct ShutdownBudget {
+    /// Time allowed for accepted requests to finish, response write included.
+    drain: Duration,
+    /// Time allowed, after draining, to close the Application Database.
+    database: Duration,
+}
+
+impl ShutdownBudget {
+    const DEFAULT: Self = Self {
+        drain: SHUTDOWN_DRAIN_BUDGET,
+        database: SHUTDOWN_DATABASE_BUDGET,
+    };
 }
 
 struct RateLimiter {
@@ -682,6 +749,9 @@ pub struct RestrictedStartup {
     /// Present only for a sealed deployment, which hands its loaded state and
     /// its open Application Database to the operational runtime.
     sealed: Option<SealedRuntime>,
+    /// The process-wide owner shutdown closes the serving database through,
+    /// whether operation was reached at startup or by an in-process Restore.
+    active_database: ActiveDatabase,
 }
 
 /// A sealed deployment's loaded state and the open Application Database its
@@ -719,6 +789,11 @@ impl RestrictedStartup {
     /// Returns the Application Database a sealed deployment holds open, if any.
     pub fn application_database(&self) -> Option<&OperationalDatabase> {
         self.sealed.as_ref().map(|sealed| &sealed.database)
+    }
+
+    /// Returns the process-wide owner of whichever database is serving.
+    pub fn active_database(&self) -> &ActiveDatabase {
+        &self.active_database
     }
 }
 
@@ -819,6 +894,8 @@ pub enum StartupError {
     LifecycleInterruptedRedeployRestore,
     /// A retained state requires operator redeployment before a workflow decision.
     LifecycleInterruptedRedeployRequired,
+    /// A signalled shutdown exceeded its budget or could not close cleanly.
+    ShutdownIncomplete,
 }
 
 impl StartupError {
@@ -862,6 +939,7 @@ impl StartupError {
             Self::LifecycleInterruptedRedeployRequired => {
                 ("lifecycle_interrupted", "operator_redeploy_required")
             }
+            Self::ShutdownIncomplete => ("shutdown_incomplete", "shutdown_incomplete"),
         }
     }
 }
@@ -871,14 +949,19 @@ impl StartupError {
 // ---------------------------------------------------------------------------
 
 /// Binds and serves the sole direct-TLS pre-operational listener.
+///
+/// The shutdown trigger is supplied by the caller rather than installed here,
+/// because deciding what asks this process to stop is process policy.
 pub async fn run_restricted_https_listener(
     listener: TrustedHttpsListener,
     startup: RestrictedStartup,
+    shutdown: ShutdownSignal,
 ) -> Result<(), StartupError> {
     let tcp_listener = TcpListener::bind(listener.address())
         .await
         .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-    let serving = serve_restricted_https_listener(tcp_listener, listener.tls_config(), &startup)?;
+    let serving =
+        serve_restricted_https_listener(tcp_listener, listener.tls_config(), &startup, shutdown)?;
     let result = serving.await;
     drop(startup);
     result
@@ -896,6 +979,7 @@ fn serve_restricted_https_listener(
     tcp_listener: TcpListener,
     tls_config: Arc<ServerConfig>,
     startup: &RestrictedStartup,
+    shutdown: ShutdownSignal,
 ) -> Result<impl Future<Output = Result<(), StartupError>> + Send + use<>, StartupError> {
     // The expected request origin is the address actually bound, never a value
     // taken from a request header or a certificate subject alternative name.
@@ -912,60 +996,126 @@ fn serve_restricted_https_listener(
     let serving_mode_switch = Arc::new(serving_mode_switch);
     let composer = PreoperationalComposer::new(startup, bound_address, &serving_mode_switch);
     composer.publish_initial(startup.composition.outcome);
+    let active_database = startup.active_database.clone();
 
     Ok(async move {
         // Retained for the listener's lifetime so a later transition can still
         // republish a surface into the running listener.
         let _composer = composer;
         let tls_acceptor = TlsAcceptor::from(tls_config);
-        let slots = ConnectionSlots::new();
-        let rate_limiter = Arc::new(RateLimiter::new());
 
-        loop {
-            let (stream, source) = tcp_listener
-                .accept()
-                .await
-                .map_err(|_| StartupError::HttpsListenerUnavailable)?;
-            if !is_trusted_loopback_peer(source.ip()) {
-                drop(stream);
-                continue;
-            }
-            // Snapshot before spawning: an in-flight connection keeps serving
-            // the surface it snapshotted, and only a newly accepted connection
-            // sees a newer mode. The router and its transport registrations are
-            // one value, so they are always snapshotted and swapped together.
-            // The borrow guard is dropped at the end of this statement because
-            // holding it across an await would block the publisher.
-            let surface = serving_modes.borrow().surface().clone();
-            if let Ok(connection_permit) = Arc::clone(&slots.normal).try_acquire_owned() {
-                let tls_acceptor = tls_acceptor.clone();
-                let rate_limiter = Arc::clone(&rate_limiter);
-                tokio::spawn(async move {
-                    serve_normal_connection(
-                        stream,
-                        source.ip(),
-                        tls_acceptor,
-                        surface,
-                        rate_limiter,
-                    )
-                    .await;
-                    drop(connection_permit);
-                });
-                continue;
-            }
-
-            let Ok(rejection_permit) = Arc::clone(&slots.rejection).try_acquire_owned() else {
-                drop(stream);
-                continue;
-            };
-            let tls_acceptor = tls_acceptor.clone();
-
-            tokio::spawn(async move {
-                serve_rejection_connection(stream, tls_acceptor).await;
-                drop(rejection_permit);
-            });
-        }
+        accept_and_drain_connections(
+            tcp_listener,
+            tls_acceptor,
+            serving_modes,
+            shutdown,
+            ShutdownBudget::DEFAULT,
+            active_database,
+        )
+        .await
     })
+}
+
+/// Accepts connections until shutdown is signalled, then drains and closes.
+///
+/// Every accepted connection is tracked rather than detached, because a
+/// shutdown that cannot observe an in-flight request cannot wait for its
+/// response to be written. On the signal the listener stops accepting and drops
+/// its bound socket, but keeps serving what it already accepted: those
+/// connections hold the serving-mode snapshot they took when they were
+/// accepted, so no republished mode could change what they serve, and cutting
+/// them off would abandon a response the client is still owed.
+async fn accept_and_drain_connections(
+    tcp_listener: TcpListener,
+    tls_acceptor: TlsAcceptor,
+    serving_modes: watch::Receiver<ServingMode>,
+    mut shutdown: ShutdownSignal,
+    budget: ShutdownBudget,
+    active_database: ActiveDatabase,
+) -> Result<(), StartupError> {
+    let slots = ConnectionSlots::new();
+    let rate_limiter = Arc::new(RateLimiter::new());
+    let mut connections = JoinSet::new();
+
+    let accepting: Result<(), StartupError> = loop {
+        let accepted = tokio::select! {
+            // Polled in order, so a shutdown already signalled always wins
+            // against a connection that arrived at the same moment.
+            biased;
+            () = &mut shutdown.0 => break Ok(()),
+            accepted = tcp_listener.accept() => accepted,
+            // Reaps finished connections while accepting, so a long-lived
+            // listener does not accumulate their handles.
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+        };
+        let Ok((stream, source)) = accepted else {
+            break Err(StartupError::HttpsListenerUnavailable);
+        };
+        if !is_trusted_loopback_peer(source.ip()) {
+            drop(stream);
+            continue;
+        }
+        // Snapshot before spawning: an in-flight connection keeps serving
+        // the surface it snapshotted, and only a newly accepted connection
+        // sees a newer mode. The router and its transport registrations are
+        // one value, so they are always snapshotted and swapped together.
+        // The borrow guard is dropped at the end of this statement because
+        // holding it across an await would block the publisher.
+        let surface = serving_modes.borrow().surface().clone();
+        if let Ok(connection_permit) = Arc::clone(&slots.normal).try_acquire_owned() {
+            let tls_acceptor = tls_acceptor.clone();
+            let rate_limiter = Arc::clone(&rate_limiter);
+            connections.spawn(async move {
+                serve_normal_connection(stream, source.ip(), tls_acceptor, surface, rate_limiter)
+                    .await;
+                drop(connection_permit);
+            });
+            continue;
+        }
+
+        let Ok(rejection_permit) = Arc::clone(&slots.rejection).try_acquire_owned() else {
+            drop(stream);
+            continue;
+        };
+        let tls_acceptor = tls_acceptor.clone();
+
+        connections.spawn(async move {
+            serve_rejection_connection(stream, tls_acceptor).await;
+            drop(rejection_permit);
+        });
+    };
+
+    // Accepting has stopped, so the bound socket is released now rather than
+    // held for the length of the drain.
+    drop(tcp_listener);
+    let drained = timeout(budget.drain, async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await
+    .is_ok();
+    // Whatever the drain did not finish is terminated, because the database
+    // close must not wait behind a request that will not end.
+    connections.shutdown().await;
+    let closed = close_active_database(active_database, budget.database).await;
+
+    match accepting {
+        Err(error) => Err(error),
+        Ok(()) if drained && closed => Ok(()),
+        Ok(()) => Err(StartupError::ShutdownIncomplete),
+    }
+}
+
+/// Closes the serving Application Database inside its own budget.
+///
+/// The close checkpoints and closes a real connection, which is blocking work,
+/// so it runs on a blocking thread. A close that outlives its budget is left
+/// there rather than delaying the process further, and is reported as an
+/// unclean stop instead of a clean one.
+async fn close_active_database(database: ActiveDatabase, budget: Duration) -> bool {
+    matches!(
+        timeout(budget, task::spawn_blocking(move || database.close())).await,
+        Ok(Ok(Ok(())))
+    )
 }
 
 fn is_trusted_loopback_peer(peer: IpAddr) -> bool {
@@ -1817,6 +1967,7 @@ impl PreoperationalComposer {
             state_root: startup.state_root.clone(),
             log_catalog: Arc::clone(&startup.log_catalog),
             client_modules: components.client_modules.clone(),
+            active_database: startup.active_database.clone(),
         });
 
         Arc::new(Self {
@@ -2106,6 +2257,7 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
             context,
         },
         sealed,
+        active_database: ActiveDatabase::default(),
     })
 }
 
@@ -2117,7 +2269,7 @@ pub(crate) mod tests {
         net::SocketAddr,
         os::unix::fs::{MetadataExt, PermissionsExt},
         path::{Path, PathBuf},
-        sync::Arc,
+        sync::{Arc, atomic::Ordering},
         time::Duration,
     };
 
@@ -2125,7 +2277,7 @@ pub(crate) mod tests {
         Router,
         body::Body,
         http::{HeaderValue, Method, Request, StatusCode, header::CONTENT_TYPE},
-        response::Response,
+        response::{Html, Response},
         routing::any,
     };
     use http_body_util::BodyExt;
@@ -2137,7 +2289,8 @@ pub(crate) mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpSocket, TcpStream},
-        sync::{Semaphore, watch},
+        sync::{Notify, Semaphore, mpsc, oneshot, watch},
+        task::JoinHandle,
     };
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
@@ -2160,13 +2313,17 @@ pub(crate) mod tests {
 
     use super::{
         APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse,
-        ConnectionSlots, ConnectionTimeouts, MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES,
-        MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE,
-        REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT, RateLimiter, RequestReadError,
-        ResponseProfile, RestrictedStartup, ServingMode, ServingModeSwitch, StartupError,
-        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter, bounded_response_from_axum,
-        classify_restricted_startup, fallback_router, gateway_timeout_response,
-        operational::{OperationalComposer, OperationalMount, OperationalRuntime},
+        ConnectionSlots, ConnectionTimeouts, DatabaseError, MAX_JSON_BODY_BYTES,
+        MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
+        RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
+        RateLimiter, RequestReadError, ResponseProfile, RestrictedStartup,
+        SHUTDOWN_DATABASE_BUDGET, ServingMode, ServingModeSwitch, ShutdownBudget, ShutdownSignal,
+        StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter,
+        accept_and_drain_connections, bounded_response_from_axum, classify_restricted_startup,
+        close_active_database, fallback_router, gateway_timeout_response,
+        operational::{
+            ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
+        },
         parse_http_request, processing_response, raw_header_section_bytes,
         read_default_profile_request, read_request_head_until, redacted_response,
         request_timeout_response,
@@ -2241,6 +2398,7 @@ pub(crate) mod tests {
             state_root: startup.state_root().to_path_buf(),
             log_catalog: Arc::clone(&startup.log_catalog),
             client_modules: server_components().client_modules,
+            active_database: startup.active_database.clone(),
         })
     }
 
@@ -2362,6 +2520,14 @@ pub(crate) mod tests {
         Surface::new(outcome).routes()
     }
 
+    /// A shutdown trigger that is never fired.
+    ///
+    /// A test about serving, rather than about stopping, composes the listener
+    /// exactly as the process does but never asks it to stop.
+    fn never_signalled() -> ShutdownSignal {
+        ShutdownSignal::new(std::future::pending())
+    }
+
     /// Serves the restricted listener over a surface composed for `outcome`.
     ///
     /// The surface is retained for the whole call because the listener is
@@ -2372,8 +2538,12 @@ pub(crate) mod tests {
         outcome: StartupOutcome,
     ) -> Result<(), StartupError> {
         let surface = Surface::new(outcome);
-        let serving =
-            super::serve_restricted_https_listener(tcp_listener, tls_config, &surface.startup)?;
+        let serving = super::serve_restricted_https_listener(
+            tcp_listener,
+            tls_config,
+            &surface.startup,
+            never_signalled(),
+        )?;
         let result = serving.await;
         drop(surface);
         result
@@ -3584,6 +3754,349 @@ pub(crate) mod tests {
             .expect("direct TLS rejection response must complete with close_notify");
         server.await.unwrap();
         response
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: signalled shutdown
+    // -----------------------------------------------------------------------
+
+    /// The route a gated shutdown test serves, and the body it answers with.
+    const GATED_ROUTE: &str = "/api/v1/gated";
+    const GATED_BODY: &str = "<!doctype html><title>gated</title>";
+
+    /// A listener running the real accept-and-drain loop over a bound socket.
+    struct DrainingListener {
+        address: SocketAddr,
+        client_config: Arc<ClientConfig>,
+        /// Completing this trigger is what asks the loop to stop.
+        shutdown: oneshot::Sender<()>,
+        serving: JoinHandle<Result<(), StartupError>>,
+    }
+
+    /// Serves `router` through the production accept-and-drain loop.
+    ///
+    /// The shutdown trigger is injected rather than raised, so a test drives
+    /// exactly the path a real signal drives without sending one.
+    async fn draining_listener(
+        router: Router,
+        budget: ShutdownBudget,
+        active_database: ActiveDatabase,
+    ) -> DrainingListener {
+        let (server_config, client_config) = tls_configs();
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = tcp_listener.local_addr().unwrap();
+        let (_switch, serving_modes) = ServingModeSwitch::new(ServingMode::FailClosed(
+            MountedSurface::without_registrations(router),
+        ));
+        let (shutdown, signalled) = oneshot::channel();
+        let serving = tokio::spawn(accept_and_drain_connections(
+            tcp_listener,
+            TlsAcceptor::from(server_config),
+            serving_modes,
+            ShutdownSignal::new(async move {
+                let _ = signalled.await;
+            }),
+            budget,
+            active_database,
+        ));
+
+        DrainingListener {
+            address,
+            client_config,
+            shutdown,
+            serving,
+        }
+    }
+
+    /// A route that reports when it is serving and returns only when released.
+    ///
+    /// A test learns the request is in flight from the report rather than from
+    /// any elapsed duration. The release is a stored notification, so releasing
+    /// before the handler parks still releases it.
+    fn gated_route() -> (Router, mpsc::UnboundedReceiver<()>, Arc<Notify>) {
+        let (entered, serving) = mpsc::unbounded_channel();
+        let release = Arc::new(Notify::new());
+        let handler_release = Arc::clone(&release);
+        let router = Router::new().route(
+            GATED_ROUTE,
+            any(move || {
+                let entered = entered.clone();
+                let release = Arc::clone(&handler_release);
+                async move {
+                    let _ = entered.send(());
+                    release.notified().await;
+                    Html(GATED_BODY)
+                }
+            }),
+        );
+
+        (router, serving, release)
+    }
+
+    fn gated_request() -> Vec<u8> {
+        format!("GET {GATED_ROUTE} HTTP/1.1\r\n\r\n").into_bytes()
+    }
+
+    /// The exact bytes a released gated request must put on the wire.
+    fn gated_response() -> Vec<u8> {
+        format!(
+            "HTTP/1.1 200 \r\nContent-Type: text/html; charset=utf-8\r\n{ASSET_SECURITY_HEADERS}\r\n{GATED_BODY}"
+        )
+        .into_bytes()
+    }
+
+    /// Waits until the listener has actually given up its bound socket.
+    ///
+    /// Rebinding the same address is the observation, and it succeeds only once
+    /// the listening socket is closed. It opens no connection the listener
+    /// could still accept, and no elapsed duration decides the outcome.
+    async fn rebind_released_port(address: SocketAddr) -> TcpListener {
+        loop {
+            if let Ok(rebound) = TcpListener::bind(address).await {
+                return rebound;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Asserts a closed SQLite Application Database left no recovery work.
+    fn assert_no_write_ahead_log(state_root: &Path) {
+        for sidecar in ["application.sqlite3-wal", "application.sqlite3-shm"] {
+            assert!(!state_root.join(sidecar).exists(), "{sidecar}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_signalled_shutdown_stops_accepting_and_releases_the_bound_port() {
+        let DrainingListener {
+            address,
+            shutdown,
+            serving,
+            ..
+        } = draining_listener(
+            fallback_router(),
+            ShutdownBudget::DEFAULT,
+            ActiveDatabase::default(),
+        )
+        .await;
+
+        shutdown.send(()).unwrap();
+        assert_eq!(serving.await.unwrap(), Ok(()));
+
+        // A connection attempted after the signal reaches no listener at all,
+        // and the address is free for the next Server generation.
+        assert!(TcpStream::connect(address).await.is_err());
+        drop(TcpListener::bind(address).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_in_flight_request_completes_its_response_write_after_the_signal() {
+        let (router, mut serving_route, release) = gated_route();
+        let DrainingListener {
+            address,
+            client_config,
+            shutdown,
+            serving,
+        } = draining_listener(router, ShutdownBudget::DEFAULT, ActiveDatabase::default()).await;
+
+        let mut client = tls_client(address, client_config).await;
+        client.write_all(&gated_request()).await.unwrap();
+        // The route reports itself, so the request is provably in flight.
+        serving_route
+            .recv()
+            .await
+            .expect("the gated route must be serving");
+
+        shutdown.send(()).unwrap();
+        // Rebinding proves the loop already stopped accepting, so the release
+        // below cannot be what let the request finish before the signal.
+        let _rebound = rebind_released_port(address).await;
+        release.notify_one();
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("the in-flight response must complete with close_notify");
+        assert_eq!(response, gated_response());
+        assert_eq!(serving.await.unwrap(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_signalled_as_a_connection_arrives_stops_instead_of_serving() {
+        let (server_config, _client_config) = tls_configs();
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = tcp_listener.local_addr().unwrap();
+        let (_switch, serving_modes) = ServingModeSwitch::new(ServingMode::FailClosed(
+            MountedSurface::without_registrations(fallback_router()),
+        ));
+        // Completed into the accept queue before the loop is ever polled, so
+        // accepting is ready at the same first poll the shutdown is.
+        let mut client = TcpStream::connect(address).await.unwrap();
+
+        let result = accept_and_drain_connections(
+            tcp_listener,
+            TlsAcceptor::from(server_config),
+            serving_modes,
+            ShutdownSignal::new(std::future::ready(())),
+            ShutdownBudget::DEFAULT,
+            ActiveDatabase::default(),
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        // The queued connection was never accepted, so it was never served.
+        let mut byte = [0_u8; 1];
+        assert!(!matches!(client.read(&mut byte).await, Ok(1)));
+    }
+
+    #[tokio::test]
+    async fn a_drain_that_cannot_finish_reports_an_incomplete_shutdown() {
+        let (router, mut serving_route, _release) = gated_route();
+        let DrainingListener {
+            address,
+            client_config,
+            shutdown,
+            serving,
+        } = draining_listener(
+            router,
+            // The gated request is never released, so no drain budget could
+            // ever be long enough; this value only keeps the test short.
+            ShutdownBudget {
+                drain: Duration::ZERO,
+                ..ShutdownBudget::DEFAULT
+            },
+            ActiveDatabase::default(),
+        )
+        .await;
+
+        let mut client = tls_client(address, client_config).await;
+        client.write_all(&gated_request()).await.unwrap();
+        serving_route
+            .recv()
+            .await
+            .expect("the gated route must be serving");
+
+        shutdown.send(()).unwrap();
+
+        assert_eq!(
+            serving.await.unwrap(),
+            Err(StartupError::ShutdownIncomplete)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_application_database_is_closed_only_after_the_drain_completes() {
+        let (router, mut serving_route, release) = gated_route();
+        let (active_database, _database, closes) = test_support::activated();
+        let DrainingListener {
+            address,
+            client_config,
+            shutdown,
+            serving,
+        } = draining_listener(router, ShutdownBudget::DEFAULT, active_database).await;
+
+        let mut client = tls_client(address, client_config).await;
+        client.write_all(&gated_request()).await.unwrap();
+        serving_route
+            .recv()
+            .await
+            .expect("the gated route must be serving");
+        shutdown.send(()).unwrap();
+        let _rebound = rebind_released_port(address).await;
+
+        // The drain cannot have finished while the route is still gated, so
+        // the close that follows the drain cannot have happened yet either.
+        assert_eq!(closes.load(Ordering::SeqCst), 0);
+
+        release.notify_one();
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("the in-flight response must complete with close_notify");
+
+        assert_eq!(response, gated_response());
+        assert_eq!(serving.await.unwrap(), Ok(()));
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failing_database_close_reports_an_incomplete_shutdown() {
+        let (active_database, _database, closes) =
+            test_support::activated_closing(Err(DatabaseError::Unavailable));
+        let DrainingListener {
+            shutdown, serving, ..
+        } = draining_listener(fallback_router(), ShutdownBudget::DEFAULT, active_database).await;
+
+        shutdown.send(()).unwrap();
+
+        assert_eq!(
+            serving.await.unwrap(),
+            Err(StartupError::ShutdownIncomplete)
+        );
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    /// A deployment becomes operational from a sealed startup or from an
+    /// in-process Restore, so the close is proved against a real SQLite backend
+    /// on both paths rather than on whichever one a test happened to take.
+    #[tokio::test]
+    async fn a_sealed_startups_close_leaves_no_write_ahead_log_and_restarts() {
+        let Surface {
+            _root,
+            state_root,
+            startup,
+        } = Surface::new(StartupOutcome::Initialized);
+        // Composing the operational surface is what registers the open
+        // database with the owner a shutdown closes through.
+        let composer = operational_composer(&startup, UNBOUND_LISTENER.parse().unwrap());
+        assert!(state_root.join("application.sqlite3-wal").exists());
+
+        assert!(
+            close_active_database(startup.active_database().clone(), SHUTDOWN_DATABASE_BUDGET)
+                .await
+        );
+
+        assert_no_write_ahead_log(&state_root);
+        drop(composer);
+        // Releases the process-lifetime state-root lock the next start needs.
+        drop(startup);
+        assert_eq!(
+            classify_restricted_startup(&state_root).unwrap().outcome(),
+            StartupOutcome::Initialized
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restored_deployments_close_leaves_no_write_ahead_log_and_restarts() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .expect("the committed valid backup must restore");
+        assert!(surface.state_root.join("application.sqlite3-wal").exists());
+
+        assert!(
+            close_active_database(
+                surface.startup.active_database().clone(),
+                SHUTDOWN_DATABASE_BUDGET,
+            )
+            .await
+        );
+
+        assert_no_write_ahead_log(&surface.state_root);
+        drop(orchestrator);
+        let (_root, state_root) = surface.release();
+        assert_eq!(
+            classify_restricted_startup(&state_root).unwrap().outcome(),
+            StartupOutcome::Initialized
+        );
     }
 
     #[tokio::test]
@@ -4982,8 +5495,13 @@ pub(crate) mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(
-            super::serve_restricted_https_listener(listener, server_config, &surface.startup)
-                .unwrap(),
+            super::serve_restricted_https_listener(
+                listener,
+                server_config,
+                &surface.startup,
+                never_signalled(),
+            )
+            .unwrap(),
         );
 
         let before = tls_exchange(

@@ -102,10 +102,13 @@ the displayed status change to selected within the same process, the Server
 terminated with `SIGTERM` and its exit awaited and asserted rather than assumed,
 and a second Server generation started against the identical state root and
 listener port, where the reloaded page still reports the selected database. The
-Server installs no signal handler, so this exercises termination and restart
-rather than an orderly application shutdown; a successful restart is also
-evidence that the terminated process released the state-root lock and the
-listening socket.
+Server stops on that signal through its own bounded shutdown, so this exercises
+an orderly stop and restart end to end; a successful restart is also evidence
+that the stopped process released the state-root lock and the listening socket.
+The Rust suite proves the shutdown itself, including a `SIGTERM` to the built
+binary that must exit with status `0` and no terminating signal, so this
+scenario is browser evidence of the restart rather than the primary evidence of
+the shutdown.
 
 The Restore scenario drives the two-request submission protocol through the
 browser against the committed backup fixture whose referenced components match

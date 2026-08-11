@@ -210,8 +210,8 @@ test("an operator signs in to a restored deployment and the session survives a r
 
     let exit = await terminateServer(server);
     server = null;
-    expect(exit.signal, "the Server ended on SIGTERM").toBe("SIGTERM");
-    expect(exit.code, "the Server did not exit under its own control").toBeNull();
+    expect(exit.signal, "the Server was not killed").toBeNull();
+    expect(exit.code, "the Server shut down cleanly").toBe(0);
 
     server = spawnServer(configuration);
     await waitForServerReady(server, configuration);
@@ -358,8 +358,8 @@ test("an operator signs in to a restored deployment and the session survives a r
 
     exit = await terminateServer(server);
     server = null;
-    expect(exit.signal, "the Server ended on SIGTERM").toBe("SIGTERM");
-    expect(exit.code).toBeNull();
+    expect(exit.signal, "the Server was not killed").toBeNull();
+    expect(exit.code).toBe(0);
 
     server = spawnServer(configuration);
     await waitForServerReady(server, configuration);

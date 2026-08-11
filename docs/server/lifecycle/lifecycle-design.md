@@ -726,6 +726,17 @@ typed error presentation. The allowed pairs are:
 | `storage_integrity_failure` | `anchor_set_invalid`, `anchor_version_unsupported`, `anchor_binding_invalid`, `database_integrity_failure` |
 | `deployment_state_invalid` | `state_combination_invalid` |
 | `lifecycle_interrupted` | `operator_redeploy_new`, `operator_redeploy_restore`, `operator_redeploy_required` |
+| `shutdown_incomplete` | `shutdown_incomplete` |
+
+The `shutdown_incomplete` pair is the only one that reports a stop rather than
+a start. A signalled shutdown that drains its accepted requests and closes the
+Application Database inside their budgets exits with status `0` and no
+terminating signal; one that exceeds a budget or cannot close cleanly writes
+this pair and exits with status `1`. It reports that the process stopped
+without completing its own shutdown, not that a deployment needs an operator
+action, and it never accompanies a clean stop. The
+[Server Architecture Design](../server-architecture-design.md) owns the
+shutdown sequence and its budgets.
 
 The `lifecycle_interrupted` pairs are stable action-class diagnostics. They
 identify only whether the operator must redeploy for a new deployment, redeploy
@@ -876,6 +887,25 @@ Application Database integration tests verify workflow checkpoint
 discrimination, atomic one-time state replacement, and deployment-identifier
 enforcement. Server process tests verify route gating and each transition from
 restricted pre-operational state to normal operation.
+
+Shutdown tests drive the real listener shutdown path with an injected trigger
+and synchronize on observed progress rather than on elapsed time, so none of
+them sleeps or lets a duration decide the result. They prove that a signalled
+shutdown stops accepting and frees the bound address, that a request already
+in flight still receives its complete response, that a shutdown signalled as a
+connection arrives stops instead of serving it, that a drain which cannot
+finish reports `shutdown_incomplete`, that the Application Database is closed
+only after the drain completes, and that a failing close is reported rather
+than hidden. Exactly-once closing is proved by a database whose close counts
+itself: duplicate shutdown requests, and requests through separate clones of
+the owner, still count one close, and a lane poisoned by a panicking operation
+counts one close while reporting a failed shutdown. Against real SQLite, both
+routes into normal operation, sealed startup and in-process Restore, are closed
+through the same owner and each leaves no write-ahead log behind, after which
+the state root reclassifies as `Initialized`. A process test signals the built
+Server binary with `SIGTERM` once it is really accepting, then requires exit
+status `0` with no terminating signal and proves that both the listener address
+and the state-root lock are immediately reusable.
 
 ## Related Documents
 

@@ -360,6 +360,71 @@ is added. A package upgrade is a deliberate dependency change that repeats the
 version, change, advisory, and validation review; no future version is approved
 by this architecture decision.
 
+### Signalled Shutdown
+
+The listener stops on a trigger the process supplies rather than on a signal it
+installs itself, so deciding what asks the Server to stop stays process policy.
+The process treats `SIGTERM`, which a service supervisor sends, and `SIGINT`,
+which an interactive operator sends, as the same request to stop. The trigger is
+registered before anything is served, so a stop that arrives during the first
+request is still delivered. Because the listener takes the trigger as a value, a
+test drives the identical shutdown path without raising a real signal.
+
+A signalled shutdown runs in a fixed order:
+
+1. Accepting stops. A shutdown already signalled always wins against a
+   connection arriving at the same moment, so no connection is admitted after
+   the request to stop.
+2. The bound socket is released immediately, before draining begins, so the
+   listener address is free for the next Server generation rather than held for
+   the length of the drain.
+3. Already-accepted connections keep being served to completion, response write
+   included. Each holds the serving-mode snapshot it took when it was accepted,
+   so no republished mode changes what it serves and no client is left owed a
+   response the Server had already begun.
+4. The Application Database is closed once draining ends.
+
+Each stage is bounded separately, because the two fail differently: a request
+that will not finish must not consume the allowance the database close needs.
+Draining is allowed 25 seconds and the close is allowed 5 seconds, so a whole
+shutdown is bounded at 30 seconds. The drain budget deliberately exceeds the
+longest a single connection may occupy the listener, which is the TLS handshake,
+request-read, and processing budgets in sequence, so a request admitted just
+before the signal can still finish inside it; that relationship is asserted at
+compile time rather than restated as a convention. Whatever the drain does not
+finish is terminated before the close begins, so a request that will not end
+cannot delay the database close behind it.
+
+The close runs through one process-wide owner of whichever Application Database
+is serving. A deployment becomes operational either from a sealed startup or
+from an in-process Restore, and each keeps its own composition afterwards, so
+shutdown cannot close the database by asking either path. Composing an
+operational surface registers its database with that owner instead, which is the
+one place both paths pass through, so what shutdown closes does not depend on
+how the deployment became operational. The owner takes the handle out of every
+clone at once, so the close happens exactly once however many times shutdown is
+requested, and every later application operation is refused rather than racing a
+closing backend. A duplicate stop request therefore reports the same clean
+result rather than a second, different one. A lane left unusable by a panicking
+operation is still closed exactly once, but the shutdown is reported as failed
+however cleanly the backend closed, because the operation that poisoned the lane
+has an untrusted outcome.
+
+A shutdown that completes both stages inside their budgets exits with status
+`0` and no terminating signal. A drain that does not finish, or a database that
+does not close cleanly, is reported as `shutdown_incomplete` and exits with
+status `1`; it is an unclean stop rather than a startup failure, and it is never
+reported as a clean one. The exit status is returned rather than set by an
+immediate process exit, so an orderly shutdown still unwinds normally and every
+retained value, including the process-lifetime state-root lock, is released by
+its own destructor.
+
+A host supervisor must allow more than the Server's whole 30-second budget
+before it kills the process, or it would kill a shutdown that is still inside
+its own budget. A packaged service unit must therefore stop the Server with
+`SIGTERM` and set a stop timeout greater than 30 seconds; 40 seconds is the
+recommended value.
+
 ### Bounded Request Reading
 
 The runtime reads a request head, admits it, and only then reads a body. The head

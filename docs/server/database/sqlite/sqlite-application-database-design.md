@@ -298,6 +298,20 @@ Failure to open, migrate, validate, or query the Application Database prevents
 safe startup. The backend reports a typed, redacted contract error rather than
 a raw driver or filesystem error.
 
+Closing consumes the backend and its one connection. Because the backend keeps
+the database in write-ahead logging mode, simply dropping the connection could
+leave committed work in the WAL sidecar, and a retained WAL is exactly what
+makes a pre-operational deployment uninspectable and forces an operator
+redeploy. The close therefore checkpoints before it releases: it runs
+`wal_checkpoint(TRUNCATE)` and requires both that the checkpoint was not blocked
+and that no frames remain, then closes the connection explicitly rather than
+letting it drop. SQLite removes the `application.sqlite3-wal` and
+`application.sqlite3-shm` sidecars when the last connection closes cleanly, so a
+cleanly stopped Server leaves only the main database file and the next start
+classifies from it directly. A checkpoint that is blocked or leaves frames, or a
+close the driver refuses, reports `Unavailable` instead of a clean close, which
+the Server reports as an incomplete shutdown.
+
 ## Errors And Test Evidence
 
 SQLite-specific errors are private implementation details. Before returning to
@@ -323,6 +337,12 @@ and WAL sidecar files automatically. They cover successful and idempotent
 migrations, restart persistence, migration and write rollback, invalid
 configuration, unavailable storage, incompatible migration history, and error
 and diagnostic redaction.
+
+Close tests build a real database whose committed write is still held only in a
+non-empty WAL. They prove that a clean close leaves neither the WAL nor the
+shared-memory sidecar behind while the committed write survives in the main
+database file, and that a checkpoint blocked by another reader reports
+`Unavailable` rather than a clean stop while still releasing the connection.
 
 Application-state tests additionally cover a full round trip of every state type
 across reopen, one-time checkpoint replacement, mismatched-checkpoint and
