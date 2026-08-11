@@ -2,9 +2,11 @@
 
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
+mod mfa;
 mod session;
 mod state;
 
+pub use mfa::{MAX_MFA_TIME_STEP, MfaAcceptance, MfaStore, MfaTimeStep};
 pub use session::{
     MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
     SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SessionCsrfHash, SessionInstant,
@@ -220,6 +222,14 @@ pub trait ApplicationDatabase: Send {
     /// silently authenticating without durable sessions.
     fn sessions(&mut self) -> Option<&mut dyn SessionStore>;
 
+    /// Returns this database's live MFA replay watermarks, when it owns them.
+    ///
+    /// A watermark is live operational data like a session, so a backend
+    /// answers for it separately from restorable state. The method is required
+    /// rather than defaulted: a caller that receives `None` refuses the
+    /// verification instead of accepting a code it cannot prove is unused.
+    fn mfa(&mut self) -> Option<&mut dyn MfaStore>;
+
     /// Closes the database and releases its storage cleanly.
     ///
     /// Taking the box consumes the only handle to the backend, so an operation
@@ -258,6 +268,8 @@ pub enum ContractInputError {
     InvalidSessionDigest,
     /// The session instant is negative or outside the accepted range.
     InvalidSessionInstant,
+    /// The MFA time step is outside the representable range.
+    InvalidMfaTimeStep,
     /// The completion-record event time is negative.
     InvalidEventTime,
     /// Two state entries share an identifier or unique key.
@@ -285,6 +297,7 @@ impl fmt::Display for ContractInputError {
             Self::InvalidRecoveryPublicKey => "recovery public key is invalid",
             Self::InvalidSessionDigest => "session digest is invalid",
             Self::InvalidSessionInstant => "session instant is invalid",
+            Self::InvalidMfaTimeStep => "mfa time step is invalid",
             Self::InvalidEventTime => "completion event time is invalid",
             Self::DuplicateEntry => "application state contains a duplicate entry",
             Self::UnknownReference => "application state contains an unknown reference",

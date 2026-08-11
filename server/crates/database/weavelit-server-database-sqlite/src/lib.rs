@@ -7,6 +7,7 @@ mod completion;
 mod connection;
 mod error;
 mod inspection;
+mod mfa;
 mod migrations;
 mod session;
 mod state;
@@ -15,7 +16,7 @@ pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, ComponentEnablement, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, HumanAuthorizationSnapshot, InitializedState, SessionStore,
+    DeploymentIdentifier, HumanAuthorizationSnapshot, InitializedState, MfaStore, SessionStore,
     StateIdentifier, WorkflowCheckpoint,
 };
 
@@ -66,6 +67,10 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn sessions(&mut self) -> Option<&mut dyn SessionStore> {
+        Some(self)
+    }
+
+    fn mfa(&mut self) -> Option<&mut dyn MfaStore> {
         Some(self)
     }
 

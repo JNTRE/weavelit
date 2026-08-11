@@ -248,6 +248,33 @@ Server. `DatabaseError` variants carry no dynamic payload and use stable,
 storage-neutral display text. Invalid contract inputs use the same redaction
 rule and never include the rejected identifier or metadata.
 
+## MFA Replay Watermark Storage
+
+`MfaStore` is a third backend-neutral contract, separate from both
+`ApplicationState` and `SessionStore`. It records, for each enrolled MFA
+factor, the highest time step the Server has ever accepted from that factor, so
+a code presented a second time inside the acceptance window described in the
+[Authentication Design](../authentication/authentication-design.md#replay-watermark)
+is refused.
+
+A time step is a distinct type whose checked constructor rejects a value a
+backend could not store, and which exposes its domain value and its stored
+representation separately, so the conversion at the storage boundary is total.
+
+The contract exposes reading a factor's current watermark and one combined
+accept operation. The accept operation performs the comparison and the write
+atomically and reports whether the step was accepted or refused as a replay; it
+does not return the watermark for a caller to compare itself. The decision
+belongs to the store because a caller that read, decided, and then wrote would
+leave a window in which a concurrent presentation of the same code could be
+accepted twice.
+
+A watermark is live operational data in the same sense as a session: it belongs
+to the running deployment rather than to the restorable aggregate. It is not a
+member of `ApplicationState`, it never reaches a backup, and completing a state
+replacement clears every watermark inside the same atomic replacement that
+clears every session.
+
 ## Deployment Record, Locator, And Operational State
 
 The Server-local deployment record contains a unique deployment identifier and

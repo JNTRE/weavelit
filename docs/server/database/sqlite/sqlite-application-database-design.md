@@ -57,13 +57,18 @@ its ledger entry run in one SQLite transaction. An unknown, missing, or
 checksum-mismatched applied migration is an integrity or compatibility failure:
 the backend changes nothing and refuses to report readiness.
 
-The initial registry contains `0001_create_migration_ledger.sql`,
-`0002_create_lifecycle_state.sql`, and `0003_create_application_state.sql`. Each
+The registry contains `0001_create_migration_ledger.sql`,
+`0002_create_lifecycle_state.sql`, `0003_create_application_state.sql`,
+`0004_create_session_store.sql`, and
+`0005_add_mfa_policy_and_replay_watermark.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
 features disabled. The ledger stores the digest as a 32-byte BLOB and rejects
-updates or deletes.
+updates or deletes. An applied migration is immutable: its embedded bytes can
+never change, because the recorded checksum would no longer match and the
+backend would refuse to open. A schema change is therefore always a new
+migration.
 
 Migration application repeats one `BEGIN IMMEDIATE` transaction at a time. The
 transaction validates that ledger rows form the exact contiguous prefix of the
@@ -177,6 +182,42 @@ rebuild the aggregate through `ApplicationState`. Any invalid identifier,
 out-of-bounds text, unknown discriminator, missing singleton, duplicate row,
 dangling reference, or disabled log assignment returns `IntegrityFailure`
 without returning the offending value.
+
+## MFA Policy And Replay Watermark Schema
+
+`0005_add_mfa_policy_and_replay_watermark.sql` adds the account column
+`mfa_required`, a `0` or `1` integer defaulting to `0`, so an existing
+deployment starts with no account required to present a second factor.
+
+The same migration creates the `STRICT` table
+`weavelit_mfa_replay_watermark`, which implements the shared contract's
+`MfaStore`. It holds `factor_id` as the primary key and `accepted_step`, and
+nothing else. The identifier column `CHECK`s the contract's 16-byte nonzero
+identifier shape and `accepted_step` `CHECK`s a non-negative value.
+
+The table sits beside the live session table rather than on
+`weavelit_mfa_factor`, and carries no foreign key into restorable state, for
+the reason given in the
+[Authentication Design](../../authentication/authentication-design.md#replay-watermark):
+an enrolled factor is part of the aggregate a Restore replaces, while the
+highest time step that factor has been observed to use is live operational
+state produced by this running deployment.
+
+Accepting a time step is one statement inside one `BEGIN IMMEDIATE`
+transaction: an upsert whose update branch is guarded by
+`excluded.accepted_step > weavelit_mfa_replay_watermark.accepted_step`. The
+comparison and the write are therefore the same statement, and no concurrent
+presentation can observe the pre-update watermark and be accepted alongside the
+first. A changed-row count of zero means the presented step did not advance the
+watermark and the presentation is reported as a replay. A `BEFORE UPDATE`
+trigger additionally aborts any statement, including a direct one, that reuses
+or rewinds an accepted step, so a spent code cannot be made usable again by
+writing to the table.
+
+Completing a checkpoint deletes every watermark row inside the same transaction
+that installs the replacement state, alongside the live session rows, so a
+Restore cannot judge a newly presented code against a history belonging to the
+replaced state.
 
 ## Checkpoint Transactions
 

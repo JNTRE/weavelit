@@ -251,12 +251,43 @@ dependencies, are recorded in the
 The compiled-in TOTP MFA Module uses the `totp-rs` library and the RFC 6238
 profile: HMAC-SHA-1, 6 digits, a 30-second period, and `T0=0`. A secret is a
 random 160-bit value stored as unpadded RFC 4648 Base32 and is provisioned
-through an `otpauth://` URI disclosed exactly once. Verification accepts the
-current time step and one step on either side, and the Server atomically
-persists the last accepted step to reject a replay within that window. This
+through an `otpauth://` URI disclosed exactly once. The Server supplies the
+twenty secret bytes from the operating-system random source; the Module never
+generates them. The Module holds the secret and the provisioning URI in
+zeroizing types that redact in `Debug`, so neither can reach a log, an error,
+or a response body except through an explicit disclosure. Verification accepts
+the current time step and one step on either side. The Module derives and
+compares codes only; it reads no clock, takes the verification time as a
+parameter, and owns no policy, session, recovery, or audit behavior. This
 implements the
 [Security Model](../../security-model.md#multifactor-authentication-security-profile)'s
 enrollment and disclosure requirements.
+
+### Replay Watermark
+
+An acceptance window that spans three time steps would otherwise let a code
+observed in transit be presented again while it remains inside that window. The
+Server therefore records, per enrolled factor, the highest time step it has
+ever accepted. A presented code is accepted only when the step it matched is
+strictly greater than that recorded watermark; a matched step at or below the
+watermark is a replay and is refused even though the code is arithmetically
+correct.
+
+The check and the update are one operation. The Application Database contract
+exposes a backend-neutral MFA store that performs the comparison and the write
+inside a single transaction, so no concurrent presentation of the same code can
+observe the pre-update watermark and be accepted alongside the first. The
+decision belongs to the store rather than to a caller precisely because a
+caller that read the watermark, decided, and then wrote it would reopen that
+window.
+
+A watermark is live operational state, not restorable state. It records what a
+factor did in this running deployment, whereas an enrolled factor is part of
+the restorable aggregate. It is therefore stored beside the live session state
+rather than on the factor record, and a Restore clears every watermark within
+the same atomic state replacement that clears every live session. Carrying a
+watermark across a Restore would judge a newly presented code against a history
+that belongs to a different deployment state.
 
 ## MFA Module Enablement
 

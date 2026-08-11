@@ -15,6 +15,7 @@ members = [
 	"crates/modules/client/weavelit-module-client",
 	"crates/modules/client/weavelit-module-client-webui",
 	"crates/modules/log/weavelit-module-log-sqlite",
+	"crates/modules/mfa/weavelit-module-mfa-totp",
 ]
 
 [workspace.dependencies]

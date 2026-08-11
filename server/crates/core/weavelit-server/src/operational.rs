@@ -369,6 +369,10 @@ pub(crate) mod test_support {
             None
         }
 
+        fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+            None
+        }
+
         fn close(self: Box<Self>) -> Result<(), DatabaseError> {
             self.closes.fetch_add(1, Ordering::SeqCst);
             self.outcome

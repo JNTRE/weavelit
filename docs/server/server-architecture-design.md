@@ -1153,6 +1153,65 @@ every dependency-resolution change.
   from stored bytes, and domain separation between the session and CSRF digest
   domains.
 
+#### `totp-rs`
+
+- **Source and version:** crates.io `=6.0.0`.
+- **Owner and behavior:** `weavelit-module-mfa-totp` uses the package to derive
+  and verify a time-based one-time password under the
+  [Authentication Design](authentication/authentication-design.md)'s approved
+  RFC 6238 profile: HMAC-SHA-1, six digits, a thirty-second step, a `T0` of
+  zero, a 160-bit secret, and acceptance of the current step plus or minus one.
+  The module also uses the package's unpadded RFC 4648 Base32 encoding to
+  render an enrollment secret. RFC 6238 code derivation and its constant-time
+  comparison must not be hand-written, and no other approved dependency
+  provides a one-time-password construction.
+- **Features:** default features are disabled; only `alloc` and `zeroize` are
+  enabled. `alloc` supplies the Base32 encoding the enrollment secret requires,
+  and `zeroize` clears the secret material the engine holds on drop. `otpauth`
+  is excluded specifically: it would add `url`, whose `idna` dependency carries
+  the full ICU normalization stack into the Server for the sole purpose of
+  formatting one fixed provisioning string. The module builds that string by
+  direct formatting over the already-approved `percent-encoding` package
+  instead, which the excluded feature would have pulled in anyway. `qr` is
+  excluded because it implies `otpauth` and adds image generation the Server
+  does not perform; `gen_secret` because the Server supplies the twenty secret
+  bytes from the operating-system random source rather than delegating
+  generation; `std` and the default `migration` feature because neither the
+  clock nor the legacy conversion path is used; `serde` because a secret is
+  never serialized; and `steam` because that non-RFC variant is not offered.
+  The locked graph therefore adds only `base32` 0.5.1, `constant_time_eq`
+  0.4.2, and `sha1` 0.11.0, reusing the approved `sha2` 0.11, `hmac` 0.13,
+  `digest` 0.11, and `zeroize` 1.9 stacks already resolved.
+- **Maintenance and license:** version 6.0.0 declares Rust 1.88 and later and
+  uses the MIT license. The single consumer is `weavelit-module-mfa-totp`, so
+  the pin stays in that crate manifest rather than in
+  `[workspace.dependencies]`.
+- **Advisory review:** the August 11, 2026 OSV review found GHSA-8vxv-2g8p-2249
+  for `totp-rs`, a non-constant-time secret comparison affecting versions before
+  1.1.0; the pinned 6.0.0 is unaffected and compares through
+  `constant_time_eq`. The review found no advisory matching `base32` 0.5.1,
+  `constant_time_eq` 0.4.2, or `sha1` 0.11.0. SHA-1 is used only as the HMAC
+  primitive RFC 6238 and every authenticator application require, where its
+  collision weakness does not apply.
+- **Safe failure:** the secret and the provisioning URI never leave the module
+  as plain values. Both are carried in zeroizing wrappers that redact in
+  `Debug`, implement no `Display` and no `PartialEq`, and expose their contents
+  only through an explicit accessor, so neither can reach a log, an error, or a
+  response body by accident; in particular the package's own `Display` for a
+  secret, which renders hexadecimal, is never delegated. A rejected issuer or
+  account name produces a payload-free error that does not echo the input.
+  Verification takes the current time as a parameter and the module reads no
+  clock, so a caller cannot be surprised by ambient time.
+- **Validation:** the module's tests pin the four RFC 6238 SHA-1 test vectors,
+  the exact unpadded Base32 encoding of the RFC secret, the exact provisioning
+  URI including an account name whose characters must be percent-encoded, the
+  boundary of the acceptance window at plus or minus one step and its rejection
+  at two, code stability across a whole step, rejection of malformed and
+  wrong-length codes, rejection under an altered secret, and the redaction of
+  every secret-bearing type. `make -C server check` passes formatting, Clippy
+  with warnings denied, all locked workspace tests, and the locked release
+  build.
+
 The workspace manifest owns an approved shared dependency's identity, version,
 source, and any workspace-wide security baseline. A single-consumer dependency
 remains in its owning crate manifest. When a second workspace crate requires

@@ -35,6 +35,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0004_create_session_store",
         sql: include_str!("../migrations/0004_create_session_store.sql"),
     },
+    Migration {
+        sequence: 5,
+        identifier: "0005_add_mfa_policy_and_replay_watermark",
+        sql: include_str!("../migrations/0005_add_mfa_policy_and_replay_watermark.sql"),
+    },
 ];
 
 struct AppliedMigration {

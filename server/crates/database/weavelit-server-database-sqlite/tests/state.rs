@@ -8,10 +8,10 @@ use weavelit_server_database::{
     ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
     DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupGrant, GroupGrantRecord,
     GroupMembership, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
-    LogModuleSetting, LogType, MfaFactor, Name, NewSession, PasswordVerifier, ProtectedSecret,
-    ProtectedValue, RecoveryPublicKey, SESSION_DIGEST_LENGTH, ServiceConnection, SessionCsrfHash,
-    SessionInstant, SessionStore, SessionTokenHash, StateIdentifier, WorkflowCheckpoint,
-    WorkflowKind,
+    LogModuleSetting, LogType, MfaFactor, MfaStore, MfaTimeStep, Name, NewSession,
+    PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
+    ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
+    StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -25,7 +25,7 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 17] = [
+const EXPECTED_TABLES: [&str; 18] = [
     "weavelit_account",
     "weavelit_completion_obligation",
     "weavelit_configuration",
@@ -38,6 +38,7 @@ const EXPECTED_TABLES: [&str; 17] = [
     "weavelit_log_module_setting",
     "weavelit_migration_ledger",
     "weavelit_mfa_factor",
+    "weavelit_mfa_replay_watermark",
     "weavelit_password_verifier",
     "weavelit_protected_secret",
     "weavelit_recovery_public_key",
@@ -93,6 +94,17 @@ fn session_count(path: &Path) -> i64 {
         .query_row("SELECT count(*) FROM weavelit_session", [], |row| {
             row.get(0)
         })
+        .unwrap()
+}
+
+fn watermark_count(path: &Path) -> i64 {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM weavelit_mfa_replay_watermark",
+            [],
+            |row| row.get(0),
+        )
         .unwrap()
 }
 
@@ -594,6 +606,36 @@ fn a_restore_clears_every_live_session_inside_the_state_replacement() {
             .unwrap()
             .state(),
         &application_state(WorkflowKind::Restore)
+    );
+}
+
+/// A Restore replaces live state as well as restorable state, and a replay
+/// watermark is live: it records what a factor did in this deployment, not
+/// what the restored aggregate says a factor is. Keeping one across a Restore
+/// would judge a code against another history.
+#[test]
+fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(13);
+    let mut database = pending_database(&path, deployment_identifier);
+    let step = MfaTimeStep::from_step(41_152_263).unwrap();
+    database.accept_step(identifier(5), step).unwrap();
+    database.accept_step(identifier(7), step).unwrap();
+    assert_eq!(watermark_count(&path), 2);
+
+    database
+        .complete_checkpoint(
+            &restore_checkpoint(deployment_identifier),
+            &application_state(WorkflowKind::Restore),
+        )
+        .unwrap();
+
+    assert_eq!(watermark_count(&path), 0);
+    assert_eq!(database.accepted_step(identifier(5)).unwrap(), None);
+    assert_eq!(
+        database.accept_step(identifier(5), step).unwrap(),
+        weavelit_server_database::MfaAcceptance::Accepted
     );
 }
 

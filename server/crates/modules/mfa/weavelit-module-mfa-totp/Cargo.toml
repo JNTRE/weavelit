@@ -1,0 +1,10 @@
+[package]
+name = "weavelit-module-mfa-totp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+percent-encoding.workspace = true
+totp-rs = { version = "=6.0.0", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }

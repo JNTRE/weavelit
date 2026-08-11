@@ -7,6 +7,7 @@ use weavelit_server_database::{
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::inspection::inspect_connection;
+use crate::mfa;
 use crate::session;
 use crate::state;
 
@@ -36,8 +37,10 @@ impl SqliteDatabase {
 
         // Live sessions are cleared inside the replacement itself, so a
         // Restore cannot leave a session that authenticates against replaced
-        // state and no interruption can land between the two.
+        // state and no interruption can land between the two. Replay
+        // watermarks are live in the same sense and are cleared with them.
         session::clear(&transaction)?;
+        mfa::clear(&transaction)?;
         state::write(&transaction, application_state)?;
         let replaced = transaction
             .execute(
