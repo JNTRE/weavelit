@@ -15,7 +15,8 @@ pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, DatabaseError, DatabaseInspection, DeploymentIdentifier,
-    InitializedState, SessionStore, StateIdentifier, WorkflowCheckpoint,
+    HumanAuthorizationSnapshot, InitializedState, SessionStore, StateIdentifier,
+    WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -51,6 +52,13 @@ impl ApplicationDatabase for SqliteDatabase {
         record_identifier: StateIdentifier,
     ) -> Result<(), DatabaseError> {
         self.acknowledge_completion_atomic(expected_deployment_identifier, record_identifier)
+    }
+
+    fn load_human_authorization(
+        &mut self,
+        account: StateIdentifier,
+    ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError> {
+        self.load_human_authorization_atomic(account)
     }
 
     fn sessions(&mut self) -> Option<&mut dyn SessionStore> {

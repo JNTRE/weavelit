@@ -56,6 +56,13 @@ impl ApplicationDatabase for FakeDatabase {
         Err(DatabaseError::NotInitialized)
     }
 
+    fn load_human_authorization(
+        &mut self,
+        _account: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
     fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
         None
     }

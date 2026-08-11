@@ -303,6 +303,43 @@ pub struct GroupGrantRecord {
     pub grant: GroupGrant,
 }
 
+/// Narrow authorization projection for exactly one Human User account.
+///
+/// This is read on every authorized request, so it carries only the account's
+/// active flag and the Group grants joined from that account's memberships. It
+/// carries no protected secret, Service Connection credential, password
+/// verifier, MFA factor, session, Log Module data, or Group identity, so an
+/// authorization decision cannot reach any of them through it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HumanAuthorizationSnapshot {
+    active: bool,
+    grants: Vec<GroupGrant>,
+}
+
+impl HumanAuthorizationSnapshot {
+    /// Creates the projection from the account's active flag and joined grants.
+    ///
+    /// Grants arrive as the join across every membership, so the same grant may
+    /// appear once per conferring Group. The projection keeps them as given and
+    /// does not report which Group conferred which grant.
+    #[must_use]
+    pub fn new(active: bool, grants: Vec<GroupGrant>) -> Self {
+        Self { active, grants }
+    }
+
+    /// Returns whether the account may be authorized at all.
+    #[must_use]
+    pub const fn active(&self) -> bool {
+        self.active
+    }
+
+    /// Returns the grants joined from every Group the account belongs to.
+    #[must_use]
+    pub fn grants(&self) -> &[GroupGrant] {
+        &self.grants
+    }
+}
+
 /// Enrolled MFA factor whose module-owned data is already protected.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MfaFactor {

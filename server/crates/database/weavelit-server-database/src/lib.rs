@@ -14,13 +14,13 @@ pub use state::{
     Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
     CompletionObligation, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
     CorrelationIdentifier, Description, Group, GroupGrant, GroupGrantRecord, GroupMembership,
-    InitializedState, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
-    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
-    MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH,
-    MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
-    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier,
-    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
-    StateIdentifier,
+    HumanAuthorizationSnapshot, InitializedState, LogAssignment, LogClassification, LogDetail,
+    LogModuleConfiguration, LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH,
+    MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH,
+    MAX_LOG_CORRELATION_IDENTIFIER_LENGTH, MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH,
+    MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH,
+    MfaFactor, Name, PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey,
+    STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier,
 };
 
 use std::{error::Error as StdError, fmt};
@@ -188,6 +188,19 @@ pub trait ApplicationDatabase: Send {
         expected_deployment_identifier: DeploymentIdentifier,
         record_identifier: StateIdentifier,
     ) -> Result<(), DatabaseError>;
+
+    /// Loads only what authorizing one account's request requires.
+    ///
+    /// This runs on every authorized request, so it is a deliberately narrow
+    /// read rather than a projection of loaded application state: it returns
+    /// the account's active flag and the Group grants joined from that
+    /// account's memberships, and nothing else. An account the database does
+    /// not hold returns `None` rather than an empty grant set, so an unknown
+    /// account and a granted-nothing account are not the same value.
+    fn load_human_authorization(
+        &mut self,
+        account: StateIdentifier,
+    ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError>;
 
     /// Returns this database's live session store, when it owns one.
     ///

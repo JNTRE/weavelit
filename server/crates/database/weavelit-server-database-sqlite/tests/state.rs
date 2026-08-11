@@ -152,17 +152,30 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
             account: identifier(1),
             verifier: PasswordVerifier::new(VERIFIER).unwrap(),
         }],
-        groups: vec![Group {
-            identifier: identifier(3),
-            name: name("Administrators"),
-            description: Some(
-                weavelit_server_database::Description::new("Server administration").unwrap(),
-            ),
-        }],
-        group_memberships: vec![GroupMembership {
-            group: identifier(3),
-            account: identifier(1),
-        }],
+        groups: vec![
+            Group {
+                identifier: identifier(3),
+                name: name("Administrators"),
+                description: Some(
+                    weavelit_server_database::Description::new("Server administration").unwrap(),
+                ),
+            },
+            Group {
+                identifier: identifier(7),
+                name: name("Ticket Operators"),
+                description: None,
+            },
+        ],
+        group_memberships: vec![
+            GroupMembership {
+                group: identifier(3),
+                account: identifier(1),
+            },
+            GroupMembership {
+                group: identifier(7),
+                account: identifier(1),
+            },
+        ],
         group_grants: vec![
             GroupGrantRecord {
                 group: identifier(3),
@@ -179,6 +192,24 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
             GroupGrantRecord {
                 group: identifier(3),
                 grant: GroupGrant::Operation(name("zendesk.ticket.create")),
+            },
+            // The second Group overlaps on the Client Module, the Service
+            // Module, and one Operation, and adds one Operation of its own.
+            GroupGrantRecord {
+                group: identifier(7),
+                grant: GroupGrant::ClientModule(name("web-ui")),
+            },
+            GroupGrantRecord {
+                group: identifier(7),
+                grant: GroupGrant::ServiceModule(name("zendesk")),
+            },
+            GroupGrantRecord {
+                group: identifier(7),
+                grant: GroupGrant::Operation(name("zendesk.ticket.create")),
+            },
+            GroupGrantRecord {
+                group: identifier(7),
+                grant: GroupGrant::Operation(name("zendesk.ticket.comment")),
             },
         ],
         mfa_factors: vec![MfaFactor {
@@ -369,6 +400,82 @@ fn only_the_live_session_table_may_name_session_data_and_no_table_stores_log_rec
 }
 
 #[test]
+fn the_authorization_projection_unions_the_grants_of_every_membership_group() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = restored_database(&path, deployment(20));
+
+    let snapshot = database
+        .load_human_authorization(identifier(1))
+        .unwrap()
+        .expect("a held account must project");
+
+    assert!(snapshot.active());
+    // Both Groups grant the Web UI Client Module, the Zendesk Service Module,
+    // and the create Operation; only one grants the comment Operation and only
+    // one grants the Server Administration Permission. The join reports each
+    // distinct grant once.
+    assert_eq!(
+        snapshot.grants(),
+        [
+            GroupGrant::ClientModule(name("web-ui")),
+            GroupGrant::Operation(name("zendesk.ticket.comment")),
+            GroupGrant::Operation(name("zendesk.ticket.create")),
+            GroupGrant::ServerAdministration,
+            GroupGrant::ServiceModule(name("zendesk")),
+        ]
+    );
+}
+
+#[test]
+fn the_authorization_projection_separates_an_absent_account_from_a_grantless_one() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = restored_database(&path, deployment(21));
+
+    let inactive = database
+        .load_human_authorization(identifier(2))
+        .unwrap()
+        .expect("a held account must project even with no membership");
+    let unknown = database.load_human_authorization(identifier(9)).unwrap();
+
+    assert!(!inactive.active());
+    assert!(inactive.grants().is_empty());
+    assert_eq!(unknown, None);
+}
+
+#[test]
+fn the_authorization_projection_carries_no_other_application_state() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = restored_database(&path, deployment(22));
+
+    let snapshot = database
+        .load_human_authorization(identifier(1))
+        .unwrap()
+        .expect("a held account must project");
+    let rendered = format!("{snapshot:?}");
+
+    for excluded in [
+        String::from_utf8_lossy(PROTECTED_SECRET_BYTES).to_string(),
+        String::from_utf8_lossy(PROTECTED_FACTOR_BYTES).to_string(),
+        String::from_utf8_lossy(PROTECTED_CREDENTIAL_BYTES).to_string(),
+        VERIFIER.to_string(),
+        RECOVERY_KEY.to_string(),
+        USERNAME.to_string(),
+        String::from("Administrators"),
+        String::from("Ticket Operators"),
+        String::from("log-sqlite"),
+        String::from("primary"),
+    ] {
+        assert!(
+            !rendered.contains(&excluded),
+            "the projection exposed {excluded}"
+        );
+    }
+}
+
+#[test]
 fn a_restore_clears_every_live_session_inside_the_state_replacement() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
@@ -468,7 +575,7 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
     assert!(!loaded.completion_acknowledged());
     assert_eq!(loaded.state(), &expected);
     assert_eq!(loaded.state().accounts().len(), 2);
-    assert_eq!(loaded.state().group_grants().len(), 4);
+    assert_eq!(loaded.state().group_grants().len(), 8);
     assert_eq!(
         loaded.state().password_verifiers()[0].verifier.as_str(),
         VERIFIER

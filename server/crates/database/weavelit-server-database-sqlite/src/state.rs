@@ -1,12 +1,13 @@
-use rusqlite::{Connection, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use weavelit_server_database::{
     Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
     CompletionObligation, ConfigurationEntry, DatabaseError, Group, GroupGrant, GroupGrantRecord,
-    GroupMembership, LogAssignment, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor,
-    PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH,
-    ServiceConnection, StateIdentifier, WorkflowKind,
+    GroupMembership, HumanAuthorizationSnapshot, LogAssignment, LogModuleConfiguration,
+    LogModuleSetting, LogType, MfaFactor, PasswordVerifier, ProtectedSecret, ProtectedValue,
+    RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier, WorkflowKind,
 };
 
+use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 
 const CONFIGURATION_QUERY: &str = "SELECT component, setting_key, setting_value \
@@ -38,6 +39,18 @@ const LOG_ASSIGNMENT_QUERY: &str = "SELECT log_type, configuration_id \
 const COMPLETION_OBLIGATION_QUERY: &str = "SELECT record_id, workflow_kind, classification, \
      correlation_identifier, event_time_milliseconds, detail, acknowledged \
      FROM weavelit_completion_obligation ORDER BY singleton LIMIT 2";
+/// Reads one account's active flag without touching any other account column.
+const ACCOUNT_ACTIVE_QUERY: &str = "SELECT active FROM weavelit_account WHERE account_id = ?1";
+/// Joins the distinct grants of every Group the account belongs to.
+///
+/// The projection selects only the grant kind and value, so the conferring
+/// Group's identifier, name, and description never leave the database.
+const HUMAN_AUTHORIZATION_GRANT_QUERY: &str = "SELECT DISTINCT conferred.grant_kind, \
+     conferred.grant_value FROM weavelit_group_grant AS conferred \
+     JOIN weavelit_group_membership AS membership \
+     ON membership.group_id = conferred.group_id \
+     WHERE membership.account_id = ?1 \
+     ORDER BY conferred.grant_kind, conferred.grant_value";
 
 type ConfigurationRow = (String, String, String);
 type ProtectedSecretRow = (String, String, Vec<u8>);
@@ -52,6 +65,59 @@ type LogModuleConfigurationRow = (Vec<u8>, String, String, i64);
 type LogModuleSettingRow = (Vec<u8>, String, String);
 type LogAssignmentRow = (String, Vec<u8>);
 type CompletionObligationRow = (Vec<u8>, String, String, String, i64, String, i64);
+type HumanAuthorizationGrantRow = (String, String);
+
+impl SqliteDatabase {
+    /// Reads one account's active flag and joined Group grants consistently.
+    ///
+    /// Both reads run inside one transaction, so a concurrent membership or
+    /// grant change cannot produce a snapshot that mixes two states.
+    pub(super) fn load_human_authorization_atomic(
+        &mut self,
+        account: StateIdentifier,
+    ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+
+        read_human_authorization(&transaction, account)
+    }
+}
+
+fn read_human_authorization(
+    connection: &Connection,
+    account: StateIdentifier,
+) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError> {
+    let active = connection
+        .query_row(
+            ACCOUNT_ACTIVE_QUERY,
+            params![account.as_bytes().as_slice()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+    // An account the database does not hold is reported as absent rather than
+    // as a held account that happens to confer no grant.
+    let Some(active) = active else {
+        return Ok(None);
+    };
+
+    let grants = parameterized_rows::<HumanAuthorizationGrantRow>(
+        connection,
+        HUMAN_AUTHORIZATION_GRANT_QUERY,
+        params![account.as_bytes().as_slice()],
+        two_columns,
+    )?
+    .into_iter()
+    .map(|(kind, value)| decode_grant(&kind, value))
+    .collect::<Result<Vec<_>, DatabaseError>>()?;
+
+    Ok(Some(HumanAuthorizationSnapshot::new(
+        boolean(active)?,
+        grants,
+    )))
+}
 
 pub(super) fn write(
     connection: &Connection,
@@ -487,6 +553,24 @@ fn rows<R>(
         .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
     let decoded = statement
         .query_map([], decode)
+        .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+
+    decoded
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::State))
+}
+
+fn parameterized_rows<R>(
+    connection: &Connection,
+    sql: &str,
+    parameters: &[&dyn rusqlite::ToSql],
+    decode: impl FnMut(&Row<'_>) -> rusqlite::Result<R>,
+) -> Result<Vec<R>, DatabaseError> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+    let decoded = statement
+        .query_map(parameters, decode)
         .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
 
     decoded

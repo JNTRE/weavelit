@@ -19,6 +19,8 @@ Use this section as the source of truth for what assets belong in this directory
 - `authentication-failure-record-design.md`: Fixed classification, detail, and
   delivery-timing design for the local authentication-failure System Log
   record.
+- `authorization-denial-record-design.md`: Fixed classification, detail, and
+  delivery-timing design for the authorization-denial System Log record.
 
 ## Usage Guidance
 

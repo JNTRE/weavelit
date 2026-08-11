@@ -298,6 +298,16 @@ impl ApplicationDatabase for LyingDatabase {
         Ok(())
     }
 
+    fn load_human_authorization(
+        &mut self,
+        _account: StateIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::HumanAuthorizationSnapshot>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
+    }
+
     fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
         None
     }

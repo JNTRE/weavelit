@@ -351,6 +351,14 @@ pub(crate) mod test_support {
             Err(DatabaseError::Unavailable)
         }
 
+        fn load_human_authorization(
+            &mut self,
+            _account: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError>
+        {
+            Err(DatabaseError::Unavailable)
+        }
+
         fn sessions(&mut self) -> Option<&mut dyn SessionStore> {
             None
         }

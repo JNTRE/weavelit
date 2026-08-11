@@ -1,0 +1,19 @@
+[workspace]
+
+[package]
+name = "weavelit-server-authorization-forbidden-proof-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavelit-server-authorization = { path = "../../.." }
+weavelit-server-database = { path = "../../../../../database/weavelit-server-database" }
+
+[[bin]]
+name = "operation-constructor"
+path = "src/operation_constructor.rs"
+
+[[bin]]
+name = "administration-literal"
+path = "src/administration_literal.rs"

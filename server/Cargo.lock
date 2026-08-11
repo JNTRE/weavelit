@@ -1418,6 +1418,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "weavelit-server-authorization"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "weavelit-server-database",
+]
+
+[[package]]
 name = "weavelit-server-database"
 version = "0.1.0"
 dependencies = [
