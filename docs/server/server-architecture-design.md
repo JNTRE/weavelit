@@ -275,10 +275,27 @@ the operational surface without a restart. The publisher carries no lifecycle
 authority: a caller must already have completed the trusted transition it
 publishes.
 
-Only the pre-operational mode may carry a transport registration, because it is
-the only mode that mounts a route needing one. The fail-closed and operational
-modes are composed with no registration at all, so no request they serve can
-reach a non-default transport profile.
+The fail-closed mode is composed with no transport registration at all, so no
+request it serves can reach a non-default transport profile. The pre-operational
+and operational modes each mount their routes together with the registrations
+those routes require.
+
+### Operational Composer
+
+One operational composer owns the whole operational surface. It accepts the
+Application Database handle a sealed workflow hands over, mounts the Client
+Module operational declaration over the shared not-found fallback, and attaches
+every operational transport registration to that same mounted value. The
+publisher accepts only what the composer produced, so an operational route
+cannot be published as a bare router that has shed the ordered admission policy
+the transport chain enforces. A registration-less operational surface is not
+expressible rather than discouraged by convention.
+
+Both routes into normal operation compose through that one composer: a sealed
+startup and a completed in-process Restore each hand it the database they hold
+open and publish the surface it returns. The two paths therefore cannot drift in
+what they mount, in what registrations they carry, or in which database handle
+their routes read.
 
 The runtime composes every mounted pre-operational route over one shared
 lifecycle authority. Startup constructs a single workflow arbiter over the
@@ -325,8 +342,16 @@ re-reads the deployment record and re-inspects the database exactly as sealing
 does, because startup classification is a routing control rather than the
 authority. A record and database that no longer agree, or that are bound to
 another deployment, fail startup closed rather than producing a surface to
-serve. The runtime retains the loaded state and the opened Application Database
-for the process lifetime.
+serve. Sealing returns the loaded state together with the database the workflow
+held open, and the runtime retains both for the process lifetime.
+
+Operational routes read through that same handed-over handle rather than
+reopening the target, so a running deployment never holds two open handles to
+one Application Database file. The handle is shared behind an exclusive lane, so
+concurrent operational requests serialize on it exactly as lifecycle mutations
+serialize on the workflow arbiter's lane. A completed in-process Restore hands
+over the handle it committed through in the same way, so activation without a
+restart does not reopen the database it just replaced.
 
 The implementation selects minimal features and exact crates.io versions for
 Axum, Hyper, Tokio, and their required adapters under the dependency policy

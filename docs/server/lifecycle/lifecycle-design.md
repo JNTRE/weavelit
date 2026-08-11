@@ -633,6 +633,15 @@ passes is the record written, so the record advances only once the deployment is
 known to be complete, acknowledged, and loadable. A backend that misreports its
 own durable state fails closed rather than producing a sealed deployment.
 
+Sealing returns the sealed deployment: the loaded application state and the
+database the workflow held open. Retaining that handle rather than dropping it
+lets an in-process activation continue on the database the workflow committed
+through instead of reopening the target, so a running deployment never holds two
+open handles to one Application Database file. The sealed deployment is a single
+value that hands both halves to the runtime together, so a caller cannot take
+the state and leave the database behind. A later startup that classifies a
+sealed deployment loads it through the same path and receives the same pair.
+
 If database state commits but sealing or in-process activation fails, the
 runtime exposes no routes and fails closed. On restart, the lifecycle crate
 classifies the retained partial state and exits without invoking either workflow

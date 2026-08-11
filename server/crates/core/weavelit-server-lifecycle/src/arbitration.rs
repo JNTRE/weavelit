@@ -179,6 +179,17 @@ impl SealedDeployment {
     pub fn database(&mut self) -> &mut dyn ApplicationDatabase {
         &mut *self.database
     }
+
+    /// Consumes the sealed deployment and hands its loaded state and its open
+    /// database to the runtime that will own them.
+    ///
+    /// The database is moved rather than reopened, so an operational runtime
+    /// serves from the handle sealing or startup already opened instead of
+    /// creating a second one against the same target.
+    #[must_use]
+    pub fn into_parts(self) -> (InitializedState, Box<dyn ApplicationDatabase>) {
+        (self.state, self.database)
+    }
 }
 
 impl fmt::Debug for SealedDeployment {
@@ -317,12 +328,15 @@ pub struct AcknowledgedWorkflow<'arbiter> {
 }
 
 impl AcknowledgedWorkflow<'_> {
-    /// Seals the deployment record `Initialized` and returns the loaded state.
+    /// Seals the deployment record `Initialized` and returns the sealed
+    /// deployment: its loaded state and the database the workflow held open.
     ///
     /// Every fallible step runs before the record is written, so the record
     /// advances only once the deployment is known to be complete, acknowledged,
-    /// and loadable.
-    pub fn seal(mut self) -> Result<InitializedState, WorkflowError> {
+    /// and loadable. The workflow's open database is retained rather than
+    /// dropped, so an in-process activation continues on the same handle the
+    /// workflow committed through instead of reopening the target.
+    pub fn seal(mut self) -> Result<SealedDeployment, WorkflowError> {
         let deployment_identifier = self.store.record().deployment_identifier();
         if self.store.record().state() != LifecycleState::InitializationPending {
             return Err(WorkflowError::NotAllowed);
@@ -361,7 +375,10 @@ impl AcknowledgedWorkflow<'_> {
             .replace_record(&RecordPersistencePermit, sealed)
             .map_err(WorkflowError::Lifecycle)?;
 
-        Ok(state)
+        Ok(SealedDeployment {
+            state,
+            database: self.database,
+        })
     }
 }
 

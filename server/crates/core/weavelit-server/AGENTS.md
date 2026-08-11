@@ -26,6 +26,10 @@ Use this section as the source of truth for what assets belong in this directory
 - `src/lib.rs`: Restricted lifecycle startup composition, SQLite backend factory,
   state-root configuration reading, `classify_restricted_startup`, the listener's
   serving-mode switch, and stable error presentation.
+- `src/operational.rs`: The single operational composition seam: the shared
+  Application Database handle a sealed workflow hands over, the operational
+  composer that mounts the Web UI operational surface with its transport
+  registrations, and the mounted surface value the serving-mode switch accepts.
 - `src/restore.rs`: Server-owned Restore orchestration that joins backup
   validation to the lifecycle typestate chain, the one-time ticket store and
   admission registrations behind the two-step submission protocol, the System

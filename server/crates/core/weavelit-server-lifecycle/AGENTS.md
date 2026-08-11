@@ -23,8 +23,8 @@ operation.
   dependencies, and isolated test support.
 - `src/`: Lifecycle domain, errors, catalog validation, database selection and
   restart reopening, startup classification, workflow arbitration,
-  sealed-deployment state loading, protected formats, trusted-root operations,
-  anchor store, and factory contract.
+  sealed-deployment state loading and open-database handover, protected formats,
+  trusted-root operations, anchor store, and factory contract.
 - `tests/`: Fake-backend contract, real-filesystem persistence, selection
   eligibility and replacement, restart reopening, startup classification matrix,
   record advancement, workflow arbitration and contention, crash-point ordering,

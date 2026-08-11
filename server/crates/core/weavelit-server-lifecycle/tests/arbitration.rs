@@ -957,7 +957,7 @@ fn a_workflow_seals_the_deployment_only_after_the_full_ordered_path() {
     let deployment_identifier = permit.deployment_identifier();
     let state = application_state();
 
-    let sealed = permit
+    let mut sealed = permit
         .create_checkpoint(WorkflowKind::Restore, restore_metadata())
         .expect("the checkpoint must be created")
         .complete_checkpoint(&state)
@@ -967,9 +967,21 @@ fn a_workflow_seals_the_deployment_only_after_the_full_ordered_path() {
         .seal()
         .expect("an acknowledged deployment must seal");
 
-    assert!(sealed.completion_acknowledged());
-    assert_eq!(sealed.deployment_identifier(), deployment_identifier);
+    assert!(sealed.state().completion_acknowledged());
+    assert_eq!(
+        sealed.state().deployment_identifier(),
+        deployment_identifier
+    );
+    // Sealing hands back the database the workflow committed through rather
+    // than dropping it, so the sealed deployment is usable without reopening.
+    assert_eq!(
+        sealed.database().inspect(deployment_identifier).unwrap(),
+        DatabaseInspection::Initialized {
+            deployment_identifier
+        }
+    );
     assert_eq!(arbiter.record_state(), LifecycleState::Initialized);
+    drop(sealed);
     drop(arbiter);
 
     let store = LifecycleStore::open_or_create(&path).unwrap();
@@ -1014,6 +1026,17 @@ fn a_sealed_deployment_reloads_its_state_and_open_database_on_a_later_startup() 
         }
     );
     assert_eq!(format!("{sealed:?}"), "SealedDeployment(REDACTED)");
+
+    // Both halves transfer to the runtime together, so an operational runtime
+    // serves from this same open handle rather than reopening the target.
+    let (loaded, mut database) = sealed.into_parts();
+    assert_eq!(loaded.deployment_identifier(), deployment_identifier);
+    assert_eq!(
+        database.inspect(deployment_identifier).unwrap(),
+        DatabaseInspection::Initialized {
+            deployment_identifier
+        }
+    );
 }
 
 #[test]

@@ -41,8 +41,8 @@ use weavelit_module_client::{
 };
 use weavelit_server_lifecycle::{
     ApplicationState, BackendCatalog, CheckpointMetadata, DeploymentIdentifier, InitializedState,
-    LifecycleError, LifecycleState, StateIdentifier, TrustedBackendContext, WorkflowArbiter,
-    WorkflowError, WorkflowKind, WorkflowPermit,
+    LifecycleError, LifecycleState, SealedDeployment, StateIdentifier, TrustedBackendContext,
+    WorkflowArbiter, WorkflowError, WorkflowKind, WorkflowPermit,
 };
 use weavelit_server_log::{
     CompleteLogRecord, ConfiguredLogDestination, LogModuleCatalog, LogModuleIdentifier,
@@ -61,6 +61,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     RestrictedStartup, ServingModeSwitch,
+    operational::{OperationalComposer, OperationalDatabase},
     transport::{
         AdmittedCheck, BodyAdmission, PreBodyCheck, PreBodyGrant, PreBodyGrantValue,
         PreBodyRejection, TransportProfile, TransportRegistration,
@@ -110,6 +111,12 @@ pub struct RestoreOrchestrator {
     /// Retained privately so no caller outside this composition can mint a
     /// trusted Log Module context or a trusted record issuer.
     log_authority: ServerLogAuthority,
+    /// The operational composition a completed Restore hands over.
+    ///
+    /// Sealing returns the database the workflow committed through, so this
+    /// retains that same open handle for the operational runtime instead of
+    /// letting it close and reopening the target afterwards.
+    operational: Mutex<Option<OperationalComposer>>,
 }
 
 impl RestoreOrchestrator {
@@ -141,7 +148,21 @@ impl RestoreOrchestrator {
             validator: RestoreValidator::new(components),
             observability,
             log_authority,
+            operational: Mutex::new(None),
         })
+    }
+
+    /// Returns the Application Database a completed Restore handed over.
+    ///
+    /// The handle is shared, not reopened: it is the descriptor the workflow
+    /// itself committed through and sealed on.
+    #[must_use]
+    pub fn operational_database(&self) -> Option<OperationalDatabase> {
+        self.operational
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|operational| operational.database().clone())
     }
 
     /// Returns the Restore capability a Client Module declares this Server with.
@@ -396,7 +417,7 @@ impl RestoreOrchestrator {
         // observing it if the replacement does not complete.
         self.serving_modes.publish_fail_closed();
 
-        let state = self.replace_state(
+        let sealed = self.replace_state(
             permit,
             &state,
             &log_module,
@@ -405,8 +426,17 @@ impl RestoreOrchestrator {
             &record,
         )?;
 
-        self.serving_modes
-            .publish_operational(weavelit_module_client_webui::operational_surface());
+        // The database sealing handed back is retained here and composed into
+        // the operational surface, so normal operation begins on the handle the
+        // replacement committed through rather than on a newly opened one.
+        let (state, database) = OperationalDatabase::from_sealed(sealed);
+        let mount = self
+            .operational
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(OperationalComposer::new(database))
+            .mount();
+        self.serving_modes.publish_operational(mount);
         Ok(state)
     }
 
@@ -420,6 +450,10 @@ impl RestoreOrchestrator {
     /// same commit that installs the replacement state. Session invalidation is
     /// therefore not a follow-up step that an interruption could skip: either
     /// the replacement and the clearing both commit, or neither does.
+    ///
+    /// The sealed deployment it returns still owns the database this chain
+    /// committed through, so the caller activates normal operation on that
+    /// handle instead of reopening the target.
     fn replace_state(
         &self,
         permit: WorkflowPermit<'_>,
@@ -428,7 +462,7 @@ impl RestoreOrchestrator {
         deployment_identifier: DeploymentIdentifier,
         record_identifier: StateIdentifier,
         record: &CompleteLogRecord,
-    ) -> Result<InitializedState, RestoreError> {
+    ) -> Result<SealedDeployment, RestoreError> {
         let metadata = CheckpointMetadata::from_bytes(RESTORE_CHECKPOINT_METADATA)
             .map_err(|_| RestoreError::RestoreFailed)?;
 

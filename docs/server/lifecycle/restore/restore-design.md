@@ -326,7 +326,11 @@ step that can fail without leaving retained state runs before the checkpoint.
     storage earlier would leave durable state a pre-checkpoint failure promised
     not to leave behind.
 11. Acknowledge completion, then seal the deployment record `Initialized`.
-12. Publish the operational serving mode. Only a connection accepted after this
+    Sealing hands back the loaded state and the database the workflow held open,
+    which the runtime retains as the operational deployment's one database
+    handle rather than reopening the target it just replaced.
+12. Compose the operational serving mode through the same operational composer a
+    sealed startup uses, then publish it. Only a connection accepted after this
     point serves normal operation, so an in-flight fail-closed connection is
     never upgraded mid-request.
 

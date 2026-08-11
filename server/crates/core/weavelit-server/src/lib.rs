@@ -41,25 +41,26 @@ use tokio::{
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use weavelit_module_client::{
-    DatabaseSelectionRejection, ExpectedOrigin, OperationalSurface, ProjectionSource,
-    SelectedBackend, SelectionCommit,
+    DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource, SelectedBackend, SelectionCommit,
 };
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
     BackendRegistration, DatabaseError, DeploymentIdentifier, InitializedState,
     InterruptedLifecycleAction, LifecycleClassification, LifecycleError, LifecycleProjection,
-    LifecycleStore, RetainedDatabaseInspection, SealedDeployment, TrustedBackendContext,
-    ValidatedConnectionSettings, WorkflowArbiter, WorkflowError, WorkflowKind,
+    LifecycleStore, RetainedDatabaseInspection, TrustedBackendContext, ValidatedConnectionSettings,
+    WorkflowArbiter, WorkflowError, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::{AvailableComponents, Name};
 
+pub mod operational;
 pub mod restore;
 pub mod transport;
 
 pub use weavelit_module_client::typed_json;
 
+use operational::{OperationalComposer, OperationalDatabase, OperationalMount};
 use transport::{HeadRead, MountedSurface, TransportCapability};
 use typed_json::TypedJsonEnvelope;
 
@@ -668,9 +669,20 @@ pub struct RestrictedStartup {
     /// compiled-in catalog the process retains.
     log_catalog: Arc<LogModuleCatalog>,
     composition: PreoperationalComposition,
-    /// Present only for a sealed deployment, which holds its Application
-    /// Database open for the process lifetime.
-    sealed: Option<SealedDeployment>,
+    /// Present only for a sealed deployment, which hands its loaded state and
+    /// its open Application Database to the operational runtime.
+    sealed: Option<SealedRuntime>,
+}
+
+/// A sealed deployment's loaded state and the open Application Database its
+/// operational runtime owns.
+///
+/// The database was opened once, while the deployment was loaded under the
+/// exclusive lifecycle permit, and is retained here for the process lifetime
+/// rather than reopened by whatever serves it.
+struct SealedRuntime {
+    state: InitializedState,
+    database: OperationalDatabase,
 }
 
 impl RestrictedStartup {
@@ -691,12 +703,12 @@ impl RestrictedStartup {
 
     /// Returns a sealed deployment's loaded application state, if any.
     pub fn initialized_state(&self) -> Option<&InitializedState> {
-        self.sealed.as_ref().map(SealedDeployment::state)
+        self.sealed.as_ref().map(|sealed| &sealed.state)
     }
 
     /// Returns the Application Database a sealed deployment holds open, if any.
-    pub fn application_database(&mut self) -> Option<&mut dyn ApplicationDatabase> {
-        self.sealed.as_mut().map(SealedDeployment::database)
+    pub fn application_database(&self) -> Option<&OperationalDatabase> {
+        self.sealed.as_ref().map(|sealed| &sealed.database)
     }
 }
 
@@ -865,10 +877,11 @@ pub async fn run_restricted_https_listener(
 /// Composes the listener's serving modes and returns the future that serves them.
 ///
 /// Composition is synchronous and the returned future owns every value it
-/// needs. A sealed startup holds its Application Database open, and that
-/// database is not `Sync`, so borrowing the startup across an await point would
-/// make the whole listener unspawnable. The caller keeps the startup alive for
-/// as long as it drives the returned future.
+/// needs, so the listener can be spawned independently of the startup it was
+/// composed from. A sealed startup's open Application Database is shared into
+/// that composition by handle rather than borrowed, but the startup still owns
+/// the process-lifetime state-root lock, so the caller keeps it alive for as
+/// long as it drives the returned future.
 fn serve_restricted_https_listener(
     tcp_listener: TcpListener,
     tls_config: Arc<ServerConfig>,
@@ -1642,16 +1655,19 @@ enum ServingMode {
     /// No functional route at all; every valid request receives not-found.
     FailClosed(MountedSurface),
     /// The sealed deployment's operational Client Module surface.
-    Operational(MountedSurface),
+    ///
+    /// This variant carries the composed mount rather than a bare surface, so
+    /// the operational mode cannot be built from a router that was separated
+    /// from the registrations composed with it.
+    Operational(OperationalMount),
 }
 
 impl ServingMode {
     /// Returns the router and registrations this mode serves.
     fn surface(&self) -> &MountedSurface {
         match self {
-            Self::PreOperational(surface)
-            | Self::FailClosed(surface)
-            | Self::Operational(surface) => surface,
+            Self::PreOperational(surface) | Self::FailClosed(surface) => surface,
+            Self::Operational(mount) => mount.surface(),
         }
     }
 
@@ -1685,12 +1701,14 @@ impl ServingModeSwitch {
         ));
     }
 
-    /// Serves the supplied operational Client Module surface from the next
-    /// accepted connection onward.
-    pub fn publish_operational(&self, surface: OperationalSurface) {
-        let _ = self.modes.send(ServingMode::Operational(
-            MountedSurface::without_registrations(surface.mount(fallback_router())),
-        ));
+    /// Serves the composed operational surface from the next accepted
+    /// connection onward.
+    ///
+    /// The mount is produced by the operational composer and by nothing else,
+    /// so the router and every registration that admits one of its routes are
+    /// published as the one value they were composed as.
+    pub fn publish_operational(&self, mount: OperationalMount) {
+        let _ = self.modes.send(ServingMode::Operational(mount));
     }
 
     /// Serves a newly composed pre-operational surface from the next accepted
@@ -1743,6 +1761,11 @@ struct PreoperationalComposer {
     listener: SocketAddr,
     orchestrator: Arc<restore::RestoreOrchestrator>,
     serving_modes: Arc<ServingModeSwitch>,
+    /// Present only for a startup that classified an already-sealed record.
+    /// It owns the Application Database that startup handed over, so the
+    /// operational surface it composes outlives this composition only through
+    /// the mount it published.
+    operational: Option<OperationalComposer>,
 }
 
 impl PreoperationalComposer {
@@ -1760,22 +1783,33 @@ impl PreoperationalComposer {
                 Arc::clone(serving_modes),
             ),
             serving_modes: Arc::clone(serving_modes),
+            operational: startup
+                .sealed
+                .as_ref()
+                .map(|sealed| OperationalComposer::new(sealed.database.clone())),
         })
     }
 
     /// Publishes the surface a classified startup begins with.
     ///
-    /// Only the pre-operational mode may ever carry a transport registration.
-    /// The fail-closed and operational modes mount no route that needs one, so
-    /// they carry none at all, and neither mounts Restore.
+    /// Only the pre-operational mode may ever carry a transport registration in
+    /// this build. The fail-closed mode mounts no route at all, and the
+    /// operational mode is composed by the operational composer, which pairs
+    /// every Server-owned route it mounts with the registration that admits it.
+    /// Neither mounts Restore.
     fn publish_initial(self: &Arc<Self>, outcome: StartupOutcome) {
         match outcome {
             StartupOutcome::UninitializedWithoutDatabase => self.publish(false),
             StartupOutcome::UninitializedWithDatabase => self.publish(true),
             StartupOutcome::InitializationPending(_) => self.serving_modes.publish_fail_closed(),
-            StartupOutcome::Initialized => self
-                .serving_modes
-                .publish_operational(weavelit_module_client_webui::operational_surface()),
+            // A sealed classification always loaded its deployment, so the
+            // composer is present. A startup that reports sealed without one
+            // serves nothing rather than an operational surface with no
+            // Application Database behind it.
+            StartupOutcome::Initialized => match &self.operational {
+                Some(operational) => self.serving_modes.publish_operational(operational.mount()),
+                None => self.serving_modes.publish_fail_closed(),
+            },
         }
     }
 
@@ -1991,13 +2025,17 @@ pub fn classify_restricted_startup(state_root: &Path) -> Result<RestrictedStartu
     let outcome = startup_outcome(classification)?;
     let arbiter = Arc::new(WorkflowArbiter::new(store));
     // The sealed deployment's state is loaded under the lifecycle mutation
-    // permit, which independently re-verifies the record and the database.
+    // permit, which independently re-verifies the record and the database. The
+    // database it opened to do that is retained rather than reopened later.
     let sealed = match outcome {
-        StartupOutcome::Initialized => Some(
-            arbiter
-                .load_sealed_deployment(&catalog, &context)
-                .map_err(map_workflow_error)?,
-        ),
+        StartupOutcome::Initialized => {
+            let (state, database) = OperationalDatabase::from_sealed(
+                arbiter
+                    .load_sealed_deployment(&catalog, &context)
+                    .map_err(map_workflow_error)?,
+            );
+            Some(SealedRuntime { state, database })
+        }
         _ => None,
     };
     Ok(RestrictedStartup {
@@ -2072,9 +2110,11 @@ mod tests {
         REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT, RateLimiter, RequestReadError,
         ResponseProfile, RestrictedStartup, ServingMode, ServingModeSwitch, StartupError,
         StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter, bounded_response_from_axum,
-        classify_restricted_startup, fallback_router, gateway_timeout_response, parse_http_request,
-        processing_response, raw_header_section_bytes, read_default_profile_request,
-        read_request_head_until, redacted_response, request_timeout_response,
+        classify_restricted_startup, fallback_router, gateway_timeout_response,
+        operational::{OperationalComposer, OperationalMount},
+        parse_http_request, processing_response, raw_header_section_bytes,
+        read_default_profile_request, read_request_head_until, redacted_response,
+        request_timeout_response,
         restore::RestoreOrchestrator,
         serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
         server_components, sqlite_catalog, startup_outcome,
@@ -2112,6 +2152,20 @@ mod tests {
         (switch, modes)
     }
 
+    /// Composes the operational mount exactly as a sealed startup does.
+    ///
+    /// The startup must be a genuinely sealed one, because the composer owns
+    /// the Application Database that startup handed over.
+    fn operational_mount(startup: &RestrictedStartup) -> OperationalMount {
+        OperationalComposer::new(
+            startup
+                .application_database()
+                .expect("a sealed startup hands over its open Application Database")
+                .clone(),
+        )
+        .mount()
+    }
+
     const SELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}";
     const UNSELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":false}";
 
@@ -2141,6 +2195,12 @@ mod tests {
                         Vec::new(),
                     )
                     .unwrap();
+            }
+            // A sealed classification is produced by really sealing a
+            // deployment, so the startup under test carries the loaded state
+            // and the open Application Database a sealed startup hands over.
+            if outcome == StartupOutcome::Initialized {
+                seal_deployment(&state_root);
             }
             let mut startup = classify_restricted_startup(&state_root).unwrap();
             // A pending classification cannot be produced from a fresh state
@@ -2592,13 +2652,14 @@ mod tests {
     #[tokio::test]
     async fn publishing_a_serving_mode_changes_only_later_connection_snapshots() {
         let surface = Surface::new(StartupOutcome::UninitializedWithoutDatabase);
+        let sealed = Surface::new(StartupOutcome::Initialized);
         let (switch, serving_modes) =
             published_serving_modes(&surface.startup, UNBOUND_LISTENER.parse().unwrap());
 
         // A connection accepted before the switch publishes any later mode.
         let in_flight = serving_modes.borrow().router().clone();
 
-        switch.publish_operational(weavelit_module_client_webui::operational_surface());
+        switch.publish_operational(operational_mount(&sealed.startup));
         let after_operational = serving_modes.borrow().router().clone();
 
         // The already-snapshotted connection keeps its pre-operational surface.
@@ -2730,7 +2791,7 @@ mod tests {
         let state_root = root.path().canonicalize().unwrap();
         let (deployment_identifier, state) = seal_deployment(&state_root);
 
-        let mut startup = classify_restricted_startup(&state_root)
+        let startup = classify_restricted_startup(&state_root)
             .expect("a sealed deployment must reach normal operation");
 
         assert_eq!(startup.outcome(), StartupOutcome::Initialized);
@@ -2744,7 +2805,40 @@ mod tests {
             startup
                 .application_database()
                 .expect("a sealed deployment must hold its database open")
-                .inspect(deployment_identifier)
+                .with(|database| database.inspect(deployment_identifier))
+                .expect("the handed-over database lane must be usable")
+                .unwrap(),
+            DatabaseInspection::Initialized {
+                deployment_identifier
+            }
+        );
+    }
+
+    #[test]
+    fn a_sealed_startup_hands_its_open_application_database_to_the_operational_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let (deployment_identifier, _state) = seal_deployment(&state_root);
+
+        let startup = classify_restricted_startup(&state_root)
+            .expect("a sealed deployment must reach normal operation");
+        let composer = OperationalComposer::new(
+            startup
+                .application_database()
+                .expect("a sealed startup hands over its open Application Database")
+                .clone(),
+        );
+
+        // The composer and the startup name one shared handle rather than two
+        // opens of the same file, so the composer keeps serving the sealed
+        // deployment after the startup value that opened it is gone.
+        drop(startup);
+        assert_eq!(
+            composer
+                .database()
+                .with(|database| database.inspect(deployment_identifier))
+                .expect("the handed-over database lane must be usable")
                 .unwrap(),
             DatabaseInspection::Initialized {
                 deployment_identifier
@@ -5867,6 +5961,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_restore_hands_its_open_application_database_to_the_operational_runtime() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+
+        assert!(
+            orchestrator.operational_database().is_none(),
+            "no operational database exists before a Restore completes"
+        );
+
+        let state = surface
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .expect("the committed valid backup must restore");
+        let deployment_identifier = state.deployment_identifier();
+
+        // The database the workflow committed through is retained and handed
+        // over, so the operational runtime continues on that same handle.
+        assert_eq!(
+            orchestrator
+                .operational_database()
+                .expect("a completed Restore must hand over its open Application Database")
+                .with(|database| database.inspect(deployment_identifier))
+                .expect("the handed-over database lane must be usable")
+                .unwrap(),
+            DatabaseInspection::Initialized {
+                deployment_identifier
+            }
+        );
+    }
+
+    /// Both routes into normal operation compose through the one operational
+    /// composer, so a restored deployment serves exactly what a sealed startup
+    /// serves instead of drifting from it.
+    #[tokio::test]
+    async fn both_operational_publication_paths_serve_the_same_composed_surface() {
+        let restored = RestoreSurface::new();
+        let orchestrator = restored.orchestrator();
+        restored
+            .restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .expect("the committed valid backup must restore");
+        let from_restore = restored.served_router();
+
+        let sealed = Surface::new(StartupOutcome::Initialized);
+        let from_startup = sealed.routes();
+
+        // Anchor the comparison: an operational surface serves the Web UI and
+        // has shed every pre-operational route, so the equality below is not
+        // two identically empty surfaces.
+        let asset = from_restore
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(asset.status(), StatusCode::OK);
+        let removed = from_startup
+            .clone()
+            .oneshot(Request::get(STATUS_ROUTE).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::NOT_FOUND);
+
+        for target in [
+            "/",
+            "/assets/weavelit-application.js",
+            "/assets/weavelit-application.css",
+            STATUS_ROUTE,
+            APPLICATION_DATABASE_ROUTE,
+            RESTORE_ROUTE,
+            RESTORE_ARTIFACT_ROUTE,
+            "/unknown",
+        ] {
+            let restored_response = from_restore
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let started_response = from_startup
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                restored_response.status(),
+                started_response.status(),
+                "{target}"
+            );
+            assert_eq!(
+                restored_response.headers(),
+                started_response.headers(),
+                "{target}"
+            );
+            assert_eq!(
+                response_body(restored_response).await,
+                response_body(started_response).await,
+                "{target}"
+            );
+        }
+
+        // Neither path can publish a router that has shed its registrations,
+        // because each publishes one mounted surface carrying both.
+        assert!(restored.modes.borrow().surface().registry().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_restore_acknowledges_completion_through_the_restored_log_configuration() {
         let surface = RestoreSurface::new();
         let orchestrator = surface.orchestrator();
@@ -6555,7 +6762,8 @@ mod tests {
         switch.publish_fail_closed();
         assert!(switch.modes.borrow().surface().registry().is_empty());
 
-        switch.publish_operational(weavelit_module_client_webui::operational_surface());
+        let sealed = Surface::new(StartupOutcome::Initialized);
+        switch.publish_operational(operational_mount(&sealed.startup));
         assert!(switch.modes.borrow().surface().registry().is_empty());
 
         for outcome in [
