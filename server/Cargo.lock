@@ -1446,6 +1446,7 @@ dependencies = [
  "weavelit-module-mfa-totp",
  "weavelit-server-authentication",
  "weavelit-server-authorization",
+ "weavelit-server-components",
  "weavelit-server-database",
  "weavelit-server-database-sqlite",
  "weavelit-server-lifecycle",
@@ -1477,6 +1478,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "weavelit-server-components"
+version = "0.1.0"
+dependencies = [
+ "weavelit-server-database",
+]
+
+[[package]]
 name = "weavelit-server-database"
 version = "0.1.0"
 dependencies = [
@@ -1492,6 +1500,20 @@ dependencies = [
  "sha2",
  "tempfile",
  "weavelit-server-database",
+]
+
+[[package]]
+name = "weavelit-server-init"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "serde_json",
+ "weavelit-server-authentication",
+ "weavelit-server-components",
+ "weavelit-server-database",
+ "weavelit-server-lifecycle",
+ "weavelit-server-recovery-key",
+ "zeroize",
 ]
 
 [[package]]
@@ -1542,6 +1564,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "weavelit-server-recovery-key"
+version = "0.1.0"
+dependencies = [
+ "bech32",
+ "getrandom 0.4.3",
+ "hmac",
+ "sha2",
+ "subtle",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "weavelit-server-restore"
 version = "0.1.0"
 dependencies = [
@@ -1557,8 +1592,10 @@ dependencies = [
  "sha2",
  "tempfile",
  "weavelit-server-authentication",
+ "weavelit-server-components",
  "weavelit-server-database",
  "weavelit-server-lifecycle",
+ "weavelit-server-recovery-key",
  "x25519-dalek",
  "zeroize",
 ]

@@ -16,10 +16,10 @@ use chacha20poly1305::{
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use x25519_dalek::PublicKey;
+use weavelit_server_recovery_key::KEY_LENGTH;
 use zeroize::Zeroizing;
 
-use crate::{ContentError, RecoveryIdentity, RestoreError, TransferBounds, key::KEY_LENGTH};
+use crate::{ContentError, RecoveryIdentity, RestoreError, TransferBounds};
 
 /// Fixed first line of an age v1 file.
 const VERSION_LINE: &[u8] = b"age-encryption.org/v1\n";
@@ -75,18 +75,16 @@ pub(crate) fn decrypt_payload(
 ) -> Result<Zeroizing<Vec<u8>>, RestoreError> {
     let header = Header::parse(payload)?;
 
-    let share = PublicKey::from(header.ephemeral_share);
-    let shared = identity.diffie_hellman(&share);
     // An all-zero shared secret means the share had small order and contributed
     // nothing to the agreement; the age specification requires rejecting it.
-    if !shared.was_contributory() {
-        return Err(RestoreError::BackupInvalid);
-    }
+    let shared = identity
+        .agree(&header.ephemeral_share)
+        .ok_or(RestoreError::BackupInvalid)?;
 
     let mut salt = [0_u8; KEY_LENGTH * 2];
-    salt[..KEY_LENGTH].copy_from_slice(share.as_bytes());
+    salt[..KEY_LENGTH].copy_from_slice(&header.ephemeral_share);
     salt[KEY_LENGTH..].copy_from_slice(&identity.public_key());
-    let wrap_key = derive(&salt, X25519_LABEL, shared.as_bytes());
+    let wrap_key = derive(&salt, X25519_LABEL, &shared[..]);
 
     let mut file_key = Zeroizing::new([0_u8; FILE_KEY_LENGTH]);
     file_key.copy_from_slice(&header.wrapped_file_key[..FILE_KEY_LENGTH]);

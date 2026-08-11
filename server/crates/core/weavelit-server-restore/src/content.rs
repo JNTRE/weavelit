@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, fmt};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Deserialize;
+use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
     Account, AccountPasswordVerifier, ConfigurationEntry, ConfigurationKey, Group, GroupGrant,
     GroupGrantRecord, GroupMembership, LogAssignment, LogModuleConfiguration, LogModuleSetting,
@@ -109,21 +110,6 @@ pub struct BackupServiceConnection {
     pub name: Name,
     /// Decrypted provider credential.
     pub credential: SensitiveBytes,
-}
-
-/// Compiled-in components a backup may reference.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct AvailableComponents {
-    /// Compiled-in Client Modules.
-    pub client_modules: BTreeSet<Name>,
-    /// Compiled-in MFA Modules.
-    pub mfa_modules: BTreeSet<Name>,
-    /// Compiled-in Service Modules.
-    pub service_modules: BTreeSet<Name>,
-    /// Compiled-in Log Modules.
-    pub log_modules: BTreeSet<Name>,
-    /// Named Operations exposed by compiled-in modules.
-    pub operations: BTreeSet<Name>,
 }
 
 /// Validated, normalized, deployment-neutral representation of a backup.
@@ -620,24 +606,24 @@ fn reject_unavailable_components(
     components: &AvailableComponents,
 ) -> Result<(), ContentError> {
     for configuration in &backup.log_module_configurations {
-        require_component(&components.log_modules, &configuration.module)?;
+        require_component(components.has_log_module(&configuration.module))?;
     }
     for factor in &backup.mfa_factors {
-        require_component(&components.mfa_modules, &factor.module)?;
+        require_component(components.has_mfa_module(&factor.module))?;
     }
     for connection in &backup.service_connections {
-        require_component(&components.service_modules, &connection.service_module)?;
+        require_component(components.has_service_module(&connection.service_module))?;
     }
     for record in &backup.group_grants {
         match &record.grant {
             GroupGrant::ClientModule(module) => {
-                require_component(&components.client_modules, module)?
+                require_component(components.has_client_module(module))?
             }
             GroupGrant::ServiceModule(module) => {
-                require_component(&components.service_modules, module)?;
+                require_component(components.has_service_module(module))?;
             }
             GroupGrant::Operation(operation) => {
-                require_component(&components.operations, operation)?;
+                require_component(components.has_operation(operation))?;
             }
             GroupGrant::ServerAdministration => {}
         }
@@ -726,8 +712,8 @@ fn require(known: &BTreeSet<StateIdentifier>, value: StateIdentifier) -> Result<
     Err(ContentError::UnresolvedReference)
 }
 
-fn require_component(available: &BTreeSet<Name>, value: &Name) -> Result<(), ContentError> {
-    if available.contains(value) {
+fn require_component(available: bool) -> Result<(), ContentError> {
+    if available {
         return Ok(());
     }
     Err(ContentError::ComponentUnavailable)

@@ -46,6 +46,7 @@ use weavelit_module_client::{
     CookieEffect, CookieLines, DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource,
     SelectedBackend, SelectionCommit,
 };
+use weavelit_server_components::AvailableComponents;
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
@@ -55,7 +56,7 @@ use weavelit_server_lifecycle::{
     ValidatedConnectionSettings, WorkflowArbiter, WorkflowError, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
-use weavelit_server_restore::{AvailableComponents, Name};
+use weavelit_server_restore::Name;
 
 pub mod authentication;
 pub mod authorization;
@@ -1923,11 +1924,12 @@ fn fallback_router() -> Router {
 
 /// The Server's compiled-in component inventory.
 ///
-/// A Restore is judged against what this build can actually serve. The names
-/// come from the module crates themselves rather than from string literals
-/// restated here, so a compiled-in module and the inventory it is judged by
-/// cannot drift apart. This build compiles in one Client Module and one Log
-/// Module, and no MFA Module, Service Module, or named operation.
+/// A pre-operational workflow is judged against what this build can actually
+/// serve. The names come from the module crates themselves rather than from
+/// string literals restated here, so a compiled-in module and the inventory it
+/// is judged by cannot drift apart. This build compiles in one Client Module,
+/// one Log Module, and one MFA Module, and no Service Module or named
+/// operation.
 fn server_components() -> AvailableComponents {
     fn named(identifier: &str) -> BTreeSet<Name> {
         Name::new(identifier).into_iter().collect()
@@ -1936,7 +1938,7 @@ fn server_components() -> AvailableComponents {
     AvailableComponents {
         client_modules: named(weavelit_module_client_webui::MODULE_IDENTIFIER),
         log_modules: named(weavelit_module_log_sqlite::MODULE_IDENTIFIER),
-        mfa_modules: BTreeSet::new(),
+        mfa_modules: named(weavelit_module_mfa_totp::MODULE_IDENTIFIER),
         service_modules: BTreeSet::new(),
         operations: BTreeSet::new(),
     }
@@ -6308,10 +6310,10 @@ pub(crate) mod tests {
 
     /// The component inventory the shared `valid.wlitbackup` fixture references.
     ///
-    /// That fixture deliberately names an MFA Module and a Service Module no
-    /// build in this repository compiles in, so the tests that use it supply
-    /// the fuller inventory a deployment offering those modules would report.
-    /// A Restore judged against what this build actually serves uses
+    /// That fixture deliberately names a Service Module and a named Operation
+    /// no build in this repository compiles in, so the tests that use it supply
+    /// the fuller inventory a deployment offering those components would
+    /// report. A Restore judged against what this build actually serves uses
     /// [`server_components`] and the `valid-web-ui-sqlite.wlitbackup` fixture
     /// instead.
     fn fixture_components() -> AvailableComponents {
@@ -6328,6 +6330,50 @@ pub(crate) mod tests {
             service_modules: names(&["zendesk"]),
             log_modules: names(&["sqlite"]),
             operations: names(&["ticket-search"]),
+        }
+    }
+
+    /// The shipped binary judges every pre-operational workflow against this
+    /// inventory, so it must name each module the build actually compiles in.
+    /// A build that compiles in the TOTP MFA Module while reporting no MFA
+    /// Module refuses state it can serve, and no test that supplies its own
+    /// inventory would notice.
+    #[test]
+    fn the_runtime_inventory_reports_every_module_this_build_compiles_in() {
+        let components = server_components();
+
+        assert!(components.has_client_module(
+            &Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER).unwrap()
+        ));
+        assert!(
+            components
+                .has_log_module(&Name::new(weavelit_module_log_sqlite::MODULE_IDENTIFIER).unwrap())
+        );
+        assert!(
+            components
+                .has_mfa_module(&Name::new(weavelit_module_mfa_totp::MODULE_IDENTIFIER).unwrap())
+        );
+
+        assert_eq!(components.client_modules.len(), 1);
+        assert_eq!(components.log_modules.len(), 1);
+        assert_eq!(components.mfa_modules.len(), 1);
+    }
+
+    /// The same inventory must still refuse what this build cannot serve, so
+    /// the correction above widened it by exactly the compiled-in MFA Module.
+    #[test]
+    fn the_runtime_inventory_reports_a_component_this_build_lacks_as_unavailable() {
+        let components = server_components();
+
+        assert!(components.service_modules.is_empty());
+        assert!(components.operations.is_empty());
+        for absent in ["zendesk", "ticket-search", "cli", "mysql", "webauthn"] {
+            let name = Name::new(absent).unwrap();
+            assert!(!components.has_client_module(&name));
+            assert!(!components.has_log_module(&name));
+            assert!(!components.has_mfa_module(&name));
+            assert!(!components.has_service_module(&name));
+            assert!(!components.has_operation(&name));
         }
     }
 
@@ -6910,10 +6956,10 @@ pub(crate) mod tests {
     }
 
     /// A backup is restorable only into a Server that can serve everything it
-    /// names. `valid.wlitbackup` enrols a `totp` MFA factor and a `zendesk`
-    /// Service Connection, and this build compiles in neither, so the real
-    /// inventory must refuse it rather than restore a deployment whose Groups
-    /// and factors point at components that would never load.
+    /// names. `valid.wlitbackup` holds a `zendesk` Service Connection and a
+    /// `ticket-search` Operation grant, and this build compiles in neither, so
+    /// the real inventory must refuse it rather than restore a deployment whose
+    /// Groups and connections point at components that would never load.
     #[tokio::test]
     async fn a_backup_naming_components_this_build_lacks_is_incompatible() {
         let surface = RestoreSurface::new();

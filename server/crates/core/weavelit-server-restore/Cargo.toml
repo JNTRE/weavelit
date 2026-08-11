@@ -9,21 +9,25 @@ path = "src/lib.rs"
 
 [dependencies]
 base64 = { version = "=0.23.0", default-features = false, features = ["alloc"] }
-bech32 = { version = "=0.11.1", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 hkdf = { version = "=0.13.0", default-features = false }
 hmac = { version = "=0.13.0", default-features = false, features = ["zeroize"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 sha2 = { version = "=0.11.0", default-features = false }
+weavelit-server-components = { path = "../weavelit-server-components" }
 weavelit-server-database = { path = "../../database/weavelit-server-database" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
-x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+weavelit-server-recovery-key = { path = "../weavelit-server-recovery-key" }
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 
 # The fixture generator is a second, independent age v1 writer over the same
 # primitives; the crate's own dependencies are available to it, so only the
 # temporary-directory helper is test-only.
+#
+# `bech32` and `x25519-dalek` are test-only here: `weavelit-server-recovery-key`
+# owns the canonical age key encoding and the key agreement in production code,
+# and the fixture generator needs both to write fixtures independently of it.
 #
 # `flate2` decompresses the zlib-compressed C2SP CCTV vector bodies. It is a
 # test-only dependency and never reaches the Server binary; `rust_backend`
@@ -35,9 +39,11 @@ zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 # lets a test read that verifier's encoded parameters back. Both are test-only.
 [dev-dependencies]
 argon2 = { version = "=0.5.3", default-features = false, features = ["alloc", "password-hash"] }
+bech32 = { version = "=0.11.1", default-features = false, features = ["alloc"] }
 flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 tempfile = "=3.27.0"
 weavelit-server-authentication = { path = "../weavelit-server-authentication" }
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 
 [[example]]
 name = "generate-restore-fixtures"

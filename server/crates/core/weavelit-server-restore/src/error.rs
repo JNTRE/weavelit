@@ -1,6 +1,7 @@
 use std::{error::Error as StdError, fmt};
 
 use weavelit_server_lifecycle::LifecycleError;
+use weavelit_server_recovery_key::RecoveryKeyError;
 
 /// Stable payload-free Restore failure category.
 ///
@@ -50,6 +51,13 @@ impl StdError for RestoreError {}
 impl From<LifecycleError> for RestoreError {
     fn from(error: LifecycleError) -> Self {
         Self::Lifecycle(error)
+    }
+}
+
+/// Every shared recovery-key rejection collapses to the single Restore category.
+impl From<RecoveryKeyError> for RestoreError {
+    fn from(_: RecoveryKeyError) -> Self {
+        Self::RecoveryKeyInvalid
     }
 }
 
@@ -105,41 +113,6 @@ impl From<EnvelopeError> for RestoreError {
             EnvelopeError::UnsupportedFormatVersion => Self::BackupIncompatible,
             _ => Self::BackupInvalid,
         }
-    }
-}
-
-/// Invalid submitted recovery key rejected before any decryption.
-///
-/// Variants exist for validation-order attribution inside the workspace. Their
-/// display representation is uniform and every variant maps to
-/// [`RestoreError::RecoveryKeyInvalid`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RecoveryKeyError {
-    /// The submitted value was empty.
-    Empty,
-    /// The submitted value exceeded the accepted canonical length.
-    TooLong,
-    /// The submitted value carried more than one line.
-    NotSingleLine,
-    /// The submitted value carried surrounding whitespace or other content.
-    SurroundingContent,
-    /// The submitted value did not use a canonical age Bech32 encoding.
-    NotCanonical,
-    /// A canonical public recipient was submitted where an identity is required.
-    IdentityRequired,
-}
-
-impl fmt::Display for RecoveryKeyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("recovery key is invalid")
-    }
-}
-
-impl StdError for RecoveryKeyError {}
-
-impl From<RecoveryKeyError> for RestoreError {
-    fn from(_: RecoveryKeyError) -> Self {
-        Self::RecoveryKeyInvalid
     }
 }
 

@@ -14,7 +14,6 @@ mod content;
 mod crypto;
 mod envelope;
 mod error;
-mod key;
 mod state;
 mod ticket;
 #[cfg(test)]
@@ -27,26 +26,27 @@ pub use bounds::{
     check_upload_elapsed,
 };
 pub use content::{
-    AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackupMfaFactor, BackupProtectedSecret,
-    BackupServiceConnection, MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS,
-    MAX_SENSITIVE_VALUE_BYTES, NormalizedBackup, SensitiveBytes, normalize,
+    BACKUP_CONTENT_FORMAT_VERSION, BackupMfaFactor, BackupProtectedSecret, BackupServiceConnection,
+    MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS, MAX_SENSITIVE_VALUE_BYTES, NormalizedBackup,
+    SensitiveBytes, normalize,
 };
 pub use envelope::{BACKUP_FORMAT_VERSION, BACKUP_MAGIC, Envelope, HEADER_LENGTH};
-pub use error::{ContentError, EnvelopeError, RecoveryKeyError, RestoreError};
-pub use key::{
-    IDENTITY_PREFIX, MAX_RECOVERY_KEY_LENGTH, RECIPIENT_PREFIX, RecoveryIdentity, RecoveryKey,
-    RecoveryRecipient,
-};
+pub use error::{ContentError, EnvelopeError, RestoreError};
 pub use state::build_application_state;
 pub use ticket::{
     RESTORE_TICKET_ENTROPY_BYTES, RESTORE_TICKET_TEXT_BYTES, RestoreTicket, RestoreTicketDigest,
 };
+pub use weavelit_server_components::AvailableComponents;
 pub use weavelit_server_database::{
     Account, AccountPasswordVerifier, ConfigurationEntry, ConfigurationKey, DeploymentIdentifier,
     Group, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogModuleConfiguration,
     LogModuleSetting, LogType, Name, PasswordVerifier, RecoveryPublicKey, StateIdentifier,
 };
 pub use weavelit_server_lifecycle::{BackendIdentifier, LifecycleError};
+pub use weavelit_server_recovery_key::{
+    IDENTITY_PREFIX, MAX_RECOVERY_KEY_LENGTH, RECIPIENT_PREFIX, RecoveryIdentity, RecoveryKey,
+    RecoveryKeyError, RecoveryRecipient,
+};
 
 /// Trusted lifecycle eligibility and selected-database binding for one Restore.
 ///
