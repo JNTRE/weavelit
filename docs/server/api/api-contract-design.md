@@ -77,17 +77,66 @@ Route groups:
   capability is eligible.
 - `/api/v1/auth/` carries authentication bootstrap. These routes are neither
   User Plane nor Administration Plane, because a principal does not yet exist
-  when they are invoked. Three routes are defined, all `PUT`:
+  when they are invoked. Seven routes are defined, all `PUT`:
   - `/api/v1/auth/login` exchanges a `client_module` identity and local
     credentials for a session, subject to the single-permit admission lane
     the [Server Authentication Design](../authentication/authentication-design.md#login-admission-and-verification-concurrency)
-    owns.
+    owns. A verified password that requires no further step returns `200` and
+    the session-issuing cookie effect. A verified password that must present a
+    second factor or must enroll one instead returns `202` with a
+    [continuation](../authentication/authentication-design.md#continuation-ticket)
+    result and no cookie:
+
+    ```json
+    {"result":{"mfa":"mfa_required","continuation":"<opaque-server-value>"},
+     "correlation_id":"<opaque-server-value>"}
+    ```
+
+    `mfa` carries `mfa_required` when an enrolled factor must verify a code, or
+    `mfa_enrollment_required` when the account must enroll one first. Both
+    codes are defined by the shared `weavelit-module-client` crate; only their
+    values differ.
   - `/api/v1/auth/session` validates the session cookie already presented and
     reports whether it is still active, issuing no new cookie.
   - `/api/v1/auth/logout` revokes the presented session and clears both
     cookies.
+  - `/api/v1/auth/mfa/verify` submits a `code` against the `continuation` a
+    `mfa_required` login response carried. Success returns `200` and the
+    session-issuing cookie effect, exactly as a login that required no second
+    factor does. Every refusal — an unknown or expired continuation, a wrong
+    code, a replayed code, or a Module disabled since the continuation was
+    issued — is the same `401` `authentication_failed` response login itself
+    uses, and the continuation is consumed whether or not the code was
+    correct.
+  - `/api/v1/auth/mfa/enrollment` opens an enrollment from the `continuation` a
+    `mfa_enrollment_required` login response carried. Success returns `200`
+    with the one-time provisioning result:
+
+    ```json
+    {"result":{"secret":"<base32-value>",
+               "provisioning_uri":"<otpauth-uri>",
+               "enrollment":"<opaque-server-value>"},
+     "correlation_id":"<opaque-server-value>"}
+    ```
+
+    `secret` and `provisioning_uri` are returned in this one response and are
+    never retrievable again; `enrollment` is a second, separate continuation
+    that confirms this exact enrollment.
+  - `/api/v1/auth/mfa/enrollment/confirm` submits a `code` against the
+    `enrollment` value the enrollment-opening response carried. Success returns
+    `200` and the session-issuing cookie effect. Refusal is the same `401`
+    `authentication_failed` response every second-factor refusal uses, and the
+    enrollment ticket is consumed whether or not the code was correct.
+  - `/api/v1/auth/mfa/enrollment/session` opens an enrollment for the account
+    of an already-established, session-bearing request rather than a login
+    continuation. It requires the session cookie, its per-session
+    `X-Weavelit-CSRF` header value, and the account's current `password` in
+    the request body, all re-verified through the same password check login
+    uses. Success returns the same `200` provisioning result
+    `/api/v1/auth/mfa/enrollment` returns; a wrong password returns the same
+    `401` `authentication_failed` response a wrong login password does.
   The shared `weavelit-module-client` crate owns every stable error code and
-  header precondition for these three routes; the decisions behind them are
+  header precondition for these seven routes; the decisions behind them are
   owned by the
   [Server Authentication Design](../authentication/authentication-design.md).
 - `/api/v1/user/` and `/api/v1/administration/` carry the two normal planes.

@@ -30,6 +30,12 @@ Use this section as the source of truth for what assets belong in this directory
   route contract: the three canonical route paths, the login request schema,
   every header and cookie precondition, the payload-free rejection contract,
   and the Server-core hooks the declaration is composed over.
+- `src/mfa.rs`: The shared second-factor and enrollment route contract: the
+  four canonical route paths (code verification, enrollment from a login
+  continuation, self-enrollment from a live session, and enrollment
+  confirmation), their request schemas, every header, CSRF, and session
+  precondition, the one-time provisioning disclosure, and the Server-core
+  hooks each declaration is composed over.
 - `src/authorization.rs`: The shared operational authorization denial contract:
   the single `AuthorizationRejection` value, the fixed `403` status and
   `authorization_denied` code, and the byte-identical response every denial

@@ -10,11 +10,14 @@ of session and CSRF bearer values.
 - This crate owns the current Argon2id profile, the closed accepted-profile
   allowlist and its verification-memory ceiling, PHC parsing and profile
   matching, the Argon2 execution seam, the decoy-backed equal-work denial,
-  rehash-on-profile-drift, redacted authentication errors, and session and CSRF
-  token generation, encoding, digesting, and constant-time digest comparison.
+  rehash-on-profile-drift, redacted authentication errors, session and CSRF
+  token generation, encoding, digesting, and constant-time digest comparison,
+  and the opaque single-use continuation ticket that binds a verified password
+  to a later second-factor or enrollment step.
 - It does not own account lookup, persistence, session lifetime, cookies, route
-  contracts, transport, MFA, or client presentation. A caller supplies the
-  stored credential as an inbound value and persists what this crate returns.
+  contracts, transport, MFA method behavior, or client presentation. A caller
+  supplies the stored credential as an inbound value and persists what this
+  crate returns.
 - It takes no workspace path dependency, so it cannot reach the transport, the
   listener, the Application Database, or a Client Module.
 - It has no child paths.
@@ -32,6 +35,8 @@ of session and CSRF bearer values.
 - `src/engine.rs`: The `Argon2Engine` seam and its RustCrypto implementation.
 - `src/password.rs`: The equal-work password decision and rehash-on-drift.
 - `src/session.rs`: Session and CSRF tokens, their digests, and redaction.
+- `src/continuation.rs`: The opaque, single-use, short-lived continuation
+  ticket and its stored digest.
 - `src/error.rs`: Payload-free authentication errors.
 - `src/random.rs`: Operating-system randomness with no fallback.
 

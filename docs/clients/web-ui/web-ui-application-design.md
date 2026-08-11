@@ -219,14 +219,18 @@ reachable only once a Restore has completed.
 
 The control is presented in a titled region carrying a
 `data-authentication-state` attribute for testability. Its initial probe and an
-absent authentication surface both render nothing; the remaining four states
-are:
+absent authentication surface both render nothing; the remaining states are:
 
 | State | Condition | Presentation |
 | --- | --- | --- |
 | Unauthenticated | The session probe reports no session authenticates. | A username input, a masked password input, and an action; the action is enabled once both are non-empty. |
 | Submitting | A sign-in request is in flight. | Both inputs and the action are disabled, so a repeated activation cannot issue a second sign-in. |
 | Failed | The submitted credential was rejected. | The inputs and action are re-enabled and the one fixed failure message is presented in an assertive live region. |
+| Second factor | A verified password was admitted only to an enrolled second factor. | The credential inputs are replaced by a single code input and a verification action; the action is enabled only for a submission the route's code shape accepts. |
+| Second factor submitting | A code submission is in flight. | The input and the action are disabled, so a repeated activation cannot spend a second continuation. |
+| Enrollment | A verified password was admitted only to enrolling a factor, and the enrollment has been opened. | The one disclosure, a code input, and a confirmation action, described in [Second-Factor Steps](#second-factor-steps). |
+| Enrollment submitting | An enrollment confirmation is in flight. | The inputs and the action are disabled. |
+| Attempt ended | A one-time value was spent by a refused request. | The credential inputs return and the one fixed attempt-ended message is presented in an assertive live region. |
 | Authenticated | The session probe, or a completed sign-in, reports an established session. | The inputs and action are replaced by a fixed confirmation message in a polite live region. |
 
 The failure message is fixed and redacted: `Sign-in failed.` The login route
@@ -236,10 +240,44 @@ application discards whatever it received rather than inspecting it, so it has
 nothing to render even if a future response tried to distinguish causes. This
 follows the same precedent as the status and selection failure states.
 
+Every second-factor state is reachable only from a continuation the Server
+issued, so no rendered state widens what a denied credential discloses: a
+denial reaches only the failed and attempt-ended states.
+
 The username is held in component state for the duration of the panel. The
 password is held in component state only and is cleared as soon as the attempt
 it drove settles, whether that attempt succeeded or failed. Neither is ever
 rendered, and neither is written to a URL, a cookie, or any browser storage.
+
+### Second-Factor Steps
+
+A login that verified a password without issuing a session answers with a
+continuation and a stage naming which step is owed. The application presents
+one step per stage and never invents a third.
+
+For `mfa_required` the control presents a single code input and submits it once
+with the continuation it was issued.
+
+For `mfa_enrollment_required` the control opens an enrollment with that same
+continuation and presents what the response discloses: the Base32 setup key,
+the `otpauth://` setup link, and a code input confirming that an authenticator
+app now holds the key. Both disclosed values are presented as read-only text
+controls so they can be selected and copied, and neither is rendered as a
+navigation target. The step carries a fixed warning that the two values are
+shown once and cannot be shown again, because the Server discloses them in
+exactly one response and can never return them. The enrollment is opened from
+the settled login submission rather than from a render effect, so the single
+disclosure is requested exactly once per attempt.
+
+Every one-time value is spent by the first request that presents it, whether or
+not that request was accepted. A refused code therefore ends the attempt rather
+than inviting another code against the same value, and the control says so
+plainly: `That code was not accepted. This sign-in attempt has ended, so sign in
+again to start a new one.` The credential inputs return with the password
+cleared, which is the only thing that can follow a spent continuation. The same
+message and the same state are presented when an enrollment cannot be opened
+and when an enrollment confirmation is refused, because those refusals spend a
+one-time value identically and the Server reports no cause for any of them.
 
 ### CSRF Cookie Handling
 
@@ -264,9 +302,18 @@ are only ever carried in the cookies the Server sets and reads, and this
 application never reads either back from a response body, renders either, or
 persists either itself.
 
+The continuation, the enrollment value, the submitted code, the setup key, and
+the setup link are held the same way: in component state for the one attempt
+that needs them, and dropped as soon as that attempt settles. None is written
+to a URL, a query string, a cookie, `localStorage`, or `sessionStorage`. The
+setup key and the setup link are the only two values this application renders
+at all, because an operator cannot capture them otherwise, and they are removed
+from the rendered output as soon as the enrollment they belong to settles.
+Nothing that outlives that enrollment retains them.
+
 ## Same-Origin Requests
 
-The application issues exactly six outbound request kinds, all same-origin,
+The application issues exactly nine outbound request kinds, all same-origin,
 all with `cache: no-store` and `redirect: error`:
 
 - `GET /api/v1/status` with `Accept: application/json` and `credentials: omit`;
@@ -289,9 +336,24 @@ all with `cache: no-store` and `redirect: error`:
 - `PUT /api/v1/auth/session` with `Accept: application/json`, the
   `X-Weavelit-CSRF` header carrying the readable cookie's value when one is
   present, and `credentials: same-origin` so an already-issued session cookie
-  is sent.
+  is sent;
+- `PUT /api/v1/auth/mfa/verify` with the same JSON headers, the same fixed
+  pre-session `X-Weavelit-CSRF` literal, `credentials: same-origin`, and a body
+  carrying the continuation and the submitted code;
+- `PUT /api/v1/auth/mfa/enrollment` with the same headers and credentials mode
+  and a body carrying the continuation alone; and
+- `PUT /api/v1/auth/mfa/enrollment/confirm` with the same headers and
+  credentials mode and a body carrying the enrollment value and the submitted
+  code.
 
-Only the last two requests use `credentials: same-origin`; the preceding four
+The three second-factor requests carry the pre-session literal rather than a
+per-session token, because they carry no session either: the one-time value in
+the body is the only thing binding them to an earlier verified password. They
+use `credentials: same-origin` so the cookies a completed step issues are
+stored. This application does not issue the session-bearing self-enrollment
+request the Server also serves.
+
+Only the last five requests use `credentials: same-origin`; the preceding four
 use `credentials: omit` because no session exists yet to send or receive while
 the pre-operational surface is in use.
 

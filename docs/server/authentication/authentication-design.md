@@ -263,6 +263,114 @@ implements the
 [Security Model](../../security-model.md#multifactor-authentication-security-profile)'s
 enrollment and disclosure requirements.
 
+Provisioning data is generated exactly once, when an enrollment is opened, and
+is returned in that one response only; the Server never returns it again for
+the same or a later enrollment. It is also never stored in a retrievable form:
+the secret and its `otpauth://` URI exist only in memory, held by the
+continuation ticket described below, until a code proves the caller holds
+them. Only then is the factor written, and what is written is the sealed
+factor data produced by the Server's protected-value authority, not the secret
+in any form the Server itself could read back and disclose again. An abandoned
+enrollment — one whose ticket expires or is never confirmed — therefore leaves
+no factor behind.
+
+### Second-Factor Admission
+
+A login's admission decision is exactly three inputs, evaluated only after the
+password has verified: whether the TOTP Module is enabled for the deployment,
+whether the account already holds an enrolled factor for it, and whether the
+account is required to present one. Every combination of the three resolves to
+one of four outcomes:
+
+| Module enabled | Enrolled | Required | Outcome |
+| --- | --- | --- | --- |
+| Yes | Yes | Yes | Second factor required |
+| Yes | Yes | No | Second factor required |
+| Yes | No | Yes | Enrollment required |
+| Yes | No | No | Session established |
+| No | Yes | Yes | Denied |
+| No | Yes | No | Session established |
+| No | No | Yes | Denied |
+| No | No | No | Session established |
+
+An enrolled account that is required to use MFA is denied whenever the Module
+is disabled, even though its password verified. This is deliberate: the
+deployment stated that the account must present a second factor, and admitting
+it because the Module currently cannot verify one would silently drop that
+requirement rather than enforce it. The denial is byte-identical to a
+wrong-password denial — the same stable error code, the same response body
+shape, the same absence of any cookie, and no response header that varies by
+cause — so a disabled Module cannot be detected by comparing its response with
+an ordinary wrong-password denial. Every remaining row issues a session
+directly: MFA gates a login only when the Module is enabled and the account
+already holds a factor, or when the account is required to hold one; an
+unenrolled, not-required account and an enrolled-but-not-required account whose
+Module is currently disabled both proceed straight to a session.
+
+### Password Verification
+
+Every login path costs exactly one password verification: an unknown username,
+a wrong password, an accepted login with no second factor, an accepted
+password that stops at an enrolled factor, and an accepted password that stops
+at enrollment all perform the same single call described in
+[Denial Without Account Disclosure](#denial-without-account-disclosure).
+Self-enrollment from a live session re-verifies the account's current password
+through that same call, so it also costs exactly one verification and takes
+the login route's single-permit admission lane.
+
+The routes that follow a continuation — submitting a second-factor code and
+confirming an opened enrollment with a code — perform no password verification
+and do not take that lane. A code costs one decryption of the sealed factor
+data and one HMAC comparison, not an Argon2 verification at the approved
+memory cost, so admitting it into the password lane would let a password
+verification already holding the single permit block a code that reserves none
+of that memory.
+
+### Continuation Ticket
+
+A verified password that must still present a second factor, or must still
+enroll one, does not receive a session directly. It receives a continuation
+instead: an opaque bearer value that is independently random rather than
+derived from the session, the account, or anything else, so nothing about the
+account can be recovered from it. The Server retains only its digest, never the
+continuation itself, and compares a submitted value against that digest in
+constant time.
+
+A continuation is single-use and short-lived. Claiming it removes it from the
+Server's store before the submitted code is examined, so one continuation
+admits exactly one attempt whether or not that attempt turns out to be correct;
+an invalid code still consumes the continuation it was presented with. This is
+deliberate: the user must sign in again to obtain a fresh continuation and a
+fresh attempt, rather than being allowed unlimited retries against one verified
+password. A continuation also expires five minutes after it is issued, so a
+verified password that is never followed up cannot be resumed indefinitely.
+
+### Enrollment
+
+Enrollment is opened one of two ways, and each proves current possession of the
+account's password by a different means.
+
+On the login-continuation path, a login stopped at `mfa_enrollment_required`
+because the account is required to use MFA but holds no factor yet. Opening the
+enrollment consumes that continuation, and the continuation is itself the proof
+of a current password: it was issued only after this Server verified one. No
+password is re-entered on this path.
+
+The self-enrollment path instead opens an enrollment for an account that
+already holds a live, unenrolled session — enrolling an optional factor by
+choice rather than being required to. Because no continuation exists to prove a
+current password, this route requires the live session, that session's
+cross-site request forgery token, and the account's current password,
+re-verified through the same single call every login uses. Enrolling a factor
+from a stolen session still costs the account's password.
+
+Both paths disclose a fresh secret and provisioning URI and issue a second,
+separate continuation that confirms the enrollment once a code from that secret
+is presented. Confirming binds exactly the disclosed secret: the factor and the
+replay watermark that already consumed the confirming code are written
+together in one operation, so the enrollment cannot be reopened and confirmed a
+second time and the confirming code cannot be presented again.
+
 ### Replay Watermark
 
 An acceptance window that spans three time steps would otherwise let a code
@@ -289,6 +397,11 @@ the same atomic state replacement that clears every live session. Carrying a
 watermark across a Restore would judge a newly presented code against a history
 that belongs to a different deployment state.
 
+Because a confirmed enrollment writes the factor and the watermark that
+consumed its confirming code in that same operation, the code that confirms an
+enrollment cannot then satisfy a login: presenting it again inside its own time
+step is a replay against the watermark the confirmation itself just set.
+
 ## MFA Module Enablement
 
 The TOTP Module starts disabled after Init, so the deployment's single Admin
@@ -298,6 +411,33 @@ Once TOTP is enabled and a Human User is enrolled, code verification gates
 every login for that user. A user who is required to use MFA but is not yet
 enrolled receives no application session; the Server fails closed with an
 enrollment prompt, and only when the required Module is enabled.
+
+Changing enablement is a preview-then-act decision, implemented as
+`AuthenticationRuntime::enrolled_accounts` and
+`AuthenticationRuntime::set_module_enabled`. An Administrator first previews how
+many accounts currently hold a TOTP factor; disabling the Module then names
+that same previewed count. The count, the enabled-state write, and the session
+revocation described below are one atomic operation: the count is recomputed
+and checked against the previewed value inside that same operation, and a count
+that no longer matches writes nothing and reports the current count instead, so
+a concurrent enrollment cannot change what an Administrator's decision actually
+disables. This satisfies the
+[Security Model](../../security-model.md#multifactor-authentication-security-profile)'s
+requirement to report the number of affected Human Users before disabling a
+Module with dependent enrollments.
+
+Disabling the Module also revokes the live session of every account holding a
+TOTP factor, in that same atomic operation, because those sessions were
+established behind a factor this deployment is no longer willing to verify.
+Enabling the Module revokes no session. Disablement never removes an account's
+MFA requirement: a required account that holds no verifiable factor is denied
+under the [Second-Factor Admission](#second-factor-admission) table above
+rather than admitted without one.
+
+These two operations are Server-core primitives; no Administration Plane route
+composes them yet, so the Security Model's enablement requirement is satisfied
+at the runtime layer and remains to be exposed through an administration
+route.
 
 ## Related Documents
 

@@ -3,10 +3,10 @@
 This crate assembles the trusted restricted lifecycle startup runtime, composes
 the SQLite backend catalog, and classifies startup state before any capability
 is exposed. It also owns the Server-core local authentication route layer
-(login, session validation, and logout) and the live authorization composition
-that evaluates every User Plane and Administration Plane request once a
-deployment is sealed. MFA and provider integrations remain deferred to later
-epics.
+(login, session validation, logout, TOTP second-factor verification, and TOTP
+enrollment) and the live authorization composition that evaluates every User
+Plane and Administration Plane request once a deployment is sealed. Provider
+integrations remain deferred to later epics.
 
 ## Purpose and Scope
 
@@ -32,7 +32,12 @@ Use this section as the source of truth for what assets belong in this directory
   decisions: account and password-verifier resolution, the equal-work denial
   path, the single-permit login admission lane, session issuance and
   revocation, and best-effort authentication-failure System Log dispatch before
-  a denial is returned.
+  a denial is returned. It also owns the TOTP second-factor and enrollment
+  decisions: the eight-row login admission truth table, the single-use
+  continuation ticket, second-factor code verification, enrollment opening from
+  both a login continuation and a live session, enrollment confirmation, and
+  the enrolled-account preview and session-revoking Module enablement
+  primitives.
 - `src/authorization.rs`: `AuthorizationRuntime`, the live composition point for
   both authorization decisions: the compiled-in served-component inventory, the
   catalog built from one live component-enablement read, the `ValidatedSession`
