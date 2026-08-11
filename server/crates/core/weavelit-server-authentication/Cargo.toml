@@ -1,0 +1,16 @@
+[package]
+name = "weavelit-server-authentication"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc", "password-hash", "zeroize"] }
+base64 = { version = "=0.23.0", default-features = false, features = ["alloc"] }
+getrandom = { version = "=0.4.3", default-features = false }
+sha2 = { version = "=0.11.0", default-features = false }
+subtle = { version = "=2.6.1", default-features = false }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }

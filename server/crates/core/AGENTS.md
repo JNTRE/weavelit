@@ -1,17 +1,17 @@
 # Server Core Crates Agent Guide
 
 This directory groups the Weavelit Server runtime and its core lifecycle, Init,
-and Restore orchestration crates. These crates own Server-wide composition and
-pre-operational application workflows rather than component-specific storage or
-module behavior.
+Restore, and authentication crates. These crates own Server-wide composition,
+pre-operational application workflows, and Server-owned credential handling
+rather than component-specific storage or module behavior.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Server runtime and core orchestration crate boundaries.
+- This directory owns Server runtime, core orchestration, and Server-owned authentication crate boundaries.
 - It does not own Application Database backends or Client, MFA, Log, and Service Module implementations.
-- Child paths own executable, lifecycle, Init, and Restore implementation guidance.
+- Child paths own executable, lifecycle, Init, Restore, and authentication implementation guidance.
 
 ## Asset Inventory
 
@@ -19,6 +19,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and Server core crate-boundary rules.
 - `weavelit-server/`: Weavelit Server executable crate.
+- `weavelit-server-authentication/`: Local password authentication core, the closed Argon2 profile allowlist, and session and CSRF secret material.
 - `weavelit-server-log/`: Typed Log Module contract and compiled-in catalog.
 - `weavelit-server-log-authority/`: Server-owned capability key that gates minting of trusted logging authority.
 - `weavelit-server-lifecycle/`: Backend-neutral lifecycle domain, validation, and runtime-supplied Application Database catalog contract.
@@ -30,7 +31,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read the nearest child `AGENTS.md`, then this `AGENTS.md`, `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read the matching canonical design under `../../../docs/server/` before changing runtime, lifecycle, Init, or Restore behavior.
+- Read the matching canonical design under `../../../docs/server/` before changing runtime, lifecycle, Init, Restore, or authentication behavior.
 - Keep component-specific persistence and module behavior in their sibling grouping directories.
 - Add or update focused tests with implementation behavior changes as required by `../../../docs/testing.md`.
 

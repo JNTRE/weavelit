@@ -94,6 +94,25 @@ weavelit-server-log-authority
 weavelit-server-observability
 ```
 
+The Server-owned authentication crate is:
+
+```text
+weavelit-server-authentication
+```
+
+`weavelit-server-authentication` owns the local password authentication core:
+the current Argon2id profile, the closed allowlist of profiles a stored
+verifier may be attempted against, the equal-work password decision, and
+generation and hashing of session and cross-site request forgery bearer values.
+It takes no workspace path dependency, so the transport, the listener, the
+Application Database, and every
+**[Client Module](../glossary.md#applications-and-interfaces)** are outside its
+reach. A caller supplies the stored credential as an inbound value and persists
+the replacement verifier and token digests the crate returns; the crate itself
+neither reads nor writes storage and issues no cookie. The
+[Authentication Design](authentication/authentication-design.md) owns the
+profile, the allowlist policy, and the session representation it implements.
+
 The shared Log Module contract is `weavelit-server-log`. It owns the Server
 core's typed record and dispatch boundary, not log-record construction or a
 destination implementation. `weavelit-module-log-sqlite` and a future
@@ -478,6 +497,9 @@ package. Internal workspace members are not exceptions.
   `weavelit-module-client-webui` uses it as a build-dependency only, to re-hash
   the Web UI bundle inputs and generated assets at compile time and fail closed
   on a stale embedded bundle; it is not linked into that crate's runtime code.
+  `weavelit-server-authentication` uses it for the domain-separated SHA-256
+  digest of a session token and of a per-session CSRF token, which is the only
+  representation of either value the Application Database stores.
   The standard library and existing approved dependencies do not provide
   SHA-256.
 - **Features:** default features are disabled and no optional features are
@@ -506,8 +528,10 @@ package. Internal workspace members are not exceptions.
 - **Owner and behavior:** `weavelit-server-lifecycle` uses canonical unpadded
   URL-safe Base64 for keys, nonces, deployment identifiers, locator generations,
   ciphertext, and byte-valued settings in the version 1 JSON formats and
-  code-owned locator filenames. The standard library and approved dependencies
-  do not provide Base64 encoding or canonical decoding.
+  code-owned locator filenames. `weavelit-server-authentication` uses the same
+  canonical unpadded URL-safe engine to encode the 32 random bytes of a session
+  token and of a per-session CSRF token. The standard library and approved
+  dependencies do not provide Base64 encoding or canonical decoding.
 - **Features:** default features are disabled and only `alloc` is enabled. The
   `std` and `simd-unsafe` features are excluded; lifecycle format handling does
   not require architecture-specific unsafe SIMD acceleration.
@@ -822,7 +846,10 @@ every dependency-resolution change.
   temporary-file uniqueness, and AEAD nonces. `weavelit-server` obtains the same
   randomness for the Restore-result System Log record identifier and its
   correlation identifier, which must be unpredictable and must not derive from
-  request content. The Rust standard library and approved dependencies do not
+  request content. `weavelit-server-authentication` obtains the random salt for
+  a decoy or replacement password verifier and the 32 bytes of entropy behind
+  each session and CSRF token. The Rust standard library and approved
+  dependencies do not
   expose the required fallible operating-system random-byte interface.
 - **Features:** default features are disabled and no optional features are
   enabled. The `std`, `sys_rng`, and `wasm_js` features are excluded; Milestone
@@ -878,7 +905,10 @@ every dependency-resolution change.
   `Zeroize` trait for application-owned at-rest key and decrypted anchor buffers.
   `weavelit-server` uses `Zeroizing` for the owned backup artifact and recovery
   key a Restore takes custody of, so both are cleared when the orchestration
-  releases them rather than surviving in a runtime buffer. The standard library
+  releases them rather than surviving in a runtime buffer.
+  `weavelit-server-authentication` uses `Zeroizing` for the encoded session and
+  CSRF token text, which exists only long enough to reach the response that
+  carries it. The standard library
   does not guarantee that clearing sensitive memory will survive compiler
   optimization.
 - **Features:** default features are disabled and only `alloc` is enabled. The
@@ -942,6 +972,92 @@ every dependency-resolution change.
   vector and whitespace, ordering, trailing-content, invalid UTF-8, size,
   malformed-input, and redaction tests pass. The locked graph enables only
   `std`; `make -C server check` passes all 78 tests and the locked release build.
+
+#### `argon2`
+
+- **Source and version:** crates.io `=0.5.3`.
+- **Owner and behavior:** `weavelit-server-authentication` uses the RustCrypto
+  Argon2 implementation for the
+  [Authentication Design](authentication/authentication-design.md)'s Argon2id
+  password-hashing profile: parsing a stored PHC verifier, verifying a
+  submitted password against an allowlisted profile, and producing a
+  replacement verifier at the current profile. Argon2 is a memory-hard
+  password-hashing function whose correctness and side-channel behavior must
+  not be hand-written; the Rust standard library and every other approved
+  dependency provide no password-hashing function.
+- **Features:** default features are disabled; only `alloc`, `password-hash`,
+  and `zeroize` are enabled. `alloc` and `password-hash` supply the PHC string
+  parser and writer the stored format requires, and `zeroize` clears the
+  algorithm's internal block memory on drop. `std`, `rand`, `simple`, and
+  `parallel` are excluded: the crate obtains fallible operating-system
+  randomness through its direct `getrandom` dependency, never uses the
+  convenience wrappers, and runs the approved `p=1` profile with no thread
+  pool.
+- **Maintenance and license:** `argon2` 0.5.3 was published on January 20, 2024,
+  declares Rust 1.65 and later, and uses the MIT or Apache-2.0 license. It is
+  published by the RustCrypto password-hashes project. The stable 0.5 line is
+  selected deliberately over the 0.6 release-candidate line; a pre-release is
+  not an approved production source. The consequence is that the locked graph
+  carries the `digest` 0.10 stack (`blake2` 0.10.6, `digest` 0.10.7,
+  `block-buffer` 0.10.4, `crypto-common` 0.1.7, `generic-array` 0.14.7)
+  alongside the `digest` 0.11 stack the approved `sha2` 0.11 already resolves.
+  The duplication is accepted for this release; adopting the 0.6 line once it
+  is released is a separate, reviewed dependency change.
+- **Advisory review:** the August 11, 2026 OSV review found no advisory matching
+  `argon2` 0.5.3, `password-hash` 0.5.0, `base64ct` 1.8.3, `digest` 0.10.7,
+  `block-buffer` 0.10.4, `crypto-common` 0.1.7, or `version_check` 0.9.5.
+  `blake2` has RUSTSEC-2019-0019, an incorrect-HMAC-block-size defect affecting
+  versions before 0.8.1; the resolved 0.10.6 is unaffected. `generic-array` has
+  RUSTSEC-2020-0146, an unsoundness in the `arr!` macro affecting versions
+  before 0.13.3; the resolved 0.14.7 is unaffected.
+- **Safe failure:** a stored verifier is parsed and matched against the closed
+  profile allowlist before Argon2 is invoked, and the engine re-checks that
+  match immediately before running, so the cost parameters encoded in a stored
+  value can never select the memory one verification allocates. Every
+  allowlisted profile stays within the approved 64 MiB verification ceiling. A
+  malformed verifier, an unlisted profile, an unknown account, an inactive
+  account, and an account with no verifier are all denied after one
+  verification against a decoy verifier built at the current profile, so no
+  denial is distinguishable from a wrong password. A hashing failure is a
+  payload-free error that never carries a password, a salt, or rejected PHC
+  text.
+- **Validation:** thirty focused package tests cover the approved profile
+  constants, fourteen rejected non-allowlisted encodings including the
+  approximately 4 GiB `m=4194304,t=100,p=16` verifier a hostile backup could
+  carry, policy construction above the verification ceiling, engine refusal of
+  a verifier outside its own policy, real Argon2 verification and rehashing at
+  a test profile, and an injected operation-counting engine that proves every
+  denial path performs one verification of identical shape and produces no
+  replacement verifier. `make -C server check` passes formatting, Clippy with
+  warnings denied, all locked workspace tests, and the locked release build.
+
+#### `subtle`
+
+- **Source and version:** crates.io `=2.6.1`.
+- **Owner and behavior:** `weavelit-server-authentication` compares a stored
+  session or CSRF token digest against a submitted one without a
+  data-dependent branch or early return. The standard library's `PartialEq` for
+  byte arrays is permitted to short-circuit, which would leak digest prefix
+  agreement through timing. The package is already in the locked graph as a
+  transitive dependency of `password-hash` and `curve25519-dalek`; this record
+  approves it as a direct dependency.
+- **Features:** default features are disabled and no optional feature is
+  enabled. `std`, `i128`, `const-generics`, and the nightly
+  `core_hint_black_box` feature are excluded; the crate uses only the
+  `ConstantTimeEq` trait over fixed-size byte arrays.
+- **Maintenance and license:** version 2.6.1 uses the BSD-3-Clause license and
+  is published by the dalek-cryptography project. It has no non-development
+  dependencies in the locked graph.
+- **Advisory review:** the August 11, 2026 OSV review found no advisory matching
+  `subtle` 2.6.1.
+- **Safe failure:** comparison returns a `Choice` that is converted to a `bool`
+  only at the decision point, and a digest type implements neither `PartialEq`
+  nor `Display`, so constant-time comparison is the only comparison a caller can
+  reach and no digest can be rendered into a log or a response.
+- **Validation:** the session-token tests cover a matching digest, an empty
+  token, a different token, a single altered character, a digest reconstructed
+  from stored bytes, and domain separation between the session and CSRF digest
+  domains.
 
 The workspace manifest owns an approved shared dependency's identity, version,
 source, and any workspace-wide security baseline. A single-consumer dependency

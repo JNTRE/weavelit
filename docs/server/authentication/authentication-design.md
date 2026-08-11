@@ -21,12 +21,68 @@ implementation design has not moved here yet.
 
 Local Human User passwords are hashed with Argon2id version 1.3 from the
 RustCrypto `argon2` crate using `m=65536 KiB`, `t=3`, `p=1`, a 16-byte random
-salt, and a 32-byte output, and are stored in PHC string format. After a
-successful authentication, the Server rehashes and replaces the stored
-verifier whenever its encoded parameters differ from the currently configured
-parameters. This satisfies the
+salt, and a 32-byte output, and are stored in PHC string format. This is the
+current profile: every new and replacement verifier is produced at it. This
+satisfies the
 [Security Model](../../security-model.md#password-and-session-security-profile)'s
 adaptive password-hashing requirement.
+
+### Accepted Verifier Profiles
+
+A stored verifier is attacker-influenced input. It is read from the
+**[Application Database](../../glossary.md#applications-and-interfaces)**, and a
+**[Restore](../../glossary.md#states-and-requests)** can install one whose
+encoded parameters its author chose. Argon2 verification allocates the memory
+the encoded string asks for, so a verifier such as
+`$argon2id$v=19$m=4194304,t=100,p=16$…` would make one unauthenticated login
+attempt request roughly 4 GiB.
+
+The Server therefore accepts stored verifiers by a closed allowlist rather than
+by a bound. A stored verifier is verified against only when its algorithm,
+version, memory cost, iteration count, degree of parallelism, decoded salt
+length, and output length all exactly match an entry in an explicitly listed set
+of accepted profiles. An absent version field, an unknown or extra PHC
+parameter, a key identifier, associated data, a different password-hashing
+function, and an unparseable string are all outside the list.
+
+Every accepted profile must sit within a 64 MiB verification ceiling, which
+bounds what a single unauthenticated login attempt can cost. That invariant is
+enforced where the profile set is constructed, so a profile above the ceiling
+cannot be configured at all.
+
+The allowlist currently holds exactly one entry: the current profile above.
+Adding an entry is a deliberate, reviewed change that accepts stored verifiers
+at that profile until it is removed, and it must be recorded here in the same
+change.
+
+A verifier outside the allowlist is refused as an authentication failure. It is
+never attempted, so its encoded cost parameters never reach the hashing library.
+
+### Rehashing On Profile Drift
+
+After a successful verification against an accepted profile that is not the
+current profile, the Server produces a fresh verifier for the submitted password
+at the current profile and returns it to the caller to persist in place of the
+stored one. A verifier already at the current profile produces no replacement, a
+denied authentication never produces one, and a replacement is always produced
+at the current profile rather than at the profile the stored verifier used.
+Rehashing is therefore reachable only for a profile that the allowlist accepted
+and that the ceiling already bounded.
+
+### Denial Without Account Disclosure
+
+An unknown account, an inactive account, an account with no stored verifier, and
+an account whose stored verifier is outside the allowlist are all denied only
+after one real Argon2 verification against a decoy verifier built at the current
+profile. Every denial therefore performs the same verification work as a wrong
+password and is indistinguishable from it. The decoy is a valid PHC string with
+a random salt and a random output, so no submitted password can match it. A
+denial is not reported as an error, so no caller can separate "no such account"
+from "wrong password" by inspecting a failure value.
+
+This equal-work property is proved by counting the verification operations a
+decision performs through an injected verification seam, not by comparing
+elapsed time.
 
 ## Session Representation
 
@@ -40,14 +96,38 @@ The session uses a balanced lifetime policy: a 30-minute idle timeout, a
 12-hour absolute maximum, and a browser-session cookie carrying no `Max-Age`
 or `Expires` attribute.
 
+The stored hash is domain-separated, so a session hash and a CSRF hash of the
+same bytes are different values. A stored hash is compared only in constant
+time, and neither a token nor a stored hash renders through `Debug` or
+`Display`; both produce a fixed redacted string instead.
+
 ## Cross-Site Request Forgery Protection
 
-Each session has a separate random per-session CSRF token; the Server stores
-only its SHA-256 hash alongside the session. The token is exposed to the
-browser through a secure, same-site readable cookie and is required in the
+Each session has a separate random per-session CSRF token of 32 random bytes
+encoded the same way; the Server stores only its SHA-256 hash alongside the
+session. The two tokens are independent random values, so disclosing the CSRF
+token to the browser cannot reveal the session token. The token is exposed to
+the browser through a secure, same-site readable cookie and is required in the
 `X-Weavelit-CSRF` header on every mutating request, alongside same-origin
 validation. The Server rotates the CSRF token on login and on MFA or privilege
 elevation.
+
+## Implementation Boundary
+
+`weavelit-server-authentication` owns the profile, the allowlist, the equal-work
+password decision, and generation and hashing of the session and CSRF values. It
+takes no workspace path dependency, so it cannot reach the transport, the
+listener, the Application Database, or a
+**[Client Module](../../glossary.md#applications-and-interfaces)**. A caller
+supplies the stored credential as an inbound value and persists the replacement
+verifier and the token hashes the crate returns. Session persistence, session
+lifetime enforcement, cookie emission, and route contracts are owned outside
+this crate.
+
+The `argon2` and `subtle` dependency records, and the authentication crate's use
+of the already-approved `sha2`, `base64`, `getrandom`, and `zeroize`
+dependencies, are recorded in the
+[Server Architecture Design](../server-architecture-design.md#approved-production-dependencies).
 
 ## TOTP Multifactor Authentication
 
@@ -75,4 +155,5 @@ enrollment prompt, and only when the required Module is enabled.
 
 - [Security Model](../../security-model.md)
 - [Technical Specification](../../spec.md)
+- [Server Architecture Design](../server-architecture-design.md)
 - [Glossary](../../glossary.md)
