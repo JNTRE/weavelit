@@ -331,3 +331,80 @@ describe("ApplicationShell Restore form gating", () => {
     });
   });
 });
+
+describe("ApplicationShell sign-in panel gating", () => {
+  function loginSection(): HTMLElement | null {
+    return document.querySelector("section[data-authentication-state]");
+  }
+
+  /** Reports whether a recorded request target is an authentication route. */
+  function authenticationTarget(input: unknown): boolean {
+    return typeof input === "string" && input.startsWith("/api/v1/auth/");
+  }
+
+  function routedFetch(routes: {
+    status: () => Promise<Response>;
+    session: () => Promise<Response>;
+  }) {
+    return vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((input: unknown) =>
+        authenticationTarget(input) ? routes.session() : routes.status(),
+      );
+  }
+
+  function sessionRejected(): Promise<Response> {
+    return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+  }
+
+  it.each([
+    ["no database is selected", () => unselectedStatus()],
+    [
+      "a database is selected",
+      () => Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: true })),
+    ],
+  ])(
+    "issues no authentication request while the status projection is served (%s)",
+    async (_label, status) => {
+      const fetchMock = routedFetch({ status, session: sessionRejected });
+
+      render(<ApplicationShell />);
+
+      await waitFor(() => {
+        expect(statusRegion().dataset.statusState).toBe("available");
+      });
+      expect(loginSection()).toBeNull();
+      expect(fetchMock.mock.calls.filter(([target]) => authenticationTarget(target))).toHaveLength(
+        0,
+      );
+    },
+  );
+
+  it("offers the sign-in panel once the status projection is no longer served", async () => {
+    routedFetch({
+      status: () => Promise.resolve(jsonResponse({ error: "not_found" }, 404)),
+      session: sessionRejected,
+    });
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.getByLabelText("Username")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+  });
+
+  it("offers no sign-in panel when the authentication surface is absent too", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED 127.0.0.1:8443"));
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("unavailable");
+    });
+    await waitFor(() => {
+      expect(loginSection()).toBeNull();
+    });
+  });
+});

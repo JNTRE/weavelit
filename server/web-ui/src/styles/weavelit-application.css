@@ -126,3 +126,52 @@ body {
 .shell__restore-failure {
   margin: var(--ds-space-md) 0 0;
 }
+
+.shell__login {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-md);
+  margin: var(--ds-space-lg) 0 0;
+  padding: var(--ds-space-md);
+}
+
+.shell__login-title {
+  font-size: var(--ds-font-size-lg);
+  margin: 0;
+}
+
+.shell__login-description {
+  margin: var(--ds-space-sm) 0 var(--ds-space-md);
+}
+
+.shell__login-label {
+  display: block;
+  margin: var(--ds-space-md) 0 var(--ds-space-xs);
+}
+
+.shell__login-username,
+.shell__login-password {
+  display: block;
+  font: inherit;
+  max-width: 100%;
+}
+
+.shell__login-action {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  margin: var(--ds-space-md) 0 0;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+}
+
+.shell__login-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.shell__login-authenticated,
+.shell__login-failure {
+  margin: var(--ds-space-md) 0 0;
+}

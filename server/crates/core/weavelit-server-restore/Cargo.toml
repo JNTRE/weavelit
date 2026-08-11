@@ -28,9 +28,16 @@ zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 # `flate2` decompresses the zlib-compressed C2SP CCTV vector bodies. It is a
 # test-only dependency and never reaches the Server binary; `rust_backend`
 # selects the pure-Rust `miniz_oxide` implementation so no C zlib is linked.
+#
+# `weavelit-server-authentication` derives the committed fixtures' administrator
+# password verifier at the approved Argon2id profile, so the fixture carries a
+# verifier the Server actually accepts rather than a placeholder, and `argon2`
+# lets a test read that verifier's encoded parameters back. Both are test-only.
 [dev-dependencies]
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc", "password-hash"] }
 flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 tempfile = "=3.27.0"
+weavelit-server-authentication = { path = "../weavelit-server-authentication" }
 
 [[example]]
 name = "generate-restore-fixtures"

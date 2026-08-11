@@ -8,6 +8,7 @@ import {
   type StatusViewState,
 } from "../hooks/weavelit-init-deployment-status";
 import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
+import { LoginPanel } from "./weavelit-login-form";
 
 const LOADING_MESSAGE = "Checking the deployment status.";
 const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
@@ -59,6 +60,12 @@ export function ApplicationShell(): JSX.Element {
   // status projection stops being served at all once the deployment is sealed,
   // so the same condition withdraws the form after activation.
   const offerRestore = state.kind === "available" && state.status.databaseSelected;
+  // The pre-operational status route is served only before sealing, so its
+  // absence is the signal that this deployment may now be operational. The
+  // panel confirms that against the Server's own authentication surface and
+  // renders nothing when that surface is absent, so an unreachable Server does
+  // not produce a sign-in form that could never succeed.
+  const offerLogin = state.kind === "unavailable";
 
   return (
     <main className="shell">
@@ -87,6 +94,7 @@ export function ApplicationShell(): JSX.Element {
         </section>
       ) : null}
       {offerRestore ? <RestoreSubmissionForm /> : null}
+      {offerLogin ? <LoginPanel /> : null}
     </main>
   );
 }

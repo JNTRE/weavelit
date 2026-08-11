@@ -1,6 +1,6 @@
 # Web UI Application Design
 
-This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the Application Database selection control, and the **[Restore](../../glossary.md#states-and-requests)** submission control. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, and the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser. This document does not restate any of those contracts.
+This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the Application Database selection control, the **[Restore](../../glossary.md#states-and-requests)** submission control, and the sign-in control. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser, and the [Server Authentication Design](../../server/authentication/authentication-design.md) and [Server API Contract](../../server/api/api-contract-design.md) own the shared session and sign-in route contract the sign-in control drives. This document does not restate any of those contracts.
 
 ## Build Toolchain
 
@@ -193,40 +193,112 @@ validity.
 
 ## Authentication
 
-This application does not yet implement a sign-in interface or issue any
-request to the Server's shared authentication routes. In the current build,
-the Web UI **[Client Module](../../glossary.md#applications-and-interfaces)**
-is the only registered `client_module` value the login route accepts, so this
-application is the sole eligible client for a session once a sign-in interface
-is added. The route contract, the session and cross-site request forgery
-cookies it would rely on, and the login admission bound are owned by the
-[Server Authentication Design](../../server/authentication/authentication-design.md)
-and the [Server API Contract](../../server/api/api-contract-design.md); this
-document does not restate them.
+This application implements the browser sign-in surface for the shared session
+the [Server Authentication Design](../../server/authentication/authentication-design.md)
+and the [Server API Contract](../../server/api/api-contract-design.md) own; the
+Web UI **[Client Module](../../glossary.md#applications-and-interfaces)** is the
+only registered `client_module` value the login route accepts, so this
+application is the sole eligible client for a session. This document owns only
+the control's presentation, gating, and confidentiality behavior in the
+browser; it does not restate the route contract or the session and
+cross-site request forgery (CSRF) cookie shapes those documents define.
+
+### Sign-In Control
+
+The shell offers the sign-in control exactly when the pre-operational status
+projection described in [Status Presentation States](#status-presentation-states)
+is no longer served, which is the only externally observable signal that a
+deployment may now be operational: the status route is withdrawn once the
+deployment is sealed, and an unreachable Server produces the identical
+absence. The control does not render on that signal alone. It first probes the
+Server's own session route and renders nothing while that probe is in flight or
+if the probed surface is also absent, so an unreachable Server never presents a
+form that could never succeed. Because **[Restore](../../glossary.md#states-and-requests)**
+is currently the only way a deployment acquires an account, a real sign-in is
+reachable only once a Restore has completed.
+
+The control is presented in a titled region carrying a
+`data-authentication-state` attribute for testability. Its initial probe and an
+absent authentication surface both render nothing; the remaining four states
+are:
+
+| State | Condition | Presentation |
+| --- | --- | --- |
+| Unauthenticated | The session probe reports no session authenticates. | A username input, a masked password input, and an action; the action is enabled once both are non-empty. |
+| Submitting | A sign-in request is in flight. | Both inputs and the action are disabled, so a repeated activation cannot issue a second sign-in. |
+| Failed | The submitted credential was rejected. | The inputs and action are re-enabled and the one fixed failure message is presented in an assertive live region. |
+| Authenticated | The session probe, or a completed sign-in, reports an established session. | The inputs and action are replaced by a fixed confirmation message in a polite live region. |
+
+The failure message is fixed and redacted: `Sign-in failed.` The login route
+deliberately reports no cause for a denial and returns the identical response
+for an unknown account, an inactive account, and a wrong password; the
+application discards whatever it received rather than inspecting it, so it has
+nothing to render even if a future response tried to distinguish causes. This
+follows the same precedent as the status and selection failure states.
+
+The username is held in component state for the duration of the panel. The
+password is held in component state only and is cleared as soon as the attempt
+it drove settles, whether that attempt succeeded or failed. Neither is ever
+rendered, and neither is written to a URL, a cookie, or any browser storage.
+
+### CSRF Cookie Handling
+
+The application reads the Server's readable `__Host-weavelit_csrf` cookie and
+echoes its value in the `X-Weavelit-CSRF` header of the session probe, the one
+mutating request this application issues while an existing session may already
+be present. A cookie value outside the issued opaque-token shape is discarded
+rather than echoed, so nothing else a cookie jar happens to hold can reach a
+request header. The login request instead carries the fixed pre-session literal
+the route requires, because signing in is the bootstrap request: no session,
+and therefore no per-session CSRF token, exists yet to echo. The session cookie
+itself is never read by this application; the browser attaches it
+automatically, and the application never inspects, renders, or stores its
+value.
+
+### Confidentiality
+
+No credential or session-related value is ever placed in a URL, a query
+string, `localStorage`, `sessionStorage`, or rendered output. The username and
+password travel only in the login request body; the session and CSRF values
+are only ever carried in the cookies the Server sets and reads, and this
+application never reads either back from a response body, renders either, or
+persists either itself.
 
 ## Same-Origin Requests
 
-The application issues exactly four outbound request kinds, all same-origin, all
-with `credentials: omit`, `cache: no-store`, and `redirect: error`:
+The application issues exactly six outbound request kinds, all same-origin,
+all with `cache: no-store` and `redirect: error`:
 
-- `GET /api/v1/status` with `Accept: application/json`;
+- `GET /api/v1/status` with `Accept: application/json` and `credentials: omit`;
 - `PUT /api/v1/application-database` with `Accept: application/json`, an
   unparameterized `Content-Type: application/json`, the required
-  `X-Weavelit-CSRF` header, and the fixed request body the
+  `X-Weavelit-CSRF` header, `credentials: omit`, and the fixed request body the
   [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
   defines;
-- `PUT /api/v1/restore` with the same JSON headers and a body carrying only the
-  recovery key; and
+- `PUT /api/v1/restore` with the same JSON headers, `credentials: omit`, and a
+  body carrying only the recovery key;
 - `PUT /api/v1/restore/artifact` with `Accept: application/json`, an
   unparameterized `Content-Type: application/octet-stream`, the required
-  `X-Weavelit-CSRF` header, the issued ticket in `X-Weavelit-Restore-Ticket`,
-  and the selected file as the request body.
+  `X-Weavelit-CSRF` header, `credentials: omit`, the issued ticket in
+  `X-Weavelit-Restore-Ticket`, and the selected file as the request body;
+- `PUT /api/v1/auth/login` with `Accept: application/json`, an unparameterized
+  `Content-Type: application/json`, the fixed pre-session `X-Weavelit-CSRF`
+  literal the route requires, `credentials: same-origin` so the Server's
+  issued cookies are stored, and a body carrying the username, the password,
+  and this application's Client Module identifier; and
+- `PUT /api/v1/auth/session` with `Accept: application/json`, the
+  `X-Weavelit-CSRF` header carrying the readable cookie's value when one is
+  present, and `credentials: same-origin` so an already-issued session cookie
+  is sent.
+
+Only the last two requests use `credentials: same-origin`; the preceding four
+use `credentials: omit` because no session exists yet to send or receive while
+the pre-operational surface is in use.
 
 The application never sets `Host` or `Origin`. Both are forbidden header names
 that the browser populates itself on a same-origin request, and a same-origin
 request satisfies the route's precondition without client involvement. The
-application sends no other request, uses no credentials, and performs no
-cross-origin call.
+application sends no other request and performs no cross-origin call.
 
 ## Related Documents
 

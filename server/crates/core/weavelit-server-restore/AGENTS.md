@@ -38,8 +38,10 @@ state normalization performed before any deployment state is replaced.
   Server binary.
 - `tests/`: Bounds, envelope, recovery-key, content, age parameter policy,
   multi-chunk STREAM, fixture-reproducibility, secret re-sealing, and end-to-end
-  validation tests, plus the shared deterministic fixture generator and harness
-  in `tests/support/`.
+  validation tests, a fixture-credential test (`tests/credentials.rs`) that
+  authenticates the committed fixtures' administrator password verifier
+  through the real password authenticator, plus the shared deterministic
+  fixture generator and harness in `tests/support/`.
 - `tests/fixtures/`: Immutable committed backup fixtures, their canonical
   recovery keys, the expected decrypted plaintext for each valid fixture, and
   the `fixtures.json` manifest pinning every fixture's byte length and SHA-256

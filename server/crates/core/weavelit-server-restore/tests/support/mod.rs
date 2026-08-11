@@ -16,7 +16,7 @@
 //! are not external validation of the age format itself. Nothing here is
 //! production code; the Server only ever decrypts.
 
-use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path};
+use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path, sync::OnceLock};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use chacha20poly1305::{
@@ -24,6 +24,9 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
 };
 use sha2::{Digest, Sha256};
+use weavelit_server_authentication::{
+    Argon2Engine as _, CURRENT_ARGON2_PROFILE, PasswordPolicy, RustCryptoArgon2,
+};
 use weavelit_server_restore::{
     AvailableComponents, BackendIdentifier, DeploymentIdentifier, Name, RequestBudget,
     RestoreAuthority, RestoreError, RestoreRequest, RestoreTarget, RestoreValidator,
@@ -63,6 +66,50 @@ const RECIPIENT_HRP: &str = "age";
 const X25519_LABEL: &[u8] = b"age-encryption.org/v1/X25519";
 const HEADER_LABEL: &[u8] = b"header";
 const PAYLOAD_LABEL: &[u8] = b"payload";
+
+/// The password the committed fixtures' `administrator` account is restored
+/// with.
+///
+/// It is a fixture credential rather than a secret: the fixtures exist so a
+/// test can restore a deployment and then sign in to it, which is only possible
+/// if the fixture's stored verifier was derived from a password the test knows.
+pub const FIXTURE_ADMINISTRATOR_PASSWORD: &str = "fixture-administrator-password";
+
+/// Fixed salt the fixture verifier is derived with.
+///
+/// Argon2 salts are random in production. This one is fixed so the derived
+/// verifier, and therefore every fixture that embeds it, stays byte
+/// reproducible. Only the leading [`Argon2Profile::salt_bytes`] of it are used,
+/// so a profile change carries the salt with it instead of failing to encode.
+///
+/// [`Argon2Profile::salt_bytes`]: weavelit_server_authentication::Argon2Profile::salt_bytes
+const FIXTURE_VERIFIER_SALT: [u8; 48] = [
+    0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf, 0xc0,
+    0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf, 0xd0,
+    0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf, 0xe0,
+];
+
+/// Returns the committed fixtures' administrator password verifier.
+///
+/// The verifier is derived, not written down: it is produced by the Server's own
+/// hashing engine at [`CURRENT_ARGON2_PROFILE`], so it cannot drift away from
+/// the approved profile or from the profile allowlist that decides whether a
+/// stored verifier may be attempted at all. Deriving it costs the approved
+/// profile's full memory and time once per test process, so the result is
+/// cached.
+pub fn administrator_verifier() -> &'static str {
+    static VERIFIER: OnceLock<String> = OnceLock::new();
+    VERIFIER.get_or_init(|| {
+        let salt = &FIXTURE_VERIFIER_SALT[..CURRENT_ARGON2_PROFILE.salt_bytes()];
+        RustCryptoArgon2::new(PasswordPolicy::approved())
+            .hash(
+                FIXTURE_ADMINISTRATOR_PASSWORD.as_bytes(),
+                &CURRENT_ARGON2_PROFILE,
+                salt,
+            )
+            .expect("the approved profile must produce a verifier")
+    })
+}
 
 /// Fixed outer envelope constants, duplicated so a production change is caught.
 const MAGIC: [u8; 8] = *b"WLBKUP\r\n";
@@ -360,7 +407,7 @@ fn padded_backup_plaintext(
             "\"configuration\":[{{\"component\":\"weavelit-server\",\"key\":\"site-name\",\"value\":\"Example\"}}{padding}],",
             "\"protected_secrets\":[{{\"component\":\"weavelit-server\",\"key\":\"at-rest-probe\",\"value\":\"{component_secret}\"}}],",
             "\"accounts\":[{{\"identifier\":\"{account}\",\"username\":\"administrator\",\"display_name\":\"Site Administrator\",\"active\":true}}],",
-            "\"password_verifiers\":[{{\"account\":\"{account}\",\"verifier\":\"$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0$dmVyaWZpZXJ2ZXJpZmllcnZlcmlmaWVy\"}}],",
+            "\"password_verifiers\":[{{\"account\":\"{account}\",\"verifier\":\"{verifier}\"}}],",
             "\"groups\":[{{\"identifier\":\"{group}\",\"name\":\"Administrators\",\"description\":\"Full access\"}}],",
             "\"group_memberships\":[{{\"group\":\"{group}\",\"account\":\"{account}\"}}],",
             "\"group_grants\":[{{\"group\":\"{group}\",\"grant\":{{\"type\":\"server_administration\"}}}},",
@@ -379,6 +426,7 @@ fn padded_backup_plaintext(
         component_secret = component_secret,
         account = account,
         group = group,
+        verifier = administrator_verifier(),
         mfa_factors = mfa_factors,
         service_connections = service_connections,
         log_configuration = log_configuration,

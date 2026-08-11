@@ -430,12 +430,39 @@ the C2SP Community Cryptography Test Vectors for age; the
 [Server Architecture Design](../../server-architecture-design.md) records their
 provenance, license, and the pinned outcome of every one.
 
+Both valid artifacts restore one `administrator` account, and its committed
+password verifier must be one the Server actually accepts and one a known
+password actually verifies against: a structurally valid but unusable
+placeholder would satisfy every content rule above while making sign-in
+permanently impossible, and would defeat the purpose of an end-to-end sign-in
+test. The verifier is therefore derived, not written down. The fixture
+generator's test harness (`tests/support/mod.rs`) derives it at the current
+approved Argon2id profile from a fixed salt and the documented fixture
+password held in its `FIXTURE_ADMINISTRATOR_PASSWORD` constant, using the
+Server's own `weavelit-server-authentication` crate as a test-only dependency
+so the verifier cannot drift from the
+[approved profile](../../authentication/authentication-design.md#password-hashing)
+or its
+[allowlist](../../authentication/authentication-design.md#accepted-verifier-profiles).
+Because the password is shared plaintext embedded in every generated backup,
+regenerating it necessarily rewrites the derived bytes of every fixture that
+embeds it, including every negative fixture derived from `valid.wlitbackup`;
+that is expected and is not evidence of an unrelated change. `tests/credentials.rs`
+reads the verifier back through the production Restore reader, rather than
+from the plaintext expectation beside it, and asserts the real
+`PasswordAuthenticator` returns `Verified { replacement: None }` for the
+documented fixture password against both valid artifacts, pinning the verifier
+to the *current* approved profile rather than merely an accepted one, and
+denies every other tried password.
+
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify
 bounded transfer, normalized status and errors, lifecycle gating, and absence
 of sensitive output. Server process tests verify interruption classification and
 the in-process transition to normal operation. Web UI end-to-end tests cover
-the complete Restore story and fail-closed interrupted-workflow behavior.
+the complete Restore story, a real sign-in to the restored account, that
+session's persistence across a Server restart, and fail-closed
+interrupted-workflow behavior.
 
 `weavelit-server` tests drive the runtime orchestration directly against the
 committed backup fixtures. They prove that a valid Restore activates the
@@ -471,5 +498,6 @@ tests that exercise other behavior with the canonical fixture.
 - [Server Init Design](../init/init-design.md)
 - [Web UI Pre-Operational Restore Surface](../../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Application Database Design](../../database/application-database-design.md)
+- [Authentication Design](../../authentication/authentication-design.md)
 - [Testing and Validation Policy](../../../testing.md)
 - [Log Module Design](../../../log-modules/log-module-design.md)
