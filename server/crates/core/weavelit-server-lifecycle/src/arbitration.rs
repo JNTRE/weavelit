@@ -121,6 +121,69 @@ impl WorkflowArbiter {
         Ok(WorkflowPermit { store, database })
     }
 
+    /// Reauthorizes the exact released Init checkpoint under a fresh permit.
+    ///
+    /// This is how a paused Init re-enters the mutation lane for its second
+    /// request. It grants nothing on the strength of the released value alone:
+    /// it takes a new exclusive permit, re-reads the deployment record, reopens
+    /// the selected database, and requires the retained pending checkpoint to
+    /// equal the released one in deployment binding, workflow kind, and
+    /// recorded metadata. A checkpoint that was replaced, altered, or is absent,
+    /// and a released value bound to another deployment, are each refused
+    /// before the caller may act.
+    ///
+    /// The permit is reacquired here rather than carried across the pause, so
+    /// the lane, the database handle, and the record stay free while the person
+    /// saves the delivered key.
+    pub fn reauthorize_pending_init<'arbiter>(
+        &'arbiter self,
+        catalog: &BackendCatalog,
+        context: &TrustedBackendContext,
+        released: &ReleasedInitCheckpoint,
+    ) -> Result<PendingWorkflow<'arbiter>, WorkflowError> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| WorkflowError::Lifecycle(POISONED))?;
+
+        // Exhaustive so a new lifecycle state fails to compile until this
+        // authority states how a paused Init answers for it.
+        match store.record().state() {
+            LifecycleState::InitializationPending => {}
+            LifecycleState::Uninitialized => return Err(WorkflowError::NotAllowed),
+            LifecycleState::Initialized => return Err(WorkflowError::AlreadyInitialized),
+        }
+        let deployment_identifier = store.record().deployment_identifier();
+        if released.checkpoint.deployment_identifier() != deployment_identifier {
+            return Err(WorkflowError::StateMismatch);
+        }
+        let locator = store.locator().ok_or(WorkflowError::DatabaseNotSelected)?;
+
+        let mut database = catalog
+            .reopen(locator.settings(), context)
+            .map_err(WorkflowError::Lifecycle)?;
+        // The whole checkpoint value is compared, so a differing workflow kind,
+        // deployment binding, or metadata byte all fail the same way.
+        match database
+            .inspect(deployment_identifier)
+            .map_err(map_database_error)?
+        {
+            DatabaseInspection::Pending(retained) if retained == released.checkpoint => {}
+            DatabaseInspection::Initialized { .. } => {
+                return Err(WorkflowError::AlreadyInitialized);
+            }
+            DatabaseInspection::Pending(_) | DatabaseInspection::Uninitialized => {
+                return Err(WorkflowError::StateMismatch);
+            }
+        }
+
+        Ok(PendingWorkflow {
+            store,
+            database,
+            checkpoint: released.checkpoint.clone(),
+        })
+    }
+
     /// Loads a sealed deployment's application state under the exclusive permit.
     ///
     /// Startup classification is a routing control, not the authority, so this
@@ -308,6 +371,75 @@ impl<'arbiter> WorkflowPermit<'arbiter> {
             database: self.database,
             checkpoint,
         })
+    }
+
+    /// Creates the Init checkpoint and then releases the whole mutation lane.
+    ///
+    /// Restore never pauses, so it keeps one uninterrupted permit from
+    /// authorization through sealing. Init must pause: the person completing it
+    /// saves the delivered recovery key between two requests, and the exclusive
+    /// permit, the open database handle, and the deployment record must not be
+    /// held for that. This performs the same point-of-no-return transition as
+    /// [`WorkflowPermit::create_checkpoint`], fixes the workflow kind to
+    /// [`WorkflowKind::Init`], and then gives all three back.
+    ///
+    /// The database is closed rather than dropped, because a handle released
+    /// for as long as a person takes to save a key must not leave a live
+    /// connection or an unreconciled write-ahead log behind it.
+    ///
+    /// What it returns is a process-local [`ReleasedInitCheckpoint`] with no
+    /// permit, no database, and no durable representation of its own. A restart
+    /// therefore cannot produce one, and the retained checkpoint it names is
+    /// classified as an interrupted new deployment exactly as any other Init
+    /// checkpoint is.
+    pub fn create_init_checkpoint_and_release(
+        self,
+        metadata: CheckpointMetadata,
+    ) -> Result<ReleasedInitCheckpoint, WorkflowError> {
+        let PendingWorkflow {
+            store,
+            database,
+            checkpoint,
+        } = self.create_checkpoint(WorkflowKind::Init, metadata)?;
+
+        // Closed under the permit that created the checkpoint, so no other
+        // mutation observes the handle mid-release.
+        let closed = database.close().map_err(map_database_error);
+        drop(store);
+        closed?;
+
+        Ok(ReleasedInitCheckpoint { checkpoint })
+    }
+}
+
+/// A durable Init checkpoint whose exclusive permit and database were released.
+///
+/// This is everything a paused Init retains between its two requests, and it is
+/// deliberately not enough to act with. It holds no lifecycle permit, no
+/// database handle, and no sealing capability, so the workflow can only be
+/// resumed by presenting it to
+/// [`WorkflowArbiter::reauthorize_pending_init`], which re-verifies the exact
+/// retained checkpoint under a fresh permit before returning a workflow that
+/// can complete, acknowledge, and seal.
+///
+/// It exists only in this process's memory. Nothing writes it, so a restart
+/// cannot reconstruct one, and a released Init is classified from the retained
+/// checkpoint alone exactly as an interrupted Init is.
+pub struct ReleasedInitCheckpoint {
+    checkpoint: WorkflowCheckpoint,
+}
+
+impl ReleasedInitCheckpoint {
+    /// Returns the deployment identifier the released checkpoint is bound to.
+    #[must_use]
+    pub const fn deployment_identifier(&self) -> DeploymentIdentifier {
+        self.checkpoint.deployment_identifier()
+    }
+}
+
+impl fmt::Debug for ReleasedInitCheckpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReleasedInitCheckpoint(REDACTED)")
     }
 }
 

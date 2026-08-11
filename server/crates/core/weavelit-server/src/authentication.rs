@@ -1710,6 +1710,13 @@ pub(crate) mod tests {
     }
 
     impl LogDestination for RecordingDestination {
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            if self.fails {
+                return Err(LogDestinationError::Unavailable);
+            }
+            Ok(())
+        }
+
         fn deliver(
             &self,
             record: &CompleteLogRecord,

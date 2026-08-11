@@ -85,6 +85,32 @@ at-least-once attempts and one persisted completion record per identifier for
 the MVP SQLite destination; it does not claim distributed exactly-once delivery
 or select a fan-out policy.
 
+## Destination Preflight And Configuration Validation
+
+`LogDestination` declares `preflight` as a required trait method rather than a
+defaulted one, so a Log Module cannot be implemented without deciding how it
+proves that its configured destination can complete its commit path for a
+given record type before the Server relies on it for delivery.
+
+`ConfiguredLogDestination::preflight` checks the Server-declared capability
+before it delegates to the module: an assignment for a record type the module
+does not declare returns `LogDeliveryError::CapabilityUnavailable` without
+reaching the module at all. Only a declared record type reaches the module's
+own `preflight`, whose failure surfaces as `LogDeliveryError::Destination`
+carrying the module's stable, payload-free `LogDestinationError`.
+
+A valid preflight proof must exercise the same commit path that delivery later
+uses for that record type, and it must leave no persisted record behind on
+either outcome. A proof that only checks reachability, or that writes a record
+it does not remove, does not satisfy this contract.
+
+The trusted context a catalog destination receives also carries the
+destination's committed, non-secret configuration settings. A Log Module's
+factory must reject any setting it does not define as
+`LogDestinationError::ConfigurationInvalid`; `LogModuleCatalog::create_destination`
+propagates that rejection as `LogConfigurationError::Destination`, so an
+unconfigured or misconfigured setting is refused rather than silently ignored.
+
 ## Event Classification Taxonomy
 
 Every classification is a lowercase dotted identifier that a producer selects
@@ -139,6 +165,18 @@ preflights the destination before an Init or Restore application-state commit,
 keeps it for the process lifetime, and validates it during startup without
 post-commit reconciliation delivery. Restore imports Module configuration and
 assignments, never destination data.
+
+This destination proves its preflight commit path by writing a probe row
+through the exact delivery commit path — the same immediate transaction and
+commit that delivery uses for that record type — then deleting the row within
+that same transaction, so storage that is read-only, out of space, or
+schema-incompatible is refused and no probe record survives either outcome.
+The probe uses a reserved all-zero record identifier; `TrustedRecordIssuer::issue`
+refuses to issue an all-zero identifier, so no genuine record can ever share
+it. This destination defines no destination configuration setting, so it
+refuses any setting a configuration supplies as
+`LogDestinationError::ConfigurationInvalid` rather than accepting or silently
+ignoring it.
 
 This MVP defines one local SQLite destination rather than Server-issued
 multiple destination instances. The recovery and capacity policy below defines
@@ -282,7 +320,9 @@ validation; no client defines an alternative Log Module initialization path.
 
 Init rejects an absent, disabled, unconfigured, or incompatible assignment. It
 also rejects an assignment unless its configured Log Module can complete its
-configured supported storage interface's commit path for the assigned log type.
+configured supported storage interface's commit path for the assigned log
+type, proven through the preflight contract described in
+[Destination Preflight And Configuration Validation](#destination-preflight-and-configuration-validation).
 After Init commits application state, it receives a durable acknowledgement for
 the Init completion result through the committed System Log assignment before
 the deployment is sealed. Init remains incomplete, and the Server does not begin

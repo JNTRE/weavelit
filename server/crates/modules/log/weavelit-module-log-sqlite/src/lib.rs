@@ -29,6 +29,13 @@ const EXPECTED_HEALTH_RESULT: i64 = 1;
 const LEDGER_TABLE: &str = "weavelit_log_migration_ledger";
 const DEPLOYMENT_TABLE: &str = "weavelit_log_deployment_binding";
 
+/// The record identifier the preflight probe row is written under.
+///
+/// `weavelit_server_log::TrustedRecordIssuer` refuses to issue an all-zero
+/// identifier, so no real record can ever collide with the probe and the probe
+/// can never be mistaken for one.
+const PREFLIGHT_PROBE_RECORD_ID: [u8; 16] = [0; 16];
+
 struct Migration {
     sequence: i64,
     identifier: &'static str,
@@ -152,6 +159,13 @@ impl SqliteLogDestination {
     fn open_from_factory_context(
         context: &LogModuleFactoryContext<'_>,
     ) -> Result<Self, LogDestinationError> {
+        // This module derives its entire destination from the trusted local
+        // root and the deployment identity, so it defines no setting. A
+        // configuration that supplies one is misconfigured for this module and
+        // is refused rather than silently ignored.
+        if !context.settings().is_empty() {
+            return Err(LogDestinationError::ConfigurationInvalid);
+        }
         Self::open_with_inputs(context.local_root(), context.deployment_identity())
     }
 
@@ -301,6 +315,60 @@ impl SqliteLogDestination {
             .commit()
             .map_err(|_| LogDestinationError::Unavailable)
     }
+
+    /// Writes and removes a probe row through the exact delivery commit path.
+    ///
+    /// Delivery inserts into the assigned record table inside an immediate
+    /// transaction and commits it. The probe does the same and then deletes the
+    /// row in the same transaction, so a destination whose storage is
+    /// read-only, out of space, schema-incompatible, or otherwise unable to
+    /// reach commit is refused, and no record is left behind either way.
+    fn probe_commit_path(&self, record_type: LogRecordType) -> Result<(), LogDestinationError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| LogDestinationError::Unavailable)?;
+        verify_health(&connection)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| LogDestinationError::Unavailable)?;
+
+        let insert = match record_type {
+            LogRecordType::System => transaction.execute(
+                "INSERT INTO weavelit_log_system_records \
+                    (record_id, event_time_milliseconds, result, correlation_id, classification, detail) \
+                    VALUES (?1, '0', 0, 'preflight', 'lifecycle.preflight', 'preflight')",
+                params![PREFLIGHT_PROBE_RECORD_ID.as_slice()],
+            ),
+            LogRecordType::Audit => transaction.execute(
+                "INSERT INTO weavelit_log_audit_records \
+                    (record_id, event_time_milliseconds, result, correlation_id, principal, action, target, detail) \
+                    VALUES (?1, '0', 0, 'preflight', 'preflight', 'preflight', 'preflight', 'preflight')",
+                params![PREFLIGHT_PROBE_RECORD_ID.as_slice()],
+            ),
+        };
+        if insert.map_err(|_| LogDestinationError::IntegrityFailure)? != 1 {
+            return Err(LogDestinationError::IntegrityFailure);
+        }
+
+        let table = match record_type {
+            LogRecordType::System => "weavelit_log_system_records",
+            LogRecordType::Audit => "weavelit_log_audit_records",
+        };
+        let removed = transaction
+            .execute(
+                &format!("DELETE FROM {table} WHERE record_id = ?1"),
+                params![PREFLIGHT_PROBE_RECORD_ID.as_slice()],
+            )
+            .map_err(|_| LogDestinationError::IntegrityFailure)?;
+        if removed != 1 {
+            return Err(LogDestinationError::IntegrityFailure);
+        }
+
+        transaction
+            .commit()
+            .map_err(|_| LogDestinationError::Unavailable)
+    }
 }
 
 impl LogDestination for SqliteLogDestination {
@@ -312,6 +380,10 @@ impl LogDestination for SqliteLogDestination {
         let record = PersistedLogRecord::from(record);
         self.deliver_persisted(&record)?;
         Ok(acknowledgement)
+    }
+
+    fn preflight(&self, record_type: LogRecordType) -> Result<(), LogDestinationError> {
+        self.probe_commit_path(record_type)
     }
 }
 
@@ -794,7 +866,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     use rusqlite::Connection;
-    use weavelit_server_log::{LogDestinationError, LogResult};
+    use weavelit_server_log::{LogDestination, LogDestinationError, LogRecordType, LogResult};
 
     use super::{
         MIGRATIONS, PersistedLogRecord, SqliteLogDestination as ProductionDestination, checksum,
@@ -991,6 +1063,45 @@ mod tests {
         record: &PersistedLogRecord,
     ) -> Result<(), LogDestinationError> {
         destination.deliver_persisted(record)
+    }
+
+    #[test]
+    fn preflight_proves_both_commit_paths_and_leaves_no_record() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let destination = SqliteLogDestination::open(&context).unwrap();
+
+        assert_eq!(destination.preflight(LogRecordType::System), Ok(()));
+        assert_eq!(destination.preflight(LogRecordType::Audit), Ok(()));
+
+        let connection = destination.connection.lock().unwrap();
+        for table in ["weavelit_log_system_records", "weavelit_log_audit_records"] {
+            let remaining: i64 = connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(remaining, 0, "{table} retained a preflight probe row");
+        }
+    }
+
+    #[test]
+    fn preflight_refuses_a_destination_whose_commit_path_is_unreachable() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let destination = SqliteLogDestination::open(&context).unwrap();
+        destination
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE weavelit_log_audit_records")
+            .unwrap();
+
+        assert_eq!(
+            destination.preflight(LogRecordType::Audit),
+            Err(LogDestinationError::IntegrityFailure)
+        );
+        assert_eq!(destination.preflight(LogRecordType::System), Ok(()));
     }
 
     #[test]

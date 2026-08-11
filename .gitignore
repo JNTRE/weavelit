@@ -11,3 +11,6 @@ weavelit.code-workspace
 *.pdb
 .github/agents/
 .github/skills/
+
+# Lock files generated when the compile-behavior test fixtures are built.
+/server/crates/**/tests/fixtures/*/Cargo.lock

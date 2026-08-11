@@ -13,6 +13,10 @@ impl LogDestination for DummyDestination {
     ) -> Result<DurableAcknowledgement, LogDestinationError> {
         Ok(acknowledgement)
     }
+
+    fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+        Ok(())
+    }
 }
 
 fn main() {

@@ -27,7 +27,8 @@ Use this section as the source of truth for what assets belong in this directory
 - `Cargo.toml`: Rust package manifest for the Weavelit Server executable crate.
 - `src/lib.rs`: Restricted lifecycle startup composition, SQLite backend factory,
   state-root configuration reading, `classify_restricted_startup`, the listener's
-  serving-mode switch, and stable error presentation.
+  serving-mode switch, the listener-owned response-write acknowledgement, and
+  stable error presentation.
 - `src/authentication.rs`: The local login, session-validation, and logout route
   decisions: account and password-verifier resolution, the equal-work denial
   path, the single-permit login admission lane, session issuance and

@@ -13,6 +13,15 @@ use weavelit_server_log_authority::ServerLogAuthority;
 const MAX_LOG_MODULES: usize = 64;
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 const RECORD_ID_LENGTH: usize = 16;
+
+/// Most non-secret settings one configured destination may receive.
+pub const MAX_DESTINATION_SETTINGS: usize = 64;
+
+/// Maximum UTF-8 bytes in one destination setting key.
+pub const MAX_DESTINATION_SETTING_KEY_BYTES: usize = 256;
+
+/// Maximum UTF-8 bytes in one destination setting value.
+pub const MAX_DESTINATION_SETTING_VALUE_BYTES: usize = 4 * 1024;
 const MAX_CORRELATION_ID_BYTES: usize = 64;
 const MAX_SYSTEM_CLASSIFICATION_BYTES: usize = 128;
 const MAX_SYSTEM_DETAIL_BYTES: usize = 4 * 1024;
@@ -540,10 +549,88 @@ impl fmt::Debug for LogModuleIdentifier {
     }
 }
 
+/// The non-secret configuration one destination is opened against.
+///
+/// A destination is configured by the deployment's committed Log Module
+/// configuration rather than by anything it reads itself, so this is the only
+/// way settings reach a factory. Keys are unique and every key and value is
+/// bounded before a module sees them, so a module cannot be handed an
+/// unbounded or ambiguous configuration.
+///
+/// Secret settings are deliberately absent: they are sealed application state
+/// and are never carried through this contract.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct DestinationSettings(Box<[(Box<str>, Box<str>)]>);
+
+impl DestinationSettings {
+    /// Validates and orders the non-secret settings of one configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogConfigurationError::SettingsInvalid`] when the collection
+    /// exceeds [`MAX_DESTINATION_SETTINGS`], a key or value is empty or past
+    /// its bound, or two entries share a key.
+    pub fn new(settings: Vec<(String, String)>) -> Result<Self, LogConfigurationError> {
+        if settings.len() > MAX_DESTINATION_SETTINGS {
+            return Err(LogConfigurationError::SettingsInvalid);
+        }
+        let mut entries: Vec<(Box<str>, Box<str>)> = Vec::with_capacity(settings.len());
+        for (key, value) in settings {
+            if !is_nonempty_within_bytes(&key, MAX_DESTINATION_SETTING_KEY_BYTES)
+                || !is_nonempty_within_bytes(&value, MAX_DESTINATION_SETTING_VALUE_BYTES)
+            {
+                return Err(LogConfigurationError::SettingsInvalid);
+            }
+            if entries.iter().any(|(held, _)| held.as_ref() == key) {
+                return Err(LogConfigurationError::SettingsInvalid);
+            }
+            entries.push((key.into_boxed_str(), value.into_boxed_str()));
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(Self(entries.into_boxed_slice()))
+    }
+
+    /// Returns whether the configuration declared no setting at all.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns how many settings the configuration declared.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns the value declared for `key`, if any.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(held, _)| held.as_ref() == key)
+            .map(|(_, value)| value.as_ref())
+    }
+
+    /// Returns every declared key in canonical order.
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.0.iter().map(|(key, _)| key.as_ref())
+    }
+}
+
+impl fmt::Debug for DestinationSettings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DestinationSettings")
+            .field("setting_count", &self.0.len())
+            .finish()
+    }
+}
+
 /// Trusted context supplied by Server runtime composition to a module factory.
 pub struct TrustedLogModuleContext {
     local_root: PathBuf,
     deployment_identity: [u8; RECORD_ID_LENGTH],
+    settings: DestinationSettings,
 }
 
 impl TrustedLogModuleContext {
@@ -553,7 +640,15 @@ impl TrustedLogModuleContext {
         Self {
             local_root,
             deployment_identity,
+            settings: DestinationSettings::default(),
         }
+    }
+
+    /// Adds the committed configuration's non-secret settings to the context.
+    #[must_use]
+    pub fn with_settings(mut self, settings: DestinationSettings) -> Self {
+        self.settings = settings;
+        self
     }
 
     /// Creates the context for a holder of Server-owned logging authority.
@@ -575,6 +670,11 @@ impl TrustedLogModuleContext {
     pub const fn deployment_identity(&self) -> &[u8; RECORD_ID_LENGTH] {
         &self.deployment_identity
     }
+
+    /// Returns the committed configuration's non-secret settings.
+    pub const fn settings(&self) -> &DestinationSettings {
+        &self.settings
+    }
 }
 
 impl fmt::Debug for TrustedLogModuleContext {
@@ -589,6 +689,7 @@ impl fmt::Debug for TrustedLogModuleContext {
 pub struct LogModuleFactoryContext<'a> {
     local_root: &'a Path,
     deployment_identity: &'a [u8; RECORD_ID_LENGTH],
+    settings: &'a DestinationSettings,
 }
 
 impl<'a> LogModuleFactoryContext<'a> {
@@ -596,6 +697,7 @@ impl<'a> LogModuleFactoryContext<'a> {
         Self {
             local_root: context.local_root(),
             deployment_identity: context.deployment_identity(),
+            settings: context.settings(),
         }
     }
 
@@ -607,6 +709,14 @@ impl<'a> LogModuleFactoryContext<'a> {
     /// Returns the Server-supplied deployment identity for destination binding.
     pub const fn deployment_identity(&self) -> &'a [u8; RECORD_ID_LENGTH] {
         self.deployment_identity
+    }
+
+    /// Returns the committed configuration's non-secret settings.
+    ///
+    /// A module must reject a setting it does not define: an unconfigured or
+    /// misconfigured assignment is refused rather than silently ignored.
+    pub const fn settings(&self) -> &'a DestinationSettings {
+        self.settings
     }
 }
 
@@ -653,6 +763,21 @@ pub trait LogDestination: Send + Sync {
         record: &CompleteLogRecord,
         acknowledgement: DurableAcknowledgement,
     ) -> Result<DurableAcknowledgement, LogDestinationError>;
+
+    /// Proves the destination can complete its commit path for `record_type`.
+    ///
+    /// Init runs this before it commits application state, so an assignment
+    /// whose configured storage interface could not durably accept the assigned
+    /// log type is refused while the deployment can still be corrected rather
+    /// than after the record it was supposed to carry already exists. The check
+    /// must exercise the same commit path delivery uses and must leave no
+    /// record behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LogDestinationError`] when the commit path is unreachable
+    /// for `record_type`.
+    fn preflight(&self, record_type: LogRecordType) -> Result<(), LogDestinationError>;
 }
 
 /// Factory for one runtime-supplied compiled-in Log Module destination.
@@ -819,6 +944,26 @@ pub struct ConfiguredLogDestination {
 }
 
 impl ConfiguredLogDestination {
+    /// Proves the destination can durably accept `record_type` before it is used.
+    ///
+    /// The declared capability is checked first, so an assignment to a module
+    /// that does not serve the assigned log type is refused without reaching
+    /// the module at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogDeliveryError::CapabilityUnavailable`] when the module does
+    /// not declare `record_type`, or [`LogDeliveryError::Destination`] when the
+    /// module could not prove its commit path.
+    pub fn preflight(&self, record_type: LogRecordType) -> Result<(), LogDeliveryError> {
+        if !self.capabilities.supports(record_type) {
+            return Err(LogDeliveryError::CapabilityUnavailable);
+        }
+        self.destination
+            .preflight(record_type)
+            .map_err(LogDeliveryError::Destination)
+    }
+
     /// Synchronously delivers one complete record and requires durable acknowledgement.
     pub fn deliver(&self, record: &CompleteLogRecord) -> Result<(), LogDeliveryError> {
         if !self.capabilities.supports(record.record_type()) {
@@ -923,6 +1068,8 @@ impl StdError for LogDestinationError {}
 pub enum LogConfigurationError {
     /// The selected module is not in the compiled-in catalog.
     UnknownModule,
+    /// The configuration's non-secret settings were unbounded or ambiguous.
+    SettingsInvalid,
     /// The selected module rejected trusted runtime configuration.
     Destination(LogDestinationError),
 }
@@ -931,6 +1078,9 @@ impl fmt::Display for LogConfigurationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownModule => formatter.write_str("log module is not registered"),
+            Self::SettingsInvalid => {
+                formatter.write_str("log module configuration settings are invalid")
+            }
             Self::Destination(error) => error.fmt(formatter),
         }
     }
@@ -1081,6 +1231,14 @@ mod tests {
             records.push(persisted_record);
             Ok(acknowledgement)
         }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            let _records = self
+                .records
+                .lock()
+                .expect("test record lock must not poison");
+            Ok(())
+        }
     }
 
     struct ReplayFactory {
@@ -1137,6 +1295,10 @@ mod tests {
                 record_type,
             })
         }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            Ok(())
+        }
     }
 
     struct MismatchedAcknowledgementFactory;
@@ -1147,6 +1309,51 @@ mod tests {
             _context: &LogModuleFactoryContext<'_>,
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             Ok(Box::new(MismatchedAcknowledgementDestination))
+        }
+    }
+
+    struct UnprovableDestination;
+
+    impl LogDestination for UnprovableDestination {
+        fn deliver(
+            &self,
+            _record: &CompleteLogRecord,
+            acknowledgement: DurableAcknowledgement,
+        ) -> Result<DurableAcknowledgement, LogDestinationError> {
+            Ok(acknowledgement)
+        }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            Err(LogDestinationError::Unavailable)
+        }
+    }
+
+    /// A module that accepts only the settings it defines.
+    struct SettingsBoundFactory {
+        observed: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl LogDestinationFactory for SettingsBoundFactory {
+        fn create(
+            &self,
+            context: &LogModuleFactoryContext<'_>,
+        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+            let settings = context.settings();
+            if settings.keys().any(|key| key != "retention_days") {
+                return Err(LogDestinationError::ConfigurationInvalid);
+            }
+            *self.observed.lock().expect("test lock must not poison") = settings
+                .keys()
+                .map(|key| {
+                    (
+                        key.to_owned(),
+                        settings.get(key).expect("declared key resolves").to_owned(),
+                    )
+                })
+                .collect();
+            Ok(Box::new(ReplayDestination::new(Arc::new(Mutex::new(
+                Vec::new(),
+            )))))
         }
     }
 
@@ -1598,6 +1805,161 @@ mod tests {
                 .lock()
                 .expect("test context lock must not poison"),
             Some((PathBuf::from("/var/lib/weavelit"), [8; RECORD_ID_LENGTH]))
+        );
+    }
+
+    #[test]
+    fn destination_settings_reject_unbounded_or_ambiguous_configuration() {
+        assert_eq!(
+            DestinationSettings::new(
+                (0..=MAX_DESTINATION_SETTINGS)
+                    .map(|index| (format!("key-{index}"), "value".to_owned()))
+                    .collect()
+            ),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![(String::new(), "value".to_owned())]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![("key".to_owned(), String::new())]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![(
+                "k".repeat(MAX_DESTINATION_SETTING_KEY_BYTES + 1),
+                "value".to_owned()
+            )]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![(
+                "key".to_owned(),
+                "v".repeat(MAX_DESTINATION_SETTING_VALUE_BYTES + 1)
+            )]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![
+                ("key".to_owned(), "first".to_owned()),
+                ("key".to_owned(), "second".to_owned()),
+            ]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+
+        let accepted = DestinationSettings::new(vec![
+            (
+                "k".repeat(MAX_DESTINATION_SETTING_KEY_BYTES),
+                "v".repeat(MAX_DESTINATION_SETTING_VALUE_BYTES),
+            ),
+            ("retention_days".to_owned(), "30".to_owned()),
+        ])
+        .expect("bounded settings are accepted");
+        assert_eq!(accepted.len(), 2);
+        assert_eq!(accepted.get("retention_days"), Some("30"));
+        assert_eq!(accepted.get("absent"), None);
+        assert!(DestinationSettings::default().is_empty());
+    }
+
+    #[test]
+    fn a_factory_receives_the_committed_configuration_settings() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Box::new(SettingsBoundFactory {
+                observed: Arc::clone(&observed),
+            }),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+
+        let accepted = trusted_context().with_settings(
+            DestinationSettings::new(vec![("retention_days".to_owned(), "30".to_owned())])
+                .expect("bounded settings"),
+        );
+        let _destination = catalog
+            .create_destination(&identifier, &accepted)
+            .expect("a defined setting is accepted");
+        assert_eq!(
+            observed
+                .lock()
+                .expect("test lock must not poison")
+                .as_slice(),
+            &[("retention_days".to_owned(), "30".to_owned())]
+        );
+
+        let rejected = trusted_context().with_settings(
+            DestinationSettings::new(vec![("unknown".to_owned(), "1".to_owned())])
+                .expect("bounded settings"),
+        );
+        assert_eq!(
+            catalog
+                .create_destination(&identifier, &rejected)
+                .expect_err("an undefined setting is refused"),
+            LogConfigurationError::Destination(LogDestinationError::ConfigurationInvalid)
+        );
+    }
+
+    #[test]
+    fn preflight_refuses_an_undeclared_record_type_without_reaching_the_module() {
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
+        let catalog = catalog(
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Arc::clone(&records),
+        );
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let destination = catalog
+            .create_destination(&identifier, &trusted_context())
+            .expect("registered destination is configured");
+
+        assert_eq!(destination.preflight(LogRecordType::System), Ok(()));
+        assert_eq!(
+            destination.preflight(LogRecordType::Audit),
+            Err(LogDeliveryError::CapabilityUnavailable)
+        );
+        assert!(
+            records
+                .lock()
+                .expect("test record lock must not poison")
+                .is_empty(),
+            "preflight must leave no record behind"
+        );
+    }
+
+    #[test]
+    fn preflight_surfaces_a_destination_that_cannot_prove_its_commit_path() {
+        struct UnprovableFactory;
+
+        impl LogDestinationFactory for UnprovableFactory {
+            fn create(
+                &self,
+                _context: &LogModuleFactoryContext<'_>,
+            ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+                Ok(Box::new(UnprovableDestination))
+            }
+        }
+
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System, LogRecordType::Audit])
+                .expect("valid capability declaration"),
+            Box::new(UnprovableFactory),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let destination = catalog
+            .create_destination(&identifier, &trusted_context())
+            .expect("registered destination is configured");
+
+        assert_eq!(
+            destination.preflight(LogRecordType::System),
+            Err(LogDeliveryError::Destination(
+                LogDestinationError::Unavailable
+            ))
         );
     }
 

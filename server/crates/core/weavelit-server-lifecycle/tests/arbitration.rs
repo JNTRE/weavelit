@@ -3,8 +3,9 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{
-        Arc, Barrier,
+        Arc, Barrier, Mutex,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
 };
@@ -19,11 +20,11 @@ use weavelit_server_lifecycle::{
     AnchorLoadState, ApplicationDatabase, ApplicationDatabaseFactory, ApplicationState,
     BackendCatalog, BackendIdentifier, BackendRegistration,
     CheckpointMetadata as LifecycleCheckpointMetadata, DeploymentIdentifier, InitializedState,
-    LifecycleClassification, LifecycleError, LifecycleState, LifecycleStore,
-    MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueKind, ProtectedValueOpener, ProtectedValueSealer,
-    RetainedDatabaseInspection, SelectionError, SelectionFailureKind, StateIdentifier,
-    TrustedBackendContext, ValidatedConnectionSettings, WorkflowArbiter, WorkflowCheckpoint,
-    WorkflowError, WorkflowKind,
+    InterruptedLifecycleAction, LifecycleClassification, LifecycleError, LifecycleState,
+    LifecycleStore, MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueKind, ProtectedValueOpener,
+    ProtectedValueSealer, RetainedDatabaseInspection, SelectionError, SelectionFailureKind,
+    StateIdentifier, TrustedBackendContext, ValidatedConnectionSettings, WorkflowArbiter,
+    WorkflowCheckpoint, WorkflowError, WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -186,6 +187,19 @@ fn identifier(byte: u8) -> StateIdentifier {
 
 /// Builds the smallest state the Application Database contract accepts.
 fn application_state() -> ApplicationState {
+    workflow_application_state(WorkflowKind::Restore)
+}
+
+/// Builds the same minimal state with an Init completion obligation.
+///
+/// The Application Database refuses a completion whose obligation names a
+/// different workflow than the checkpoint, so an Init checkpoint has to be
+/// completed with Init's own obligation.
+fn init_application_state() -> ApplicationState {
+    workflow_application_state(WorkflowKind::Init)
+}
+
+fn workflow_application_state(workflow: WorkflowKind) -> ApplicationState {
     let configuration_identifier = identifier(0x11);
     ApplicationState::new(ApplicationStateInput {
         configuration: vec![],
@@ -214,7 +228,7 @@ fn application_state() -> ApplicationState {
             .collect(),
         completion_obligation: CompletionObligation::new(
             identifier(RECORD_BYTE),
-            WorkflowKind::Restore,
+            workflow,
             LogClassification::new("lifecycle.restore").unwrap(),
             CorrelationIdentifier::new("correlation-identifier").unwrap(),
             1_700_000_000_000,
@@ -1357,4 +1371,396 @@ fn a_permit_reports_the_selected_backend_it_authorized_against() {
     let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
 
     assert_eq!(permit.selected_backend(), &sqlite_backend());
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Init checkpoint release and reauthorization
+// ---------------------------------------------------------------------------
+
+/// A backend whose retained pending checkpoint the test controls directly.
+///
+/// Reauthorization has to compare the exact retained checkpoint, so a test
+/// needs to change what the database retains independently of what the
+/// workflow created. Every handle this factory opens shares one retained slot,
+/// so a reopen observes whatever the test left in it.
+struct DriftingDatabase {
+    retained: Arc<Mutex<Option<WorkflowCheckpoint>>>,
+}
+
+impl ApplicationDatabase for DriftingDatabase {
+    fn inspect(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<DatabaseInspection, weavelit_server_database::DatabaseError> {
+        Ok(match self.retained.lock().unwrap().clone() {
+            Some(checkpoint) => DatabaseInspection::Pending(checkpoint),
+            None => DatabaseInspection::Uninitialized,
+        })
+    }
+
+    fn create_checkpoint(
+        &mut self,
+        checkpoint: &WorkflowCheckpoint,
+    ) -> Result<(), weavelit_server_database::DatabaseError> {
+        *self.retained.lock().unwrap() = Some(checkpoint.clone());
+        Ok(())
+    }
+
+    fn complete_checkpoint(
+        &mut self,
+        _checkpoint: &WorkflowCheckpoint,
+        _state: &ApplicationState,
+    ) -> Result<(), weavelit_server_database::DatabaseError> {
+        Err(weavelit_server_database::DatabaseError::InvalidState)
+    }
+
+    fn load_initialized_state(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<InitializedState, weavelit_server_database::DatabaseError> {
+        Err(weavelit_server_database::DatabaseError::InvalidState)
+    }
+
+    fn acknowledge_completion(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+        _record_identifier: StateIdentifier,
+    ) -> Result<(), weavelit_server_database::DatabaseError> {
+        Err(weavelit_server_database::DatabaseError::InvalidState)
+    }
+
+    fn load_human_authorization(
+        &mut self,
+        _account: StateIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::HumanAuthorizationSnapshot>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
+    }
+
+    fn load_component_enablement(
+        &mut self,
+    ) -> Result<
+        weavelit_server_database::ComponentEnablement,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(weavelit_server_database::ComponentEnablement::default())
+    }
+
+    fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
+        None
+    }
+
+    fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+        None
+    }
+
+    fn close(self: Box<Self>) -> Result<(), weavelit_server_database::DatabaseError> {
+        Ok(())
+    }
+}
+
+struct DriftingFactory(Arc<Mutex<Option<WorkflowCheckpoint>>>);
+
+impl ApplicationDatabaseFactory for DriftingFactory {
+    fn open(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+    ) -> Result<Box<dyn ApplicationDatabase>, LifecycleError> {
+        Ok(Box::new(DriftingDatabase {
+            retained: Arc::clone(&self.0),
+        }))
+    }
+
+    fn inspect_retained(
+        &self,
+        _context: &TrustedBackendContext,
+        _settings: &ValidatedConnectionSettings,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<RetainedDatabaseInspection, LifecycleError> {
+        Err(LifecycleError::DependencyUnavailable)
+    }
+}
+
+/// Sets up an arbiter whose retained checkpoint the returned slot controls.
+fn drifting_setup(
+    path: &Path,
+) -> (
+    WorkflowArbiter,
+    BackendCatalog,
+    TrustedBackendContext,
+    Arc<Mutex<Option<WorkflowCheckpoint>>>,
+) {
+    let retained = Arc::new(Mutex::new(None));
+    let catalog = BackendCatalog::new(vec![BackendRegistration::new(
+        "drifting-backend",
+        vec![],
+        Box::new(DriftingFactory(Arc::clone(&retained))),
+    )])
+    .unwrap();
+    let context = sqlite_context(path);
+    let mut store = LifecycleStore::open_or_create(path).unwrap();
+    store
+        .select_database(
+            &catalog,
+            &context,
+            &BackendIdentifier::new("drifting-backend").unwrap(),
+            vec![],
+        )
+        .unwrap();
+    (WorkflowArbiter::new(store), catalog, context, retained)
+}
+
+/// Creates the Init checkpoint and releases the lane, as Init's first request does.
+fn release_init_checkpoint(
+    arbiter: &WorkflowArbiter,
+    catalog: &BackendCatalog,
+    context: &TrustedBackendContext,
+) -> weavelit_server_lifecycle::ReleasedInitCheckpoint {
+    arbiter
+        .authorize_workflow(catalog, context)
+        .expect("Init must authorize from selected state")
+        .create_init_checkpoint_and_release(init_metadata())
+        .expect("the Init checkpoint must be created and released")
+}
+
+#[test]
+fn a_released_init_checkpoint_reauthorizes_and_seals_the_same_checkpoint() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let released = release_init_checkpoint(&arbiter, &catalog, &context);
+
+    // The checkpoint is durable and the record advanced, but nothing is held:
+    // the exclusive permit answers immediately between the two requests.
+    assert_eq!(
+        arbiter.record_state(),
+        LifecycleState::InitializationPending
+    );
+    assert!(
+        arbiter.projection().unwrap().database_selected(),
+        "the released lane must still answer a live projection read"
+    );
+
+    let sealed = arbiter
+        .reauthorize_pending_init(&catalog, &context, &released)
+        .expect("the exact pending Init checkpoint must reauthorize")
+        .complete_checkpoint(&init_application_state())
+        .expect("the reauthorized checkpoint must complete")
+        .acknowledge_completion(identifier(RECORD_BYTE))
+        .expect("the completion obligation must acknowledge")
+        .seal()
+        .expect("the acknowledged deployment must seal");
+
+    assert_eq!(
+        sealed.state().deployment_identifier(),
+        released.deployment_identifier()
+    );
+    assert_eq!(arbiter.record_state(), LifecycleState::Initialized);
+}
+
+#[test]
+fn a_released_init_checkpoint_leaves_no_open_database_handle() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let _released = release_init_checkpoint(&arbiter, &catalog, &context);
+
+    // A handle released for as long as a person takes to save a key must not
+    // leave a live connection or an unreconciled write-ahead log behind it.
+    assert!(!path.join("application.sqlite3-wal").exists());
+    assert!(!path.join("application.sqlite3-shm").exists());
+}
+
+#[test]
+fn reauthorization_is_refused_for_another_deployments_released_checkpoint() {
+    let (_first_dir, first_path) = state_root();
+    let (first_arbiter, first_catalog, first_context) = setup(&first_path);
+    let (_second_dir, second_path) = state_root();
+    let (second_arbiter, second_catalog, second_context) = setup(&second_path);
+
+    let first = release_init_checkpoint(&first_arbiter, &first_catalog, &first_context);
+    let second = release_init_checkpoint(&second_arbiter, &second_catalog, &second_context);
+
+    // Both deployments are pending, so only the deployment binding separates
+    // them; a released value from one must not authorize the other.
+    assert_ne!(
+        first.deployment_identifier(),
+        second.deployment_identifier()
+    );
+    assert_eq!(
+        second_arbiter
+            .reauthorize_pending_init(&second_catalog, &second_context, &first)
+            .unwrap_err(),
+        WorkflowError::StateMismatch
+    );
+    assert_eq!(
+        first_arbiter
+            .reauthorize_pending_init(&first_catalog, &first_context, &second)
+            .unwrap_err(),
+        WorkflowError::StateMismatch
+    );
+}
+
+#[test]
+fn reauthorization_is_refused_when_the_retained_checkpoint_metadata_was_altered() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context, retained) = drifting_setup(&path);
+
+    let released = release_init_checkpoint(&arbiter, &catalog, &context);
+    let original = retained.lock().unwrap().clone().unwrap();
+    assert_eq!(original.metadata().as_bytes(), b"init-checkpoint-metadata");
+
+    *retained.lock().unwrap() = Some(WorkflowCheckpoint::new(
+        original.deployment_identifier(),
+        WorkflowKind::Init,
+        metadata(b"init-checkpoint-metadatb"),
+    ));
+
+    assert_eq!(
+        arbiter
+            .reauthorize_pending_init(&catalog, &context, &released)
+            .unwrap_err(),
+        WorkflowError::StateMismatch
+    );
+}
+
+#[test]
+fn reauthorization_is_refused_when_the_retained_checkpoint_names_another_workflow() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context, retained) = drifting_setup(&path);
+
+    let released = release_init_checkpoint(&arbiter, &catalog, &context);
+    let original = retained.lock().unwrap().clone().unwrap();
+    *retained.lock().unwrap() = Some(WorkflowCheckpoint::new(
+        original.deployment_identifier(),
+        WorkflowKind::Restore,
+        original.metadata().clone(),
+    ));
+
+    assert_eq!(
+        arbiter
+            .reauthorize_pending_init(&catalog, &context, &released)
+            .unwrap_err(),
+        WorkflowError::StateMismatch
+    );
+}
+
+#[test]
+fn reauthorization_is_refused_when_no_checkpoint_is_retained() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context, retained) = drifting_setup(&path);
+
+    let released = release_init_checkpoint(&arbiter, &catalog, &context);
+    *retained.lock().unwrap() = None;
+
+    assert_eq!(
+        arbiter
+            .reauthorize_pending_init(&catalog, &context, &released)
+            .unwrap_err(),
+        WorkflowError::StateMismatch
+    );
+}
+
+#[test]
+fn reauthorization_is_refused_once_the_released_checkpoint_has_been_completed() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let released = release_init_checkpoint(&arbiter, &catalog, &context);
+    arbiter
+        .reauthorize_pending_init(&catalog, &context, &released)
+        .expect("the first reauthorization must succeed")
+        .complete_checkpoint(&init_application_state())
+        .expect("the reauthorized checkpoint must complete");
+
+    // The durable one-time guard, not the released value, is what makes the
+    // second attempt impossible.
+    assert_eq!(
+        arbiter
+            .reauthorize_pending_init(&catalog, &context, &released)
+            .unwrap_err(),
+        WorkflowError::AlreadyInitialized
+    );
+}
+
+#[test]
+fn only_one_reauthorization_holds_the_mutation_permit_at_a_time() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+    let released = release_init_checkpoint(&arbiter, &catalog, &context);
+
+    let arbiter = Arc::new(arbiter);
+    let first = arbiter
+        .reauthorize_pending_init(&catalog, &context, &released)
+        .expect("the first reauthorization must take the permit");
+
+    let (started, waiting) = mpsc::channel();
+    let (finished, reacquired) = mpsc::channel();
+    let second = {
+        let arbiter = Arc::clone(&arbiter);
+        let path = path.clone();
+        thread::spawn(move || {
+            let catalog = sqlite_catalog();
+            let context = sqlite_context(&path);
+            started.send(()).unwrap();
+            let outcome = arbiter
+                .reauthorize_pending_init(&catalog, &context, &released)
+                .is_ok();
+            finished.send(outcome).unwrap();
+        })
+    };
+    waiting.recv().expect("the second attempt must start");
+
+    // The permit is exclusive, so the second attempt cannot have produced a
+    // workflow while the first one is still holding it.
+    assert!(matches!(
+        reacquired.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+
+    drop(first);
+    assert!(
+        reacquired.recv().expect("the second attempt must finish"),
+        "the released permit must admit the waiting attempt"
+    );
+    second.join().expect("the second attempt must not panic");
+}
+
+#[test]
+fn a_released_init_checkpoint_is_still_classified_as_an_interrupted_new_deployment() {
+    let (_dir, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let released = release_init_checkpoint(&arbiter, &catalog, &context);
+    // The release exists only in this process. A restart drops it, so what a
+    // later startup sees is the retained checkpoint and nothing else.
+    drop(released);
+    drop(arbiter);
+
+    let record_before = fs::read(path.join("deployment-record.json")).unwrap();
+    let locators_before = locator_files(&path);
+    let database_before = fs::read(path.join("application.sqlite3")).unwrap();
+
+    let store = LifecycleStore::open_or_create(&path).unwrap();
+    let classification = store
+        .classify_startup(&sqlite_catalog(), &sqlite_context(&path))
+        .unwrap();
+
+    assert_eq!(
+        classification,
+        LifecycleClassification::Interrupted(InterruptedLifecycleAction::RedeployNew)
+    );
+    assert_eq!(
+        fs::read(path.join("deployment-record.json")).unwrap(),
+        record_before
+    );
+    assert_eq!(locator_files(&path), locators_before);
+    assert_eq!(
+        fs::read(path.join("application.sqlite3")).unwrap(),
+        database_before
+    );
+    assert!(!path.join("application.sqlite3-wal").exists());
 }

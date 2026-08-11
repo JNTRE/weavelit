@@ -10,7 +10,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -320,6 +320,75 @@ impl AllowedMethod {
     }
 }
 
+/// An action the listener runs after it has written a response successfully.
+///
+/// A workflow attaches one to make a later capability reachable only once the
+/// response that carries its one-time output has actually left the Server. The
+/// listener owns when it runs: it is invoked after the response has been
+/// written and never by the route that produced the response.
+///
+/// # What a successful write means
+///
+/// It means exactly this: every byte of the response was accepted by the TLS
+/// transport and the connection was shut down cleanly, all inside the
+/// connection's response budget. It does **not** mean that the peer received,
+/// decrypted, stored, rendered, or read those bytes. No event observable at
+/// this boundary can establish any of that, so nothing here should be read as
+/// evidence that a person holds what the response contained.
+///
+/// The guarantee is therefore one-directional and is useful only in that
+/// direction. A write failure, a peer that disappeared before the connection
+/// was shut down, and a response budget that expired are indistinguishable
+/// here, and none of them runs the action. A caller that publishes capability
+/// from this action stays fail closed whenever delivery is merely uncertain,
+/// and it must not treat the action running as proof of receipt.
+#[derive(Clone)]
+pub struct ResponseWriteAcknowledgement {
+    /// Taken on the first run, so the action runs at most once however many
+    /// responses or clones carry this value.
+    action: Arc<Mutex<Option<AcknowledgementAction>>>,
+}
+
+/// The one-shot action a [`ResponseWriteAcknowledgement`] runs.
+///
+/// It consumes itself, so the type alone records that it cannot run twice.
+type AcknowledgementAction = Box<dyn FnOnce() + Send>;
+
+impl ResponseWriteAcknowledgement {
+    /// Creates the acknowledgement a response carries to the listener.
+    #[must_use]
+    pub fn new<A>(action: A) -> Self
+    where
+        A: FnOnce() + Send + 'static,
+    {
+        Self {
+            action: Arc::new(Mutex::new(Some(Box::new(action)))),
+        }
+    }
+
+    /// Runs the action at most once.
+    ///
+    /// A lane left poisoned by a panicking action is recovered rather than
+    /// re-entered: the action has already been taken, so a later call finds
+    /// nothing to run.
+    fn run(&self) {
+        let action = self
+            .action
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(action) = action {
+            action();
+        }
+    }
+}
+
+impl fmt::Debug for ResponseWriteAcknowledgement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResponseWriteAcknowledgement(REDACTED)")
+    }
+}
+
 #[derive(Clone)]
 struct BoundedResponse {
     status: StatusCode,
@@ -333,6 +402,11 @@ struct BoundedResponse {
     /// [`redacted_response`] leaves it absent, so a response that redacts
     /// emits no cookie at all.
     cookies: Option<CookieLines>,
+    /// Action the listener runs only after this response is written.
+    ///
+    /// Only the typed profile can carry one, and [`redacted_response`] leaves
+    /// it absent, so a response that redacts acknowledges nothing.
+    acknowledgement: Option<ResponseWriteAcknowledgement>,
 }
 
 impl BoundedResponse {
@@ -343,6 +417,7 @@ impl BoundedResponse {
             body: Bytes::from_static(body.as_bytes()),
             allow: None,
             cookies: None,
+            acknowledgement: None,
         }
     }
 }
@@ -1170,11 +1245,7 @@ async fn serve_normal_connection_with_timeouts(
 
     let response =
         process_restricted_request(&mut tls_stream, source, surface, rate_limiter, timeouts).await;
-    let _ = timeout(
-        timeouts.processing,
-        write_bounded_response(&mut tls_stream, response),
-    )
-    .await;
+    write_response_and_acknowledge(&mut tls_stream, response, timeouts.processing).await;
 }
 
 async fn serve_rejection_connection(stream: TcpStream, tls_acceptor: TlsAcceptor) {
@@ -1665,6 +1736,12 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
     // rendered by the listener, so the only cookies that can reach the wire
     // are the two the closed effect names.
     let effect = response.extensions().get::<CookieEffect>().cloned();
+    // The post-write action is read here and run by the listener, so a route
+    // cannot run it itself and cannot run it before its response is written.
+    let acknowledgement = response
+        .extensions()
+        .get::<ResponseWriteAcknowledgement>()
+        .cloned();
     // The typed profile serializes the route's envelope itself and ignores the
     // response body and every header the route set, so it can emit no
     // cross-origin header, message, path, trace, or dependency detail.
@@ -1688,12 +1765,14 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             body: Bytes::from(body),
             allow,
             cookies,
+            acknowledgement,
         };
     }
-    // Only the typed profile may carry a cookie effect. An effect on any other
-    // response is an invalid composition, so it redacts rather than silently
-    // dropping the cookie and returning the route's body.
-    if effect.is_some() {
+    // Only the typed profile may carry a cookie effect or a post-write action.
+    // Either on any other response is an invalid composition, so it redacts
+    // rather than silently dropping the effect and returning the route's body,
+    // or acknowledging a write of a response the listener did not compose.
+    if effect.is_some() || acknowledgement.is_some() {
         return redacted_response(status, allow);
     }
     let Some(profile) = response
@@ -1716,6 +1795,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             body: Bytes::from_static(body.as_bytes()),
             allow,
             cookies: None,
+            acknowledgement: None,
         };
     }
     BoundedResponse {
@@ -1724,6 +1804,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         body,
         allow,
         cookies: None,
+        acknowledgement: None,
     }
 }
 
@@ -1784,6 +1865,31 @@ where
     stream.write_all(head.as_bytes()).await?;
     stream.write_all(&response.body).await?;
     stream.shutdown().await
+}
+
+/// Writes a bounded response and runs its post-write action only on success.
+///
+/// The action is taken out of the response before the write consumes it and is
+/// run only when the whole write, including the connection shutdown, completed
+/// inside the response budget. A write failure, a peer that vanished before the
+/// shutdown, and an expired budget all leave it unrun, so a workflow that
+/// gates capability on it stays fail closed whenever delivery did not visibly
+/// complete.
+async fn write_response_and_acknowledge<S>(
+    stream: &mut S,
+    mut response: BoundedResponse,
+    write_timeout: Duration,
+) where
+    S: AsyncWrite + Unpin,
+{
+    let acknowledgement = response.acknowledgement.take();
+    let written = matches!(
+        timeout(write_timeout, write_bounded_response(stream, response)).await,
+        Ok(Ok(()))
+    );
+    if written && let Some(acknowledgement) = acknowledgement {
+        acknowledgement.run();
+    }
 }
 
 async fn processing_response<F>(processing_deadline: Deadline, processing: F) -> BoundedResponse
@@ -2279,10 +2385,16 @@ pub(crate) mod tests {
     use std::{
         ffi::OsString,
         future::pending,
+        io,
         net::SocketAddr,
         os::unix::fs::{MetadataExt, PermissionsExt},
         path::{Path, PathBuf},
-        sync::{Arc, atomic::Ordering},
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
         time::Duration,
     };
 
@@ -2300,7 +2412,7 @@ pub(crate) mod tests {
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
     };
     use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
+        io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
         net::{TcpListener, TcpSocket, TcpStream},
         sync::{Notify, Semaphore, mpsc, oneshot, watch},
         task::JoinHandle,
@@ -2331,11 +2443,12 @@ pub(crate) mod tests {
         ConnectionSlots, ConnectionTimeouts, DatabaseError, MAX_JSON_BODY_BYTES,
         MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
         RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
-        RateLimiter, RequestReadError, ResponseProfile, RestrictedStartup,
-        SHUTDOWN_DATABASE_BUDGET, ServingMode, ServingModeSwitch, ShutdownBudget, ShutdownSignal,
-        StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter,
-        accept_and_drain_connections, bounded_response_from_axum, classify_restricted_startup,
-        close_active_database, fallback_router, gateway_timeout_response,
+        RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
+        RestrictedStartup, SHUTDOWN_DATABASE_BUDGET, ServingMode, ServingModeSwitch,
+        ShutdownBudget, ShutdownSignal, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
+        WorkflowArbiter, accept_and_drain_connections, bounded_response_from_axum,
+        classify_restricted_startup, close_active_database, fallback_router,
+        gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
@@ -2353,6 +2466,7 @@ pub(crate) mod tests {
             ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
             typed_json_response,
         },
+        write_response_and_acknowledge,
     };
 
     /// Listener authority used by router-level tests that bind no socket.
@@ -7755,5 +7869,272 @@ pub(crate) mod tests {
         // bound; a shape that outgrew the derivation would take this branch.
         let redacted = redacted_response(StatusCode::OK, None);
         assert_eq!(redacted.body.as_ref(), b"{\"error\":\"gateway_timeout\"}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Response-write acknowledgement
+    // -----------------------------------------------------------------------
+
+    /// Accepts every byte and shuts the connection down cleanly.
+    struct AcceptingWriter;
+
+    impl AsyncWrite for AcceptingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Fails the write itself, as a transport whose peer is already gone does.
+    struct FailingWriter;
+
+    impl AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+        }
+    }
+
+    /// Takes every byte but never closes cleanly, as a peer that disconnects
+    /// after the body was handed to the transport does.
+    struct DisconnectingWriter;
+
+    impl AsyncWrite for DisconnectingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::from(io::ErrorKind::ConnectionReset)))
+        }
+    }
+
+    /// Never makes progress, so the write outlives its budget.
+    struct StalledWriter;
+
+    impl AsyncWrite for StalledWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    /// An acknowledgement that counts its runs, and the counter to read.
+    fn counting_acknowledgement() -> (ResponseWriteAcknowledgement, Arc<AtomicUsize>) {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&runs);
+        (
+            ResponseWriteAcknowledgement::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+            runs,
+        )
+    }
+
+    fn acknowledging_response(acknowledgement: &ResponseWriteAcknowledgement) -> BoundedResponse {
+        BoundedResponse {
+            acknowledgement: Some(acknowledgement.clone()),
+            ..BoundedResponse::json(StatusCode::OK, "{\"error\":\"not_found\"}")
+        }
+    }
+
+    /// A write that completed hands the action to the listener exactly once,
+    /// however many written responses carry the same acknowledgement.
+    #[tokio::test]
+    async fn a_written_response_runs_its_post_write_action_exactly_once() {
+        let (acknowledgement, runs) = counting_acknowledgement();
+
+        write_response_and_acknowledge(
+            &mut AcceptingWriter,
+            acknowledging_response(&acknowledgement),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+
+        write_response_and_acknowledge(
+            &mut AcceptingWriter,
+            acknowledging_response(&acknowledgement),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "the action must be taken once, not once per written response"
+        );
+    }
+
+    /// A failed write leaves the action unrun, so a workflow gated on it stays
+    /// fail closed.
+    #[tokio::test]
+    async fn a_failed_response_write_runs_no_post_write_action() {
+        let (acknowledgement, runs) = counting_acknowledgement();
+
+        write_response_and_acknowledge(
+            &mut FailingWriter,
+            acknowledging_response(&acknowledgement),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    /// A peer that disappears before the connection is shut down cleanly is
+    /// not a delivery, even though every body byte was accepted.
+    #[tokio::test]
+    async fn a_disconnected_peer_runs_no_post_write_action() {
+        let (acknowledgement, runs) = counting_acknowledgement();
+
+        write_response_and_acknowledge(
+            &mut DisconnectingWriter,
+            acknowledging_response(&acknowledgement),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    /// A write that outlives its budget is abandoned without acknowledging.
+    ///
+    /// The clock is paused and advanced by the runtime, so this asserts the
+    /// budget rather than waiting for it.
+    #[tokio::test(start_paused = true)]
+    async fn a_response_write_that_exceeds_its_budget_runs_no_post_write_action() {
+        let (acknowledgement, runs) = counting_acknowledgement();
+
+        write_response_and_acknowledge(
+            &mut StalledWriter,
+            acknowledging_response(&acknowledgement),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    /// The typed profile carries the route's post-write action to the listener.
+    #[tokio::test]
+    async fn the_typed_profile_carries_a_route_supplied_post_write_action() {
+        let (acknowledgement, runs) = counting_acknowledgement();
+        let mut response = typed_json_response(StatusCode::ACCEPTED, typed_envelope());
+        response.extensions_mut().insert(acknowledgement);
+
+        let bounded = bounded_response_from_axum(response).await;
+        assert!(matches!(bounded.profile, ResponseProfile::TypedJson));
+        assert!(bounded.acknowledgement.is_some());
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+
+        write_response_and_acknowledge(&mut AcceptingWriter, bounded, REQUEST_PROCESSING_TIMEOUT)
+            .await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// Only the typed profile may carry a post-write action. Any other response
+    /// carrying one is an invalid composition and redacts rather than
+    /// acknowledging a response the listener did not compose.
+    #[tokio::test]
+    async fn a_non_typed_response_carrying_a_post_write_action_is_redacted() {
+        let (acknowledgement, runs) = counting_acknowledgement();
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json; charset=utf-8")
+            .body(Body::from("{\"error\":\"not_found\"}"))
+            .unwrap();
+        response.extensions_mut().insert(acknowledgement);
+
+        let bounded = bounded_response_from_axum(response).await;
+        assert_eq!(bounded.body.as_ref(), b"{\"error\":\"gateway_timeout\"}");
+        assert!(bounded.acknowledgement.is_none());
+
+        write_response_and_acknowledge(&mut AcceptingWriter, bounded, REQUEST_PROCESSING_TIMEOUT)
+            .await;
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    /// The whole listener path runs the action only after the exact response
+    /// bytes have left the Server.
+    #[tokio::test]
+    async fn the_listener_acknowledges_a_route_supplied_action_after_writing_the_response() {
+        let (server_config, client_config) = tls_configs();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let router = fallback_router().route(
+            "/api/v1/typed",
+            any({
+                let runs = Arc::clone(&runs);
+                move || {
+                    let runs = Arc::clone(&runs);
+                    async move {
+                        let mut response =
+                            typed_json_response(StatusCode::ACCEPTED, typed_envelope());
+                        response
+                            .extensions_mut()
+                            .insert(ResponseWriteAcknowledgement::new(move || {
+                                runs.fetch_add(1, Ordering::SeqCst);
+                            }));
+                        response
+                    }
+                }
+            }),
+        );
+
+        let response = direct_tls_response(
+            router,
+            server_config,
+            client_config,
+            b"GET /api/v1/typed HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+
+        assert_eq!(
+            response,
+            b"HTTP/1.1 202 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n{\"result\":{\"accepted\":true,\"bytes\":268435456},\"correlation_id\":\"restore-0123456789\"}"
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
     }
 }

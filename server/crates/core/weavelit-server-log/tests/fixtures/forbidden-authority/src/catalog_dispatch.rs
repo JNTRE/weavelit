@@ -14,6 +14,10 @@ impl LogDestination for NestedDestination {
     ) -> Result<DurableAcknowledgement, LogDestinationError> {
         Ok(acknowledgement)
     }
+
+    fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+        Ok(())
+    }
 }
 
 struct NestedFactory;

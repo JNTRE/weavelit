@@ -673,6 +673,46 @@ Init again; a replacement Restore requires redeploying and using independently
 retained compatible backup and recovery material. The lifecycle crate neither
 retains that material nor manages its durability.
 
+### Init Checkpoint Release And Reauthorization
+
+Init spans two requests, so it cannot hold one uninterrupted permit the way
+Restore does. The lifecycle crate exposes a single Init-only transition that
+creates the checkpoint and then releases both the exclusive permit and the
+database handle before returning. Restore does not use it: the transition
+creates an Init checkpoint by construction, and Restore continues through the
+unchanged continuous chain.
+
+Releasing closes the Application Database rather than merely dropping the
+handle, so the backend leaves behind no open-handle artifact and the retained
+state a later startup inspects is exactly the created checkpoint. The close runs
+while the permit is still held, so no other mutation observes a half-released
+lane.
+
+What the transition returns is a released Init checkpoint: a value that names
+the pending checkpoint and nothing else. It holds no permit, no database, and no
+capability to complete, acknowledge, or seal anything, and those absences are
+compile-time properties rather than documented conventions. It has no durable
+representation, so it exists only for the life of the process that created it
+and a restart cannot reconstruct one.
+
+The second request must reauthorize. Reauthorization takes a fresh exclusive
+mutation permit, rechecks that the deployment record is still
+`InitializationPending`, reopens the selected database, and requires the retained
+checkpoint to equal the released one exactly: same deployment identifier, same
+workflow kind, and same checkpoint metadata. A mismatched deployment, altered
+metadata, a different workflow, an absent checkpoint, or a database that has
+since committed application state each fail closed and authorize nothing. Only
+an exact match yields a pending workflow, which then continues through the same
+unchanged `complete_checkpoint -> acknowledge_completion -> seal` chain.
+
+Releasing changes nothing about restart classification. A released Init
+checkpoint is still a retained Init checkpoint, so a startup that finds one
+classifies the deployment as an interrupted lifecycle whose operator action is
+to redeploy and begin a new deployment. That startup binds no listener and
+performs no retry, completion logging, sealing, cleanup, recreation, or
+reconciliation, and it leaves the deployment record, the database locator, and
+the Application Database unchanged.
+
 ## Application At-Rest Protection
 
 The lifecycle crate owns the deployment's Server-local at-rest key, so it also

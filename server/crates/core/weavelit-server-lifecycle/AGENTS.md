@@ -27,8 +27,12 @@ operation.
   trusted-root operations, anchor store, and factory contract.
 - `tests/`: Fake-backend contract, real-filesystem persistence, selection
   eligibility and replacement, restart reopening, startup classification matrix,
-  record advancement, workflow arbitration and contention, crash-point ordering,
-  validation-order, malformed/tampered input, and redaction tests.
+  record advancement, workflow arbitration and contention, Init checkpoint
+  release and exact reauthorization, crash-point ordering, validation-order,
+  malformed/tampered input, and redaction tests.
+- `tests/fixtures/forbidden-lifecycle/`: External compile-fail crate proving a
+  released Init checkpoint cannot be forged, completed, or sealed outside this
+  crate.
 
 ## Usage Guidance
 

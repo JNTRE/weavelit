@@ -15,6 +15,11 @@ impl LogDestination for ExternalDestination {
         let _ = record.persistence_view();
         Ok(acknowledgement)
     }
+
+    fn preflight(&self, record_type: LogRecordType) -> Result<(), LogDestinationError> {
+        let _ = record_type;
+        Ok(())
+    }
 }
 
 struct ExternalFactory;
@@ -26,6 +31,7 @@ impl LogDestinationFactory for ExternalFactory {
     ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
         let _ = context.local_root();
         let _ = context.deployment_identity();
+        let _ = context.settings().len();
         Ok(Box::new(ExternalDestination))
     }
 }

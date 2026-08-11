@@ -1,0 +1,23 @@
+[workspace]
+
+[package]
+name = "weavelit-server-lifecycle-forbidden-lifecycle-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavelit-server-database = { path = "../../../../../database/weavelit-server-database" }
+weavelit-server-lifecycle = { path = "../../.." }
+
+[[bin]]
+name = "released-checkpoint-constructor"
+path = "src/released_checkpoint_constructor.rs"
+
+[[bin]]
+name = "released-checkpoint-completion"
+path = "src/released_checkpoint_completion.rs"
+
+[[bin]]
+name = "released-checkpoint-seal"
+path = "src/released_checkpoint_seal.rs"

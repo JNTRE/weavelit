@@ -549,6 +549,38 @@ The media type, security headers, and maximum body size continue to derive from
 the response profile alone. They are never taken from a module, request, file
 extension, or body, and the allowed method does not influence any of them.
 
+### Response-Write Acknowledgement
+
+A route may attach one listener-owned post-write action to the response it
+returns. The listener runs that action after it has written the response, and
+never before. This is a composition seam for work that must not begin until the
+Server has already answered the request, so the listener owns it rather than the
+route or any module.
+
+Only the typed JSON profile may carry an action. A response on any other profile
+that carries one is an invalid composition: the listener redacts it to the fixed
+gateway-timeout response and discards the action. The frozen pre-operational
+routes therefore keep byte-for-byte identical responses and cannot acquire
+post-write behavior by accident.
+
+The action runs at most once per acknowledgement value, however many written
+responses carry it. It takes no arguments and returns nothing, so it cannot
+observe, alter, or delay the response, and it cannot report a failure back onto
+a connection that has already been answered.
+
+The guarantee is deliberately narrow. Running the action means every byte of the
+response was accepted by the TLS transport and the connection was shut down
+cleanly, all inside that connection's response budget. It does not mean the peer
+received the bytes, decrypted them, stored them, rendered them, or that any
+person read them. A failed write, a peer that disappeared before a clean
+shutdown, and a budget that expired mid-write are indistinguishable from the
+listener's side, and none of them run the action. Composition that needs a
+stronger signal than "handed to the transport successfully" must obtain it from
+a subsequent request rather than from this seam.
+
+Rejection connections write their fixed response without acknowledgement, so a
+rejected request can never run one.
+
 ## Rust Workspace Dependency Policy
 
 `server/Cargo.toml` is the Server Rust workspace manifest and the authority for

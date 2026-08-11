@@ -12,8 +12,8 @@ mod persistence;
 mod protection;
 
 pub use arbitration::{
-    AcknowledgedWorkflow, CommittedWorkflow, PendingWorkflow, SealedDeployment, WorkflowArbiter,
-    WorkflowPermit,
+    AcknowledgedWorkflow, CommittedWorkflow, PendingWorkflow, ReleasedInitCheckpoint,
+    SealedDeployment, WorkflowArbiter, WorkflowPermit,
 };
 pub use catalog::{
     ApplicationDatabaseFactory, BackendCatalog, BackendDeclaration, BackendRegistration,
