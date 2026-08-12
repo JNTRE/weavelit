@@ -418,6 +418,17 @@ describe("ApplicationShell Init workflow gating", () => {
     expect(screen.getByRole("heading", { name: "Set up this deployment" })).toBeTruthy();
   });
 
+  it("does not offer the Init workflow before a database is selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
+
+    render(<ApplicationShell />);
+    await choose("init");
+
+    // A recovery key cannot be prepared before the database it would initialize
+    // has been selected, so the workflow that prepares it is not offered at all.
+    expect(initSection()).toBeNull();
+  });
+
   it("offers the Init workflow as soon as a selection succeeds", async () => {
     mockRoutedFetch({
       status: unselectedStatus,

@@ -452,4 +452,112 @@ describe("InitWorkflow", () => {
     expect(window.location.href).not.toContain(RECOVERY_KEY);
     expect(window.location.href).not.toContain(PASSWORD);
   });
+
+  it("keeps the proof and the log assignments out of storage and the URL too", async () => {
+    mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => Promise.resolve(completionResponse()),
+    });
+
+    render(<InitWorkflow onCompleted={() => {}} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    // The proof is derived material for the key, so it is held to the same rule
+    // as the key itself, as is the delivery nonce it is bound to.
+    for (const secret of [EXPECTED_PROOF, DELIVERY_NONCE, RECOVERY_KEY, PASSWORD]) {
+      // A needle that never appears anywhere would make every check below pass
+      // without proving anything, so its presence is established first.
+      expect(secret.length).toBeGreaterThan(0);
+      expect(window.location.href).not.toContain(secret);
+      expect(document.cookie).not.toContain(secret);
+      expect(JSON.stringify(window.localStorage)).not.toContain(secret);
+      expect(JSON.stringify(window.sessionStorage)).not.toContain(secret);
+    }
+  });
+
+  it("writes nothing to the console on any failure path", async () => {
+    const written: unknown[] = [];
+    const methods = ["log", "info", "warn", "error", "debug", "trace"] as const;
+    const spies = methods.map((method) =>
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        written.push(...args);
+      }),
+    );
+    try {
+      mockRoutedFetch({
+        prepare: () => Promise.resolve(deliveryResponse()),
+        finalize: () => Promise.reject(new Error(`transport carrying ${RECOVERY_KEY}`)),
+      });
+
+      render(<InitWorkflow onCompleted={() => {}} />);
+      await reachReviewStep();
+      fireEvent.click(button("Complete setup"));
+      await waitFor(() => {
+        expect(section().textContent).toContain(CLOSED_MESSAGE);
+      });
+
+      expect(written).toEqual([]);
+      // The rejection deliberately carries the key in its message, so this also
+      // pins that a thrown error is never surfaced verbatim.
+      expect(section().textContent).not.toContain(RECOVERY_KEY);
+    } finally {
+      for (const spy of spies) {
+        spy.mockRestore();
+      }
+    }
+  });
+
+  it("renders no submitted secret in any failure detail", async () => {
+    mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () =>
+        Promise.resolve(
+          jsonResponse({ error: "initialization_failed", correlation_id: CORRELATION }, 500),
+        ),
+    });
+
+    render(<InitWorkflow onCompleted={() => {}} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+    await waitFor(() => {
+      expect(section().textContent).toContain(CORRECTABLE_AFTER_DELIVERY_MESSAGE);
+    });
+
+    // The rendered text is read from the failure region rather than the whole
+    // workflow, because the key is legitimately still on the page above it.
+    const rendered = document.querySelector<HTMLElement>(".shell__init-failure")?.textContent ?? "";
+    expect(rendered.length).toBeGreaterThan(0);
+    for (const secret of [PASSWORD, EXPECTED_PROOF, DELIVERY_NONCE]) {
+      expect(rendered).not.toContain(secret);
+    }
+  });
+
+  it("offers no resume or reconstruction path after the page is reloaded", async () => {
+    mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => Promise.resolve(completionResponse()),
+    });
+
+    const first = render(<InitWorkflow onCompleted={() => {}} />);
+    await reachKeyStep();
+    expect(keyInput().value).toBe(RECOVERY_KEY);
+
+    // Unmounting and mounting a new workflow is what a reload does to this
+    // page: the delivered key lived only in the memory that was just discarded.
+    first.unmount();
+    render(<InitWorkflow onCompleted={() => {}} />);
+
+    expect(step()).toBe("details");
+    expect(screen.queryByLabelText("Recovery key for this deployment")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Complete setup" })).toBeNull();
+    expect(section().textContent).not.toContain(RECOVERY_KEY);
+    // Nothing survived that could reconstruct it, so no resume is even possible.
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+    expect(document.cookie).toBe("");
+  });
 });
