@@ -268,14 +268,16 @@ unmounted until the recovery-key response is actually written, the asymmetric
 actionable-versus-fail-closed outcome at every failure stage, the one-time
 `AlreadyInitialized` guard at the mounted routes, restart's
 `lifecycle_interrupted` / `operator_redeploy_new` reclassification over a
-retained checkpoint, and the in-process transition to normal operation. No Web
-UI browser workflow exercises first-launch Init yet; Init is reachable and
-fully tested over the API, but no browser affordance drives it, so no Web UI
-end-to-end coverage exists for it.
+retained checkpoint, and the in-process transition to normal operation. The
+[Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md)
+first-launch Init workflow drives Init through the browser, and
+`server/web-ui/browser-tests/init-first-launch.spec.ts` exercises it end to
+end against the release Server binary.
 
 ## Related Documents
 
 - [Init User Story](../../user-stories/init-user-story.md)
+- [Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md)
 - [Technical Specification](../../../spec.md)
 - [Security Model](../../../security-model.md)
 - [Server Architecture Design](../../server-architecture-design.md)

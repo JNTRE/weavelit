@@ -18,6 +18,7 @@ import {
 } from "./fixture-support";
 
 const SELECTION_ACTION_NAME = "Select SQLite";
+const RESTORE_CHOICE_NAME = "Restore from a backup";
 const RESTORE_ACTION_NAME = "Restore backup";
 const LOGIN_ACTION_NAME = "Sign in";
 const LOGIN_FAILED_MESSAGE = "Sign-in failed.";
@@ -171,6 +172,7 @@ test("an operator signs in to a restored deployment and the session survives a r
     // The pre-operational surface offers no sign-in control at all.
     await expect(login).toHaveCount(0);
 
+    await page.getByRole("button", { name: RESTORE_CHOICE_NAME }).click();
     const selectionResponse = page.waitForResponse(
       (response) => new URL(response.url()).pathname === SELECTION_PATH,
     );

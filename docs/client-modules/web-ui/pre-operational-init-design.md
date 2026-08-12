@@ -53,11 +53,15 @@ after the recovery-key response has actually been written, as the
 defines. Init is reachable and fully tested over the API this contract
 describes.
 
-No browser workflow drives Init yet. The
-[Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
-does not yet implement the first-launch screens that would submit these two
-requests, so a person cannot complete Init through the Web UI until that
-application work exists.
+The [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
+Init workflow drives both requests through the browser: it presents the
+first-launch choice between Init and Restore, the log assignment and first
+Administrator steps, the one-time recovery-key display and acknowledgement
+gate, and the review and finalization steps that submit these two requests.
+That document owns the workflow's presentation, step sequence, and failure
+handling; this contract remains authoritative only for the wire-level
+request, response, and rejection shapes, and for the browser-side proof
+derivation described below.
 
 ## Ownership And Capability
 
@@ -184,6 +188,32 @@ against; this transport checks shape only.
 Every schema rule the recovery-key route enforces applies unchanged, and this
 route additionally requires the `recovery_key_proof` member.
 
+## Browser-Side Proof Derivation
+
+The Web UI Client Module accepts `recovery_key_proof` as an opaque
+43-character token and does not itself derive or verify it; the
+[Server Init Design](../../server/lifecycle/init/init-design.md) computes the
+expected value the checkpoint compares against. This section documents what
+the [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
+Init workflow sends and never sends, because the derivation happens entirely
+in the browser between the two requests above.
+
+The Init workflow decodes the delivered `recovery_key`'s Bech32 payload to
+recover its 32-byte secret, then computes an `HMAC-SHA-256` over the raw bytes
+of the delivered `delivery_nonce`, keyed by that secret, using only the
+browser's native `crypto.subtle`. The workflow carries no JavaScript
+cryptography dependency for this derivation; Bech32 decoding is implemented in
+the application itself. The resulting signature, encoded as unpadded URL-safe
+Base64, is the 43-character `recovery_key_proof` submitted on the
+finalization request.
+
+Only the derived proof is ever sent back to the Server: the finalization
+request body never contains the `recovery_key` value itself. The delivered
+private recovery key is held in browser memory only for the interval between
+the two requests, is never written to a URL, a cookie, `localStorage`, or
+`sessionStorage`, and is dropped once finalization settles, whether it
+succeeds or a permanent failure closes the workflow.
+
 ### Success
 
 A completed Init responds `200 OK` with
@@ -281,9 +311,12 @@ actually written its response, that a proof mismatch and a lifecycle state
 that no longer permits Init are correctly mapped, that neither route is
 mounted before an Application Database is selected or after the deployment is
 sealed, and that a stale surface still mounting both routes is rejected at
-request time rather than by route absence. Web UI end-to-end tests must still
-drive both requests through the real release Server binary once the Web UI
-application implements a first-launch workflow; no such coverage exists yet.
+request time rather than by route absence.
+`server/web-ui/browser-tests/init-first-launch.spec.ts` drives both requests
+through the real release Server binary end to end, covering the mutually
+exclusive first-launch choice, the shared Application Database selection, the
+delivered key's copy and acknowledgement gate, the browser-derived proof of
+possession, and the resulting sign-in.
 The Server quality gate remains `make -C server check`.
 
 ## Related Documents

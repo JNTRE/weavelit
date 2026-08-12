@@ -43,6 +43,39 @@ body {
   padding: var(--ds-space-md);
 }
 
+.shell__choice {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-md);
+  margin: var(--ds-space-lg) 0 0;
+  padding: var(--ds-space-md);
+}
+
+.shell__choice-title {
+  font-size: var(--ds-font-size-lg);
+  margin: 0;
+}
+
+.shell__choice-description {
+  margin: var(--ds-space-sm) 0 var(--ds-space-md);
+}
+
+.shell__choice-action {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  margin: var(--ds-space-md) 0 0;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+}
+
+.shell__choice-detail {
+  margin: var(--ds-space-xs) 0 0;
+  opacity: 0.7;
+}
+
 .shell__selection {
   border: 1px solid currentColor;
   border-radius: var(--ds-radius-md);
@@ -187,4 +220,127 @@ body {
 .shell__login-attempt-ended,
 .shell__login-disclosure {
   margin: var(--ds-space-md) 0 0;
+}
+
+.shell__init {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-md);
+  margin: var(--ds-space-lg) 0 0;
+  padding: var(--ds-space-md);
+}
+
+.shell__init-title {
+  font-size: var(--ds-font-size-lg);
+  margin: 0;
+}
+
+.shell__init-description {
+  margin: var(--ds-space-sm) 0 var(--ds-space-md);
+}
+
+.shell__init-section-title {
+  font-size: var(--ds-font-size-body);
+  font-weight: var(--ds-font-weight-semibold);
+  margin: var(--ds-space-lg) 0 0;
+}
+
+.shell__init-section-description {
+  margin: var(--ds-space-xs) 0 0;
+  opacity: 0.7;
+}
+
+.shell__init-label {
+  display: block;
+  margin: var(--ds-space-md) 0 var(--ds-space-xs);
+}
+
+.shell__init-input,
+.shell__init-select,
+.shell__init-key {
+  display: block;
+  font: inherit;
+  max-width: 100%;
+}
+
+/* The recovery key is shown once and must be readable exactly, so it is laid
+   out in a fixed-width face wide enough to show it without truncation. */
+.shell__init-key {
+  font-family: var(--ds-font-family-mono);
+  width: 100%;
+}
+
+.shell__init-action,
+.shell__init-secondary,
+.shell__init-copy {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  margin: var(--ds-space-md) var(--ds-space-sm) 0 0;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+}
+
+.shell__init-action:disabled,
+.shell__init-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.shell__init-acknowledgement {
+  display: block;
+  margin: var(--ds-space-md) 0 0;
+}
+
+/* The one-time disclosure carries the workflow's only irreversible warning, so
+   it is set apart from the surrounding explanatory text. */
+.shell__init-key-warning {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  font-weight: var(--ds-font-weight-semibold);
+  margin: var(--ds-space-md) 0 0;
+  padding: var(--ds-space-md);
+}
+
+.shell__init-failure,
+.shell__init-closed {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  margin: var(--ds-space-md) 0 0;
+  padding: var(--ds-space-md);
+}
+
+.shell__init-failure-title {
+  font-size: var(--ds-font-size-body);
+  font-weight: var(--ds-font-weight-semibold);
+  margin: 0;
+}
+
+.shell__init-failure-message {
+  margin: var(--ds-space-sm) 0 0;
+}
+
+.shell__init-failure-code {
+  font-family: var(--ds-font-family-mono);
+  font-size: var(--ds-font-size-sm);
+  margin: var(--ds-space-sm) 0 0;
+}
+
+.shell__init-progress,
+.shell__init-copy-result {
+  margin: var(--ds-space-md) 0 0;
+}
+
+.shell__init-review {
+  margin: var(--ds-space-md) 0 0;
+}
+
+.shell__init-review-term {
+  font-weight: var(--ds-font-weight-semibold);
+  margin: var(--ds-space-sm) 0 0;
+}
+
+.shell__init-review-value {
+  margin: 0;
 }

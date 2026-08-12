@@ -18,6 +18,7 @@ import {
 } from "./fixture-support";
 
 const SELECTION_ACTION_NAME = "Select SQLite";
+const RESTORE_CHOICE_NAME = "Restore from a backup";
 const RESTORE_ACTION_NAME = "Restore backup";
 const LOGIN_ACTION_NAME = "Sign in";
 const VERIFY_ACTION_NAME = "Verify code";
@@ -142,6 +143,7 @@ test.beforeAll(async ({ browser }) => {
   const page = await browser.newPage();
   try {
     await page.goto(baseUrl, { waitUntil: "load" });
+    await page.getByRole("button", { name: RESTORE_CHOICE_NAME }).click();
     const selection = page.waitForResponse(
       (response) => new URL(response.url()).pathname === SELECTION_PATH,
     );

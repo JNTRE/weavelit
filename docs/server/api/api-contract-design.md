@@ -74,8 +74,9 @@ Route groups:
   Init submission protocol. Their behavior is fixed by the
   [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md).
   The Web UI Client Module declares this contract and the `weavelit-server`
-  runtime mounts it, so Init is reachable end to end over the API; no Web UI
-  browser workflow drives it yet.
+  runtime mounts it, so Init is reachable end to end over the API, and the
+  [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
+  Init workflow drives it through the browser.
 - `/api/v1/restore` and `/api/v1/restore/artifact` are the two requests of the
   Restore submission protocol. Their behavior is fixed by the
   [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md).

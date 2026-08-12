@@ -1,6 +1,6 @@
 # Web UI Application Design
 
-This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the Application Database selection control, the **[Restore](../../glossary.md#states-and-requests)** submission control, and the sign-in control. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser, and the [Server Authentication Design](../../server/authentication/authentication-design.md) and [Server API Contract](../../server/api/api-contract-design.md) own the shared session and sign-in route contract the sign-in control drives. This document does not restate any of those contracts.
+This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the first-launch **[Init](../../glossary.md#states-and-requests)** and **[Restore](../../glossary.md#states-and-requests)** choice, the Application Database selection control, the Init workflow, the Restore submission control, and the sign-in control. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md) owns the two-request Init submission protocol, its recovery-key delivery, its browser-side proof-of-possession derivation, and its rejection contract the Init workflow drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser, and the [Server Authentication Design](../../server/authentication/authentication-design.md) and [Server API Contract](../../server/api/api-contract-design.md) own the shared session and sign-in route contract the sign-in control drives. This document does not restate any of those contracts.
 
 ## Build Toolchain
 
@@ -112,10 +112,29 @@ policy, but treats a missing or wrongly typed documented field
 (`lifecycle` or `database_selected`) as a failure rather than guessing a
 default.
 
+## First-Launch Choice
+
+Before an **[Application Database](../../glossary.md#applications-and-interfaces)**
+is selected, the shell offers exactly one control: a choice between
+**[Init](../../glossary.md#states-and-requests)** and
+**[Restore](../../glossary.md#states-and-requests)**. The control is
+presented in a titled region carrying a
+`data-setup-choice` attribute for testability, with one labelled action per
+path and a short description of what each does. The two paths are mutually
+exclusive, matching the states-and-requests contract: choosing one hides the
+other, and the shell offers no control to change a chosen path once made for
+the page's lifetime.
+
+Both paths need a selected Application Database before their own controls
+appear, so they share the one [Application Database Selection Control](#application-database-selection-control)
+below instead of each presenting a duplicate. Once a database is selected, the
+chosen path's own control replaces the selection control.
+
 ## Application Database Selection Control
 
-The shell offers exactly one control, and only in the Unselected status state.
-The control selects SQLite, the single **[Application Database](../../glossary.md#applications-and-interfaces)**
+The shell offers exactly one control, shown once a path is chosen from the
+[First-Launch Choice](#first-launch-choice) above and only in the Unselected
+status state. The control selects SQLite, the single **[Application Database](../../glossary.md#applications-and-interfaces)**
 backend this milestone supports, so it is a single labelled action rather than a
 backend picker. It is presented in a titled region carrying a
 `data-selection-state` attribute for testability, containing a heading, a short
@@ -190,6 +209,67 @@ The application performs no client-side validation of the artifact or the key
 beyond requiring that both are present. It does not parse, preview, or inspect
 backup content, and it does not claim that any client-side check establishes
 validity.
+
+## Init Workflow
+
+The shell offers the Init workflow exactly when the person has chosen Init
+from the [First-Launch Choice](#first-launch-choice) and the status projection
+reports a selected Application Database, the same condition that makes Restore
+eligible. The workflow is presented in a titled region carrying a
+`data-init-state` attribute reporting its current state — details, preparing,
+key, review, finalizing, or closed — for testability, and renders one of
+three step regions, each carrying its own `data-init-step` value: details
+(covering both the details and preparing states), key, and review (covering
+both the review and finalizing states).
+
+The details step collects the System Log and the Audit Log assignments and
+the first **[Administrator](../../glossary.md#identities-and-access)**
+identity. Each log is assigned independently to the compiled-in SQLite
+**[Log Module](../../glossary.md#applications-and-interfaces)** or left
+unassigned; the workflow does not imply that a SQLite Log Module shares the
+SQLite Application Database's file, schema, or connection. The Administrator
+fields are a username, an optional display name, and a password; the password
+is held in component state only and is cleared as soon as the attempt it
+drives settles, whichever way it settles. Submitting these details requests
+the one-time recovery key.
+
+On delivery, the workflow moves to the key step and displays the private
+recovery key exactly once, read-only, with a copy control and a fixed warning
+that Weavelit cannot show the key again, recover it, or issue a replacement.
+Progress past this step is gated behind an explicit acknowledgement checkbox;
+the checkbox records the person's stated responsibility and does not verify
+that the key was actually copied or stored durably. The workflow then presents
+a review step summarizing the submitted username, display name, and log
+assignments without redisplaying the password or the recovery key, and a
+finalizing step while the completing request is in flight.
+
+The recovery key's proof of possession is derived entirely in the browser
+between these steps and is documented in full, including exactly what is sent
+and what is never sent, by the
+[Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md#browser-side-proof-derivation).
+No other route is available to this page between key delivery and
+finalization: the shell has no router and issues no reload or status
+re-request across that boundary, so the already-loaded page is the only thing
+that can complete the workflow.
+
+A rejected submission distinguishes an actionable failure from a permanent
+one rather than presenting one fixed message. An actionable failure returns to
+the details step with the Server's stable error code shown, so the person may
+correct the details and try again; when a key has already been delivered, the
+same delivered key remains the one this deployment expects, and the workflow
+never implies that a new key is needed. A permanent failure moves to the
+closed step, which presents a fixed message that this Server can no longer
+complete Init, withdraws every retry control, and discards the delivered key
+from memory. Because the finalization route's `initialization_failed` code
+covers both an internal failure and cases the Server cannot yet distinguish
+from one, the workflow treats it as actionable so an already-delivered key is
+never abandoned on an ambiguous rejection.
+
+Once finalization is confirmed, the shell adopts that confirmation directly
+rather than issuing a further status request, because the pre-operational
+status projection is no longer served once the deployment is sealed. This is
+the same signal, described in [Sign-In Control](#sign-in-control) below, that
+offers the sign-in control next.
 
 ## Authentication
 
@@ -313,7 +393,7 @@ Nothing that outlives that enrollment retains them.
 
 ## Same-Origin Requests
 
-The application issues exactly nine outbound request kinds, all same-origin,
+The application issues exactly eleven outbound request kinds, all same-origin,
 all with `cache: no-store` and `redirect: error`:
 
 - `GET /api/v1/status` with `Accept: application/json` and `credentials: omit`;
@@ -322,6 +402,12 @@ all with `cache: no-store` and `redirect: error`:
   `X-Weavelit-CSRF` header, `credentials: omit`, and the fixed request body the
   [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
   defines;
+- `PUT /api/v1/init/recovery-key` with the same JSON headers, `credentials: omit`,
+  and a body carrying the log assignments and the first Administrator's
+  identity and password;
+- `PUT /api/v1/init` with the same JSON headers, `credentials: omit`, and a
+  body carrying that same submission together with the browser-derived
+  recovery-key proof of possession;
 - `PUT /api/v1/restore` with the same JSON headers, `credentials: omit`, and a
   body carrying only the recovery key;
 - `PUT /api/v1/restore/artifact` with `Accept: application/json`, an
@@ -353,7 +439,7 @@ use `credentials: same-origin` so the cookies a completed step issues are
 stored. This application does not issue the session-bearing self-enrollment
 request the Server also serves.
 
-Only the last five requests use `credentials: same-origin`; the preceding four
+Only the last five requests use `credentials: same-origin`; the preceding six
 use `credentials: omit` because no session exists yet to send or receive while
 the pre-operational surface is in use.
 
@@ -366,11 +452,13 @@ application sends no other request and performs no cross-origin call.
 
 - [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
 - [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
+- [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md)
 - [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md)
 - [Server Authentication Design](../../server/authentication/authentication-design.md)
 - [Server API Contract](../../server/api/api-contract-design.md)
 - [Web UI Agent Guide](AGENTS.md)
+- [Server Init Design](../../server/lifecycle/init/init-design.md)
 - [Server Restore Design](../../server/lifecycle/restore/restore-design.md)
 - [Testing and Validation Policy](../../testing.md)
 - [Technical Specification](../../spec.md)

@@ -20,6 +20,7 @@ import {
 const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
 const UNSELECTED_MESSAGE = "No Application Database is selected for this deployment.";
 const SELECTION_ACTION_NAME = "Select SQLite";
+const RESTORE_CHOICE_NAME = "Restore from a backup";
 const RESTORE_ACTION_NAME = "Restore backup";
 const RESTORE_COMPLETED_MESSAGE =
   "The backup was restored and this deployment now runs in normal operation.";
@@ -139,7 +140,11 @@ test("a submitted backup and recovery key restore the deployment through the Web
     // Restore is not offered before a database has been selected.
     await expect(restore).toHaveCount(0);
 
-    // 1. Select the SQLite Application Database through the operator's control.
+    // 1. Take the Restore path of the mutually exclusive first-launch choice,
+    // then select the SQLite Application Database through the operator's
+    // control. Both paths share the one selection surface.
+    await page.getByRole("button", { name: RESTORE_CHOICE_NAME }).click();
+    await expect(page.locator("section.shell__choice")).toHaveCount(0);
     const selectionResponse = page.waitForResponse(
       (response) => new URL(response.url()).pathname === SELECTION_PATH,
     );

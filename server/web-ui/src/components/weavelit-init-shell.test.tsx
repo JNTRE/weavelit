@@ -37,6 +37,22 @@ function unselectedStatus(): Promise<Response> {
   return Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: false }));
 }
 
+function selectedStatus(): Promise<Response> {
+  return Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: true }));
+}
+
+/** Waits for the status projection, then takes one first-launch path. */
+async function choose(path: "init" | "restore"): Promise<void> {
+  await waitFor(() => {
+    expect(statusRegion().dataset.statusState).toBe("available");
+  });
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: path === "init" ? "Set up a new deployment" : "Restore from a backup",
+    }),
+  );
+}
+
 describe("ApplicationShell", () => {
   it("renders the loading state while the status request is pending", () => {
     vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>(() => {}));
@@ -104,6 +120,71 @@ describe("ApplicationShell", () => {
   });
 });
 
+describe("ApplicationShell first-launch choice", () => {
+  function choiceSection(): HTMLElement | null {
+    return document.querySelector("section.shell__choice");
+  }
+
+  it("offers exactly the two first-launch paths once the status projection arrives", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(choiceSection()).not.toBeNull();
+    });
+    expect(screen.getByRole("heading", { name: "First launch" })).toBeTruthy();
+    expect(screen.queryAllByRole("button")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Set up a new deployment" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restore from a backup" })).toBeTruthy();
+  });
+
+  it("offers no first-launch choice while the status request is pending", () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>(() => {}));
+
+    render(<ApplicationShell />);
+
+    expect(choiceSection()).toBeNull();
+  });
+
+  it("offers no first-launch choice when the status projection is no longer served", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED 127.0.0.1:8443"));
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("unavailable");
+    });
+    expect(choiceSection()).toBeNull();
+  });
+
+  it.each([
+    ["init", "section.shell__init", "section.shell__restore"],
+    ["restore", "section.shell__restore", "section.shell__init"],
+  ] as const)("withdraws the other path once %s is chosen", async (path, chosen, withdrawn) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => selectedStatus());
+
+    render(<ApplicationShell />);
+    await choose(path);
+
+    await waitFor(() => {
+      expect(document.querySelector(chosen)).not.toBeNull();
+    });
+    expect(document.querySelector(withdrawn)).toBeNull();
+    expect(choiceSection()).toBeNull();
+  });
+
+  it("reuses the existing selection surface for either path rather than duplicating it", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
+
+    render(<ApplicationShell />);
+    await choose("init");
+
+    expect(document.querySelectorAll("section.shell__selection")).toHaveLength(1);
+    expect(document.querySelector("section.shell__init")).toBeNull();
+  });
+});
+
 describe("ApplicationShell database selection control", () => {
   it("offers the selection control only when no Application Database is selected", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
@@ -111,9 +192,8 @@ describe("ApplicationShell database selection control", () => {
     render(<ApplicationShell />);
 
     expect(screen.queryAllByRole("button")).toHaveLength(0);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
+    expect(selectionButton().disabled).toBe(false);
     expect(screen.getByRole("heading", { name: "Application Database" })).toBeTruthy();
   });
 
@@ -149,9 +229,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
 
     fireEvent.click(selectionButton());
 
@@ -177,9 +255,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("restore");
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     fireEvent.click(selectionButton());
@@ -211,9 +287,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
 
     fireEvent.click(selectionButton());
 
@@ -234,9 +308,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
 
     fireEvent.click(selectionButton());
 
@@ -255,9 +327,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
 
     fireEvent.click(selectionButton());
 
@@ -276,11 +346,10 @@ describe("ApplicationShell Restore form gating", () => {
   }
 
   it("offers the Restore form once an Application Database is selected", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ lifecycle: "uninitialized", database_selected: true }),
-    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => selectedStatus());
 
     render(<ApplicationShell />);
+    await choose("restore");
 
     await waitFor(() => {
       expect(restoreSection()).not.toBeNull();
@@ -293,10 +362,8 @@ describe("ApplicationShell Restore form gating", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
 
     render(<ApplicationShell />);
+    await choose("restore");
 
-    await waitFor(() => {
-      expect(statusRegion().dataset.statusState).toBe("available");
-    });
     expect(restoreSection()).toBeNull();
   });
 
@@ -319,9 +386,7 @@ describe("ApplicationShell Restore form gating", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("restore");
     expect(restoreSection()).toBeNull();
 
     fireEvent.click(selectionButton());
@@ -329,6 +394,106 @@ describe("ApplicationShell Restore form gating", () => {
     await waitFor(() => {
       expect(restoreSection()).not.toBeNull();
     });
+  });
+});
+
+describe("ApplicationShell Init workflow gating", () => {
+  function initSection(): HTMLElement | null {
+    return document.querySelector("section.shell__init");
+  }
+
+  function loginSection(): HTMLElement | null {
+    return document.querySelector("section[data-authentication-state]");
+  }
+
+  it("offers the Init workflow once an Application Database is selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => selectedStatus());
+
+    render(<ApplicationShell />);
+    await choose("init");
+
+    await waitFor(() => {
+      expect(initSection()).not.toBeNull();
+    });
+    expect(screen.getByRole("heading", { name: "Set up this deployment" })).toBeTruthy();
+  });
+
+  it("offers the Init workflow as soon as a selection succeeds", async () => {
+    mockRoutedFetch({
+      status: unselectedStatus,
+      selection: () =>
+        Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: true })),
+    });
+
+    render(<ApplicationShell />);
+    await choose("init");
+    expect(initSection()).toBeNull();
+
+    fireEvent.click(selectionButton());
+
+    await waitFor(() => {
+      expect(initSection()).not.toBeNull();
+    });
+  });
+
+  it("withdraws every setup control and offers sign-in once Init completes", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown, init?: RequestInit) => {
+      if (input === "/api/v1/init/recovery-key") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              recovery_key:
+                "AGE-SECRET-KEY-1QQQSYQCYQ5RQWZQFPG9SCRGWPUGPZYSNZS23V9CCRYDPK8QARC0SWRYDWG",
+              delivery_nonce: "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+            },
+          }),
+        );
+      }
+      if (input === "/api/v1/init") {
+        return Promise.resolve(jsonResponse({ result: { lifecycle: "initialized" } }));
+      }
+      if (typeof input === "string" && input.startsWith("/api/v1/auth/")) {
+        return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+      }
+      expect(init?.method).not.toBe("PUT");
+      return selectedStatus();
+    });
+
+    render(<ApplicationShell />);
+    await choose("init");
+
+    fireEvent.change(await screen.findByLabelText("System Log module"), {
+      target: { value: "sqlite" },
+    });
+    fireEvent.change(screen.getByLabelText("Audit Log module"), { target: { value: "sqlite" } });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "administrator" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare recovery key" }));
+
+    fireEvent.click(await screen.findByLabelText("I have saved this recovery key."));
+    fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Complete setup" }));
+
+    // The page never re-reads status across the sealing boundary: completion is
+    // adopted from the finalization response it already holds.
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("initialized");
+    });
+    expect(statusRegion().textContent).toBe(
+      "This deployment is initialized and now runs in normal operation.",
+    );
+    expect(initSection()).toBeNull();
+    expect(document.querySelector("section.shell__selection")).toBeNull();
+    expect(document.querySelector("section.shell__restore")).toBeNull();
+    expect(document.querySelector("section.shell__choice")).toBeNull();
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+
+    const statusRequests = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter(([target]) => target === "/api/v1/status");
+    expect(statusRequests).toHaveLength(1);
   });
 });
 

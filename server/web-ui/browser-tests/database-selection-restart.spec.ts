@@ -19,6 +19,7 @@ import {
 const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
 const UNSELECTED_MESSAGE = "No Application Database is selected for this deployment.";
 const SELECTION_ACTION_NAME = "Select SQLite";
+const RESTORE_CHOICE_NAME = "Restore from a backup";
 const SELECTION_PATH = "/api/v1/application-database";
 
 /**
@@ -87,6 +88,10 @@ test("a selected Application Database is presented immediately and survives a Se
     expect(document?.status()).toBe(200);
     await expect(status).toHaveAttribute("data-status-state", "available");
     await expect(status).toHaveText(UNSELECTED_MESSAGE);
+    // The selection surface follows the mutually exclusive first-launch choice,
+    // and is shared by both paths rather than duplicated inside either.
+    await expect(selection).toHaveCount(0);
+    await page.getByRole("button", { name: RESTORE_CHOICE_NAME }).click();
     await expect(selection).toHaveCount(1);
 
     // The selection is driven through the control the operator actually uses,
