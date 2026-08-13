@@ -57,7 +57,10 @@ use axum::{
     routing::{MethodRouter, any},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use tokio::{sync::Semaphore, task};
+use tokio::{
+    sync::{Semaphore, oneshot},
+    task,
+};
 use tower::ServiceExt as _;
 use weavelit_module_client::{
     ExpectedOrigin, InitCapability, InitCompleted, InitFinalizeSubmission, InitRecoveryKeyPrepared,
@@ -107,6 +110,25 @@ pub(crate) type DeliveryPublication = Arc<dyn Fn() + Send + Sync>;
 /// It is injected so a test observes an exact recorded time instead of
 /// asserting against whatever the host clock happened to read.
 pub(crate) type EventClock = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
+
+/// The boundaries the blocking preparation chain announces to a test.
+///
+/// The chain is uninterruptible by construction, so the only way to order a
+/// cancellation against it deterministically is for the chain itself to say
+/// where it is.
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PreparationPhase {
+    /// Nothing is committed yet and the caller's liveness lease is about to be
+    /// observed.
+    BeforeLivenessCheck,
+    /// Fail closed has been published and the checkpoint is about to be written.
+    BeforeCheckpoint,
+}
+
+/// The pause a test drives the blocking preparation chain through.
+#[cfg(test)]
+type PreparationHook = Arc<dyn Fn(PreparationPhase) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // Delivery stage
@@ -269,6 +291,9 @@ pub struct InitOrchestrator {
     /// retains that same open handle for the operational runtime instead of
     /// letting it close and reopening the target afterwards.
     operational: Mutex<Option<OperationalComposer>>,
+    /// The pause a test drives the blocking preparation chain through.
+    #[cfg(test)]
+    preparation_hook: Mutex<Option<PreparationHook>>,
 }
 
 impl InitOrchestrator {
@@ -317,6 +342,8 @@ impl InitOrchestrator {
             clock,
             operational_runtime,
             operational: Mutex::new(None),
+            #[cfg(test)]
+            preparation_hook: Mutex::new(None),
         }))
     }
 
@@ -437,27 +464,42 @@ impl InitOrchestrator {
         // cleared here instead of outliving the call that received it.
         drop(submission.request);
 
+        // The liveness lease. Dropping a `spawn_blocking` join handle does not
+        // stop the task behind it, so a route future the listener's processing
+        // timeout dropped would otherwise commit an Init for a caller that is
+        // already gone. This request holds the sending half for exactly as long
+        // as it exists, and the blocking chain reads the receiving half.
+        let (lease, observer) = oneshot::channel::<()>();
+
         let orchestrator = Arc::clone(self);
         // The whole authorize-through-release chain is blocking work under a
         // `!Send` lifecycle guard, so it runs in one closure on one thread and
-        // outside any cancellation point.
+        // outside any cancellation point. Every publication the chain owes is
+        // made inside it for the same reason.
         let prepared = task::spawn_blocking(move || {
             let _admission = admission;
-            orchestrator.prepare(backend)
+            orchestrator.prepare(backend, observer, &delivering)
         })
-        .await
-        .map_err(|_| InitRejection::InitializationFailed)??;
+        .await;
 
-        // The checkpoint now exists, so this Server is committed to finishing
-        // this Init or to nothing at all. Every later connection observes the
-        // fail-closed surface until the key response is written successfully.
-        self.serving_modes.publish_fail_closed();
-        delivering.mark();
-        Ok(prepared)
+        // Held across the await above and released only here: the dropped
+        // sender is the blocking chain's only signal that this request is gone.
+        drop(lease);
+        prepared.map_err(|_| InitRejection::InitializationFailed)?
     }
 
     /// Runs the blocking preparation chain.
-    fn prepare(&self, backend: SelectedBackend) -> Result<InitRecoveryKeyPrepared, InitRejection> {
+    ///
+    /// `lease` is the caller's liveness lease and `delivering` is its delivery
+    /// marker. Both are consulted here rather than after the await, because a
+    /// cancelled route future never resumes while this chain still runs on to
+    /// commit the deployment.
+    fn prepare(
+        &self,
+        backend: SelectedBackend,
+        mut lease: oneshot::Receiver<()>,
+        delivering: &DeliveringRequest,
+    ) -> Result<InitRecoveryKeyPrepared, InitRejection> {
         if !self.stage.accepts_preparation() {
             return Err(InitRejection::AlreadyInitialized);
         }
@@ -486,29 +528,89 @@ impl InitOrchestrator {
         let correlation_identifier = crate::authentication::correlation_identifier()
             .ok_or(InitRejection::ServiceUnavailable)?;
 
-        // Point of no return: this writes the deployment-bound checkpoint,
-        // advances the record to `InitializationPending`, and only then gives
-        // back the permit, the database handle, and the lane.
+        #[cfg(test)]
+        self.pause(PreparationPhase::BeforeLivenessCheck);
+        // Every step above is reversible, and this is the last moment at which
+        // that is still true. The check is advisory rather than a correctness
+        // boundary: a cancellation can still land just after it, which is why
+        // the publication below precedes the durable write rather than
+        // following it.
+        if matches!(lease.try_recv(), Err(oneshot::error::TryRecvError::Closed)) {
+            // The prepared delivery, and the key material inside it, are
+            // dropped here. The stage stays idle, so Init remains retryable.
+            return Err(InitRejection::InitializationFailed);
+        }
+
+        // Point of no return. Fail closed is published before the durable
+        // mutation, so a cancellation that raced the check above still leaves a
+        // committed Init visibly fail closed rather than apparently healthy.
+        self.serving_modes.publish_fail_closed();
+        #[cfg(test)]
+        self.pause(PreparationPhase::BeforeCheckpoint);
+
+        // Writes the deployment-bound checkpoint, advances the record to
+        // `InitializationPending`, and only then gives back the permit, the
+        // database handle, and the lane.
         let released = permit
             .create_init_checkpoint_and_release(metadata)
-            .map_err(preparation_rejection)?;
+            .map_err(|error| self.abandon(preparation_rejection(error)))?;
 
         // The key is produced only after both commit paths completed.
-        let recovery_key = prepared.into_delivery_line().map_err(init_rejection)?;
+        let recovery_key = prepared
+            .into_delivery_line()
+            .map_err(|error| self.abandon(init_rejection(error)))?;
         if !self.stage.begin_delivery(PendingInit {
             released,
             checkpoint,
             backend: selected,
             correlation_identifier: correlation_identifier.clone(),
         }) {
-            return Err(InitRejection::AlreadyInitialized);
+            return Err(self.abandon(InitRejection::AlreadyInitialized));
         }
+
+        // Only now does a delivery exist for a written response to publish.
+        delivering.mark();
 
         Ok(InitRecoveryKeyPrepared {
             recovery_key,
             delivery_nonce,
             correlation_id: correlation_identifier,
         })
+    }
+
+    /// Ends the delivery stage after a failure past the point of no return.
+    ///
+    /// Fail closed is already published, so this Server serves nothing; ending
+    /// the stage keeps a later preparation or finalization from acting on the
+    /// half-built delivery this failure left behind.
+    fn abandon(&self, rejection: InitRejection) -> InitRejection {
+        self.stage.end();
+        rejection
+    }
+
+    /// Runs the installed pause, if any, at one preparation boundary.
+    ///
+    /// The hook is cloned out of its lock before it runs, so a parked chain
+    /// holds nothing the test needs.
+    #[cfg(test)]
+    fn pause(&self, phase: PreparationPhase) {
+        let hook = self
+            .preparation_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            hook(phase);
+        }
+    }
+
+    /// Installs the pause a test drives the blocking preparation chain through.
+    #[cfg(test)]
+    fn pause_preparation(&self, hook: PreparationHook) {
+        *self
+            .preparation_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
     }
 
     // -----------------------------------------------------------------------
@@ -536,17 +638,16 @@ impl InitOrchestrator {
         .await
         .map_err(|_| InitRejection::InitializationFailed)?;
 
+        // Every state publication this outcome owes was already made inside the
+        // blocking chain, so a dropped route future cannot skip one. What is
+        // left here is only the rendered rejection.
         match outcome {
             Ok(completed) => Ok(completed),
-            Err(InitFailure::Actionable(rejection)) => Err(rejection),
-            Err(InitFailure::Refused(rejection)) => Err(rejection),
-            Err(InitFailure::Closed(rejection)) => {
-                // Every later connection serves nothing at all: this process
-                // will not retry, reset, recreate, or reconcile the retained
-                // state, and only a redeploy resolves it.
-                self.serving_modes.publish_fail_closed();
-                Err(rejection)
-            }
+            Err(
+                InitFailure::Actionable(rejection)
+                | InitFailure::Refused(rejection)
+                | InitFailure::Closed(rejection),
+            ) => Err(rejection),
         }
     }
 
@@ -554,7 +655,9 @@ impl InitOrchestrator {
     ///
     /// A claimed delivery is returned to the stage on an actionable failure and
     /// destroyed on any other, so the asymmetry is decided in one place rather
-    /// than restated at each step.
+    /// than restated at each step. A closed failure publishes the fail-closed
+    /// surface here, inside the uninterruptible chain, rather than after the
+    /// await that a cancellation would never resume from.
     fn run(
         &self,
         request: InitRequestSubmission,
@@ -575,6 +678,12 @@ impl InitOrchestrator {
             }
             Err(failure) => {
                 self.stage.end();
+                if matches!(failure, InitFailure::Closed(_)) {
+                    // Every later connection serves nothing at all: this
+                    // process will not retry, reset, recreate, or reconcile the
+                    // retained state, and only a redeploy resolves it.
+                    self.serving_modes.publish_fail_closed();
+                }
                 Err(failure)
             }
         }
@@ -1088,7 +1197,10 @@ mod tests {
         http::{Method, StatusCode, header},
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use tokio::{io::AsyncWriteExt as _, sync::watch};
+    use tokio::{
+        io::AsyncWriteExt as _,
+        sync::{oneshot, watch},
+    };
     use tower::ServiceExt as _;
     use weavelit_module_client::{
         APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_SESSION_ROUTE, CSRF_COOKIE_NAME,
@@ -1112,8 +1224,8 @@ mod tests {
     use zeroize::Zeroizing;
 
     use super::{
-        DeliveryStage, InitFailure, InitOrchestrator, InitStage, PendingInit, closed, decode_proof,
-        finalization_failure, system_event_clock,
+        DeliveryStage, InitFailure, InitOrchestrator, InitStage, PendingInit, PreparationPhase,
+        closed, decode_proof, finalization_failure, system_event_clock,
     };
     use crate::{
         APPLICATION_DATABASE_FILE, PreoperationalComposer, RateLimiter,
@@ -1840,6 +1952,252 @@ mod tests {
         ] {
             assert!(!serves(&served, absent).await, "{absent} must be absent");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Cancellation
+    // -----------------------------------------------------------------------
+
+    /// A one-shot barrier a test drives one blocking chain through.
+    ///
+    /// The blocking side announces that it reached a boundary and then parks
+    /// until the test releases it, so a cancellation is ordered against an
+    /// uninterruptible chain by construction rather than by a sleep or by a
+    /// timing assumption.
+    struct Barrier {
+        arrival: Mutex<Option<oneshot::Sender<()>>>,
+        blocked: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    impl Barrier {
+        fn new() -> (Arc<Self>, BarrierControl) {
+            let (arrival, arrived) = oneshot::channel();
+            let (release, blocked) = std::sync::mpsc::channel();
+            (
+                Arc::new(Self {
+                    arrival: Mutex::new(Some(arrival)),
+                    blocked: Mutex::new(Some(blocked)),
+                }),
+                BarrierControl { arrived, release },
+            )
+        }
+
+        /// Parks the calling blocking chain until the test releases it.
+        ///
+        /// Only the first arrival parks, so a retry through the same installed
+        /// hook runs straight past this boundary.
+        fn wait(&self) {
+            let arrival = self
+                .arrival
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let blocked = self
+                .blocked
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(arrival) = arrival {
+                let _ = arrival.send(());
+            }
+            if let Some(blocked) = blocked {
+                let _ = blocked.recv();
+            }
+        }
+    }
+
+    /// The test side of a [`Barrier`].
+    struct BarrierControl {
+        arrived: oneshot::Receiver<()>,
+        release: std::sync::mpsc::Sender<()>,
+    }
+
+    impl BarrierControl {
+        /// Resolves once the blocking chain is parked at the boundary.
+        async fn reached(&mut self) {
+            (&mut self.arrived)
+                .await
+                .expect("the blocking chain reaches the boundary");
+        }
+
+        /// Lets the parked blocking chain run to completion.
+        fn release(self) {
+            let _ = self.release.send(());
+        }
+    }
+
+    /// Installs a preparation hook that parks the chain at exactly one boundary.
+    fn park_preparation_at(surface: &InitSurface, boundary: PreparationPhase) -> BarrierControl {
+        let (barrier, control) = Barrier::new();
+        surface
+            .orchestrator()
+            .pause_preparation(Arc::new(move |phase| {
+                if phase == boundary {
+                    barrier.wait();
+                }
+            }));
+        control
+    }
+
+    /// A clock that parks the finalization chain and then refuses to report a
+    /// time, which is the closed failure every internal step reports.
+    fn parking_clock() -> (super::EventClock, BarrierControl) {
+        let (barrier, control) = Barrier::new();
+        (
+            Arc::new(move || {
+                barrier.wait();
+                None
+            }),
+            control,
+        )
+    }
+
+    /// Serves one Init request from its own task, as the listener does.
+    ///
+    /// Aborting the returned handle drops the route future at its await, which
+    /// is exactly what the listener's processing timeout does to it.
+    fn spawn_request(
+        surface: &InitSurface,
+        target: &'static str,
+        body: String,
+    ) -> tokio::task::JoinHandle<Served> {
+        let served = surface.served();
+        tokio::spawn(async move { serve(&served, target, &body).await })
+    }
+
+    /// Drops an aborted route task and proves it never completed.
+    async fn cancel(request: tokio::task::JoinHandle<Served>) {
+        request.abort();
+        assert!(
+            request
+                .await
+                .err()
+                .is_some_and(|error| error.is_cancelled()),
+            "the route future must be dropped rather than resumed"
+        );
+    }
+
+    /// Resolves once the blocking chain that held the mutation lane finished.
+    ///
+    /// The admission permit is held for the whole blocking chain, so
+    /// reacquiring the single-permit lane is the exact completion signal; no
+    /// sleep or timing assumption stands in for it.
+    async fn lane_settled(surface: &InitSurface) {
+        drop(
+            Arc::clone(&surface.orchestrator().mutation_lane)
+                .acquire_owned()
+                .await
+                .expect("the mutation lane is open"),
+        );
+    }
+
+    /// A preparation whose route future is dropped before its liveness lease is
+    /// observed commits nothing at all. The blocking chain runs on regardless,
+    /// so the deployment record, the serving mode, and the delivery stage are
+    /// all left where an untouched deployment stands, and a retry still works.
+    #[tokio::test]
+    async fn a_preparation_cancelled_before_the_liveness_check_commits_nothing() {
+        let surface = InitSurface::new();
+        let anchors = surface.anchor_snapshot();
+        let mut barrier = park_preparation_at(&surface, PreparationPhase::BeforeLivenessCheck);
+
+        let request = spawn_request(&surface, INIT_RECOVERY_KEY_ROUTE, preparation_body());
+        barrier.reached().await;
+        cancel(request).await;
+        barrier.release();
+        lane_settled(&surface).await;
+
+        assert_eq!(surface.record_state(), LifecycleState::Uninitialized);
+        assert_eq!(surface.anchor_snapshot(), anchors);
+        assert!(matches!(
+            *surface.modes.borrow(),
+            ServingMode::PreOperational(_)
+        ));
+        assert!(surface.orchestrator().stage.accepts_preparation());
+        assert!(serves(&surface.served(), INIT_RECOVERY_KEY_ROUTE).await);
+
+        // The whole workflow is still available, key and all.
+        surface.complete().await;
+        assert_eq!(surface.record_state(), LifecycleState::Initialized);
+    }
+
+    /// A preparation cancelled after its liveness check still commits, because
+    /// the blocking chain past that point cannot be interrupted. The Server it
+    /// leaves behind is visibly fail closed rather than apparently healthy: the
+    /// checkpoint exists, nothing is mounted, a stale preparation router
+    /// refuses, and the undelivered key is gone for good.
+    #[tokio::test]
+    async fn a_preparation_cancelled_after_fail_closed_leaves_no_way_to_obtain_the_key() {
+        let surface = InitSurface::new();
+        let mut barrier = park_preparation_at(&surface, PreparationPhase::BeforeCheckpoint);
+        let stale = surface.served();
+
+        let request = spawn_request(&surface, INIT_RECOVERY_KEY_ROUTE, preparation_body());
+        barrier.reached().await;
+        cancel(request).await;
+        barrier.release();
+        lane_settled(&surface).await;
+
+        assert_eq!(
+            surface.record_state(),
+            LifecycleState::InitializationPending
+        );
+        assert!(matches!(
+            *surface.modes.borrow(),
+            ServingMode::FailClosed(_)
+        ));
+
+        let after = surface.served();
+        for absent in [
+            INIT_ROUTE,
+            INIT_RECOVERY_KEY_ROUTE,
+            RESTORE_ROUTE,
+            STATUS_ROUTE,
+            APPLICATION_DATABASE_ROUTE,
+        ] {
+            assert!(!serves(&after, absent).await, "{absent} must be absent");
+        }
+
+        // A connection accepted before the publication still holds a router
+        // that mounts preparation, and it obtains nothing through it.
+        let refused = serve(&stale, INIT_RECOVERY_KEY_ROUTE, &preparation_body()).await;
+        assert_eq!(refused.status, InitRejection::AlreadyInitialized.status());
+        assert!(
+            !refused.body.contains("recovery_key"),
+            "no response may carry the key: {}",
+            refused.body
+        );
+    }
+
+    /// A finalization that fails closed publishes the fail-closed surface from
+    /// inside its own blocking chain, so an aborted route task cannot leave
+    /// this Server serving a healthier surface than its state deserves.
+    #[tokio::test]
+    async fn a_closed_finalization_fails_closed_even_when_its_route_task_is_aborted() {
+        let (clock, mut barrier) = parking_clock();
+        let surface = InitSurface::composed(clock, None);
+        let delivered = surface.deliver_key().await;
+        let stale = surface.served();
+
+        let request = spawn_request(&surface, INIT_ROUTE, finalization_body(&delivered.proof()));
+        barrier.reached().await;
+        cancel(request).await;
+        barrier.release();
+        lane_settled(&surface).await;
+
+        assert!(matches!(
+            *surface.modes.borrow(),
+            ServingMode::FailClosed(_)
+        ));
+        assert_eq!(
+            surface.record_state(),
+            LifecycleState::InitializationPending
+        );
+        assert!(system_log_records(&surface.state_root).is_empty());
+        assert!(!serves(&surface.served(), INIT_ROUTE).await);
+
+        let refused = serve(&stale, INIT_ROUTE, &finalization_body(&delivered.proof())).await;
+        assert_eq!(refused.status, InitRejection::AlreadyInitialized.status());
     }
 
     // -----------------------------------------------------------------------

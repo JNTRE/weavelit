@@ -82,7 +82,7 @@ For Milestone 1 that inventory is exactly:
 | --- | --- |
 | **[Client Module](../../../glossary.md#applications-and-interfaces)** | `web-ui` |
 | **[Log Module](../../../glossary.md#applications-and-interfaces)** | `sqlite` |
-| **[MFA Module](../../../glossary.md#applications-and-interfaces)** | none |
+| **[MFA Module](../../../glossary.md#applications-and-interfaces)** | `totp` |
 | **[Service Module](../../../glossary.md#applications-and-interfaces)** | none |
 | Named operation | none |
 
@@ -99,12 +99,12 @@ outside the inventory is refused as `backup_incompatible` before any checkpoint
 exists.
 
 This is an operator-visible constraint, not an internal detail. A backup taken
-from a deployment that enrolled an MFA factor or configured a Service Connection
-cannot be restored into a build that compiles in neither, because restoring it
-would produce a deployment whose Groups, factors, and connections point at
-components that could never load. The refusal is deliberate and is never relaxed
-by overstating the inventory. Comparison is exact: a component name that differs
-only in case or spelling is unavailable.
+from a deployment that configured a Service Connection, or that enrolled an MFA
+factor from any module other than `totp`, cannot be restored into this build,
+because restoring it would produce a deployment whose Groups, factors, and
+connections point at components that could never load. The refusal is deliberate
+and is never relaxed by overstating the inventory. Comparison is exact: a
+component name that differs only in case or spelling is unavailable.
 
 ## Request And Sensitive Input Handling
 

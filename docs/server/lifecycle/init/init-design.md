@@ -169,6 +169,43 @@ checkpoint is durable: the permit, the handle, and the lane are all released
 before the recovery-key response is produced, so none of them is held while
 the person saves that key outside Weavelit.
 
+Preparation's blocking chain cannot be cancelled once it starts, and dropping
+the route future — which is what the listener's processing timeout does — does
+not stop it. The request therefore holds a liveness lease that the chain
+observes exactly once, after every reversible step and immediately before the
+first commitment. A chain that finds the lease closed commits nothing at all:
+no fail-closed publication, no checkpoint, and no delivery. It discards the
+generated key material and leaves the deployment selected, uninitialized, and
+preparable, so a person whose request timed out before that point simply
+retries.
+
+That check is advisory rather than a correctness boundary, because a
+cancellation can still land immediately after it. Everything past it is
+ordered so the observable state can never be less severe than the durable
+state: the runtime publishes the fail-closed surface **before** it writes the
+checkpoint, not after. A cancellation that races the check therefore leaves a
+committed Init that is visibly fail closed, never one that still looks like a
+healthy uninitialized deployment. Producing the delivery line, recording the
+pending delivery, and marking the request whose written response may publish
+finalization all run inside that same uninterruptible chain, and any failure
+among them ends the delivery stage with this process already fail closed.
+
+The residual behavior is delivery uncertainty, never silent commitment. A
+preparation whose response timed out may have created a checkpoint the client
+never received the key for. The key was discarded with the request; nothing
+persists, reconstructs, retries, or later retrieves it, and no second request
+can pick it up. Such a deployment is fail closed with an
+`InitializationPending` checkpoint no one can finalize, and the operator
+redeploys, exactly as for any other interrupted Init.
+
+Finalization publishes its own outcome from inside its blocking chain for the
+same reason: a closed failure ends the delivery stage and publishes the
+fail-closed surface there, so an abandoned route future cannot leave this
+Server serving a healthier surface than its retained state deserves.
+Finalization carries no liveness lease, because its response carries no
+irreplaceable secret, success publishes normal operation from inside the same
+chain, and an actionable failure restores the delivery for a retry.
+
 The delivered key remains a canonical age key, unchanged; only the proof
 mechanism above is Init-specific, and it does not alter Restore's accepted key
 syntax or backup recovery. This design stores the expected HMAC-SHA-256 proof
@@ -208,11 +245,14 @@ lifecycle recovery action.
 The lifecycle crate serializes deployment-record and locator mutation across
 **[Init](../../../glossary.md#states-and-requests)** and Restore. Recovery-key
 preparation and finalization run only under its exclusive workflow mutation
-permit. Finalization's reauthorization, proof verification, request
+permit. Preparation's authorization, key generation, checkpoint creation, and
+release, and finalization's reauthorization, proof verification, request
 validation, Log Module preflight, checkpoint replacement, completion delivery,
-sealing, and activation all run in one blocking task with no cancellation
+sealing, and activation, each run in one blocking task with no cancellation
 point between them, so no caller timeout can abandon a deployment
-mid-replacement. The
+mid-commitment. Each chain also makes every serving-mode publication it owes
+from inside that task rather than after it, because a cancelled caller never
+resumes to make one. The
 **[Application Database](../../../glossary.md#applications-and-interfaces)**'s atomic
 state transitions remain the final one-time guard. Concurrent or stale requests
 are rechecked against current trusted state; at most one workflow can commit,
@@ -268,7 +308,14 @@ unmounted until the recovery-key response is actually written, the asymmetric
 actionable-versus-fail-closed outcome at every failure stage, the one-time
 `AlreadyInitialized` guard at the mounted routes, restart's
 `lifecycle_interrupted` / `operator_redeploy_new` reclassification over a
-retained checkpoint, and the in-process transition to normal operation. The
+retained checkpoint, and the in-process transition to normal operation. Three
+of those tests drive an aborted route task against a blocking chain paused at a
+named boundary and rendezvous through the mutation lane rather than through any
+elapsed time: a preparation cancelled before its liveness check commits nothing
+and still permits a full Init, a preparation cancelled after it leaves a fail
+closed Server whose committed checkpoint no request can obtain a key for, and a
+closed finalization publishes the fail-closed surface even though its route
+task never resumed. The
 [Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md)
 first-launch Init workflow drives Init through the browser, and
 `server/web-ui/browser-tests/init-first-launch.spec.ts` exercises it end to
