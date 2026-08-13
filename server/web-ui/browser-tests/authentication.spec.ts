@@ -190,10 +190,19 @@ test("an operator signs in to a restored deployment and the session survives a r
     );
     await page.getByRole("button", { name: RESTORE_ACTION_NAME }).click();
     expect((await ticket).status()).toBe(202);
-    expect((await upload).status(), `rendered Restore state: ${await restore.innerText()}`).toBe(
-      200,
-    );
-    await expect(restore).toHaveAttribute("data-restore-state", "completed");
+    // The Restore surface is withdrawn the moment the Restore completes, so the
+    // rendered state is only read when the status is actually wrong.
+    const uploadResponse = await upload;
+    if (uploadResponse.status() !== 200) {
+      throw new Error(
+        `the upload returned ${uploadResponse.status()}, rendered Restore state: ${await restore.innerText()}`,
+      );
+    }
+    // The completed Restore is adopted by the already-loaded page: the setup
+    // surface is withdrawn and the sign-in control is offered without a reload.
+    await expect(restore).toHaveCount(0);
+    await expect(status).toHaveAttribute("data-status-state", "initialized");
+    await expect(login).toHaveAttribute("data-authentication-state", "unauthenticated");
 
     expect(sorted(observed), "requests issued against the first generation").toEqual(
       sorted([
@@ -201,6 +210,7 @@ test("an operator signs in to a restored deployment and the session survives a r
         `200 ${SELECTION_PATH}`,
         `202 ${RESTORE_KEY_PATH}`,
         `200 ${RESTORE_ARTIFACT_PATH}`,
+        `401 ${SESSION_PATH}`,
       ]),
     );
     // Nothing has been signed in to yet, so no cookie can exist.

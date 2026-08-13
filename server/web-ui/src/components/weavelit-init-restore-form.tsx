@@ -29,6 +29,12 @@ function failureCode(reason: unknown): string {
   return reason instanceof RestoreFailedError ? reason.code : UNREPORTED_FAILURE_CODE;
 }
 
+/** Props of the Restore submission control. */
+export interface RestoreSubmissionFormProps {
+  /** Invoked once, after the Restore has been confirmed by the Server. */
+  readonly onCompleted: () => void;
+}
+
 /**
  * The minimal Restore submission control of the pre-operational Web UI.
  *
@@ -36,8 +42,12 @@ function failureCode(reason: unknown): string {
  * component state alone. Neither is written to a URL, a cookie, or any browser
  * storage, and the key is cleared as soon as the attempt it drove settles,
  * whether that attempt succeeded or failed.
+ *
+ * A completed Restore is reported to the shell from the completion response
+ * this component already holds, so the surface it belongs to is withdrawn
+ * without a reload or a status request the sealed deployment no longer serves.
  */
-export function RestoreSubmissionForm(): JSX.Element {
+export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProps): JSX.Element {
   const [artifact, setArtifact] = useState<File | null>(null);
   const [recoveryKey, setRecoveryKey] = useState("");
   const [state, setState] = useState<RestoreViewState>({ kind: "idle" });
@@ -60,13 +70,14 @@ export function RestoreSubmissionForm(): JSX.Element {
       () => {
         setRecoveryKey("");
         setState({ kind: "completed" });
+        onCompleted();
       },
       (reason: unknown) => {
         setRecoveryKey("");
         setState({ kind: "failed", code: failureCode(reason) });
       },
     );
-  }, [artifact, recoveryKey]);
+  }, [artifact, onCompleted, recoveryKey]);
 
   const submitting = state.kind === "submitting";
 

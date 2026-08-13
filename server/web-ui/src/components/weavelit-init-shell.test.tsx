@@ -345,6 +345,20 @@ describe("ApplicationShell Restore form gating", () => {
     return document.querySelector("section.shell__restore");
   }
 
+  function loginSection(): HTMLElement | null {
+    return document.querySelector("section[data-authentication-state]");
+  }
+
+  /**
+   * The shell's own status region.
+   *
+   * It is addressed by class rather than by role, because a completed Restore
+   * renders a live region of its own until the shell withdraws it.
+   */
+  function shellStatus(): HTMLElement {
+    return document.querySelector<HTMLElement>("p.shell__status")!;
+  }
+
   it("offers the Restore form once an Application Database is selected", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(() => selectedStatus());
 
@@ -394,6 +408,62 @@ describe("ApplicationShell Restore form gating", () => {
     await waitFor(() => {
       expect(restoreSection()).not.toBeNull();
     });
+  });
+
+  it("withdraws every setup control and offers sign-in once a Restore completes", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown, init?: RequestInit) => {
+      if (input === "/api/v1/restore") {
+        // The recovery-key route answers `202` with the one-time ticket.
+        return Promise.resolve(
+          jsonResponse(
+            { result: { restore_ticket: "0123456789abcdefghijklmnopqrstuvwxyzABC-_" } },
+            202,
+          ),
+        );
+      }
+      if (input === "/api/v1/restore/artifact") {
+        return Promise.resolve(jsonResponse({ result: { lifecycle: "initialized" } }));
+      }
+      if (typeof input === "string" && input.startsWith("/api/v1/auth/")) {
+        return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+      }
+      expect(init?.method).not.toBe("PUT");
+      return selectedStatus();
+    });
+
+    render(<ApplicationShell />);
+    await choose("restore");
+
+    fireEvent.change(await screen.findByLabelText("Backup file"), {
+      target: {
+        files: [new File([new Uint8Array([0x57, 0x4c, 0x42, 0x4b])], "backup.wlitbackup")],
+      },
+    });
+    fireEvent.change(screen.getByLabelText("Recovery key"), {
+      target: { value: "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLE" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Restore backup" }));
+
+    // The page never re-reads status across the sealing boundary: completion is
+    // adopted from the Restore completion response it already holds.
+    await waitFor(() => {
+      expect(shellStatus().dataset.statusState).toBe("initialized");
+    });
+    expect(shellStatus().textContent).toBe(
+      "This deployment is initialized and now runs in normal operation.",
+    );
+    expect(restoreSection()).toBeNull();
+    expect(document.querySelector("section.shell__init")).toBeNull();
+    expect(document.querySelector("section.shell__selection")).toBeNull();
+    expect(document.querySelector("section.shell__choice")).toBeNull();
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+
+    const statusRequests = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter(([target]) => target === "/api/v1/status");
+    expect(statusRequests).toHaveLength(1);
   });
 });
 

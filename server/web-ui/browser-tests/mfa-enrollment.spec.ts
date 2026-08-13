@@ -161,9 +161,12 @@ test.beforeAll(async ({ browser }) => {
     await page.getByRole("button", { name: RESTORE_ACTION_NAME }).click();
     expect((await ticket).status()).toBe(202);
     expect((await upload).status()).toBe(200);
-    await expect(page.locator("section.shell__restore")).toHaveAttribute(
-      "data-restore-state",
-      "completed",
+    // The completed Restore withdraws the setup surface in the loaded page,
+    // which is what confirms the deployment sealed before this Server stops.
+    await expect(page.locator("section.shell__restore")).toHaveCount(0);
+    await expect(page.locator("p.shell__status")).toHaveAttribute(
+      "data-status-state",
+      "initialized",
     );
   } finally {
     await page.close();

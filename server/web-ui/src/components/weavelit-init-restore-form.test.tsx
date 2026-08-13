@@ -37,6 +37,10 @@ function section(): HTMLElement {
   return document.querySelector<HTMLElement>("section.shell__restore")!;
 }
 
+function renderForm(onCompleted: () => void = () => {}): void {
+  render(<RestoreSubmissionForm onCompleted={onCompleted} />);
+}
+
 function artifactInput(): HTMLInputElement {
   return screen.getByLabelText("Backup file");
 }
@@ -61,7 +65,7 @@ function enterRecoveryKey(value = RECOVERY_KEY): void {
 
 describe("RestoreSubmissionForm", () => {
   it("presents a file input, a masked key input, and a submit control", () => {
-    render(<RestoreSubmissionForm />);
+    renderForm();
 
     expect(section().dataset.restoreState).toBe("idle");
     expect(artifactInput().type).toBe("file");
@@ -71,7 +75,7 @@ describe("RestoreSubmissionForm", () => {
   });
 
   it("enables the submit control only once both inputs are supplied", () => {
-    render(<RestoreSubmissionForm />);
+    renderForm();
 
     chooseArtifact();
     expect(actionButton().disabled).toBe(true);
@@ -86,7 +90,7 @@ describe("RestoreSubmissionForm", () => {
       upload: () => Promise.resolve(completionResponse()),
     });
 
-    render(<RestoreSubmissionForm />);
+    renderForm();
     const file = chooseArtifact();
     enterRecoveryKey();
     fireEvent.click(actionButton());
@@ -103,13 +107,49 @@ describe("RestoreSubmissionForm", () => {
     expect(screen.queryByRole("button", { name: "Restore backup" })).toBeNull();
   });
 
+  it("reports completion to its caller exactly once when the Restore succeeds", async () => {
+    mockRoutedFetch({
+      key: () => Promise.resolve(ticketResponse()),
+      upload: () => Promise.resolve(completionResponse()),
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
+    });
+    expect(section().dataset.restoreState).toBe("completed");
+  });
+
+  it("reports no completion to its caller when the Restore fails", async () => {
+    mockRoutedFetch({
+      key: () => Promise.resolve(ticketResponse()),
+      upload: () => Promise.resolve(jsonResponse({ error: "recovery_key_invalid" }, 400)),
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    await waitFor(() => {
+      expect(section().dataset.restoreState).toBe("failed");
+    });
+    expect(completed).not.toHaveBeenCalled();
+  });
+
   it("holds the submitting state and submits once while requests are in flight", async () => {
     const fetchMock = mockRoutedFetch({
       key: () => new Promise<Response>(() => {}),
       upload: () => Promise.resolve(completionResponse()),
     });
 
-    render(<RestoreSubmissionForm />);
+    renderForm();
     chooseArtifact();
     enterRecoveryKey();
     fireEvent.click(actionButton());
@@ -131,7 +171,7 @@ describe("RestoreSubmissionForm", () => {
       upload: () => Promise.resolve(completionResponse()),
     });
 
-    render(<RestoreSubmissionForm />);
+    renderForm();
     chooseArtifact();
     enterRecoveryKey();
     fireEvent.click(actionButton());
@@ -149,7 +189,7 @@ describe("RestoreSubmissionForm", () => {
       upload: () => Promise.resolve(jsonResponse({ error: "recovery_key_invalid" }, 400)),
     });
 
-    render(<RestoreSubmissionForm />);
+    renderForm();
     chooseArtifact();
     enterRecoveryKey();
     fireEvent.click(actionButton());
@@ -178,7 +218,7 @@ describe("RestoreSubmissionForm", () => {
         Promise.resolve(jsonResponse({ error: code, detail: "/var/lib/weavelit" }, status)),
     });
 
-    render(<RestoreSubmissionForm />);
+    renderForm();
     chooseArtifact();
     enterRecoveryKey();
     fireEvent.click(actionButton());
@@ -195,7 +235,7 @@ describe("RestoreSubmissionForm", () => {
       upload: () => Promise.resolve(completionResponse()),
     });
 
-    render(<RestoreSubmissionForm />);
+    renderForm();
     chooseArtifact();
     enterRecoveryKey();
     fireEvent.click(actionButton());
@@ -211,7 +251,7 @@ describe("RestoreSubmissionForm", () => {
       upload: () => Promise.resolve(completionResponse()),
     });
 
-    render(<RestoreSubmissionForm />);
+    renderForm();
     chooseArtifact();
     enterRecoveryKey();
     fireEvent.click(actionButton());

@@ -19,15 +19,15 @@ import {
 
 const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
 const UNSELECTED_MESSAGE = "No Application Database is selected for this deployment.";
+const INITIALIZED_MESSAGE = "This deployment is initialized and now runs in normal operation.";
 const SELECTION_ACTION_NAME = "Select SQLite";
 const RESTORE_CHOICE_NAME = "Restore from a backup";
 const RESTORE_ACTION_NAME = "Restore backup";
-const RESTORE_COMPLETED_MESSAGE =
-  "The backup was restored and this deployment now runs in normal operation.";
 
 const SELECTION_PATH = "/api/v1/application-database";
 const RESTORE_KEY_PATH = "/api/v1/restore";
 const RESTORE_ARTIFACT_PATH = "/api/v1/restore/artifact";
+const SESSION_PATH = "/api/v1/auth/session";
 const RESTORE_TICKET_HEADER = "x-weavelit-restore-ticket";
 
 const ARTIFACT_INPUT = "#weavelit-restore-artifact";
@@ -66,9 +66,10 @@ function capturedOutput(path: string): string {
  *
  * The listener admits a burst of 12 requests per source, so asserting the exact
  * set also pins the request budget: 4 for the page load, 1 selection, 2 for the
- * rejected Restore attempt, and 2 for the accepted one. The two route-absence
- * probes below are issued outside the page and add 2 more, leaving the run
- * inside the burst without relying on replenishment.
+ * rejected Restore attempt, 2 for the accepted one, and 1 session probe the
+ * sign-in control issues once the Restore withdraws the setup surface. The two
+ * route-absence probes below are issued outside the page and add 2 more,
+ * leaving the run inside the burst without relying on replenishment.
  */
 const PAGE_LOAD_RESPONSES = [
   "200 /",
@@ -132,6 +133,7 @@ test("a submitted backup and recovery key restore the deployment through the Web
 
     const status = page.locator("p.shell__status");
     const restore = page.locator("section.shell__restore");
+    const login = page.locator("section[data-authentication-state]");
 
     // The operator opens a deployment whose state root has no database yet.
     const document = await page.goto(baseUrl, { waitUntil: "load" });
@@ -195,10 +197,13 @@ test("a submitted backup and recovery key restore the deployment through the Web
 
     const completion = await completedUpload;
     expect(completion.request().method()).toBe("PUT");
-    expect(
-      completion.status(),
-      `rendered failure code: ${await page.locator("section.shell__restore").innerText()}`,
-    ).toBe(200);
+    // The Restore surface is withdrawn the moment the Restore completes, so the
+    // rendered state is only read when the status is actually wrong.
+    if (completion.status() !== 200) {
+      throw new Error(
+        `the upload returned ${completion.status()}, rendered Restore state: ${await restore.innerText()}`,
+      );
+    }
     expect(completion.headers()["content-type"]).toBe("application/json; charset=utf-8");
 
     // The artifact is uploaded as the request body with the ticket in its one
@@ -218,8 +223,17 @@ test("a submitted backup and recovery key restore the deployment through the Web
 
     // 4. Normal operation activates in the same Server process: no restart, no
     // second generation, and the process that served the page is still serving.
-    await expect(restore).toHaveAttribute("data-restore-state", "completed");
-    await expect(page.locator("p.shell__restore-completion")).toHaveText(RESTORE_COMPLETED_MESSAGE);
+    // The already-loaded page adopts the completion it holds, so every setup
+    // control is withdrawn and the sign-in control is offered without a reload
+    // and without re-reading a status projection that is no longer served.
+    const loadedUrl = page.url();
+    await expect(status).toHaveAttribute("data-status-state", "initialized");
+    await expect(status).toHaveText(INITIALIZED_MESSAGE);
+    await expect(restore).toHaveCount(0);
+    await expect(page.locator("section.shell__choice")).toHaveCount(0);
+    await expect(page.locator("section.shell__selection")).toHaveCount(0);
+    await expect(login).toHaveAttribute("data-authentication-state", "unauthenticated");
+    expect(page.url(), "the page was never reloaded or navigated").toBe(loadedUrl);
     expect(server.observedExit(), "the Server did not exit during the Restore").toBeNull();
     expect(server.pid, "the Restore ran in the process that served the page").toBe(servingPid);
 
@@ -231,6 +245,7 @@ test("a submitted backup and recovery key restore the deployment through the Web
         `400 ${RESTORE_ARTIFACT_PATH}`,
         `202 ${RESTORE_KEY_PATH}`,
         `200 ${RESTORE_ARTIFACT_PATH}`,
+        `401 ${SESSION_PATH}`,
       ]),
     );
 

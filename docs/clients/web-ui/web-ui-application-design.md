@@ -169,9 +169,13 @@ Server.
 
 The shell offers the Restore control exactly when the status projection reports
 a selected Application Database, which is exactly when the Server makes Restore
-eligible. The same condition withdraws it: the pre-operational status projection
-is no longer served once the deployment is sealed, so a completed Restore
-removes the control rather than leaving a second submission on the page.
+eligible. A completed Restore withdraws it, so no second submission is left on
+the page. The completion is reported to the shell from the response the
+submission already holds, exactly as a confirmed Init is, because the
+pre-operational status projection is no longer served once the deployment is
+sealed. The shell therefore withdraws the whole setup surface and offers the
+sign-in control immediately, without a page reload and without a further status
+request.
 
 The control is presented in a titled region carrying a `data-restore-state`
 attribute for testability, containing a heading, a short description, a file
@@ -185,6 +189,11 @@ renders exactly four states:
 | Submitting | A Restore submission is in flight. | Both inputs and the action are disabled, so a repeated activation cannot issue a second Restore. |
 | Failed | Either request of the submission was rejected. | The inputs are enabled again and the Server's stable error code is presented in an assertive live region. |
 | Completed | The Restore completed and the deployment now runs in normal operation. | The inputs and the action are replaced by a fixed completion message in a polite live region. |
+
+The completed state is terminal and momentary: the shell adopts the same
+completion and withdraws the whole region, so the deployment's new operational
+state is reported by the shell's status region rather than by a control the
+sealed deployment no longer offers.
 
 The failure presentation renders the Server's stable, lowercase error code and
 nothing else: no server message, HTTP status number, field path, or transport

@@ -63,10 +63,11 @@ export function ApplicationShell(): JSX.Element {
   const chooseRestore = useCallback(() => {
     setChoice("restore");
   }, []);
-  // Init seals this deployment and withdraws the pre-operational surface, so
-  // completion is adopted from the finalization response the page already holds
-  // rather than from a status request that can no longer be served.
-  const completeInit = useCallback(() => {
+  // Either first-launch path seals this deployment and withdraws the
+  // pre-operational surface, so completion is adopted from the response the
+  // page already holds rather than from a status request that can no longer be
+  // served.
+  const completeSetup = useCallback(() => {
     setInitialized(true);
   }, []);
 
@@ -94,9 +95,9 @@ export function ApplicationShell(): JSX.Element {
   // Both paths need an Application Database, so the existing selection surface
   // is reused after either choice rather than duplicated inside them.
   const offerSelection = settingUp && choice !== null && !databaseSelected;
-  // Restore becomes eligible exactly when a database has been selected, and the
-  // status projection stops being served at all once the deployment is sealed,
-  // so the same condition withdraws the form after activation.
+  // Restore becomes eligible exactly when a database has been selected, and a
+  // confirmed Restore withdraws the form through the same completion signal
+  // Init uses rather than through a status projection that is no longer served.
   const offerRestore = settingUp && choice === "restore" && databaseSelected;
   const offerInit = settingUp && choice === "init" && databaseSelected;
   // The pre-operational status route is served only before sealing, so its
@@ -161,8 +162,8 @@ export function ApplicationShell(): JSX.Element {
           ) : null}
         </section>
       ) : null}
-      {offerRestore ? <RestoreSubmissionForm /> : null}
-      {offerInit ? <InitWorkflow onCompleted={completeInit} /> : null}
+      {offerRestore ? <RestoreSubmissionForm onCompleted={completeSetup} /> : null}
+      {offerInit ? <InitWorkflow onCompleted={completeSetup} /> : null}
       {offerLogin ? <LoginPanel /> : null}
     </main>
   );
