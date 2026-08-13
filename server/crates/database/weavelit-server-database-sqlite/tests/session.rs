@@ -89,14 +89,14 @@ fn keep_active_until(database: &mut SqliteDatabase, token_hash: &SessionTokenHas
         now += SESSION_IDLE_TIMEOUT_MILLISECONDS - 1;
         stored(
             database
-                .validate_and_touch(token_hash, instant(now))
+                .validate_and_touch(token_hash, &csrf(CSRF_BYTE), instant(now))
                 .unwrap(),
         );
     }
     if now < target {
         stored(
             database
-                .validate_and_touch(token_hash, instant(target))
+                .validate_and_touch(token_hash, &csrf(CSRF_BYTE), instant(target))
                 .unwrap(),
         );
     }
@@ -113,7 +113,7 @@ fn a_stored_session_survives_an_ordinary_restart() {
     let mut reopened = opened(&path);
     let session = stored(
         reopened
-            .validate_and_touch(&token(TOKEN_BYTE), instant(ISSUED_AT + 1))
+            .validate_and_touch(&token(TOKEN_BYTE), &csrf(CSRF_BYTE), instant(ISSUED_AT + 1))
             .unwrap(),
     );
 
@@ -134,11 +134,61 @@ fn an_unknown_token_is_rejected_without_creating_anything() {
     let mut database = opened(&path);
 
     let validation = database
-        .validate_and_touch(&token(0x55), instant(ISSUED_AT))
+        .validate_and_touch(&token(0x55), &csrf(CSRF_BYTE), instant(ISSUED_AT))
         .unwrap();
 
     assert_eq!(rejection(validation), SessionRejection::Unknown);
     assert_eq!(session_count(&path), 0);
+}
+
+#[test]
+fn a_wrong_csrf_digest_is_rejected_as_unknown_without_advancing_the_activity() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = opened(&path);
+    database.create(&new_session(TOKEN_BYTE, 0x41)).unwrap();
+    let idle_deadline = ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS;
+
+    let refused = database
+        .validate_and_touch(&token(TOKEN_BYTE), &csrf(0x7A), instant(idle_deadline - 1))
+        .unwrap();
+    let expired = database
+        .validate_and_touch(&token(TOKEN_BYTE), &csrf(CSRF_BYTE), instant(idle_deadline))
+        .unwrap();
+
+    assert_eq!(
+        rejection(refused),
+        SessionRejection::Unknown,
+        "a wrong CSRF digest must produce the same rejection an unknown token does"
+    );
+    assert_eq!(
+        rejection(expired),
+        SessionRejection::IdleTimeout,
+        "the refused request must not have extended the idle deadline"
+    );
+}
+
+#[test]
+fn a_matching_csrf_digest_still_advances_the_activity() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = opened(&path);
+    database.create(&new_session(TOKEN_BYTE, 0x41)).unwrap();
+    let idle_deadline = ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS;
+
+    let touched = database
+        .validate_and_touch(
+            &token(TOKEN_BYTE),
+            &csrf(CSRF_BYTE),
+            instant(idle_deadline - 1),
+        )
+        .unwrap();
+    let still_live = database
+        .validate_and_touch(&token(TOKEN_BYTE), &csrf(CSRF_BYTE), instant(idle_deadline))
+        .unwrap();
+
+    assert_eq!(stored(touched).last_seen_at(), instant(idle_deadline - 1));
+    assert_eq!(stored(still_live).last_seen_at(), instant(idle_deadline));
 }
 
 #[test]
@@ -150,11 +200,19 @@ fn the_idle_boundary_is_exact_and_the_expired_session_is_removed() {
     let idle_deadline = ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS;
 
     let last_valid = database
-        .validate_and_touch(&token(TOKEN_BYTE), instant(idle_deadline - 1))
+        .validate_and_touch(
+            &token(TOKEN_BYTE),
+            &csrf(CSRF_BYTE),
+            instant(idle_deadline - 1),
+        )
         .unwrap();
     let refreshed_deadline = idle_deadline - 1 + SESSION_IDLE_TIMEOUT_MILLISECONDS;
     let expired = database
-        .validate_and_touch(&token(TOKEN_BYTE), instant(refreshed_deadline))
+        .validate_and_touch(
+            &token(TOKEN_BYTE),
+            &csrf(CSRF_BYTE),
+            instant(refreshed_deadline),
+        )
         .unwrap();
 
     assert_eq!(
@@ -181,10 +239,18 @@ fn the_absolute_boundary_is_exact_and_activity_cannot_extend_it() {
     keep_active_until(&mut database, &token(TOKEN_BYTE), absolute_deadline - 1);
 
     let last_valid = database
-        .validate_and_touch(&token(TOKEN_BYTE), instant(absolute_deadline - 1))
+        .validate_and_touch(
+            &token(TOKEN_BYTE),
+            &csrf(CSRF_BYTE),
+            instant(absolute_deadline - 1),
+        )
         .unwrap();
     let expired = database
-        .validate_and_touch(&token(TOKEN_BYTE), instant(absolute_deadline))
+        .validate_and_touch(
+            &token(TOKEN_BYTE),
+            &csrf(CSRF_BYTE),
+            instant(absolute_deadline),
+        )
         .unwrap();
 
     assert_eq!(
@@ -204,21 +270,33 @@ fn a_backwards_clock_fails_closed_without_touching_or_removing_the_session() {
     database.create(&new_session(TOKEN_BYTE, 0x41)).unwrap();
     stored(
         database
-            .validate_and_touch(&token(TOKEN_BYTE), instant(ISSUED_AT + 5_000))
+            .validate_and_touch(
+                &token(TOKEN_BYTE),
+                &csrf(CSRF_BYTE),
+                instant(ISSUED_AT + 5_000),
+            )
             .unwrap(),
     );
 
     let before_issue = database
-        .validate_and_touch(&token(TOKEN_BYTE), instant(ISSUED_AT - 1))
+        .validate_and_touch(&token(TOKEN_BYTE), &csrf(CSRF_BYTE), instant(ISSUED_AT - 1))
         .unwrap();
     let before_activity = database
-        .validate_and_touch(&token(TOKEN_BYTE), instant(ISSUED_AT + 4_999))
+        .validate_and_touch(
+            &token(TOKEN_BYTE),
+            &csrf(CSRF_BYTE),
+            instant(ISSUED_AT + 4_999),
+        )
         .unwrap();
     let rotation = database
         .rotate_csrf(&token(TOKEN_BYTE), &csrf(0x77), instant(ISSUED_AT - 1))
         .unwrap();
     let recovered = database
-        .validate_and_touch(&token(TOKEN_BYTE), instant(ISSUED_AT + 5_001))
+        .validate_and_touch(
+            &token(TOKEN_BYTE),
+            &csrf(CSRF_BYTE),
+            instant(ISSUED_AT + 5_001),
+        )
         .unwrap();
 
     assert_eq!(rejection(before_issue), SessionRejection::ClockRollback);
@@ -250,7 +328,7 @@ fn rotating_the_csrf_digest_changes_nothing_else_and_needs_a_usable_session() {
     );
     let reloaded = stored(
         database
-            .validate_and_touch(&token(TOKEN_BYTE), instant(ISSUED_AT + 11))
+            .validate_and_touch(&token(TOKEN_BYTE), &csrf(0x63), instant(ISSUED_AT + 11))
             .unwrap(),
     );
     let unknown = database
@@ -298,7 +376,7 @@ fn revocation_removes_only_the_named_session_or_account() {
     assert_eq!(
         stored(
             database
-                .validate_and_touch(&token(0x03), instant(ISSUED_AT + 1))
+                .validate_and_touch(&token(0x03), &csrf(CSRF_BYTE), instant(ISSUED_AT + 1))
                 .unwrap()
         )
         .account(),
@@ -315,7 +393,7 @@ fn purging_removes_exactly_the_sessions_past_a_boundary() {
     database.create(&new_session(0x02, 0x41)).unwrap();
     stored(
         database
-            .validate_and_touch(&token(0x02), instant(ISSUED_AT + 1))
+            .validate_and_touch(&token(0x02), &csrf(CSRF_BYTE), instant(ISSUED_AT + 1))
             .unwrap(),
     );
     let idle_deadline = ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS;
@@ -410,7 +488,7 @@ fn the_stored_lifetime_cannot_be_extended_or_reassigned_by_direct_statement() {
     let mut reopened = opened(&path);
     let session = stored(
         reopened
-            .validate_and_touch(&token(TOKEN_BYTE), instant(ISSUED_AT + 1))
+            .validate_and_touch(&token(TOKEN_BYTE), &csrf(CSRF_BYTE), instant(ISSUED_AT + 1))
             .unwrap(),
     );
 

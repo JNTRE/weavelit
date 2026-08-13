@@ -190,6 +190,13 @@ because it is never a bearer credential on its own without the `HttpOnly`
 session cookie it accompanies. The Server rotates the CSRF token on login and
 on MFA or privilege elevation.
 
+The store resolves the session, compares the presented CSRF digest, and
+advances the last-seen instant as one atomic operation, and it advances that
+instant only when the digests match. A request that fails the CSRF check is
+therefore refused without extending the idle timeout, so a session token
+presented without its bound CSRF token cannot keep a session alive. The refusal
+is the same rejection an unknown session token produces.
+
 ## Cookie Emission
 
 A response may carry only one of two closed, fixed cookie effects: issuing a

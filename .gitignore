@@ -12,5 +12,6 @@ weavelit.code-workspace
 .github/agents/
 .github/skills/
 
-# Lock files generated when the compile-behavior test fixtures are built.
+# Build output generated when the compile-behavior test fixtures are built.
 /server/crates/**/tests/fixtures/*/Cargo.lock
+/server/crates/**/tests/fixtures/*/target/

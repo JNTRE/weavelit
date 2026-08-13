@@ -999,6 +999,10 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     /// and the request must echo the cross-site request forgery token bound to
     /// that exact session. Every failure is one rejection, so a live session
     /// with a wrong token is indistinguishable from an unknown one.
+    ///
+    /// The store compares the presented token inside the same atomic operation
+    /// that resolves the session and advances its activity, so a request that
+    /// fails the token check does not refresh the idle timeout.
     fn authorized_session(
         &self,
         session_token: &str,
@@ -1012,14 +1016,11 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             .map_err(|_| invalid)?;
 
         let now = self.now()?;
-        let SessionValidation::Valid(session) =
-            self.with_sessions(|sessions| sessions.validate_and_touch(&token_hash, now))?
+        let SessionValidation::Valid(session) = self
+            .with_sessions(|sessions| sessions.validate_and_touch(&token_hash, &presented, now))?
         else {
             return Err(invalid);
         };
-        if !session.csrf_hash().matches(&presented) {
-            return Err(invalid);
-        }
         Ok((token_hash, session))
     }
 
@@ -3206,6 +3207,103 @@ pub(crate) mod tests {
         .await;
         assert_eq!(ended.status, StatusCode::OK);
         assert_session_invalid(&surface, &session, &csrf).await;
+    }
+
+    /// A request failing the CSRF check does not extend the idle lifetime.
+    ///
+    /// The idle timeout bounds how long a session survives without legitimate
+    /// use, so a rejected request must not refresh it. Holding only the session
+    /// cookie would otherwise keep a session alive indefinitely through
+    /// requests that are all refused. The clock is injected, so the deadline
+    /// here is crossed by choice rather than by waiting.
+    #[tokio::test]
+    async fn a_request_failing_the_csrf_check_does_not_extend_the_idle_lifetime() {
+        let surface = AuthSurface::new();
+        let (session, csrf) = established_session(&surface).await;
+
+        surface.set_clock(ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS - 1);
+        let refused = request(
+            surface.surface(),
+            default_timeouts(),
+            session_head(AUTH_SESSION_ROUTE, &session, "not-this-sessions-token"),
+            String::new(),
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+
+        // Past the original idle deadline the correct pair must also fail. It
+        // would still succeed if the refused request had touched the session.
+        surface.set_clock(ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS);
+        assert_session_invalid(&surface, &session, &csrf).await;
+    }
+
+    /// A request passing the CSRF check still extends the idle lifetime.
+    #[tokio::test]
+    async fn a_request_passing_the_csrf_check_extends_the_idle_lifetime() {
+        let surface = AuthSurface::new();
+        let (session, csrf) = established_session(&surface).await;
+
+        surface.set_clock(ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS - 1);
+        let touched = request(
+            surface.surface(),
+            default_timeouts(),
+            session_head(AUTH_SESSION_ROUTE, &session, &csrf),
+            String::new(),
+        )
+        .await;
+        assert_eq!(touched.status, StatusCode::OK);
+
+        surface.set_clock(ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS);
+        let still_live = request(
+            surface.surface(),
+            default_timeouts(),
+            session_head(AUTH_SESSION_ROUTE, &session, &csrf),
+            String::new(),
+        )
+        .await;
+        assert_eq!(
+            still_live.status,
+            StatusCode::OK,
+            "an accepted request must still refresh the idle timeout"
+        );
+    }
+
+    /// A wrong CSRF token is refused exactly as an unknown session token is.
+    ///
+    /// Both responses are compared byte for byte once their own correlation
+    /// identifiers are normalized, so the fact that one of the two sessions
+    /// exists is not observable.
+    #[tokio::test]
+    async fn a_wrong_csrf_token_is_refused_exactly_as_an_unknown_session_is() {
+        let surface = AuthSurface::new();
+        let (session, _csrf) = established_session(&surface).await;
+        let unknown = "z".repeat(SESSION_TOKEN_TEXT_BYTES);
+
+        let mut wire = Vec::new();
+        for (presented_session, presented_csrf) in [
+            (session.as_str(), "not-this-sessions-token"),
+            (unknown.as_str(), "not-this-sessions-token"),
+        ] {
+            let response = request(
+                surface.surface(),
+                default_timeouts(),
+                session_head(AUTH_SESSION_ROUTE, presented_session, presented_csrf),
+                String::new(),
+            )
+            .await;
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+            assert!(response.cookies.is_none());
+            let correlation = correlation_of(&response);
+            assert!(is_correlation_identifier(&correlation));
+            wire.push(normalized(&rendered(&response).await, &correlation));
+        }
+
+        assert_eq!(wire[0], wire[1]);
+        assert_eq!(
+            wire[0],
+            "HTTP/1.1 401 \r\nContent-Type: application/json; charset=utf-8\r\n\r\n\
+             {\"error\":\"session_invalid\",\"correlation_id\":\"<correlation>\"}"
+        );
     }
 
     /// Asserts both session-bearing routes refuse the presented session.

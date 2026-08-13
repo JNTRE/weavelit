@@ -64,11 +64,18 @@ impl SessionStore for SqliteDatabase {
     fn validate_and_touch(
         &mut self,
         token_hash: &SessionTokenHash,
+        csrf_hash: &SessionCsrfHash,
         now: SessionInstant,
     ) -> Result<SessionValidation, DatabaseError> {
         let transaction = immediate(&mut self.connection)?;
+        // The resolve, the constant-time CSRF comparison, and the touch share
+        // this one transaction, so a request that fails the comparison cannot
+        // advance the activity a concurrent reader would then observe.
         let validation = match resolve(&transaction, token_hash, now)? {
             Resolved::Rejected(rejection) => SessionValidation::Rejected(rejection),
+            Resolved::Usable(session) if !session.csrf_hash().matches(csrf_hash) => {
+                SessionValidation::Rejected(SessionRejection::Unknown)
+            }
             Resolved::Usable(session) => {
                 execute(
                     &transaction,

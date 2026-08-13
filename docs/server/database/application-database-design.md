@@ -181,6 +181,11 @@ clock rather than the session is what is wrong.
 The contract provides atomic `create`, `validate_and_touch`, `rotate_csrf`,
 `revoke`, `revoke_for_account`, and `purge_expired` operations.
 `validate_and_touch` and `rotate_csrf` remove a session they find expired.
+`validate_and_touch` takes the presented CSRF digest and compares it inside the
+same transaction that resolves the session, and it advances the recorded
+activity only when the digests match, so a request failing that comparison
+cannot extend the idle timeout. A mismatch is reported as the same rejection an
+unknown session token produces.
 Completing a state replacement clears every stored session inside the same
 atomic replacement.
 

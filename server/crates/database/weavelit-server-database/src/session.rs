@@ -287,13 +287,24 @@ pub trait SessionStore {
     /// Stores one newly issued session.
     fn create(&mut self, session: &NewSession) -> Result<(), DatabaseError>;
 
-    /// Validates a presented session and advances its activity when usable.
+    /// Validates a presented session pair and advances its activity when usable.
     ///
-    /// An expired session is removed in the same transaction that rejects it.
-    /// A session rejected for a backwards clock is left untouched.
+    /// The presented CSRF digest is compared against the stored one inside the
+    /// same atomic operation that resolves the session, and the activity is
+    /// advanced only when the two match. A request that fails the cross-site
+    /// request forgery check therefore never extends the idle timeout, which
+    /// would otherwise let a session token alone keep a session alive through
+    /// rejected requests. A mismatch is reported as
+    /// [`SessionRejection::Unknown`], so a live session presented with a wrong
+    /// CSRF digest is indistinguishable from an unknown one.
+    ///
+    /// An expired session is removed in the same transaction that rejects it,
+    /// whatever CSRF digest was presented with it. A session rejected for a
+    /// backwards clock is left untouched.
     fn validate_and_touch(
         &mut self,
         token_hash: &SessionTokenHash,
+        csrf_hash: &SessionCsrfHash,
         now: SessionInstant,
     ) -> Result<SessionValidation, DatabaseError>;
 
