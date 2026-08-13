@@ -160,11 +160,16 @@ the module, startup neither opens nor delivers to the destination.
 The destination stores System and Audit records separately within its own
 database. It must not depend on or reuse an Application Database crate, file,
 schema, connection, configuration, or resource. It may use the same
-workspace-pinned `rusqlite` package after dependency review. The Server
-preflights the destination before an Init or Restore application-state commit,
-keeps it for the process lifetime, and validates it during startup without
-post-commit reconciliation delivery. Restore imports Module configuration and
-assignments, never destination data.
+workspace-pinned `rusqlite` package after dependency review. Init preflights
+the System Log and Audit Log destinations before its application-state commit,
+keeps each destination for the process lifetime, and validates it during
+startup without post-commit reconciliation delivery. Restore does not preflight
+either destination: preflight proves a commit path by writing and deleting a
+durable probe row, and Restore guarantees that a pre-checkpoint failure leaves
+nothing behind, so Restore instead resolves the assigned System Log module's
+identifier and confirms the named module's availability before its point of no
+return, then opens that destination only after the checkpoint completes.
+Restore imports Module configuration and assignments, never destination data.
 
 This destination proves its preflight commit path by writing a probe row
 through the exact delivery commit path — the same immediate transaction and
@@ -343,7 +348,12 @@ validation used during normal administration.
 Restore validates both restored assignments and does not seal the replacement
 deployment until the restored System Log assignment provides a durable
 acknowledgement for the required Restore result without recovery secrets or
-backup contents. A failure remains non-operational and follows the retained-state interruption boundary in the
+backup contents. That validation confirms each assigned Log Module is compiled
+into the replacement Server; it does not prove the Audit Log destination can
+complete its commit path, because Restore never opens or delivers to it. This
+is a documented limitation of the Restore path rather than a defect: an
+imported Audit Log assignment that cannot commit surfaces only when Audit
+logging is first attempted after Restore completes. A failure remains non-operational and follows the retained-state interruption boundary in the
 [Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored
 Log Module never reads backup contents or Application Database state directly.
 

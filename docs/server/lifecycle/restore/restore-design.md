@@ -342,6 +342,13 @@ for either workflow. A failure at or after step 8 leaves the Server fail-closed
 with its retained partial state intact. No rollback is attempted, because the
 replaced state is exactly what an operator asked to discard.
 
+No step above preflights the System Log or Audit Log destination; step 6 only
+resolves the assigned System Log module's identifier, and component-availability
+validation confirms each referenced Log Module is compiled into this Server
+rather than proving it can commit. Restore therefore never proves the Audit Log
+assignment's operability, a documented limitation described in
+[Destination Preflight And Configuration Validation](../../../log-modules/log-module-design.md#destination-preflight-and-configuration-validation).
+
 The runtime is the authority for which components a backup may reference. It
 supplies the single compiled-in inventory defined in
 [Compiled-In Component Inventory](#compiled-in-component-inventory) to the

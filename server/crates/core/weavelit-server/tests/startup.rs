@@ -321,6 +321,25 @@ fn await_listener(address: SocketAddr) {
     }
 }
 
+/// Waits until this Server holds the lock in its own state root.
+///
+/// Unlike the listener address, the state root belongs to one test, so nothing
+/// else can satisfy this.
+fn await_state_root_lock(state_root: &Path, server: &mut Child) {
+    let lock = state_root.join("lifecycle.lock");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !lock.exists() {
+        if let Some(status) = server.try_wait().unwrap() {
+            panic!("the Server exited during startup with {status}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the Server did not take its state root lock"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Asks a running Server to stop exactly as a service supervisor does.
 fn terminate(server: &Child) {
     let pid = rustix::process::Pid::from_raw(i32::try_from(server.id()).unwrap())
@@ -649,6 +668,12 @@ fn a_terminating_signal_stops_the_server_cleanly_and_frees_what_it_held() {
         .spawn()
         .unwrap();
     await_listener(address);
+    // An ephemeral port is chosen by binding and releasing it, so a concurrent
+    // test can win the same port and answer the probe above. The lock file
+    // appears in this test's own state root, and only after this child has
+    // registered its termination handler and bound its listener, so waiting for
+    // it proves the signal below reaches a Server that can already catch it.
+    await_state_root_lock(&state_root, &mut server);
 
     terminate(&server);
     let status = server.wait().unwrap();
