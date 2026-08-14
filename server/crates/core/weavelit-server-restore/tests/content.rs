@@ -5,7 +5,7 @@ mod support;
 use support::{committed, committed_text, components};
 use weavelit_server_restore::{
     AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
-    MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS, MAX_SENSITIVE_VALUE_BYTES, Name,
+    MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS, MAX_SENSITIVE_VALUE_BYTES, Name, RestoreError,
     SensitiveBytes, normalize,
 };
 
@@ -26,6 +26,19 @@ fn replaced(from: &str, to: &str) -> String {
 fn reject(document: &str) -> ContentError {
     normalize(document.as_bytes(), &sqlite(), &components())
         .expect_err("the mutated document must be rejected")
+}
+
+/// Prepends accounts, leaving the fixture account every reference resolves to.
+fn accounts(added: &[(&str, &str)]) -> String {
+    let entries = added
+        .iter()
+        .map(|(identifier, username)| {
+            format!(
+                "{{\"identifier\":\"{identifier}\",\"username\":\"{username}\",\"display_name\":null,\"active\":true}},"
+            )
+        })
+        .collect::<String>();
+    replaced("\"accounts\":[", &format!("\"accounts\":[{entries}"))
 }
 
 #[test]
@@ -131,6 +144,36 @@ fn a_duplicate_entry_is_rejected() {
         "\"configuration\":[{\"component\":\"weavelit-server\",\"key\":\"site-name\",\"value\":\"Example\"},{\"component\":\"weavelit-server\",\"key\":\"site-name\",\"value\":\"Other\"}]",
     );
     assert_eq!(reject(&document), ContentError::DuplicateEntry);
+}
+
+#[test]
+fn a_duplicate_username_is_rejected_when_the_accounts_are_adjacent() {
+    let document = accounts(&[
+        ("AAAAAAAAAAAAAAAAAAAAAQ", "shared"),
+        ("AAAAAAAAAAAAAAAAAAAAAg", "shared"),
+    ]);
+    assert_eq!(reject(&document), ContentError::DuplicateEntry);
+    assert_eq!(
+        RestoreError::from(reject(&document)).category_reason(),
+        ("backup_invalid", "backup_invalid")
+    );
+}
+
+#[test]
+fn a_duplicate_username_is_rejected_when_the_accounts_are_not_adjacent() {
+    // Accounts are ordered by identifier, so the middle account exists only to
+    // sort between the two accounts that share a username. The duplicate is
+    // therefore reachable only by a check independent of identifier order.
+    let document = accounts(&[
+        ("AAAAAAAAAAAAAAAAAAAAAQ", "shared"),
+        ("AAAAAAAAAAAAAAAAAAAAAg", "between"),
+        ("AAAAAAAAAAAAAAAAAAAAAw", "shared"),
+    ]);
+    assert_eq!(reject(&document), ContentError::DuplicateEntry);
+    assert_eq!(
+        RestoreError::from(reject(&document)).category_reason(),
+        ("backup_invalid", "backup_invalid")
+    );
 }
 
 #[test]

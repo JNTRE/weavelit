@@ -522,8 +522,9 @@ fn reject_duplicates(backup: &NormalizedBackup) -> Result<(), ContentError> {
         left.component == right.component && left.key == right.key
     })?;
     reject_adjacent(&backup.accounts, |left, right| {
-        left.identifier == right.identifier || left.username == right.username
+        left.identifier == right.identifier
     })?;
+    reject_duplicate_keys(&backup.accounts, |account| account.username.clone())?;
     reject_adjacent(&backup.password_verifiers, |left, right| {
         left.account == right.account
     })?;
