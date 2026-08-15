@@ -769,14 +769,15 @@ typed error presentation. The allowed pairs are:
 | `shutdown_incomplete` | `shutdown_incomplete` |
 
 The `shutdown_incomplete` pair is the only one that reports a stop rather than
-a start. A signalled shutdown that drains its accepted requests and closes the
+a start. A signalled shutdown that drains its accepted requests, waits out any
+irreversible lifecycle transition already under way, and closes the
 Application Database inside their budgets exits with status `0` and no
 terminating signal; one that exceeds a budget or cannot close cleanly writes
 this pair and exits with status `1`. It reports that the process stopped
 without completing its own shutdown, not that a deployment needs an operator
 action, and it never accompanies a clean stop. The
 [Server Architecture Design](../server-architecture-design.md) owns the
-shutdown sequence and its budgets.
+shutdown sequence, its lifecycle transition gate, and its budgets.
 
 The `lifecycle_interrupted` pairs are stable action-class diagnostics. They
 identify only whether the operator must redeploy for a new deployment, redeploy
@@ -936,7 +937,16 @@ in flight still receives its complete response, that a shutdown signalled as a
 connection arrives stops instead of serving it, that a drain which cannot
 finish reports `shutdown_incomplete`, that the Application Database is closed
 only after the drain completes, and that a failing close is reported rather
-than hidden. Exactly-once closing is proved by a database whose close counts
+than hidden. Transition-gate tests prove that a closed gate refuses every
+subsequent entry without retaining its permit, that a signalled shutdown waits
+for an irreversible lifecycle transition to leave the gate before the database
+is closed, and that a transition outlasting its budget reports
+`shutdown_incomplete` rather than waiting further. Init and Restore tests prove
+that a workflow refused at a closed gate commits nothing, leaves the deployment
+record and its anchors untouched, and is indistinguishable to its submitter from
+the failure that entry point already produces, and that a Restore admitted
+through the gate has sealed its record before the waiting shutdown is released.
+Exactly-once closing is proved by a database whose close counts
 itself: duplicate shutdown requests, and requests through separate clones of
 the owner, still count one close, and a lane poisoned by a panicking operation
 counts one close while reporting a failed shutdown. Against real SQLite, both

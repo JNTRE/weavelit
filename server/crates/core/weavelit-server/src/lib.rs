@@ -10,7 +10,10 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
     time::{Duration, Instant},
 };
 
@@ -36,7 +39,7 @@ use rustls::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{Semaphore, watch},
+    sync::{OwnedSemaphorePermit, Semaphore, watch},
     task::{self, JoinSet},
     time::{Instant as Deadline, timeout, timeout_at},
 };
@@ -56,7 +59,7 @@ use weavelit_server_lifecycle::{
     ValidatedConnectionSettings, WorkflowArbiter, WorkflowError, WorkflowKind,
 };
 use weavelit_server_log::LogModuleCatalog;
-use weavelit_server_restore::Name;
+use weavelit_server_restore::{Name, TOTAL_REQUEST_DEADLINE};
 
 pub mod authentication;
 pub mod authorization;
@@ -86,24 +89,56 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a signalled shutdown may spend finishing accepted requests.
 ///
-/// It exceeds the longest a single connection may occupy, which is the
-/// handshake, read, and processing budgets in sequence, so a request admitted
-/// just before the signal can still finish inside it.
+/// It covers the ordinary transport stages only: the handshake, read, and
+/// processing budgets in sequence, so a request admitted just before the signal
+/// can still finish inside it. It says nothing about a lifecycle transition,
+/// whose irreversible region runs outside any connection future and is bounded
+/// separately by [`SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET`].
 const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(25);
+/// How long a signalled shutdown may wait for an irreversible lifecycle
+/// transition to leave its gate.
+///
+/// A Restore's replacement chain and an Init's commit chain run as blocking
+/// work that no connection future owns and that nothing may abort, so a stop
+/// arriving inside one must wait for it rather than drain around it. The
+/// allowance is the approved total request deadline, which is the longest such
+/// a transition may legitimately still be running for.
+const SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET: Duration = Duration::from_secs(300);
 /// How long a signalled shutdown may spend closing the Application Database.
 const SHUTDOWN_DATABASE_BUDGET: Duration = Duration::from_secs(5);
 /// The whole budget a host supervisor must allow before it kills the process.
 ///
+/// Draining and lifecycle-transition quiescence run concurrently, so the whole
+/// budget is the longer of the two followed by the database close. It is
+/// derived from those stages rather than restated, so no stage can be changed
+/// without the supervisor requirement following it.
+///
 /// A supervisor unit must set a stop timeout greater than this, or it would
 /// kill a shutdown that is still inside its own budget.
-pub const SHUTDOWN_BUDGET: Duration =
-    Duration::from_secs(SHUTDOWN_DRAIN_BUDGET.as_secs() + SHUTDOWN_DATABASE_BUDGET.as_secs());
+pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(
+    longer_seconds(SHUTDOWN_DRAIN_BUDGET, SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET)
+        + SHUTDOWN_DATABASE_BUDGET.as_secs(),
+);
+
+/// Returns the greater of two whole-second budgets.
+const fn longer_seconds(left: Duration, right: Duration) -> u64 {
+    if left.as_secs() > right.as_secs() {
+        left.as_secs()
+    } else {
+        right.as_secs()
+    }
+}
+
 const _: () = assert!(
     SHUTDOWN_DRAIN_BUDGET.as_secs()
         > TLS_HANDSHAKE_TIMEOUT.as_secs()
             + REQUEST_READ_TIMEOUT.as_secs()
             + REQUEST_PROCESSING_TIMEOUT.as_secs(),
-    "draining must outlast the longest single connection the listener admits"
+    "draining must outlast the longest ordinary connection the listener admits"
+);
+const _: () = assert!(
+    SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET.as_secs() >= TOTAL_REQUEST_DEADLINE.as_secs(),
+    "quiescing must outlast the longest request a lifecycle transition may still be inside"
 );
 const MAX_REQUEST_TARGET_BYTES: usize = 2 * 1024;
 const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
@@ -180,20 +215,26 @@ impl fmt::Debug for ShutdownSignal {
 
 /// How long each stage of a signalled shutdown may take.
 ///
-/// The two stages are bounded separately because they fail differently: a
-/// request that will not finish must not consume the allowance the database
-/// close needs to leave no work for recovery.
+/// The stages are bounded separately because they fail differently: a request
+/// that will not finish must not consume the allowance the database close needs
+/// to leave no work for recovery, and a lifecycle transition that must not be
+/// interrupted must not be cut short by whatever a client is doing to a
+/// connection. Draining and quiescing run concurrently; the database close
+/// follows both.
 #[derive(Clone, Copy, Debug)]
 struct ShutdownBudget {
     /// Time allowed for accepted requests to finish, response write included.
     drain: Duration,
-    /// Time allowed, after draining, to close the Application Database.
+    /// Time allowed for an irreversible lifecycle transition to leave its gate.
+    transition: Duration,
+    /// Time allowed, after both, to close the Application Database.
     database: Duration,
 }
 
 impl ShutdownBudget {
     const DEFAULT: Self = Self {
         drain: SHUTDOWN_DRAIN_BUDGET,
+        transition: SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET,
         database: SHUTDOWN_DATABASE_BUDGET,
     };
 }
@@ -661,6 +702,105 @@ fn pem_end_label(line: &[u8]) -> Option<&[u8]> {
 // Lifecycle adapter
 // ---------------------------------------------------------------------------
 
+/// The gate a lifecycle transition must be inside to strand durable state.
+///
+/// Init and Restore each contain one region that must not be interrupted: from
+/// the moment the fail-closed surface is published to the moment the deployment
+/// record has been advanced or sealed. That region runs as blocking work no
+/// connection future owns and nothing may abort, so a signalled shutdown can
+/// neither drain around it nor cut it short. This gate is the only thing that
+/// lets a shutdown wait for exactly that region, and refuse the workflows that
+/// have not entered it yet.
+///
+/// It is deliberately not the mutation lane. A Restore holds that lane across
+/// artifact upload, decryption, and validation, so waiting on it would expose
+/// how long a stop takes to attacker-supplied work.
+pub(crate) struct LifecycleTransitionGate {
+    /// Set once, synchronously, when a stop is first observed.
+    stopping: AtomicBool,
+    /// Single permit, so at most one transition is ever inside the region and a
+    /// shutdown that holds it knows the region is empty.
+    permit: Arc<Semaphore>,
+}
+
+/// Proof that its holder is inside the irreversible transition region.
+///
+/// Dropping it is what tells a waiting shutdown the region is empty again, so
+/// it is retained across the whole region rather than checked at its start.
+pub(crate) struct LifecycleTransitionGuard {
+    _permit: OwnedSemaphorePermit,
+}
+
+impl LifecycleTransitionGate {
+    fn new() -> Self {
+        Self {
+            stopping: AtomicBool::new(false),
+            permit: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    /// Enters the region, or refuses without waiting.
+    ///
+    /// Refusal is not a new outcome: every caller maps it onto the failure its
+    /// surrounding chain already produces for an operation abandoned before its
+    /// point of no return, so nothing an operator can observe changes.
+    ///
+    /// The flag is read on both sides of the acquisition, which is what closes
+    /// the race between a stop being signalled and a transition entering. An
+    /// entrant whose acquisition completes after the flag is set releases the
+    /// permit and refuses, so the only entrants a shutdown can ever have to
+    /// wait for are those that observed an open gate after taking the permit,
+    /// and for those the shutdown's own acquisition necessarily blocks until
+    /// the guard is dropped.
+    ///
+    /// It never waits for the permit. A second transition cannot exist, because
+    /// the mutation lane already admits one workflow at a time, so a permit
+    /// that is unavailable means a shutdown is holding it.
+    pub(crate) fn try_enter(&self) -> Option<LifecycleTransitionGuard> {
+        if self.stopping.load(AtomicOrdering::SeqCst) {
+            return None;
+        }
+        let permit = Arc::clone(&self.permit).try_acquire_owned().ok()?;
+        if self.stopping.load(AtomicOrdering::SeqCst) {
+            drop(permit);
+            return None;
+        }
+        Some(LifecycleTransitionGuard { _permit: permit })
+    }
+
+    /// Closes the gate to every transition that has not already entered it.
+    ///
+    /// Called synchronously on the stop, before anything is awaited, so no
+    /// transition can enter during the shutdown's own scheduling.
+    fn begin_stopping(&self) {
+        self.stopping.store(true, AtomicOrdering::SeqCst);
+    }
+
+    /// Reports whether a transition is inside the region right now.
+    ///
+    /// It observes the permit without taking it, so a test can order itself
+    /// against a real workflow's region without stealing the permit that
+    /// workflow is about to acquire.
+    #[cfg(test)]
+    pub(crate) fn is_occupied(&self) -> bool {
+        self.permit.available_permits() == 0
+    }
+
+    /// Waits inside `budget` for the region to empty, then holds it empty.
+    ///
+    /// The returned guard is retained by the shutdown for the rest of its own
+    /// run, so nothing can enter the region behind the wait. `None` means the
+    /// budget expired with a transition still inside: the gate stays closed and
+    /// the shutdown is reported as incomplete rather than held open further.
+    async fn quiesce(&self, budget: Duration) -> Option<LifecycleTransitionGuard> {
+        timeout(budget, Arc::clone(&self.permit).acquire_owned())
+            .await
+            .ok()?
+            .ok()
+            .map(|permit| LifecycleTransitionGuard { _permit: permit })
+    }
+}
+
 /// Runtime-owned single-lane async adapter that moves all blocking arbiter
 /// and SQLite access off the Tokio event-loop thread.
 ///
@@ -676,6 +816,9 @@ struct LifecycleAdapter {
     arbiter: Arc<WorkflowArbiter>,
     /// Single-permit gate that serializes selection mutations.
     mutation_lane: Arc<Semaphore>,
+    /// Shared with Init, Restore, and the listener, so the one shutdown that
+    /// closes the gate is the one both workflows are refused by.
+    transition_gate: Arc<LifecycleTransitionGate>,
 }
 
 impl LifecycleAdapter {
@@ -683,6 +826,7 @@ impl LifecycleAdapter {
         Self {
             arbiter,
             mutation_lane: Arc::new(Semaphore::new(1)),
+            transition_gate: Arc::new(LifecycleTransitionGate::new()),
         }
     }
 
@@ -1084,6 +1228,9 @@ fn serve_restricted_https_listener(
     let composer = PreoperationalComposer::new(startup, bound_address, &serving_mode_switch);
     composer.publish_initial(startup.composition.outcome);
     let active_database = startup.active_database.clone();
+    // The same gate Init and Restore enter, so the stop this listener observes
+    // is the one that refuses and waits for them.
+    let transition_gate = Arc::clone(&startup.composition.adapter.transition_gate);
 
     Ok(async move {
         // Retained for the listener's lifetime so a later transition can still
@@ -1097,6 +1244,7 @@ fn serve_restricted_https_listener(
             serving_modes,
             shutdown,
             ShutdownBudget::DEFAULT,
+            transition_gate,
             active_database,
         )
         .await
@@ -1112,12 +1260,18 @@ fn serve_restricted_https_listener(
 /// connections hold the serving-mode snapshot they took when they were
 /// accepted, so no republished mode could change what they serve, and cutting
 /// them off would abandon a response the client is still owed.
+///
+/// An irreversible lifecycle transition is not a connection, so draining cannot
+/// see it. The transition gate is closed on the signal and waited on beside the
+/// drain, so a Restore or Init already past its point of no return finishes
+/// before the process exits, and one that has not reached it is refused.
 async fn accept_and_drain_connections(
     tcp_listener: TcpListener,
     tls_acceptor: TlsAcceptor,
     serving_modes: watch::Receiver<ServingMode>,
     mut shutdown: ShutdownSignal,
     budget: ShutdownBudget,
+    transition_gate: Arc<LifecycleTransitionGate>,
     active_database: ActiveDatabase,
 ) -> Result<(), StartupError> {
     let slots = ConnectionSlots::new();
@@ -1129,7 +1283,13 @@ async fn accept_and_drain_connections(
             // Polled in order, so a shutdown already signalled always wins
             // against a connection that arrived at the same moment.
             biased;
-            () = &mut shutdown.0 => break Ok(()),
+            () = &mut shutdown.0 => {
+                // Closed here, synchronously, so no lifecycle transition can
+                // enter its irreversible region between the stop being
+                // observed and the wait below being scheduled.
+                transition_gate.begin_stopping();
+                break Ok(());
+            }
             accepted = tcp_listener.accept() => accepted,
             // Reaps finished connections while accepting, so a long-lived
             // listener does not accumulate their handles.
@@ -1175,11 +1335,23 @@ async fn accept_and_drain_connections(
     // Accepting has stopped, so the bound socket is released now rather than
     // held for the length of the drain.
     drop(tcp_listener);
-    let drained = timeout(budget.drain, async {
-        while connections.join_next().await.is_some() {}
-    })
-    .await
-    .is_ok();
+    // Concurrent, not sequential: a connection that will not finish must not
+    // spend a transition's allowance, and a transition that must not be
+    // interrupted must not spend the drain's.
+    let (drained, quiesced) = tokio::join!(
+        async {
+            timeout(budget.drain, async {
+                while connections.join_next().await.is_some() {}
+            })
+            .await
+            .is_ok()
+        },
+        transition_gate.quiesce(budget.transition),
+    );
+    // Retained until this shutdown returns, so nothing enters the transition
+    // region behind the wait while the database is being closed. When the
+    // budget expired there is no guard, and the gate stays closed instead.
+    let transition = quiesced;
     // Whatever the drain did not finish is terminated, because the database
     // close must not wait behind a request that will not end.
     connections.shutdown().await;
@@ -1187,7 +1359,7 @@ async fn accept_and_drain_connections(
 
     match accepting {
         Err(error) => Err(error),
-        Ok(()) if drained && closed => Ok(()),
+        Ok(()) if drained && transition.is_some() && closed => Ok(()),
         Ok(()) => Err(StartupError::ShutdownIncomplete),
     }
 }
@@ -2539,7 +2711,7 @@ pub(crate) mod tests {
         pin::Pin,
         sync::{
             Arc,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         task::{Context, Poll},
         time::Duration,
@@ -2590,15 +2762,15 @@ pub(crate) mod tests {
 
     use super::{
         APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse,
-        ConnectionSlots, ConnectionTimeouts, DatabaseError, MAX_JSON_BODY_BYTES,
-        MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
+        ConnectionSlots, ConnectionTimeouts, DatabaseError, LifecycleTransitionGate,
+        MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
         RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
         RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
-        RestrictedStartup, SHUTDOWN_DATABASE_BUDGET, ServingMode, ServingModeSwitch,
-        ShutdownBudget, ShutdownSignal, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT,
-        WorkflowArbiter, accept_and_drain_connections, bounded_response_from_axum,
-        classify_restricted_startup, close_active_database, fallback_router,
-        gateway_timeout_response,
+        RestrictedStartup, SHUTDOWN_DATABASE_BUDGET, SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET,
+        ServingMode, ServingModeSwitch, ShutdownBudget, ShutdownSignal, StartupError,
+        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter, accept_and_drain_connections,
+        bounded_response_from_axum, classify_restricted_startup, close_active_database,
+        fallback_router, gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
@@ -4105,6 +4277,9 @@ pub(crate) mod tests {
         client_config: Arc<ClientConfig>,
         /// Completing this trigger is what asks the loop to stop.
         shutdown: oneshot::Sender<()>,
+        /// The gate the loop closes on the signal and waits on beside the
+        /// drain; a test enters it to stand in for a lifecycle transition.
+        transition_gate: Arc<LifecycleTransitionGate>,
         serving: JoinHandle<Result<(), StartupError>>,
     }
 
@@ -4124,6 +4299,7 @@ pub(crate) mod tests {
             MountedSurface::without_registrations(router),
         ));
         let (shutdown, signalled) = oneshot::channel();
+        let transition_gate = Arc::new(LifecycleTransitionGate::new());
         let serving = tokio::spawn(accept_and_drain_connections(
             tcp_listener,
             TlsAcceptor::from(server_config),
@@ -4132,6 +4308,7 @@ pub(crate) mod tests {
                 let _ = signalled.await;
             }),
             budget,
+            Arc::clone(&transition_gate),
             active_database,
         ));
 
@@ -4139,6 +4316,7 @@ pub(crate) mod tests {
             address,
             client_config,
             shutdown,
+            transition_gate,
             serving,
         }
     }
@@ -4232,6 +4410,7 @@ pub(crate) mod tests {
             client_config,
             shutdown,
             serving,
+            ..
         } = draining_listener(router, ShutdownBudget::DEFAULT, ActiveDatabase::default()).await;
 
         let mut client = tls_client(address, client_config).await;
@@ -4275,6 +4454,7 @@ pub(crate) mod tests {
             serving_modes,
             ShutdownSignal::new(std::future::ready(())),
             ShutdownBudget::DEFAULT,
+            Arc::new(LifecycleTransitionGate::new()),
             ActiveDatabase::default(),
         )
         .await;
@@ -4293,6 +4473,7 @@ pub(crate) mod tests {
             client_config,
             shutdown,
             serving,
+            ..
         } = draining_listener(
             router,
             // The gated request is never released, so no drain budget could
@@ -4329,6 +4510,7 @@ pub(crate) mod tests {
             client_config,
             shutdown,
             serving,
+            ..
         } = draining_listener(router, ShutdownBudget::DEFAULT, active_database).await;
 
         let mut client = tls_client(address, client_config).await;
@@ -4371,6 +4553,119 @@ pub(crate) mod tests {
             Err(StartupError::ShutdownIncomplete)
         );
         assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    /// The gate refuses entry from the moment a stop is observed and keeps
+    /// refusing it, so nothing begins an irreversible transition a shutdown
+    /// would then have to wait out.
+    ///
+    /// A refusal leaves the permit free, which is what lets a shutdown that is
+    /// already waiting proceed instead of blocking behind an entrant that was
+    /// turned away between taking the permit and reading the flag again.
+    #[test]
+    fn a_closed_transition_gate_refuses_entry_permanently() {
+        let gate = LifecycleTransitionGate::new();
+
+        let entered = gate
+            .try_enter()
+            .expect("an open gate must admit a transition");
+        assert!(gate.is_occupied());
+        drop(entered);
+        assert!(!gate.is_occupied());
+
+        gate.begin_stopping();
+        assert!(gate.try_enter().is_none());
+        assert!(!gate.is_occupied());
+        assert!(gate.try_enter().is_none());
+    }
+
+    /// A stop that arrives while an irreversible lifecycle transition is inside
+    /// its region waits for that region, instead of exiting the process between
+    /// the transition's fail-closed publication and its committed record.
+    ///
+    /// The drain budget is zero and no connection is open, so nothing but the
+    /// transition gate could hold this shutdown open. Completion is unreachable
+    /// while the guard is held, so the assertion below is a property of the
+    /// gate rather than an observation of elapsed time.
+    #[tokio::test]
+    async fn a_signalled_shutdown_waits_for_a_lifecycle_transition_to_leave_the_gate() {
+        let (active_database, _database, closes) = test_support::activated();
+        let DrainingListener {
+            address,
+            shutdown,
+            transition_gate,
+            serving,
+            ..
+        } = draining_listener(
+            fallback_router(),
+            ShutdownBudget {
+                drain: Duration::ZERO,
+                ..ShutdownBudget::DEFAULT
+            },
+            active_database,
+        )
+        .await;
+
+        // Stands in for the Restore or Init region: both production workflows
+        // enter this same gate through this same call.
+        let transition = transition_gate
+            .try_enter()
+            .expect("an open gate must admit a transition");
+
+        shutdown.send(()).unwrap();
+        // Rebinding proves the loop already left its accept phase, so what
+        // remains is the drain, the wait, and the close.
+        let _rebound = rebind_released_port(address).await;
+
+        assert!(!serving.is_finished());
+        assert_eq!(closes.load(Ordering::SeqCst), 0);
+
+        drop(transition);
+        assert_eq!(serving.await.unwrap(), Ok(()));
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    /// A transition that outlasts its own budget cannot hold the stop open
+    /// indefinitely. The wait expires, the gate stays closed, and the shutdown
+    /// is reported as unclean rather than as a clean stop.
+    ///
+    /// This is the accepted residual case: the process still exits while the
+    /// transition runs, so its durable state can still be interrupted. What it
+    /// cannot do is prevent the host from stopping the Server.
+    #[tokio::test]
+    async fn a_lifecycle_transition_that_outlasts_its_budget_reports_an_incomplete_shutdown() {
+        let (active_database, _database, closes) = test_support::activated();
+        let DrainingListener {
+            shutdown,
+            transition_gate,
+            serving,
+            ..
+        } = draining_listener(
+            fallback_router(),
+            // The guard below is never released, so no transition budget could
+            // ever be long enough; this value only keeps the test short.
+            ShutdownBudget {
+                transition: Duration::ZERO,
+                ..ShutdownBudget::DEFAULT
+            },
+            active_database,
+        )
+        .await;
+        let _transition = transition_gate
+            .try_enter()
+            .expect("an open gate must admit a transition");
+
+        shutdown.send(()).unwrap();
+
+        assert_eq!(
+            serving.await.unwrap(),
+            Err(StartupError::ShutdownIncomplete)
+        );
+        // The expired wait neither skips the database close nor repeats it.
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        // The gate was closed on the signal and stays closed, so a transition
+        // that had not entered can never enter afterwards.
+        assert!(transition_gate.try_enter().is_none());
     }
 
     /// A deployment becomes operational from a sealed startup or from an
@@ -7438,6 +7733,131 @@ pub(crate) mod tests {
 
     /// The reads validation makes before it returns a normalized backup.
     const READS_THROUGH_VALIDATION: usize = 4;
+
+    /// A request budget that closes the transition gate at a chosen read.
+    ///
+    /// The chain consults its deadline immediately before it enters the gate,
+    /// so closing the gate from inside that read places the stop at exactly the
+    /// last moment at which abandoning the Restore is still free. Every answer
+    /// the deadline itself gives comes from a real live [`RequestBudget`], so
+    /// nothing here stands in for the deadline's own decision.
+    struct StoppingAt {
+        reads: AtomicUsize,
+        stopping_read: usize,
+        live: RequestBudget,
+        gate: Arc<LifecycleTransitionGate>,
+    }
+
+    impl StoppingAt {
+        fn read(stopping_read: usize, gate: Arc<LifecycleTransitionGate>) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                stopping_read,
+                live: RequestBudget::start(),
+                gate,
+            }
+        }
+    }
+
+    impl RequestDeadline for StoppingAt {
+        fn check(&self) -> Result<(), RestoreError> {
+            if self.reads.fetch_add(1, Ordering::SeqCst) == self.stopping_read {
+                self.gate.begin_stopping();
+            }
+            self.live.check()
+        }
+    }
+
+    /// A stop signalled before a Restore enters its irreversible region is
+    /// refused there, and the deployment is left exactly as an untouched one.
+    ///
+    /// The refusal is not a new outcome. It renders the same `restore_failed`
+    /// an expired budget renders at every earlier step, so no step and no cause
+    /// is distinguishable to a submitter.
+    #[tokio::test]
+    async fn a_restore_refused_at_a_closed_transition_gate_leaves_the_deployment_untouched() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let anchors = surface.anchor_snapshot();
+        let deadline = StoppingAt::read(
+            READS_THROUGH_VALIDATION,
+            Arc::clone(&surface.startup.composition.adapter.transition_gate),
+        );
+
+        let error = surface
+            .restore_against_deadline(
+                &orchestrator,
+                &deadline,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .expect_err("a Restore refused at the transition gate must not be committed");
+
+        // Byte for byte what an overrun at this same step already answered.
+        assert_eq!(error, RestoreError::RestoreFailed);
+        assert_eq!(
+            error.category_reason(),
+            ("restore_failed", "restore_failed")
+        );
+
+        // The deployment is untouched: the fail-closed surface was never
+        // published, no checkpoint was created, and no durable state changed.
+        assert_preoperational(surface.served_router()).await;
+        assert_eq!(
+            surface.startup.composition.adapter.arbiter.record_state(),
+            LifecycleState::Uninitialized
+        );
+        assert_eq!(surface.anchor_snapshot(), anchors);
+    }
+
+    /// A Restore that entered its region before the stop still seals, and the
+    /// wait a shutdown performs returns only once that region is empty.
+    ///
+    /// The deployment state is read at the instant the wait returns, so a
+    /// shutdown reaching its database close before the replacement sealed would
+    /// be visible here as an unsealed record.
+    #[tokio::test]
+    async fn a_restore_inside_the_transition_gate_seals_before_the_wait_returns() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let gate = Arc::clone(&surface.startup.composition.adapter.transition_gate);
+        let finished = Arc::new(AtomicBool::new(false));
+
+        let (restored, sealed_when_released) = tokio::join!(
+            async {
+                let restored = surface
+                    .restore(
+                        &orchestrator,
+                        restore_fixture("valid.wlitbackup"),
+                        valid_recovery_key(),
+                    )
+                    .await;
+                finished.store(true, Ordering::SeqCst);
+                restored
+            },
+            async {
+                // A shutdown can only wait for a transition that is already
+                // inside, so this wait is ordered behind the Restore's own
+                // entry rather than racing it for the permit. The second
+                // condition ends the loop if the whole region completed first,
+                // so nothing here can outlive the workflow.
+                while !gate.is_occupied() && !finished.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+                gate.begin_stopping();
+                let quiesced = gate.quiesce(SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET).await;
+                assert!(
+                    quiesced.is_some(),
+                    "the region must empty inside its budget"
+                );
+                surface.startup.composition.adapter.arbiter.record_state()
+            },
+        );
+
+        assert!(restored.is_ok(), "{restored:?}");
+        assert_eq!(sealed_when_released, LifecycleState::Initialized);
+    }
 
     /// A deadline crossed while state is rebuilt stops before any mutation.
     ///

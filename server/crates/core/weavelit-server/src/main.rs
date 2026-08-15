@@ -48,8 +48,11 @@ fn run() -> Result<(), StartupError> {
         ShutdownSignal::new(signalled),
     ));
     // The listener has already spent its whole shutdown budget by this point,
-    // so anything still running deliberately outlived it and is terminated
-    // rather than left holding the process open.
+    // including its wait for any irreversible lifecycle transition, so nothing
+    // is given further time here. Anything still running either overran a
+    // budget the listener already reported as an incomplete shutdown, or is
+    // blocking work no runtime can cancel, and is left behind rather than
+    // holding the process open.
     runtime.shutdown_timeout(Duration::ZERO);
 
     result

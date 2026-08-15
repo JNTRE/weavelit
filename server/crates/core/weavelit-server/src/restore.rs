@@ -60,7 +60,7 @@ use weavelit_server_restore::{
 use zeroize::Zeroizing;
 
 use crate::{
-    RestrictedStartup, ServingModeSwitch,
+    LifecycleTransitionGate, RestrictedStartup, ServingModeSwitch,
     operational::{OperationalComposer, OperationalDatabase, OperationalRuntime},
     transport::{
         AdmittedCheck, BodyAdmission, PreBodyCheck, PreBodyGrant, PreBodyGrantValue,
@@ -104,6 +104,10 @@ pub struct RestoreOrchestrator {
     log_catalog: Arc<LogModuleCatalog>,
     state_root: PathBuf,
     mutation_lane: Arc<Semaphore>,
+    /// The gate this workflow's irreversible replacement region runs inside,
+    /// so a signalled shutdown waits for that region instead of exiting inside
+    /// it and stranding durable state.
+    transition_gate: Arc<LifecycleTransitionGate>,
     pending: Arc<PendingRestoreSlot>,
     serving_modes: Arc<ServingModeSwitch>,
     validator: RestoreValidator,
@@ -150,6 +154,7 @@ impl RestoreOrchestrator {
             log_catalog: Arc::clone(&startup.log_catalog),
             state_root: startup.state_root.clone(),
             mutation_lane: Arc::clone(&startup.composition.adapter.mutation_lane),
+            transition_gate: Arc::clone(&startup.composition.adapter.transition_gate),
             pending: Arc::new(PendingRestoreSlot::default()),
             serving_modes,
             validator: RestoreValidator::new(components),
@@ -441,6 +446,17 @@ impl RestoreOrchestrator {
         // free to abandon.
         budget.check().map_err(|_| RestoreError::RestoreFailed)?;
 
+        // Entered before the point of no return and held past it, so a stop
+        // signalled from here on waits for the replacement instead of exiting
+        // between the publication below and the sealed record. A gate already
+        // closed refuses entry, and that refusal is reported as the same
+        // `restore_failed` every other abandoned step reports, so no new
+        // outcome becomes visible to a submitter.
+        let transition = self
+            .transition_gate
+            .try_enter()
+            .ok_or(RestoreError::RestoreFailed)?;
+
         // Point of no return begins here. Every later connection observes the
         // fail-closed surface before any durable state changes, and keeps
         // observing it if the replacement does not complete.
@@ -454,6 +470,9 @@ impl RestoreOrchestrator {
             record_identifier,
             &record,
         )?;
+        // The record is sealed, so an interruption from here on can no longer
+        // strand durable state and a waiting shutdown is released.
+        drop(transition);
 
         // The database sealing handed back is retained here and composed into
         // the operational surface, so normal operation begins on the handle the

@@ -429,25 +429,77 @@ A signalled shutdown runs in a fixed order:
 1. Accepting stops. A shutdown already signalled always wins against a
    connection arriving at the same moment, so no connection is admitted after
    the request to stop.
-2. The bound socket is released immediately, before draining begins, so the
+2. The lifecycle transition gate is closed synchronously, before anything else
+   is awaited, so no workflow can begin an irreversible transition after the
+   request to stop was observed.
+3. The bound socket is released immediately, before draining begins, so the
    listener address is free for the next Server generation rather than held for
    the length of the drain.
-3. Already-accepted connections keep being served to completion, response write
+4. Already-accepted connections keep being served to completion, response write
    included. Each holds the serving-mode snapshot it took when it was accepted,
    so no republished mode changes what it serves and no client is left owed a
-   response the Server had already begun.
-4. The Application Database is closed once draining ends.
+   response the Server had already begun. Concurrently, the shutdown waits for
+   any irreversible lifecycle transition already inside the gate to leave it.
+5. The Application Database is closed once draining and that wait have both
+   ended.
 
-Each stage is bounded separately, because the two fail differently: a request
-that will not finish must not consume the allowance the database close needs.
-Draining is allowed 25 seconds and the close is allowed 5 seconds, so a whole
-shutdown is bounded at 30 seconds. The drain budget deliberately exceeds the
-longest a single connection may occupy the listener, which is the TLS handshake,
-request-read, and processing budgets in sequence, so a request admitted just
-before the signal can still finish inside it; that relationship is asserted at
-compile time rather than restated as a convention. Whatever the drain does not
-finish is terminated before the close begins, so a request that will not end
-cannot delay the database close behind it.
+Each stage is bounded separately, because they fail differently: a request that
+will not finish must not consume the allowance the database close needs, and a
+transition that must not be interrupted must not be cut short by whatever a
+client is doing to a connection. Draining is allowed 25 seconds, the wait for a
+lifecycle transition is allowed 300 seconds, and the close is allowed 5 seconds.
+Draining and the wait run concurrently, so a whole shutdown is bounded at 305
+seconds. That whole budget is derived in code from those stages rather than
+restated, so no stage can be changed without the supervisor requirement
+following it.
+
+The drain budget deliberately exceeds the longest an ordinary connection may
+occupy the listener, which is the TLS handshake, request-read, and processing
+budgets in sequence, so a request admitted just before the signal can still
+finish inside it; that relationship is asserted at compile time rather than
+restated as a convention. It says nothing about a lifecycle transition, which is
+bounded by the wait instead. Whatever the drain does not finish is terminated
+before the close begins, so a request that will not end cannot delay the
+database close behind it.
+
+#### The Lifecycle Transition Gate
+
+An Init and a Restore each contain one region that must not be interrupted:
+from the moment the fail-closed surface is published to the moment the
+deployment record has been advanced or sealed. That region runs as blocking work
+that no connection owns and that nothing may abort, so draining cannot see it
+and terminating a connection cannot end it. A process that exits inside that
+region leaves durable state a restart can only report as requiring redeployment.
+
+The gate is a runtime-owned value the listener, Init, and Restore all share. It
+holds a single permit and a stop flag. A workflow enters it immediately before
+its point of no return and holds it until the record is committed; it never
+waits for the permit, because the mutation lane already admits one workflow at a
+time. A shutdown sets the flag synchronously on the signal and then waits, inside
+the transition budget, to acquire and retain the same permit.
+
+The flag is read on both sides of the acquisition, which is what closes the race
+between a stop being signalled and a workflow entering. A workflow whose
+acquisition completes after the flag was set releases the permit and refuses, so
+the only workflows a shutdown ever waits for are those that observed an open gate
+after taking the permit, and for those the shutdown's own acquisition necessarily
+blocks until the workflow is done.
+
+Refusal at the gate is not a new outcome. Each entry point maps it onto the
+failure its surrounding chain already produces for an operation abandoned before
+its point of no return, so nothing an operator or a submitter can observe
+changes.
+
+The gate is deliberately not the lifecycle mutation lane. A Restore holds that
+lane across artifact upload, decryption, and validation, so waiting on it would
+expose how long a stop takes to work a submitter supplies.
+
+If the transition budget expires with a workflow still inside the region, the
+gate stays closed, the shutdown is reported as `shutdown_incomplete`, and the
+process exits without waiting further. That residual case can still interrupt
+the critical operation, and it is accepted deliberately: a workflow that has
+overrun its own approved deadline by that much must not be able to hold a host
+supervisor's stop open indefinitely.
 
 The close runs through one process-wide owner of whichever Application Database
 is serving. A deployment becomes operational either from a sealed startup or
@@ -464,20 +516,21 @@ operation is still closed exactly once, but the shutdown is reported as failed
 however cleanly the backend closed, because the operation that poisoned the lane
 has an untrusted outcome.
 
-A shutdown that completes both stages inside their budgets exits with status
-`0` and no terminating signal. A drain that does not finish, or a database that
-does not close cleanly, is reported as `shutdown_incomplete` and exits with
-status `1`; it is an unclean stop rather than a startup failure, and it is never
-reported as a clean one. The exit status is returned rather than set by an
-immediate process exit, so an orderly shutdown still unwinds normally and every
-retained value, including the process-lifetime state-root lock, is released by
-its own destructor.
+A shutdown that completes every stage inside its budget exits with status `0`
+and no terminating signal. A drain that does not finish, a lifecycle transition
+that does not leave the gate, or a database that does not close cleanly, is
+reported as `shutdown_incomplete` and exits with status `1`; it is an unclean
+stop rather than a startup failure, and it is never reported as a clean one. The
+exit status is returned rather than set by an immediate process exit, so an
+orderly shutdown still unwinds normally and every retained value, including the
+process-lifetime state-root lock, is released by its own destructor.
 
-A host supervisor must allow more than the Server's whole 30-second budget
+A host supervisor must allow more than the Server's whole 305-second budget
 before it kills the process, or it would kill a shutdown that is still inside
-its own budget. A packaged service unit must therefore stop the Server with
-`SIGTERM` and set a stop timeout greater than 30 seconds; 40 seconds is the
-recommended value.
+its own budget, including one waiting for an irreversible lifecycle transition
+to reach a committed record. A packaged service unit must therefore stop the
+Server with `SIGTERM` and set a stop timeout greater than 305 seconds; 315
+seconds is the recommended value.
 
 ### Bounded Request Reading
 

@@ -198,15 +198,36 @@ preparable, so a person whose request timed out before that point simply
 retries.
 
 That check is advisory rather than a correctness boundary, because a
-cancellation can still land immediately after it. Everything past it is
-ordered so the observable state can never be less severe than the durable
-state: the runtime publishes the fail-closed surface **before** it writes the
-checkpoint, not after. A cancellation that races the check therefore leaves a
+cancellation can still land immediately after it. Immediately after it, and
+still before the first commitment, the chain enters the lifecycle transition
+gate and holds it until the checkpoint is written and its permit released. A
+shutdown signalled before that entry closes the gate, and the preparation is
+refused there rather than beginning a transition the process may not survive; a
+refusal answers the same `initialization_failed` outcome the chain already
+produces for a preparation abandoned before its first commitment, and commits
+nothing.
+
+Everything past the gate is ordered so the observable state can never be less
+severe than the durable state: the runtime publishes the fail-closed surface
+**before** it writes the checkpoint, not after. A cancellation that races the
+check therefore leaves a
 committed Init that is visibly fail closed, never one that still looks like a
 healthy uninitialized deployment. Producing the delivery line, recording the
 pending delivery, and marking the request whose written response may publish
 finalization all run inside that same uninterruptible chain, and any failure
 among them ends the delivery stage with this process already fail closed.
+
+The gate bounds process exit, not request cancellation. A shutdown that observes
+an in-flight preparation waits for it to commit its checkpoint, and a shutdown
+signalled earlier stops the preparation before it commits anything. Neither the
+gate nor the liveness lease removes the residual window in which a stop is
+signalled between the lease check and the gate entry succeeding, because the
+gate's stop flag is read again after its permit is taken and a workflow that
+observes the closed flag then refuses. What remains is the case in which the
+lifecycle transition budget expires while a preparation is still inside the
+region, which the
+[Server Architecture Design](../../server-architecture-design.md) documents as
+an accepted residual risk.
 
 The residual behavior is delivery uncertainty, never silent commitment. A
 preparation whose response timed out may have created a checkpoint the client
@@ -222,7 +243,13 @@ fail-closed surface there, so an abandoned route future cannot leave this
 Server serving a healthier surface than its retained state deserves.
 Finalization carries no liveness lease, because its response carries no
 irreplaceable secret, success publishes normal operation from inside the same
-chain, and an actionable failure restores the delivery for a retry.
+chain, and an actionable failure restores the delivery for a retry. It enters
+the lifecycle transition gate after its last preflight and before it publishes
+the fail-closed surface, and releases it once the deployment record is sealed,
+so the same stop that refuses a preparation refuses a finalization that has not
+yet committed and waits for one that has. A finalization refused at a closed
+gate answers the same closed `initialization_failed` outcome, leaves the pending
+checkpoint and its anchors untouched, and writes no System Log record.
 
 The delivered key remains a canonical age key, unchanged; only the proof
 mechanism above is Init-specific, and it does not alter Restore's accepted key
@@ -333,7 +360,11 @@ elapsed time: a preparation cancelled before its liveness check commits nothing
 and still permits a full Init, a preparation cancelled after it leaves a fail
 closed Server whose committed checkpoint no request can obtain a key for, and a
 closed finalization publishes the fail-closed surface even though its route
-task never resumed. The
+task never resumed. Two further tests close the lifecycle transition gate and
+prove that a preparation refused there commits nothing, delivers no recovery
+key, and leaves the deployment uninitialized and preparable, and that a
+finalization refused there leaves its pending checkpoint, its anchors, and its
+System Log untouched. The
 [Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md)
 first-launch Init workflow drives Init through the browser, and
 `server/web-ui/browser-tests/init-first-launch.spec.ts` exercises it end to

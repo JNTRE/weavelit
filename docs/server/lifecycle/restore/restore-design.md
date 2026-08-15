@@ -136,7 +136,7 @@ This check is deliberately a comparison of declared keys and not an open. It
 reads the module's declaration off the catalog and never calls the module's
 factory, so it creates no Log Module local storage and leaves nothing behind
 that a pre-checkpoint failure promised not to leave; the destination is still
-opened for the first time at step 11 of
+opened for the first time at step 12 of
 [Runtime Orchestration Order](#runtime-orchestration-order). It is also not a
 preflight: it proves nothing about the destination's commit path, only that the
 configuration is one the named module would accept. The refusal reuses the
@@ -448,28 +448,42 @@ step that can fail without leaving retained state runs before the checkpoint.
    substantial work that ran after validation's last observation, so this is the
    last point at which a request that crossed the total request deadline can be
    abandoned without mutating the deployment.
-8. Publish the fail-closed serving mode. Every connection accepted from this
+8. Enter the lifecycle transition gate. A shutdown signalled before this point
+   closes the gate, and the Restore is refused here instead of beginning a
+   transition the process will not survive. The gate is held until step 13
+   commits the sealed record.
+9. Publish the fail-closed serving mode. Every connection accepted from this
    point forward serves no functional route.
-9. Create the Restore checkpoint. This is the point of no return.
-10. Replace the application state atomically.
-11. Open the assigned System Log destination and deliver the completion record.
+10. Create the Restore checkpoint. This is the point of no return.
+11. Replace the application state atomically.
+12. Open the assigned System Log destination and deliver the completion record.
     The destination is opened only now, because creating a Log Module's local
     storage earlier would leave durable state a pre-checkpoint failure promised
     not to leave behind.
-12. Acknowledge completion, then seal the deployment record `Initialized`.
+13. Acknowledge completion, then seal the deployment record `Initialized`.
     Sealing hands back the loaded state and the database the workflow held open,
     which the runtime retains as the operational deployment's one database
-    handle rather than reopening the target it just replaced.
-13. Compose the operational serving mode through the same operational composer a
+    handle rather than reopening the target it just replaced. The lifecycle
+    transition gate is released here, because an interruption from this point on
+    can no longer strand durable state.
+14. Compose the operational serving mode through the same operational composer a
     sealed startup uses, then publish it. Only a connection accepted after this
     point serves normal operation, so an in-flight fail-closed connection is
     never upgraded mid-request.
 
-A failure before step 9 leaves the Server exactly as it was: the serving mode is
-never changed, the anchor set is unmodified, and the deployment remains eligible
-for either workflow. A failure at or after step 9 leaves the Server fail-closed
-with its retained partial state intact. No rollback is attempted, because the
-replaced state is exactly what an operator asked to discard.
+A failure before step 10 leaves the Server exactly as it was: the serving mode
+is never changed, the anchor set is unmodified, and the deployment remains
+eligible for either workflow. A failure at or after step 10 leaves the Server
+fail-closed with its retained partial state intact. No rollback is attempted,
+because the replaced state is exactly what an operator asked to discard.
+
+A Restore refused at a closed gate is one of those unchanged failures. It
+answers `restore_failed`, the same stable failure a timeout or storage failure
+answers, so a submitter learns nothing about the Server's shutdown state from
+it, and the deployment is left exactly as a pre-checkpoint failure leaves it.
+The [Server Architecture Design](../../server-architecture-design.md) owns the
+gate, the shutdown budget that bounds the wait, and the accepted residual risk
+of a transition that outlasts it.
 
 No step above preflights the System Log or Audit Log destination; step 6 only
 resolves the assigned System Log module's identifier, and component-availability

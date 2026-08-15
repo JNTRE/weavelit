@@ -90,7 +90,7 @@ use weavelit_server_recovery_key::{RECOVERY_PROOF_BYTES, RecoveryProof};
 use zeroize::Zeroizing;
 
 use crate::{
-    ResponseWriteAcknowledgement, RestrictedStartup, ServingModeSwitch,
+    LifecycleTransitionGate, ResponseWriteAcknowledgement, RestrictedStartup, ServingModeSwitch,
     operational::{OperationalComposer, OperationalDatabase, OperationalRuntime},
     transport::{
         AdmittedCheck, BodyAdmission, PreBodyCheck, PreBodyGrant, PreBodyRejection,
@@ -271,6 +271,10 @@ pub struct InitOrchestrator {
     log_catalog: Arc<LogModuleCatalog>,
     state_root: PathBuf,
     mutation_lane: Arc<Semaphore>,
+    /// The gate this workflow's two irreversible regions run inside, so a
+    /// signalled shutdown waits for whichever one is running instead of
+    /// exiting inside it and stranding durable state.
+    transition_gate: Arc<LifecycleTransitionGate>,
     stage: Arc<DeliveryStage>,
     serving_modes: Arc<ServingModeSwitch>,
     /// The build's Init operations, composed once from its own inventory.
@@ -333,6 +337,7 @@ impl InitOrchestrator {
             log_catalog: Arc::clone(&startup.log_catalog),
             state_root: startup.state_root.clone(),
             mutation_lane: Arc::clone(&startup.composition.adapter.mutation_lane),
+            transition_gate: Arc::clone(&startup.composition.adapter.transition_gate),
             stage: Arc::new(DeliveryStage::default()),
             serving_modes,
             operations,
@@ -541,6 +546,17 @@ impl InitOrchestrator {
             return Err(InitRejection::InitializationFailed);
         }
 
+        // Entered before the point of no return and held past the durable
+        // write, so a stop signalled from here on waits for the checkpoint and
+        // the record advancement rather than exiting between them. A gate
+        // already closed refuses entry here, which leaves exactly what the
+        // liveness refusal above leaves: nothing published, nothing written,
+        // the stage still idle, and the same rejection rendered.
+        let transition = self
+            .transition_gate
+            .try_enter()
+            .ok_or(InitRejection::InitializationFailed)?;
+
         // Point of no return. Fail closed is published before the durable
         // mutation, so a cancellation that raced the check above still leaves a
         // committed Init visibly fail closed rather than apparently healthy.
@@ -554,6 +570,10 @@ impl InitOrchestrator {
         let released = permit
             .create_init_checkpoint_and_release(metadata)
             .map_err(|error| self.abandon(preparation_rejection(error)))?;
+        // The record now records the pending checkpoint and the database is
+        // closed, so an interruption from here on can no longer strand durable
+        // state and a waiting shutdown is released.
+        drop(transition);
 
         // The key is produced only after both commit paths completed.
         let recovery_key = prepared
@@ -771,6 +791,12 @@ impl InitOrchestrator {
         let system_log = self.preflight(request, LogType::System, deployment_identifier)?;
         self.preflight(request, LogType::Audit, deployment_identifier)?;
 
+        // Entered before the point of no return and held through sealing, so a
+        // stop signalled from here on waits for the commit chain instead of
+        // exiting inside it. A gate already closed refuses entry, reported as
+        // the same closed failure every other internal step reports.
+        let transition = self.transition_gate.try_enter().ok_or_else(closed)?;
+
         // Point of no return begins here. Every later connection observes the
         // fail-closed surface before any durable state changes, and keeps
         // observing it if the replacement does not complete.
@@ -785,6 +811,9 @@ impl InitOrchestrator {
             .map_err(|_| closed())?
             .seal()
             .map_err(|_| closed())?;
+        // The record is sealed, so an interruption from here on can no longer
+        // strand durable state and a waiting shutdown is released.
+        drop(transition);
 
         // The database sealing handed back is retained here and composed into
         // the operational surface, so normal operation begins on the handle the
@@ -2211,6 +2240,83 @@ mod tests {
 
         let refused = serve(&stale, INIT_ROUTE, &finalization_body(&delivered.proof())).await;
         assert_eq!(refused.status, InitRejection::AlreadyInitialized.status());
+    }
+
+    /// A stop signalled before a preparation reaches its point of no return is
+    /// refused at the transition gate, and leaves exactly what a preparation
+    /// cancelled before its liveness check leaves: nothing published, nothing
+    /// written, and a stage that still accepts a retry.
+    ///
+    /// The refusal renders the same rejection the liveness refusal beside it
+    /// renders, so no new outcome becomes visible to a person preparing a key.
+    #[tokio::test]
+    async fn a_preparation_refused_at_a_closed_transition_gate_commits_nothing() {
+        let surface = InitSurface::new();
+        let anchors = surface.anchor_snapshot();
+        let mut barrier = park_preparation_at(&surface, PreparationPhase::BeforeLivenessCheck);
+
+        let request = spawn_request(&surface, INIT_RECOVERY_KEY_ROUTE, preparation_body());
+        barrier.reached().await;
+        // Parked at the last boundary the gate is still ahead of, so the stop
+        // lands before the entry rather than racing it.
+        surface
+            .startup
+            .composition
+            .adapter
+            .transition_gate
+            .begin_stopping();
+        barrier.release();
+
+        let refused = request.await.unwrap();
+        assert_eq!(refused.status, InitRejection::InitializationFailed.status());
+        assert!(
+            !refused.body.contains("recovery_key"),
+            "no refused response may carry the key: {}",
+            refused.body
+        );
+        lane_settled(&surface).await;
+
+        assert_eq!(surface.record_state(), LifecycleState::Uninitialized);
+        assert_eq!(surface.anchor_snapshot(), anchors);
+        assert!(matches!(
+            *surface.modes.borrow(),
+            ServingMode::PreOperational(_)
+        ));
+        assert!(surface.orchestrator().stage.accepts_preparation());
+    }
+
+    /// A stop signalled before a finalization reaches its point of no return is
+    /// refused at the transition gate, reported as the same closed failure
+    /// every other internal step reports, with the pending checkpoint left
+    /// exactly where it already stood.
+    #[tokio::test]
+    async fn a_finalization_refused_at_a_closed_transition_gate_commits_nothing() {
+        let surface = InitSurface::new();
+        let delivered = surface.deliver_key().await;
+        let anchors = surface.anchor_snapshot();
+        surface
+            .startup
+            .composition
+            .adapter
+            .transition_gate
+            .begin_stopping();
+
+        let refused = surface
+            .submit(INIT_ROUTE, &finalization_body(&delivered.proof()))
+            .await;
+
+        assert_eq!(refused.status, InitRejection::InitializationFailed.status());
+        assert_eq!(
+            surface.record_state(),
+            LifecycleState::InitializationPending
+        );
+        assert_eq!(surface.anchor_snapshot(), anchors);
+        assert!(system_log_records(&surface.state_root).is_empty());
+        // The refusal is a closed failure, so this Server serves nothing more.
+        assert!(matches!(
+            *surface.modes.borrow(),
+            ServingMode::FailClosed(_)
+        ));
     }
 
     // -----------------------------------------------------------------------
