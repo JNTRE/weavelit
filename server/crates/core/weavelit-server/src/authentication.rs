@@ -29,7 +29,7 @@ use std::{
     collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -118,12 +118,12 @@ const MFA_ENABLED_VALUE: &str = "true";
 /// The issuer label an enrollment's provisioning URI carries.
 const PROVISIONING_ISSUER: &str = "Weavelit";
 
-/// How long a continuation stays claimable, in milliseconds.
+/// How long a continuation stays claimable.
 ///
 /// A continuation is a verified password waiting for its second factor, so it
 /// is short-lived: past this window the caller logs in again rather than
 /// holding an indefinitely resumable half-authentication.
-const CONTINUATION_LIFETIME_MILLISECONDS: i64 = 5 * 60 * 1000;
+const CONTINUATION_LIFETIME: Duration = Duration::from_secs(5 * 60);
 
 /// Continuations retained at one time.
 ///
@@ -133,7 +133,7 @@ const CONTINUATION_LIFETIME_MILLISECONDS: i64 = 5 * 60 * 1000;
 const MAX_OUTSTANDING_CONTINUATIONS: usize = 256;
 
 const _: () = assert!(
-    CONTINUATION_LIFETIME_MILLISECONDS > 0 && MAX_OUTSTANDING_CONTINUATIONS > 0,
+    !CONTINUATION_LIFETIME.is_zero() && MAX_OUTSTANDING_CONTINUATIONS > 0,
     "a continuation store that retains nothing, or retains forever, is not a bounded handoff"
 );
 
@@ -151,6 +151,44 @@ pub(crate) fn system_clock() -> WallClock {
             .ok()
             .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
     })
+}
+
+/// Reads the monotonic time elapsed since a fixed origin.
+///
+/// A continuation's lifetime is measured against this rather than against the
+/// wall clock, because a system clock moved backwards would otherwise extend a
+/// half-authenticated login's claimable window by the rollback interval.
+/// Injected so a test observes those decisions at chosen instants without
+/// waiting for real time to pass.
+pub type ElapsedClock = Arc<dyn Fn() -> Duration + Send + Sync>;
+
+/// Returns the production monotonic clock.
+pub(crate) fn monotonic_clock() -> ElapsedClock {
+    let origin = Instant::now();
+    Arc::new(move || origin.elapsed())
+}
+
+/// The two time sources authentication decides against.
+///
+/// They are separate because they answer different questions. A session's
+/// deadlines are durable and are therefore decided against the wall clock,
+/// while a continuation is held only in memory and is decided against monotonic
+/// elapsed time so no movement of the wall clock can extend it.
+pub(crate) struct AuthenticationClocks {
+    /// Reads the current UTC time in Unix milliseconds.
+    pub wall: WallClock,
+    /// Reads the monotonic time elapsed since a fixed origin.
+    pub elapsed: ElapsedClock,
+}
+
+impl AuthenticationClocks {
+    /// Returns the clocks a running Server decides against.
+    pub(crate) fn production() -> Self {
+        Self {
+            wall: system_clock(),
+            elapsed: monotonic_clock(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +240,7 @@ impl AuthenticationRuntime<RustCryptoArgon2> {
             database,
             state,
             client_modules,
-            system_clock(),
+            AuthenticationClocks::production(),
             open_system_log(state, state_root, log_catalog).map(Arc::new),
             protection,
         )
@@ -210,7 +248,7 @@ impl AuthenticationRuntime<RustCryptoArgon2> {
 }
 
 impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
-    /// Composes authentication over an explicit verification engine and clock.
+    /// Composes authentication over an explicit verification engine and clocks.
     ///
     /// A test injects a counting engine here to observe that a denial performs
     /// exactly as many verifications as an acceptance, which is a property of
@@ -220,7 +258,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         database: OperationalDatabase,
         state: &InitializedState,
         client_modules: BTreeSet<Name>,
-        clock: WallClock,
+        clocks: AuthenticationClocks,
         system_log: Option<Arc<ConfiguredLogDestination>>,
         protection: Arc<dyn ProtectedValueAccess>,
     ) -> Option<Arc<Self>> {
@@ -232,12 +270,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             client_modules,
             authenticator: PasswordAuthenticator::new(engine, PasswordPolicy::approved()).ok()?,
             login_lane: Arc::new(Semaphore::new(MAX_CONCURRENT_LOGIN_VERIFICATIONS)),
-            clock,
+            clock: clocks.wall,
             observability: ServerObservability::new(TrustedRecordIssuer::from_server_authority(
                 &log_authority,
             )),
             protection,
-            continuations: ContinuationStore::default(),
+            continuations: ContinuationStore::new(clocks.elapsed),
             system_log,
         }))
     }
@@ -655,7 +693,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         let Some(PendingClaim::SecondFactor {
             account,
             client_module,
-        }) = self.continuations.claim(continuation, now)
+        }) = self.continuations.claim(continuation)
         else {
             return Err(self.deny(correlation_id));
         };
@@ -715,11 +753,10 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         continuation: &str,
         correlation_id: &str,
     ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
-        let now = self.milliseconds()?;
         let Some(PendingClaim::Enrollment {
             account,
             client_module,
-        }) = self.continuations.claim(continuation, now)
+        }) = self.continuations.claim(continuation)
         else {
             return Err(self.deny(correlation_id));
         };
@@ -737,7 +774,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             return Err(self.deny(correlation_id));
         };
 
-        self.open_secret(account, client_module, &username, now)
+        self.open_secret(account, client_module, &username)
     }
 
     /// Opens an enrollment for an account that is already signed in.
@@ -781,7 +818,6 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         correlation_id: &str,
     ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
         let session = self.authorized_session(session_token, csrf_token)?.1;
-        let now = self.milliseconds()?;
         let state = self.initialized_state()?;
 
         // Resolved before verification and handed to the same call even when it
@@ -804,7 +840,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             return Err(self.deny(correlation_id));
         };
 
-        self.open_secret(verified, session.client_module().clone(), &username, now)
+        self.open_secret(verified, session.client_module().clone(), &username)
     }
 
     /// Generates one enrollment secret and the ticket that confirms it.
@@ -826,7 +862,6 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         account: StateIdentifier,
         client_module: Name,
         username: &Name,
-        now: i64,
     ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
         let unavailable = AuthenticationRejection::ServiceUnavailable;
         let bytes = random_bytes::<SECRET_LENGTH>().ok_or(unavailable)?;
@@ -841,14 +876,11 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             .map_err(|_| unavailable)?;
         let provisioning_uri = ProvisioningUri::new(uri.expose()).ok_or(unavailable)?;
 
-        let enrollment = self.continuations.issue(
-            PendingClaim::EnrollmentConfirm {
-                account,
-                client_module,
-                secret: Zeroizing::new(bytes),
-            },
-            now,
-        )?;
+        let enrollment = self.continuations.issue(PendingClaim::EnrollmentConfirm {
+            account,
+            client_module,
+            secret: Zeroizing::new(bytes),
+        })?;
 
         Ok(MfaEnrollmentOpened {
             secret: Zeroizing::new(base32.expose().to_owned()),
@@ -887,7 +919,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             account,
             client_module,
             secret,
-        }) = self.continuations.claim(enrollment, now)
+        }) = self.continuations.claim(enrollment)
         else {
             return Err(self.deny(correlation_id));
         };
@@ -981,9 +1013,8 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         &self,
         claim: PendingClaim,
     ) -> Result<Zeroizing<String>, AuthenticationRejection> {
-        let now = self.milliseconds()?;
         self.continuations
-            .issue(claim, now)
+            .issue(claim)
             .map(|continuation| Zeroizing::new(continuation.as_str().to_owned()))
     }
 
@@ -1219,10 +1250,11 @@ enum PendingClaim {
     },
 }
 
-/// One outstanding continuation and the instant it stops being claimable.
+/// One outstanding continuation and the elapsed instant it stops being
+/// claimable at.
 struct Pending {
     digest: ContinuationDigest,
-    expires_at: i64,
+    expires_after: Duration,
     claim: PendingClaim,
 }
 
@@ -1233,32 +1265,43 @@ struct Pending {
 /// one continuation admits exactly one attempt. The store lives in memory: a
 /// restart therefore invalidates every outstanding continuation, which is the
 /// safe direction for a partially completed authentication.
-#[derive(Default)]
+///
+/// Nothing here is persisted, which is what lets every lifetime decision be
+/// measured against a monotonic clock rather than against the wall clock a
+/// session's durable deadlines must be written in. A system clock moved
+/// backwards therefore cannot extend the window a continuation stays claimable
+/// in, and the refusal it produces is the single refusal an expired
+/// continuation already produced.
 struct ContinuationStore {
+    /// The monotonic source every lifetime decision is measured against.
+    elapsed: ElapsedClock,
     pending: Mutex<Vec<Pending>>,
 }
 
 impl ContinuationStore {
+    /// Creates an empty store over one monotonic clock.
+    fn new(elapsed: ElapsedClock) -> Self {
+        Self {
+            elapsed,
+            pending: Mutex::default(),
+        }
+    }
+
     /// Issues one continuation for a claim the runtime already decided.
-    fn issue(
-        &self,
-        claim: PendingClaim,
-        now: i64,
-    ) -> Result<Continuation, AuthenticationRejection> {
+    fn issue(&self, claim: PendingClaim) -> Result<Continuation, AuthenticationRejection> {
         let unavailable = AuthenticationRejection::ServiceUnavailable;
-        let expires_at = now
-            .checked_add(CONTINUATION_LIFETIME_MILLISECONDS)
-            .ok_or(unavailable)?;
+        let now = (self.elapsed)();
+        let expires_after = now.checked_add(CONTINUATION_LIFETIME).ok_or(unavailable)?;
         let continuation = Continuation::generate().map_err(|_| unavailable)?;
 
         let mut pending = self.pending.lock().map_err(|_| unavailable)?;
-        pending.retain(|entry| entry.expires_at > now);
+        pending.retain(|entry| entry.expires_after > now);
         if pending.len() >= MAX_OUTSTANDING_CONTINUATIONS {
             return Err(unavailable);
         }
         pending.push(Pending {
             digest: continuation.digest(),
-            expires_at,
+            expires_after,
             claim,
         });
         Ok(continuation)
@@ -1268,10 +1311,11 @@ impl ContinuationStore {
     ///
     /// The entry is removed whatever the caller then decides, so a wrong code
     /// costs the continuation rather than allowing another attempt against it.
-    fn claim(&self, submitted: &str, now: i64) -> Option<PendingClaim> {
+    fn claim(&self, submitted: &str) -> Option<PendingClaim> {
         let submitted = ContinuationDigest::of(submitted);
+        let now = (self.elapsed)();
         let mut pending = self.pending.lock().ok()?;
-        pending.retain(|entry| entry.expires_at > now);
+        pending.retain(|entry| entry.expires_after > now);
         let found = pending
             .iter()
             .position(|entry| entry.digest.matches(&submitted))?;
@@ -1506,7 +1550,7 @@ pub(crate) mod tests {
         os::unix::fs::PermissionsExt,
         sync::{
             Condvar, Mutex,
-            atomic::{AtomicI64, AtomicUsize, Ordering},
+            atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
         },
         time::Duration,
     };
@@ -1878,6 +1922,9 @@ pub(crate) mod tests {
         runtime: Arc<AuthenticationRuntime<CountingEngine>>,
         engine: Arc<EngineState>,
         clock: Arc<AtomicI64>,
+        /// The monotonic time a continuation's own lifetime is measured
+        /// against, in milliseconds since this surface was built.
+        elapsed: Arc<AtomicU64>,
         /// The username the sealed active account answers to.
         username: String,
     }
@@ -1922,6 +1969,8 @@ pub(crate) mod tests {
             let engine = EngineState::new(open_engine);
             let clock = Arc::new(AtomicI64::new(ISSUED_AT));
             let reading = Arc::clone(&clock);
+            let elapsed = Arc::new(AtomicU64::new(0));
+            let elapsing = Arc::clone(&elapsed);
             let runtime = AuthenticationRuntime::with_engine(
                 CountingEngine {
                     state: Arc::clone(&engine),
@@ -1934,7 +1983,12 @@ pub(crate) mod tests {
                     .initialized_state()
                     .expect("a sealed startup hands over its loaded state"),
                 client_modules(),
-                Arc::new(move || Some(reading.load(Ordering::SeqCst))),
+                AuthenticationClocks {
+                    wall: Arc::new(move || Some(reading.load(Ordering::SeqCst))),
+                    elapsed: Arc::new(move || {
+                        Duration::from_millis(elapsing.load(Ordering::SeqCst))
+                    }),
+                },
                 system_log,
                 startup.protection(),
             )
@@ -1946,6 +2000,7 @@ pub(crate) mod tests {
                 runtime,
                 engine,
                 clock,
+                elapsed,
                 username,
             }
         }
@@ -1961,6 +2016,14 @@ pub(crate) mod tests {
 
         fn set_clock(&self, milliseconds: i64) {
             self.clock.store(milliseconds, Ordering::SeqCst);
+        }
+
+        /// Moves the monotonic clock a continuation's lifetime is measured
+        /// against to `elapsed` since this surface was built.
+        fn set_elapsed(&self, elapsed: Duration) {
+            let milliseconds =
+                u64::try_from(elapsed.as_millis()).expect("the test elapsed time fits a counter");
+            self.elapsed.store(milliseconds, Ordering::SeqCst);
         }
 
         /// Returns the instant the injected clock currently reports.
@@ -3801,6 +3864,75 @@ pub(crate) mod tests {
 
         let fresh = stopped_login(&surface, MFA_REQUIRED_CODE).await;
         let accepted = verify_code(&surface, &fresh, ENROLLED_VECTOR_CODE).await;
+        assert_eq!(accepted.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+    }
+
+    /// A continuation is claimable for its own lifetime and no longer.
+    ///
+    /// The monotonic clock the lifetime is measured against is injected, so
+    /// both instants are chosen rather than waited for. The expired attempt
+    /// runs first and is refused before any code is examined, so the accepted
+    /// attempt that follows proves the refusal was the elapsed lifetime rather
+    /// than the code or the factor.
+    #[tokio::test]
+    async fn a_continuation_is_claimable_for_its_lifetime_and_refused_at_it() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, true, true));
+        surface.set_clock(vector_milliseconds(0));
+
+        let expiring = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        surface.set_elapsed(CONTINUATION_LIFETIME);
+        let refused = verify_code(&surface, &expiring, ENROLLED_VECTOR_CODE).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        assert!(refused.cookies.is_none());
+        assert!(!rendered(&refused).await.contains("Set-Cookie"));
+
+        // Issued at the instant above, so one millisecond short of its own
+        // lifetime later it is still claimable.
+        let live = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        surface.set_elapsed(CONTINUATION_LIFETIME * 2 - Duration::from_millis(1));
+        let accepted = verify_code(&surface, &live, ENROLLED_VECTOR_CODE).await;
+        assert_eq!(accepted.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+    }
+
+    /// A system clock moved backwards does not extend a continuation.
+    ///
+    /// The wall clock a session's durable deadlines are written in moves an
+    /// hour backwards while the continuation's own five-minute lifetime
+    /// elapses. Measured against the wall clock the ticket would look freshly
+    /// issued and stay claimable for over an hour; measured against monotonic
+    /// time it expires exactly when it always would have. The refusal is the
+    /// one every other refused continuation receives, so nothing reports that
+    /// the clock rather than the deadline is what refused it.
+    #[tokio::test]
+    async fn a_clock_rollback_does_not_extend_a_continuations_claimable_window() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, true, true));
+        surface.set_clock(vector_milliseconds(0));
+        let continuation = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+
+        let rolled_back = vector_milliseconds(0) - 60 * 60 * 1000;
+        surface.set_clock(rolled_back);
+        surface.set_elapsed(CONTINUATION_LIFETIME);
+
+        let code = current_code(&TotpSecret::from_bytes(ENROLLED_SECRET), rolled_back);
+        let refused = verify_code(&surface, &continuation, &code).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body_text(&refused),
+            format!(
+                "{{\"error\":\"authentication_failed\",\"correlation_id\":\"{}\"}}",
+                correlation_of(&refused)
+            )
+        );
+        assert!(refused.cookies.is_none());
+        assert!(!rendered(&refused).await.contains("Set-Cookie"));
+
+        // The rolled-back clock and the code itself refuse nothing: a
+        // continuation issued after the rollback completes the same login with
+        // that same code.
+        let fresh = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let accepted = verify_code(&surface, &fresh, &code).await;
         assert_eq!(accepted.status, StatusCode::OK);
         assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
     }

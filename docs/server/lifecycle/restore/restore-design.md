@@ -271,6 +271,16 @@ A failure at any step releases transient resources without continuing to a
 later step, leaves the selected database without application state, and
 returns only a stable, redacted error.
 
+The total request deadline is checked once more after step 9 and before
+validation reports success. Steps 6 through 9 are the request's own expensive
+work, and they run inside a blocking chain no caller timeout can cancel, so a
+validated backup handed back after the deadline passed would be committed at
+step 11 even though the request had already been answered as timed out. The
+recheck makes an overrun fail the validation instead, so a Restore that
+reported a timeout replaced no state. The overrun answers the same stable
+failure wherever it is discovered, so the step the deadline passed at is not
+reported.
+
 Step 9's recipient binding is what makes the retained recovery public key
 trustworthy. The backup declares that key in its authenticated plaintext, so a
 backup encrypted to one recovery key could otherwise declare an unrelated one,

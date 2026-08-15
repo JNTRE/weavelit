@@ -67,6 +67,15 @@ pub const fn check_total_elapsed(elapsed: Duration) -> Result<(), RestoreError> 
     Ok(())
 }
 
+/// The total-deadline check one Restore request is bounded by.
+///
+/// Validation observes its budget only through this, so a test decides the
+/// step an overrun is discovered at instead of waiting for real time to pass.
+pub trait RequestDeadline: Send + Sync {
+    /// Rejects the request once the approved total deadline has passed.
+    fn check(&self) -> Result<(), RestoreError>;
+}
+
 /// Monotonic budget for one Restore request's total execution time.
 #[derive(Clone, Copy, Debug)]
 pub struct RequestBudget {
@@ -97,6 +106,12 @@ impl RequestBudget {
 
     /// Rejects the request once the approved total deadline has passed.
     pub fn check(&self) -> Result<(), RestoreError> {
+        check_total_elapsed(self.elapsed())
+    }
+}
+
+impl RequestDeadline for RequestBudget {
+    fn check(&self) -> Result<(), RestoreError> {
         check_total_elapsed(self.elapsed())
     }
 }

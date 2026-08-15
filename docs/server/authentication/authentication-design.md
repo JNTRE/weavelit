@@ -352,6 +352,18 @@ fresh attempt, rather than being allowed unlimited retries against one verified
 password. A continuation also expires five minutes after it is issued, so a
 verified password that is never followed up cannot be resumed indefinitely.
 
+That five-minute lifetime is measured against a monotonic clock rather than
+against the wall clock. Continuations are held only in the Server's memory and
+are never persisted, so their deadlines need no durable representation, unlike
+a session's, which is written in Unix milliseconds. Measuring them in wall-clock
+time would let a system clock moved backwards extend a claimable continuation by
+the rollback interval, keeping a password-verified or enrollment-confirming
+bearer usable well past its documented window. A continuation therefore expires
+after five minutes of elapsed time whatever the system clock does, and a
+continuation refused because it has expired receives the single refusal every
+other refused continuation receives, so no caller learns why its continuation
+was refused.
+
 ### Enrollment
 
 Enrollment is opened one of two ways, and each proves current possession of the

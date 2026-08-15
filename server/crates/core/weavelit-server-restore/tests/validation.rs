@@ -2,9 +2,12 @@
 
 mod support;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use support::{committed, committed_text, components, validate};
 use weavelit_server_restore::{
-    LogType, RequestBudget, RestoreError, RestoreRequest, RestoreValidator, TransferBounds,
+    LogType, RequestBudget, RequestDeadline, RestoreError, RestoreRequest, RestoreValidator,
+    TransferBounds,
 };
 
 fn identity() -> String {
@@ -282,4 +285,125 @@ fn no_diagnostic_rendering_discloses_key_or_backup_material() {
 
     let rendered = format!("{:?}", validated.backup().mfa_factors());
     assert!(!rendered.contains("totp-seed"), "{rendered}");
+}
+
+// ---------------------------------------------------------------------------
+// The total request deadline
+// ---------------------------------------------------------------------------
+
+/// A deadline that overruns after a chosen number of observations.
+///
+/// Validation reads its budget only through [`RequestDeadline`], so counting
+/// observations places the overrun at an exact validation step without waiting
+/// for real time to pass or making the work itself slow.
+struct ScriptedDeadline {
+    observed: AtomicUsize,
+    live: usize,
+}
+
+impl ScriptedDeadline {
+    /// Reports the request as live for `live` observations and overrun after.
+    const fn live_for(live: usize) -> Self {
+        Self {
+            observed: AtomicUsize::new(0),
+            live,
+        }
+    }
+
+    /// Returns how many times validation observed the deadline.
+    fn observed(&self) -> usize {
+        self.observed.load(Ordering::SeqCst)
+    }
+}
+
+impl RequestDeadline for ScriptedDeadline {
+    fn check(&self) -> Result<(), RestoreError> {
+        if self.observed.fetch_add(1, Ordering::SeqCst) < self.live {
+            return Ok(());
+        }
+        Err(RestoreError::RestoreFailed)
+    }
+}
+
+/// The three observations validation makes before normalization has run.
+const OBSERVATIONS_BEFORE_NORMALIZATION: usize = 3;
+
+/// A deadline crossed during normalization reports no validated backup.
+///
+/// Normalizing a large authenticated plaintext is the last expensive work a
+/// Restore performs, and its caller commits whatever validation returns from a
+/// chain no caller timeout can cancel. A budget that is live at every earlier
+/// step and overrun by the time normalization finishes must therefore fail the
+/// validation rather than hand back a result the deployment is replaced from
+/// after the request was already answered as timed out.
+#[test]
+fn a_deadline_crossed_during_normalization_fails_the_validation() {
+    let validator = RestoreValidator::new(components());
+    let artifact = committed("valid.wlitbackup");
+    let deadline = ScriptedDeadline::live_for(OBSERVATIONS_BEFORE_NORMALIZATION);
+
+    let error = validator
+        .validate(
+            &support::TestAuthority::eligible("sqlite"),
+            &deadline,
+            RestoreRequest {
+                artifact: &artifact,
+                recovery_key: &identity(),
+            },
+        )
+        .expect_err("a validation that overran its deadline must return no backup");
+
+    assert_eq!(
+        deadline.observed(),
+        OBSERVATIONS_BEFORE_NORMALIZATION + 1,
+        "the deadline must be observed once more after normalization"
+    );
+    assert_eq!(error, RestoreError::RestoreFailed);
+    assert_eq!(
+        support::category(error),
+        ("restore_failed", "restore_failed")
+    );
+}
+
+/// Where the deadline was crossed is not reported to the caller.
+///
+/// Every overrun answers the single rejection an expired budget already
+/// answered before this crate rechecked one after normalization, so the step
+/// the deadline passed at discloses nothing. A deadline that never overruns
+/// still validates, which is what makes each refusal above the deadline rather
+/// than the recheck itself.
+#[test]
+fn an_overrun_reports_the_same_rejection_wherever_it_is_discovered() {
+    let validator = RestoreValidator::new(components());
+    let artifact = committed("valid.wlitbackup");
+
+    for live in 0..=OBSERVATIONS_BEFORE_NORMALIZATION {
+        let error = validator
+            .validate(
+                &support::TestAuthority::eligible("sqlite"),
+                &ScriptedDeadline::live_for(live),
+                RestoreRequest {
+                    artifact: &artifact,
+                    recovery_key: &identity(),
+                },
+            )
+            .expect_err("an overrun request must be rejected");
+
+        assert_eq!(
+            support::category(error),
+            ("restore_failed", "restore_failed"),
+            "{live}"
+        );
+    }
+
+    validator
+        .validate(
+            &support::TestAuthority::eligible("sqlite"),
+            &ScriptedDeadline::live_for(usize::MAX),
+            RestoreRequest {
+                artifact: &artifact,
+                recovery_key: &identity(),
+            },
+        )
+        .expect("a request inside its deadline still validates");
 }

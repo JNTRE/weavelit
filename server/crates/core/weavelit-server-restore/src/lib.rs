@@ -21,7 +21,7 @@ mod vectors;
 
 pub use bounds::{
     MAX_AUTHENTICATED_PLAINTEXT_BYTES, MAX_CONCURRENT_RESTORE_OPERATIONS,
-    MAX_ENCRYPTED_ARTIFACT_BYTES, RequestBudget, RestoreConcurrency, RestoreSlot,
+    MAX_ENCRYPTED_ARTIFACT_BYTES, RequestBudget, RequestDeadline, RestoreConcurrency, RestoreSlot,
     TOTAL_REQUEST_DEADLINE, TransferBounds, UPLOAD_DEADLINE, check_total_elapsed,
     check_upload_elapsed,
 };
@@ -164,10 +164,14 @@ impl RestoreValidator {
     /// plaintext, retaining only the recovery public key inside the returned
     /// normalized backup. Checkpoint creation and atomic replacement are not
     /// part of this boundary.
+    ///
+    /// The budget is rechecked once more before success is reported, so work
+    /// that crossed the total deadline is answered as a failure rather than
+    /// returned as a result the caller would then commit.
     pub fn validate(
         &self,
         authority: &dyn RestoreAuthority,
-        budget: &RequestBudget,
+        budget: &dyn RequestDeadline,
         request: RestoreRequest<'_>,
     ) -> Result<ValidatedBackup, RestoreError> {
         // 1. Exclusive Restore permit, then lifecycle eligibility.
@@ -210,6 +214,13 @@ impl RestoreValidator {
         // 10. Clear the private recovery key, unwrapped data key, and plaintext.
         drop(identity);
         drop(plaintext);
+
+        // Normalization and the recipient binding are the last work the budget
+        // guards, and nothing above rechecks it once they have run. The caller
+        // commits whatever this returns from an uncancellable chain, so a
+        // result handed back after the deadline passed would let the deployment
+        // be replaced after the request was already answered as timed out.
+        budget.check()?;
 
         Ok(ValidatedBackup {
             deployment_identifier: target.deployment_identifier(),

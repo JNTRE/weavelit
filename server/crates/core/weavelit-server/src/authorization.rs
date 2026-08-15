@@ -490,7 +490,10 @@ mod tests {
                     .initialized_state()
                     .expect("a sealed startup hands over its loaded state"),
                 BTreeSet::from([name(CLIENT_MODULE)]),
-                Arc::clone(&clock),
+                crate::authentication::AuthenticationClocks {
+                    wall: Arc::clone(&clock),
+                    elapsed: crate::authentication::monotonic_clock(),
+                },
                 None,
                 startup.protection(),
             )
