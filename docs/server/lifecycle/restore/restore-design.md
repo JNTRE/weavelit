@@ -450,8 +450,8 @@ step that can fail without leaving retained state runs before the checkpoint.
    abandoned without mutating the deployment.
 8. Enter the lifecycle transition gate. A shutdown signalled before this point
    closes the gate, and the Restore is refused here instead of beginning a
-   transition the process will not survive. The gate is held until step 13
-   commits the sealed record.
+   transition the process will not survive. The gate is held until step 14
+   publishes the operational serving mode.
 9. Publish the fail-closed serving mode. Every connection accepted from this
    point forward serves no functional route.
 10. Create the Restore checkpoint. This is the point of no return.
@@ -463,13 +463,16 @@ step that can fail without leaving retained state runs before the checkpoint.
 13. Acknowledge completion, then seal the deployment record `Initialized`.
     Sealing hands back the loaded state and the database the workflow held open,
     which the runtime retains as the operational deployment's one database
-    handle rather than reopening the target it just replaced. The lifecycle
-    transition gate is released here, because an interruption from this point on
-    can no longer strand durable state.
+    handle rather than reopening the target it just replaced.
 14. Compose the operational serving mode through the same operational composer a
     sealed startup uses, then publish it. Only a connection accepted after this
     point serves normal operation, so an in-flight fail-closed connection is
-    never upgraded mid-request.
+    never upgraded mid-request. The lifecycle transition gate is released here
+    rather than at the seal, because the handed-back handle is registered as
+    part of this step and closing an unregistered database is a silent success:
+    a shutdown that quiesced at the seal could close nothing and still let this
+    step activate the handle afterward, leaving write-ahead state a restart
+    reads as requiring redeployment.
 
 A failure before step 10 leaves the Server exactly as it was: the serving mode
 is never changed, the anchor set is unmodified, and the deployment remains

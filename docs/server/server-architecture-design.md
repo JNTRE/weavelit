@@ -465,16 +465,26 @@ database close behind it.
 #### The Lifecycle Transition Gate
 
 An Init and a Restore each contain one region that must not be interrupted:
-from the moment the fail-closed surface is published to the moment the
-deployment record has been advanced or sealed. That region runs as blocking work
-that no connection owns and that nothing may abort, so draining cannot see it
-and terminating a connection cannot end it. A process that exits inside that
-region leaves durable state a restart can only report as requiring redeployment.
+from the moment the fail-closed surface is published to the moment the workflow
+has both advanced or sealed the deployment record and registered the database it
+committed through. Registration is inside the region because closing an
+unregistered database is a silent success: a shutdown that ended the region at
+the seal could close nothing and still let the workflow activate its handle
+afterward, leaving write-ahead state a restart reads as requiring redeployment.
+A Restore replacing state and an Init finalization therefore hold the region
+until the operational surface is published. An Init preparation closes its
+database rather than activating one, so its region ends at the checkpoint.
+
+That region runs as blocking work that no connection owns and that nothing may
+abort, so draining cannot see it and terminating a connection cannot end it. A
+process that exits inside that region leaves durable state a restart can only
+report as requiring redeployment.
 
 The gate is a runtime-owned value the listener, Init, and Restore all share. It
 holds a single permit and a stop flag. A workflow enters it immediately before
-its point of no return and holds it until the record is committed; it never
-waits for the permit, because the mutation lane already admits one workflow at a
+its point of no return and holds it until the record is committed and its
+database is registered; it never waits for the permit, because the mutation lane
+already admits one workflow at a
 time. A shutdown sets the flag synchronously on the signal and then waits, inside
 the transition budget, to acquire and retain the same permit.
 

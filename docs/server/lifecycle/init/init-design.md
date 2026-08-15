@@ -245,11 +245,15 @@ Finalization carries no liveness lease, because its response carries no
 irreplaceable secret, success publishes normal operation from inside the same
 chain, and an actionable failure restores the delivery for a retry. It enters
 the lifecycle transition gate after its last preflight and before it publishes
-the fail-closed surface, and releases it once the deployment record is sealed,
-so the same stop that refuses a preparation refuses a finalization that has not
-yet committed and waits for one that has. A finalization refused at a closed
-gate answers the same closed `initialization_failed` outcome, leaves the pending
-checkpoint and its anchors untouched, and writes no System Log record.
+the fail-closed surface, and releases it once the deployment record is sealed
+and the database it committed through has been registered and normal operation
+published, so the same stop that refuses a preparation refuses a finalization
+that has not yet committed and waits for one that has. Releasing at the seal
+would not be enough, because closing an unregistered database is a silent
+success and the activation could then outlive the process. A finalization
+refused at a closed gate answers the same closed `initialization_failed`
+outcome, leaves the pending checkpoint and its anchors untouched, and writes no
+System Log record.
 
 The delivered key remains a canonical age key, unchanged; only the proof
 mechanism above is Init-specific, and it does not alter Restore's accepted key
