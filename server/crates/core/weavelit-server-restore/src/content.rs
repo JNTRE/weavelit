@@ -1,10 +1,12 @@
 use std::{collections::BTreeSet, fmt, marker::PhantomData};
 
+use argon2::password_hash::PasswordHash;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
     Deserialize, Deserializer,
     de::{Error as DeserializeError, IgnoredAny, SeqAccess, Visitor},
 };
+use weavelit_server_authentication::PasswordPolicy;
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
     Account, AccountPasswordVerifier, ConfigurationEntry, ConfigurationKey, Group, GroupGrant,
@@ -683,6 +685,7 @@ pub fn normalize(
     reject_invalid_assignments(&backup)?;
     reject_unavailable_components(&backup, components)?;
     reject_unreadable_module_data(&backup, components)?;
+    reject_unusable_password_verifiers(&backup)?;
 
     Ok(backup)
 }
@@ -865,6 +868,39 @@ fn reject_unreadable_module_data(
             });
         if !servable {
             return Err(ContentError::SettingUnsupported);
+        }
+    }
+
+    Ok(())
+}
+
+/// Rejects a password verifier the Server would never attempt.
+///
+/// A stored verifier's encoded shape is not enough. The Application Database
+/// contract accepts any bounded ASCII PHC-shaped string, but the password
+/// decision attempts a stored verifier only when its algorithm, version, cost
+/// parameters, salt length, and output length match the closed allowlist the
+/// authentication crate owns; a verifier outside that allowlist is verified
+/// against a decoy and always denied. A backup can carry whatever parameters
+/// its author chose, so without this check a backup whose only active
+/// Administrator carries an off-profile verifier would restore, seal, and then
+/// deny every password, leaving a deployment no one can sign in to and a
+/// Restore that cannot be retried.
+///
+/// Every off-profile verifier is refused, not only the last Administrator's, so
+/// the check needs no reasoning about account topology and stays a field
+/// rejection like its neighbours.
+///
+/// The allowlist is resolved through [`PasswordPolicy::approved`] against the
+/// same PHC reader the authentication decision parses with, so a backup is
+/// accepted here exactly when the Server would later attempt what it carries.
+fn reject_unusable_password_verifiers(backup: &NormalizedBackup) -> Result<(), ContentError> {
+    let policy = PasswordPolicy::approved();
+    for entry in &backup.password_verifiers {
+        let usable = PasswordHash::new(entry.verifier.as_str())
+            .is_ok_and(|parsed| policy.resolve(&parsed).is_some());
+        if !usable {
+            return Err(ContentError::DomainInvalid);
         }
     }
 

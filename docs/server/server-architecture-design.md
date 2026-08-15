@@ -226,7 +226,11 @@ The Init and Restore crates depend on the lifecycle and Application Database
 contracts and on the shared `weavelit-server-components` and
 `weavelit-server-recovery-key` crates, but do not depend on each other. Neither
 shared crate depends on a workflow crate, so the shared boundary carries no
-workflow behavior. Each mutating workflow entry point
+workflow behavior. `weavelit-server-restore` additionally depends on
+`weavelit-server-authentication` so that backup content validation resolves
+every password verifier a backup carries against the one closed profile
+allowlist that crate owns rather than restating it. The authentication crate
+takes no workspace path dependency, so that edge cannot become a cycle. Each mutating workflow entry point
 calls the lifecycle authority itself before reading secrets or backup content
 or causing side effects; a prior runtime or routing check is not sufficient.
 This dependency direction keeps lifecycle enforcement consistent without

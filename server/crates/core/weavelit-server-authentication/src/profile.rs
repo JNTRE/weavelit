@@ -303,8 +303,12 @@ impl PasswordPolicy {
 
     /// Returns the accepted profile an encoded verifier was produced at.
     ///
-    /// A `None` result means the verifier must not be attempted at all.
-    pub(crate) fn resolve(&self, encoded: &PasswordHash<'_>) -> Option<&'static Argon2Profile> {
+    /// A `None` result means the verifier must not be attempted at all. Restore
+    /// content validation asks the same question of a verifier a backup carries,
+    /// so this is the one authority both the authentication decision and that
+    /// validation resolve a stored verifier against.
+    #[must_use]
+    pub fn resolve(&self, encoded: &PasswordHash<'_>) -> Option<&'static Argon2Profile> {
         self.accepted
             .iter()
             .find(|profile| profile.matches_encoded(encoded))

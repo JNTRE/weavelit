@@ -328,6 +328,21 @@ format its named MFA Module declares is refused there too, because the module
 could never read it back. The private recovery key is never repurposed as an
 at-rest key.
 
+A password verifier the backup carries is checked the same way and for the same
+reason. The Application Database contract accepts any bounded ASCII PHC string,
+but the password decision attempts a stored verifier only when it matches the
+closed profile allowlist defined by the
+[Authentication Design](../../authentication/authentication-design.md#accepted-verifier-profiles);
+a verifier outside that allowlist is silently denied at every sign-in. A backup
+whose only active Administrator carried such a verifier would therefore restore,
+seal, and leave a deployment no one can sign in to and a Restore that cannot be
+retried. Content validation resolves every verifier the backup carries against
+that same allowlist before restored state is constructed and refuses any
+verifier outside it as `backup_invalid`, indistinguishable from every other
+invalid-backup cause. The check covers every verifier rather than only the last
+Administrator's, so it requires no reasoning about account topology, and it
+reuses the allowlist rather than restating it, so the two decisions cannot drift.
+
 ## Checkpoint, Atomic Restore, And Sealing
 
 Every step that can fail without leaving retained state runs before the

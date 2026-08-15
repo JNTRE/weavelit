@@ -25,7 +25,8 @@ state normalization performed before any deployment state is replaced.
 - `AGENTS.md`: Local Restore validation contract and fixture rules.
 - `Cargo.toml`: Package metadata and the approved cryptographic dependencies
   that compose the in-house age v1 X25519 reader, with their excluded feature
-  surface.
+  surface, plus the `weavelit-server-authentication` and `argon2` dependencies
+  content validation resolves password verifiers against.
 - `src/`: Transfer bounds and the Restore permit, outer envelope parsing,
   canonical recovery-key handling, authenticated decryption, backup content
   normalization, redacted errors, and the validation entry point. `src/state.rs`
@@ -104,5 +105,9 @@ state normalization performed before any deployment state is replaced.
   formatting.
 - Reject unknown, duplicate, missing, wrongly typed, non-canonically encoded, or
   oversized fields before constructing restored state.
+- Reject every password verifier the backup carries that falls outside the
+  closed Argon2 profile allowlist `weavelit-server-authentication` owns, before
+  constructing restored state. Resolve it through `PasswordPolicy::approved` and
+  that crate's PHC reader; never restate the allowlist or parse PHC here.
 - Enforce the approved transfer bounds, deadlines, and single-operation permit
   in the crate rather than relying on callers.

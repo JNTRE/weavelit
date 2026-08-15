@@ -323,6 +323,79 @@ fn an_out_of_domain_value_is_rejected() {
     );
 }
 
+/// The encoded verifier the committed fixture carries, at the approved profile.
+///
+/// Each mutation below changes exactly one encoded field of this string, so the
+/// rejection it causes can only come from that field falling outside the closed
+/// allowlist rather than from anything else in the fixture.
+const APPROVED_VERIFIER: &str = "$argon2id$v=19$m=65536,t=3,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ";
+
+/// Encoded verifiers the Server's password decision would never attempt.
+///
+/// Each is a bounded ASCII PHC-shaped string the Application Database contract
+/// accepts on its own, so nothing but the profile allowlist rejects it.
+const OFF_PROFILE_VERIFIERS: [&str; 8] = [
+    // Memory cost above the approved verification ceiling.
+    "$argon2id$v=19$m=1048576,t=3,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ",
+    // Memory cost below the approved profile.
+    "$argon2id$v=19$m=8,t=3,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ",
+    // Iteration count outside the approved profile.
+    "$argon2id$v=19$m=65536,t=1,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ",
+    // Degree of parallelism outside the approved profile.
+    "$argon2id$v=19$m=65536,t=3,p=4$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ",
+    // Another Argon2 variant.
+    "$argon2i$v=19$m=65536,t=3,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ",
+    // An older Argon2 version.
+    "$argon2id$v=16$m=65536,t=3,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ",
+    // No explicit version, which would otherwise default to the library's.
+    "$argon2id$m=65536,t=3,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ",
+    // A salt and an output outside the approved lengths.
+    "$argon2id$v=19$m=65536,t=3,p=1$sbKztLW2t7i5uru8vb6/wKur$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGq",
+];
+
+#[test]
+fn a_password_verifier_at_the_approved_profile_is_accepted() {
+    let backup = normalize(plaintext().as_bytes(), &sqlite(), &components())
+        .expect("the committed plaintext carries an accepted verifier");
+
+    let verifiers = backup.password_verifiers();
+    assert_eq!(verifiers.len(), 1);
+    assert_eq!(verifiers[0].verifier.as_str(), APPROVED_VERIFIER);
+}
+
+#[test]
+fn a_password_verifier_outside_the_approved_profile_is_rejected() {
+    for verifier in OFF_PROFILE_VERIFIERS {
+        let document = replaced(APPROVED_VERIFIER, verifier);
+        assert_eq!(
+            normalize(document.as_bytes(), &sqlite(), &components()).err(),
+            Some(ContentError::DomainInvalid),
+            "{verifier}"
+        );
+    }
+}
+
+#[test]
+fn an_off_profile_password_verifier_is_indistinguishable_from_any_other_invalid_backup() {
+    let other = RestoreError::from(reject(&replaced(
+        "\"username\":\"administrator\"",
+        "\"username\":\"\"",
+    )));
+
+    for verifier in OFF_PROFILE_VERIFIERS {
+        let rejected = RestoreError::from(reject(&replaced(APPROVED_VERIFIER, verifier)));
+
+        assert_eq!(
+            rejected.category_reason(),
+            ("backup_invalid", "backup_invalid"),
+            "{verifier}"
+        );
+        assert_eq!(rejected.category_reason(), other.category_reason());
+        assert_eq!(rejected.to_string(), other.to_string());
+        assert_eq!(format!("{rejected:?}"), format!("{other:?}"), "{verifier}");
+    }
+}
+
 /// Builds one collection body of `count` copies of `entry` plus one surplus
 /// entry that cannot deserialize as the collection's wire type.
 ///

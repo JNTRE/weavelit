@@ -62,6 +62,14 @@ change.
 A verifier outside the allowlist is refused as an authentication failure. It is
 never attempted, so its encoded cost parameters never reach the hashing library.
 
+Because that refusal is silent by design, a **[Restore](../../glossary.md#states-and-requests)**
+that installed an off-allowlist verifier would produce a deployment whose
+accounts can never authenticate. Restore therefore resolves every verifier a
+backup carries against this same allowlist before it constructs restored state,
+as defined by the
+[Server Restore Design](../lifecycle/restore/restore-design.md#backup-validation-and-restored-state).
+The allowlist is the single authority for both decisions; neither restates it.
+
 ### Rehashing On Profile Drift
 
 After a successful verification against an accepted profile that is not the
@@ -537,5 +545,6 @@ route.
 - [Technical Specification](../../spec.md)
 - [Server Architecture Design](../server-architecture-design.md)
 - [Server API Contract](../api/api-contract-design.md)
+- [Server Restore Design](../lifecycle/restore/restore-design.md)
 - [Authentication-Failure System Log Record](../observability/authentication-failure-record-design.md)
 - [Glossary](../../glossary.md)
