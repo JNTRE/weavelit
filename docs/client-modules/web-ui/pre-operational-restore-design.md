@@ -268,6 +268,34 @@ a client that presents one fixed code for it must distinguish it from a
 `restore_failed` the Server actually sent by whether a response carried a code
 at all, never by the code it presents.
 
+An outcome is settled only by evidence, and this surface is not the evidence: a
+sealed deployment stops serving it entirely. The observation that settles such
+a result is the authentication surface owned by the
+[Server Authentication Design](../../server/authentication/authentication-design.md),
+which is what a published normal operation serves in its place. An absent
+authentication surface is not evidence either — a Restore still committing and
+a Restore that never committed present the same absence — so the attempt stays
+unsettled and its recovery key stays with it until something proves what
+happened. A client must not discard a recovery key an unsettled attempt still
+needs, and must not write it anywhere to keep it.
+
+Once an attempt has gone unsettled, two answers stop being determinate for that
+client. `restore_not_allowed`, defined in the table above, is answered whenever
+the deployment record has left `Uninitialized`, which is exactly what a Restore
+that committed leaves behind. The `404 Not Found`, `{"error":"not_found"}`
+answer a Server gives on a route it does not mount is what a published normal
+operation answers here, because it no longer mounts these routes at all.
+Neither proves the unsettled attempt committed, because a lifecycle pending
+some other workflow answers the first and a Server serving nothing at all
+answers the second, so a client must reconcile a retry answered by either
+against the authentication surface rather than believe it. Proof of an
+operational surface settles the attempt as a completed Restore; no such proof
+leaves it unsettled, never failed. This applies only after an attempt has
+reported no outcome: a first submission answered by either code was answered
+about itself, and a client presents it as the rejection this surface defines.
+The Server's responses are unchanged by any of this; the reconciliation is
+entirely a client obligation.
+
 ### Compiled-In Component Refusal
 
 `backup_incompatible` is an operator-visible compatibility guarantee, not an
@@ -360,6 +388,7 @@ binary over its direct-TLS listener. The Server quality gate remains
 - [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
 - [Server Restore Design](../../server/lifecycle/restore/restore-design.md)
 - [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md)
+- [Server Authentication Design](../../server/authentication/authentication-design.md)
 - [Technical Specification](../../spec.md)
 - [Security Model](../../security-model.md)
 - [Testing and Validation Policy](../../testing.md)

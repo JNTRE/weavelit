@@ -1,7 +1,7 @@
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
-    COMPONENT_ENABLED_VALUE, DatabaseError, MfaAcceptance, MfaEnablementOutcome, MfaEnrollment,
-    MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
+    COMPONENT_ENABLED_VALUE, DatabaseError, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome,
+    MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
 };
 
 use crate::SqliteDatabase;
@@ -32,6 +32,10 @@ const INSERT_FACTOR: &str = "INSERT INTO weavelit_mfa_factor \
      ON CONFLICT (account_id, module) DO NOTHING";
 const COUNT_ENROLLED_ACCOUNTS: &str =
     "SELECT COUNT(DISTINCT account_id) FROM weavelit_mfa_factor WHERE module = ?1";
+const SELECT_ACCOUNT_FACTOR: &str = "SELECT EXISTS \
+     (SELECT 1 FROM weavelit_mfa_factor WHERE account_id = ?1 AND module = ?2)";
+const SELECT_ACCOUNT_REQUIREMENT: &str =
+    "SELECT mfa_required FROM weavelit_account WHERE account_id = ?1";
 const SELECT_ENABLEMENT: &str = "SELECT setting_value FROM weavelit_configuration \
      WHERE component = ?1 AND setting_key = ?2";
 const SET_ENABLEMENT: &str = "INSERT INTO weavelit_configuration \
@@ -126,6 +130,49 @@ impl MfaStore for SqliteDatabase {
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
 
         Ok(MfaAcceptance::Accepted)
+    }
+
+    fn issue_direct_session(
+        &mut self,
+        target: &MfaModuleTarget,
+        account: StateIdentifier,
+        session: &NewSession,
+    ) -> Result<MfaDirectSession, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        // The enablement read, the enrollment read, the requirement read, and
+        // the session write share this one transaction. A Module enabled, or a
+        // requirement imposed, while the login was in flight therefore refuses
+        // the session rather than committing one neither change could revoke:
+        // enabling and requiring revoke nothing, and the disablement that does
+        // revoke removes the sessions that exist when it commits.
+        //
+        // An account this transaction no longer finds is admitted to nothing,
+        // for the same reason a required account whose Module is disabled is.
+        let Some(required) = requirement(&transaction, account)? else {
+            return Ok(MfaDirectSession::Denied);
+        };
+        // The caller's own admission table, decided again against the state the
+        // session would be written into. Every row but the last returns without
+        // committing, so it writes nothing.
+        match (
+            enabled(&transaction, target)?,
+            enrolled(&transaction, target, account)?,
+            required,
+        ) {
+            (true, true, _) => return Ok(MfaDirectSession::SecondFactorRequired),
+            (true, false, true) => return Ok(MfaDirectSession::EnrollmentRequired),
+            (false, _, true) => return Ok(MfaDirectSession::Denied),
+            (true | false, _, false) => {}
+        }
+        session::insert(&transaction, session)?;
+        transaction
+            .commit()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+
+        Ok(MfaDirectSession::Issued)
     }
 
     fn enroll(
@@ -251,4 +298,41 @@ fn enabled(transaction: &Transaction<'_>, target: &MfaModuleTarget) -> Result<bo
         .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
 
     Ok(stored.as_deref() == Some(COMPONENT_ENABLED_VALUE))
+}
+
+/// Reports whether one account holds a factor for one MFA Module, inside the
+/// caller's transaction.
+fn enrolled(
+    transaction: &Transaction<'_>,
+    target: &MfaModuleTarget,
+    account: StateIdentifier,
+) -> Result<bool, DatabaseError> {
+    transaction
+        .query_row(
+            SELECT_ACCOUNT_FACTOR,
+            params![account.as_bytes().as_slice(), target.module.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|held| held != 0)
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))
+}
+
+/// Reports whether one account is required to hold a second factor, inside the
+/// caller's transaction.
+///
+/// `None` reports that this transaction holds no such account, which is
+/// distinct from an account that is not required to hold one.
+fn requirement(
+    transaction: &Transaction<'_>,
+    account: StateIdentifier,
+) -> Result<Option<bool>, DatabaseError> {
+    transaction
+        .query_row(
+            SELECT_ACCOUNT_REQUIREMENT,
+            params![account.as_bytes().as_slice()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|required| required.map(|value| value != 0))
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))
 }

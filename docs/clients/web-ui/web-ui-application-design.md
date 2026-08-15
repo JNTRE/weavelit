@@ -165,6 +165,56 @@ database is selected the shell never offers to select again, and an exact replay
 is accepted as a successful no-op; only a differing repeat is refused by the
 Server.
 
+## Settling Pre-Operational Outcomes
+
+The Init workflow and the Restore submission control both drive a request that
+can seal this deployment, and both are served by pre-operational routes a
+sealed deployment withdraws. They therefore share one rule, stated once here
+and applied by each control at its own step boundaries.
+
+An outcome is settled only by evidence. A result that reports nothing — a lost
+connection, an unreadable body, or the listener's timeout — is never presented
+as a failure. It is reconciled against the authentication surface described in
+[Sign-In Control](#sign-in-control) below, which is the one surface a sealed
+deployment still serves. An identity and an unauthenticated challenge both
+prove that normal operation was published, so a result reconciled to either
+settles the attempt as a success. An absent authentication surface is not
+evidence: it is what a workflow still running and a workflow that never
+committed look like alike, so the attempt stays unsettled, with a recheck
+offered, until something proves what happened.
+
+Once an attempt has gone unsettled, a later attempt's rejection is read the
+same way whenever the unsettled original could itself have caused it. A Server
+that has left `Uninitialized` refuses the workflow that would take it there,
+and a Server running normal operation no longer mounts the pre-operational
+route at all; each answer is exactly what the unsettled original committing
+would produce. Neither proves it, because both also have determinate causes, so
+a response that could report the original workflow committed is reconciled
+rather than believed. A probe that proves an operational surface settles the
+attempt as a success; a probe that proves nothing leaves it unsettled rather
+than failed. A rejection answering a first attempt is never read this way,
+because it was answered about that attempt itself.
+
+A rejection the Server did report is determinate and is never reconciled. A
+determinate rejection can carry the same fixed code a transport or read failure
+presents as, so each control distinguishes the two by whether a response
+carried a stable code at all, never by the code that reaches the presentation
+layer. This keeps a determinate failure from being dressed up as an unsettled
+one, and an unsettled attempt from being presented as a failure.
+
+A delivered recovery key is never discarded while an attempt is unsettled. It
+is dropped only on an outcome that is actually known: a completion, because the
+key has done its work, or a determinate permanent failure, because no attempt
+against this Server can ever use it again. While an attempt is unsettled the
+key stays in the same transient component memory that held it before, and is
+never written to a URL, a cookie, `localStorage`, or `sessionStorage` to
+survive there.
+
+Neither control re-requests the pre-operational status projection or the
+Application Database selection to settle anything. Both are withdrawn once the
+deployment is sealed, so both would report the same absence for a sealed
+deployment and for a Server that never finished.
+
 ## Restore Submission Control
 
 The shell offers the Restore control exactly when the status projection reports
@@ -181,13 +231,14 @@ The control is presented in a titled region carrying a `data-restore-state`
 attribute for testability, containing a heading, a short description, a file
 input for the encrypted backup, a masked recovery-key input, and an action
 button whose accessible name is fixed so it does not change between states. It
-renders exactly four states:
+renders exactly five states:
 
 | State | Condition | Presentation |
 | --- | --- | --- |
 | Idle | No submission is in flight and none has failed since the last attempt. | Both inputs are enabled, and the action is enabled once a file is chosen and a key is entered. |
 | Submitting | A Restore submission is in flight. | Both inputs and the action are disabled, so a repeated activation cannot issue a second Restore. |
-| Failed | Either request of the submission was rejected, or a submission that reported no outcome was found not to have committed. | The inputs are enabled again and the Server's stable error code is presented in an assertive live region. |
+| Indeterminate | A submission reported no outcome, or a retry was answered by a code the unsettled attempt could itself have caused, and no probe has settled it. | A fixed message stating that no outcome was reported and that the submitted key is still this backup's key, the reported code, and either a checking notice or a recheck control. |
+| Failed | Either request of the submission was rejected determinately. | The inputs are enabled again and the Server's stable error code is presented in an assertive live region. |
 | Completed | The Restore completed and the deployment now runs in normal operation. | The inputs and the action are replaced by a fixed completion message in a polite live region. |
 
 The completed state is terminal and momentary: the shell adopts the same
@@ -199,16 +250,30 @@ A submission that reports no outcome is not presented as a failure. The
 listener's `gateway_timeout`, a transport failure after the artifact upload was
 accepted, and a completion body that never arrives intact all leave whether the
 Restore committed unknown, and the commit chain any of them abandons is not
-cancelled by them. The control settles such a result exactly as the Init
-workflow settles one, against the authentication surface described in
-[Sign-In Control](#sign-in-control): an identity or an unauthenticated
-challenge proves normal operation was published, so the control reports
-completion and the shell withdraws the whole setup surface; an absent surface
-proves nothing, so the failure presentation and its retry remain exactly as
-they are. The submitting state is held across that check, so no retry is
-offered against routes a committed Restore no longer serves. No delivered key
-is at stake here, because the person supplied the key; what is at stake is a
-stale pre-operational page and retries that could never succeed.
+cancelled by them. The control settles such a result under
+[Settling Pre-Operational Outcomes](#settling-pre-operational-outcomes) above:
+an identity or an unauthenticated challenge proves normal operation was
+published, so the control reports completion and the shell withdraws the whole
+setup surface; an absent surface proves nothing, so the control holds the
+indeterminate state, which names the reported code, states that whether the
+backup was restored is not yet known, and tells the person to keep the
+submitted key because it is still the key this backup is encrypted with. It
+offers a recheck control and leaves the retry available with that key. The
+controls are held disabled while a probe is in flight, so no retry is issued
+against routes a committed Restore no longer serves.
+
+Once a submission has gone unsettled, a retry answered `restore_not_allowed` or
+`not_found` is reconciled the same way rather than believed. A Restore that
+committed is exactly what leaves this deployment past `Uninitialized` and stops
+it mounting the Restore routes, but a lifecycle pending some other workflow and
+a Server serving nothing at all answer identically, so neither response settles
+anything by itself. A probe that finds an operational surface settles the
+attempt as a completed Restore; a probe that finds nothing returns the control
+to the indeterminate state, still holding the submitted key. A first submission
+answered by either code was answered about itself and fails determinately as
+the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md#rejections)
+defines. A determinate rejection after an unsettled attempt still fails
+determinately and still drops the key.
 
 A rejection the Server itself reported is never settled that way. Its
 `restore_failed` code is also the code a transport or read failure presents as,
@@ -228,11 +293,13 @@ person can act on, such as an invalid recovery key or an incompatible backup.
 The recovery key is held in component state alone and the backup is held only as
 the browser-provided `File` handle. Neither is written to a URL, a cookie, or
 any browser storage, and the key is cleared as soon as the attempt it drove
-settles, whether that attempt succeeded or failed. The selected file's bytes are
-never read into a string, an `ArrayBuffer`, or an array; the handle is passed to
-`fetch` as the request body, so the approved 256 MiB artifact bound streams from
-the browser's file-backed storage instead of being copied through the JavaScript
-heap.
+settles, whether that attempt succeeded or failed. An attempt that has not
+settled keeps its key, because that key is still the one this backup is
+encrypted with and this page holds no other copy of it. The selected file's
+bytes are never read into a string, an `ArrayBuffer`, or an array; the handle is
+passed to `fetch` as the request body, so the approved 256 MiB artifact bound
+streams from the browser's file-backed storage instead of being copied through
+the JavaScript heap.
 
 The application performs no client-side validation of the artifact or the key
 beyond requiring that both are present. It does not parse, preview, or inspect
@@ -315,15 +382,16 @@ code a transport or read failure presents as, so the workflow distinguishes
 them by whether an answer was ever read from the route, never by the presented
 code.
 
-This follows from one rule the workflow applies without exception: a delivered
-key is discarded only on an outcome that is actually known. Completion drops
-it because it has done its work, and a permanent failure drops it because no
-attempt against this Server can ever use it again. An outcome that reported
-nothing establishes neither, so the key is retained in the same transient
-component memory that held it before, and is never written to a URL, a cookie,
-`localStorage`, or `sessionStorage` to survive there. The password is dropped
-in every case, including this one, because it is re-enterable and the key is
-not.
+This follows from one rule the workflow applies without exception, stated in
+full in [Settling Pre-Operational Outcomes](#settling-pre-operational-outcomes)
+above: a delivered key is discarded only on an outcome that is actually known.
+Completion drops it because it has done its work, and a permanent failure drops
+it because no attempt against this Server can ever use it again. An outcome
+that reported nothing establishes neither, so the key is retained in the same
+transient component memory that held it before, and is never written to a URL,
+a cookie, `localStorage`, or `sessionStorage` to survive there. The password is
+dropped in every case, including this one, because it is re-enterable and the
+key is not.
 
 The workflow settles an indeterminate outcome by asking the shared session
 route described in [Sign-In Control](#sign-in-control) below whether an
@@ -337,6 +405,17 @@ releases the key and reports completion exactly as a confirmed finalization
 does. An absent authentication surface proves nothing — finalization may still
 be running, or may never have committed — so the key is kept and the person
 decides whether to recheck or retry.
+
+Once the workflow has gone unsettled, a retried finalization answered
+`already_initialized` or `not_found` is reconciled through that same route
+rather than believed. A finalization that committed is exactly what leaves this
+deployment initialized and withdraws the pre-operational routes, but a
+lifecycle pending some other workflow and a Server serving nothing at all
+answer identically. A probe that finds an operational surface settles the
+attempt as a completed Init; a probe that finds nothing returns the workflow to
+the indeterminate state, still holding the delivered key. A first finalization
+answered by either code was answered about itself and is presented as the
+rejection it is.
 
 Once finalization is confirmed, the shell adopts that confirmation directly
 rather than issuing a further status request, because the pre-operational

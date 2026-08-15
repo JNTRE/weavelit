@@ -16,6 +16,13 @@ const RESTORE_ACTION_LABEL = "Restore backup";
 const RESTORE_COMPLETED_MESSAGE =
   "The backup was restored and this deployment now runs in normal operation.";
 
+const INDETERMINATE_HEADING = "The Restore did not report an outcome";
+const INDETERMINATE_MESSAGE =
+  "This attempt reported no outcome, so whether this backup was restored is not yet known. Keep the recovery key you submitted: it is still the key this backup is encrypted with. Check again to see whether the Restore completed, or try again with the same key.";
+const INDETERMINATE_CHECKING_MESSAGE = "Checking whether the Restore completed.";
+const RECHECK_ACTION_LABEL = "Check again";
+const FAILURE_CODE_LABEL = "Reported code";
+
 const ARTIFACT_INPUT_ID = "weavelit-restore-artifact";
 const RECOVERY_KEY_INPUT_ID = "weavelit-restore-recovery-key";
 
@@ -29,10 +36,28 @@ const RECOVERY_KEY_INPUT_ID = "weavelit-restore-recovery-key";
  */
 const INDETERMINATE_RESTORE_CODES = ["gateway_timeout"];
 
+/**
+ * Codes a retry reports that an unsettled original attempt could itself cause.
+ *
+ * `restore_not_allowed` is answered whenever the deployment record has left
+ * `Uninitialized`, which is exactly what an original Restore that committed
+ * leaves behind. `not_found` is answered by every route of a published normal
+ * operation, which no longer mounts Restore at all.
+ *
+ * Neither proves the original committed, because both also have determinate
+ * causes: a lifecycle that is pending some other workflow answers the first,
+ * and a Server serving nothing at all answers the second. They are therefore
+ * reconciled through the authentication surface rather than believed, and they
+ * are only read this way once an attempt has already reported no outcome. A
+ * first attempt answered by either of them was answered about itself.
+ */
+const RECONCILED_RETRY_CODES = ["restore_not_allowed", "not_found"];
+
 /** Presentation state of a Restore submission. */
 type RestoreViewState =
   | { readonly kind: "idle" }
   | { readonly kind: "submitting" }
+  | { readonly kind: "indeterminate"; readonly code: string; readonly checking: boolean }
   | { readonly kind: "failed"; readonly code: string }
   | { readonly kind: "completed" };
 
@@ -74,18 +99,32 @@ export interface RestoreSubmissionFormProps {
  * storage, and the key is cleared as soon as the attempt it drove settles,
  * whether that attempt succeeded or failed.
  *
- * A completed Restore is reported to the shell from the completion response
- * this component already holds, so the surface it belongs to is withdrawn
- * without a reload or a status request the sealed deployment no longer serves.
- * An attempt that reported no outcome is settled the same way the Init workflow
- * settles one, against the Server's own authentication surface, because a
- * Restore that sealed this deployment while its answer was lost would otherwise
- * leave this page offering retries against routes that no longer exist.
+ * An outcome is settled only by evidence. A completed Restore is reported to
+ * the shell from the completion response this component already holds, so the
+ * surface it belongs to is withdrawn without a reload or a status request the
+ * sealed deployment no longer serves. An attempt that reported no outcome is
+ * settled the same way the Init workflow settles one, against the Server's own
+ * authentication surface, because a Restore that sealed this deployment while
+ * its answer was lost would otherwise leave this page offering retries against
+ * routes that no longer exist.
+ *
+ * An absent authentication surface is not that evidence: it is what a Restore
+ * still running and a Restore that never committed both look like. Such an
+ * attempt stays unsettled, and its key stays with it, until something proves
+ * what happened.
  */
 export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProps): JSX.Element {
   const [artifact, setArtifact] = useState<File | null>(null);
   const [recoveryKey, setRecoveryKey] = useState("");
   const [state, setState] = useState<RestoreViewState>({ kind: "idle" });
+  /**
+   * Whether some attempt has already reported no outcome.
+   *
+   * Once one has, this page can never again read {@link RECONCILED_RETRY_CODES}
+   * as a determinate answer, so this is never cleared: only completion, or
+   * loading the page again, ends it.
+   */
+  const [unsettled, setUnsettled] = useState(false);
 
   const chooseArtifact = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     // Retained as a handle; the file's bytes are never read here.
@@ -98,18 +137,20 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
 
   const reconcile = useCallback(
     (code: string) => {
-      // The submitting state is held across the probe, so no retry is offered
-      // against a deployment that may already have stopped serving this route.
+      setUnsettled(true);
+      setState({ kind: "indeterminate", code, checking: true });
       void probeSession().then((probe) => {
         if (probe.kind === "absent") {
           // No authentication surface is served, which distinguishes nothing:
           // the Restore may still be running, or may never have committed. The
-          // failure is presented as before and the retry stays available.
-          setState({ kind: "failed", code });
+          // attempt stays unsettled, the key is kept, and the operator decides
+          // when to look again.
+          setState({ kind: "indeterminate", code, checking: false });
           return;
         }
         // An identity or an unauthenticated challenge both prove the same
         // thing: normal operation was published, so this Restore committed.
+        setRecoveryKey("");
         setState({ kind: "completed" });
         onCompleted();
       });
@@ -129,18 +170,36 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
         onCompleted();
       },
       (reason: unknown) => {
-        setRecoveryKey("");
         const code = failureCode(reason);
-        if (indeterminateRestore(reason, code)) {
+        // An attempt that reported nothing, and a retry answered by a code an
+        // already unsettled original could itself have caused, are both taken
+        // to the authentication surface rather than presented. Neither has
+        // settled, so neither releases the key.
+        if (
+          indeterminateRestore(reason, code) ||
+          (unsettled && RECONCILED_RETRY_CODES.includes(code))
+        ) {
+          // Deliberately keeps the recovery key: this attempt, or the
+          // unsettled one it retried, may already have restored and sealed
+          // this deployment with it.
           reconcile(code);
           return;
         }
+        setRecoveryKey("");
         setState({ kind: "failed", code });
       },
     );
-  }, [artifact, onCompleted, reconcile, recoveryKey]);
+  }, [artifact, onCompleted, reconcile, recoveryKey, unsettled]);
 
-  const submitting = state.kind === "submitting";
+  const recheck = useCallback(() => {
+    if (state.kind === "indeterminate") {
+      reconcile(state.code);
+    }
+  }, [reconcile, state]);
+
+  // A probe in flight holds the controls too, so no retry is submitted against
+  // a deployment that may already have stopped serving this route.
+  const busy = state.kind === "submitting" || (state.kind === "indeterminate" && state.checking);
 
   return (
     <section className="shell__restore" data-restore-state={state.kind}>
@@ -160,7 +219,7 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
             className="shell__restore-artifact"
             type="file"
             onChange={chooseArtifact}
-            disabled={submitting}
+            disabled={busy}
           />
           <label className="shell__restore-label" htmlFor={RECOVERY_KEY_INPUT_ID}>
             {RECOVERY_KEY_LABEL}
@@ -173,18 +232,36 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
             spellCheck={false}
             value={recoveryKey}
             onChange={changeRecoveryKey}
-            disabled={submitting}
+            disabled={busy}
           />
           <button
             type="button"
             className="shell__restore-action"
             onClick={submit}
-            disabled={submitting || artifact === null || recoveryKey === ""}
+            disabled={busy || artifact === null || recoveryKey === ""}
           >
             {RESTORE_ACTION_LABEL}
           </button>
         </>
       )}
+      {state.kind === "indeterminate" ? (
+        <div className="shell__restore-indeterminate" role="alert" data-restore-error={state.code}>
+          <h3 className="shell__restore-failure-title">{INDETERMINATE_HEADING}</h3>
+          <p className="shell__restore-failure-message">{INDETERMINATE_MESSAGE}</p>
+          <p className="shell__restore-failure-code">
+            {FAILURE_CODE_LABEL}: {state.code}
+          </p>
+          {state.checking ? (
+            <p className="shell__restore-progress" role="status">
+              {INDETERMINATE_CHECKING_MESSAGE}
+            </p>
+          ) : (
+            <button type="button" className="shell__restore-recheck" onClick={recheck}>
+              {RECHECK_ACTION_LABEL}
+            </button>
+          )}
+        </div>
+      ) : null}
       {state.kind === "failed" ? (
         <p className="shell__restore-failure" role="alert" data-restore-error={state.code}>
           {state.code}

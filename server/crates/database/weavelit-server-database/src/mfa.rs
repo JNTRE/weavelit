@@ -57,6 +57,33 @@ pub enum MfaAcceptance {
     ModuleDisabled,
 }
 
+/// The result of issuing a session no second factor was found to gate.
+///
+/// Every variant other than [`Self::Issued`] is one row of the admission truth
+/// table the caller already decides, re-decided against the state the session
+/// would have been written into. Nothing new is reported: a caller answers each
+/// of them exactly as it answers that row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MfaDirectSession {
+    /// The account is not required to hold a factor and no enabled Module holds
+    /// one for it, so the session was written.
+    Issued,
+    /// The Module was enabled and the account holds a factor for it, so the
+    /// login must present that factor. Nothing was written.
+    SecondFactorRequired,
+    /// The Module was enabled and the account is required to hold a factor it
+    /// does not hold, so the login must enroll one. Nothing was written.
+    EnrollmentRequired,
+    /// The account is required to present a second factor the deployment cannot
+    /// currently verify, so the login is admitted to nothing. Nothing was
+    /// written.
+    ///
+    /// An account that has ceased to exist is reported the same way, because a
+    /// login can be admitted to nothing on behalf of an account this store no
+    /// longer holds either.
+    Denied,
+}
+
 /// The result of persisting one newly confirmed enrollment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MfaEnrollment {
@@ -139,6 +166,26 @@ pub trait MfaStore {
         step: MfaTimeStep,
         session: &NewSession,
     ) -> Result<MfaAcceptance, DatabaseError>;
+
+    /// Writes one session for a login no second factor was found to gate.
+    ///
+    /// The enabled-state read, the account's enrollment read, the account's
+    /// requirement read, and the session write are one atomic operation, for
+    /// the same reason accepting a step is. A caller that decided those three
+    /// inputs from separately loaded state would write a session behind a
+    /// Module enabled, or a requirement imposed, while the login was in flight,
+    /// and neither change can revoke a session that does not exist yet.
+    ///
+    /// The three inputs are decided here exactly as the caller's own admission
+    /// table decides them, and every row that is not the issuing one is
+    /// reported rather than written. `target` names the module a factor records
+    /// and the configuration component that owns the enabled setting for it.
+    fn issue_direct_session(
+        &mut self,
+        target: &MfaModuleTarget,
+        account: StateIdentifier,
+        session: &NewSession,
+    ) -> Result<MfaDirectSession, DatabaseError>;
 
     /// Persists one confirmed factor, its opening watermark, and its session.
     ///

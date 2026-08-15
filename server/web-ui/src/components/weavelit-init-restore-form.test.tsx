@@ -85,6 +85,11 @@ function actionButton(): HTMLButtonElement {
   return screen.getByRole("button", { name: "Restore backup" });
 }
 
+/** The recheck control an unsettled attempt offers, if one is presented. */
+function recheckButton(): HTMLButtonElement | null {
+  return screen.queryByRole("button", { name: "Check again" });
+}
+
 function chooseArtifact(): File {
   const file = new File([new Uint8Array([0x57, 0x4c, 0x42, 0x4b])], "backup.wlitbackup");
   fireEvent.change(artifactInput(), { target: { files: [file] } });
@@ -274,7 +279,8 @@ describe("RestoreSubmissionForm", () => {
     fireEvent.click(actionButton());
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("restore_failed");
+    expect(alert.dataset.restoreError).toBe("restore_failed");
+    expect(alert.textContent).toContain("Reported code: restore_failed");
     expect(document.body.textContent).not.toContain("ECONNREFUSED");
   });
 
@@ -302,7 +308,7 @@ describe("RestoreSubmissionForm", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("leaves the failure and the retry when nothing can settle a Restore that reported nothing", async () => {
+  it("keeps an unsettled Restore unsettled, with its key, when nothing can settle it", async () => {
     const fetchMock = mockRoutedFetch({
       key: () => Promise.resolve(ticketResponse()),
       upload: () => Promise.reject(new Error("ECONNRESET")),
@@ -316,14 +322,150 @@ describe("RestoreSubmissionForm", () => {
     fireEvent.click(actionButton());
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("restore_failed");
-    expect(section().dataset.restoreState).toBe("failed");
+    // An absent surface proves nothing, so this is never presented as the
+    // determinate failure it is not.
+    expect(alert.textContent).toContain("The Restore did not report an outcome");
+    expect(section().dataset.restoreState).toBe("indeterminate");
     expect(completed).not.toHaveBeenCalled();
     expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
-    // The retry stays available, and only the re-entered key enables it.
-    expect(recoveryKeyInput().value).toBe("");
-    enterRecoveryKey();
+    // The key stays with the attempt it drove, because that attempt has not
+    // settled and this is the only copy of it.
+    expect(recoveryKeyInput().value).toBe(RECOVERY_KEY);
     expect(actionButton().disabled).toBe(false);
+    expect(recheckButton()).not.toBeNull();
+  });
+
+  it("completes an unsettled Restore when a recheck finds an operational surface", async () => {
+    const probe = vi
+      .fn<() => Promise<Response>>()
+      .mockImplementationOnce(absentProbe)
+      .mockImplementationOnce(challengedProbe);
+    const fetchMock = mockRoutedFetch({
+      key: () => Promise.resolve(ticketResponse()),
+      upload: () => Promise.reject(new Error("ECONNRESET")),
+      probe,
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    await screen.findByRole("alert");
+    fireEvent.click(recheckButton()!);
+
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
+    });
+    expect(section().dataset.restoreState).toBe("completed");
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(2);
+    expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
+  });
+
+  it.each([
+    [409, "restore_not_allowed"],
+    [404, "not_found"],
+  ])(
+    "completes when a retry is answered %i by the Restore its unsettled attempt committed",
+    async (status, code) => {
+      const probe = vi
+        .fn<() => Promise<Response>>()
+        .mockImplementationOnce(absentProbe)
+        .mockImplementationOnce(challengedProbe);
+      const fetchMock = mockRoutedFetch({
+        key: vi
+          .fn<() => Promise<Response>>()
+          .mockImplementationOnce(() => Promise.resolve(ticketResponse()))
+          .mockImplementationOnce(() => Promise.resolve(jsonResponse({ error: code }, status))),
+        upload: () => Promise.reject(new Error("ECONNRESET")),
+        probe,
+      });
+      const completed = vi.fn();
+
+      renderForm(completed);
+      chooseArtifact();
+      enterRecoveryKey();
+      fireEvent.click(actionButton());
+
+      await screen.findByRole("alert");
+      // The same key drives the retry, because the attempt it belongs to never
+      // settled.
+      fireEvent.click(actionButton());
+
+      await waitFor(() => {
+        expect(completed).toHaveBeenCalledTimes(1);
+      });
+      expect(section().dataset.restoreState).toBe("completed");
+      expect(callsTo(fetchMock, SESSION_PATH)).toBe(2);
+      expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
+    },
+  );
+
+  it("keeps a retry answered restore_not_allowed unsettled when nothing proves it", async () => {
+    mockRoutedFetch({
+      key: vi
+        .fn<() => Promise<Response>>()
+        .mockImplementationOnce(() => Promise.resolve(ticketResponse()))
+        .mockImplementationOnce(() =>
+          Promise.resolve(jsonResponse({ error: "restore_not_allowed" }, 409)),
+        ),
+      upload: () => Promise.reject(new Error("ECONNRESET")),
+      probe: absentProbe,
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    await screen.findByRole("alert");
+    fireEvent.click(actionButton());
+
+    await waitFor(() => {
+      expect(recheckButton()).not.toBeNull();
+    });
+    // The code is reconciled, never believed: with no evidence the attempt is
+    // still unsettled and is neither completed nor failed.
+    expect(section().dataset.restoreState).toBe("indeterminate");
+    expect(completed).not.toHaveBeenCalled();
+    expect(recoveryKeyInput().value).toBe(RECOVERY_KEY);
+  });
+
+  it("still fails determinately, and drops the key, after an unsettled attempt", async () => {
+    const fetchMock = mockRoutedFetch({
+      key: vi
+        .fn<() => Promise<Response>>()
+        .mockImplementationOnce(() => Promise.resolve(ticketResponse()))
+        .mockImplementationOnce(() => Promise.resolve(ticketResponse())),
+      upload: vi
+        .fn<() => Promise<Response>>()
+        .mockImplementationOnce(() => Promise.reject(new Error("ECONNRESET")))
+        .mockImplementationOnce(() =>
+          Promise.resolve(jsonResponse({ error: "recovery_key_invalid" }, 400)),
+        ),
+      probe: absentProbe,
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    await screen.findByRole("alert");
+    fireEvent.click(actionButton());
+
+    await waitFor(() => {
+      expect(section().dataset.restoreState).toBe("failed");
+    });
+    // A rejection the Restore route reported about this very attempt is
+    // evidence, so it settles and the key it used is released.
+    expect(completed).not.toHaveBeenCalled();
+    expect(recoveryKeyInput().value).toBe("");
+    expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
   });
 
   it("presents a Server-reported internal failure without reconciling it", async () => {

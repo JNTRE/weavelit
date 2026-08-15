@@ -135,6 +135,26 @@ const CORRECTABLE_FINALIZATION_CODES = [
  */
 const INDETERMINATE_FINALIZATION_CODES = ["gateway_timeout"];
 
+/**
+ * Codes a retried attempt reports that an unsettled original could itself cause.
+ *
+ * `already_initialized` is answered whenever the lifecycle authority this route
+ * was mounted with reports an initialized deployment, which is exactly what an
+ * original finalization that committed leaves behind. `not_found` is answered
+ * by every route of a published normal operation, which no longer mounts Init
+ * at all.
+ *
+ * Neither proves the original committed, because both also have determinate
+ * causes. `already_initialized` is also reported when no pending attempt is
+ * held any more, which is what a finalization that failed this Server closed
+ * leaves behind, and `not_found` is what a Server serving nothing at all
+ * answers on every route. They are therefore reconciled through the
+ * authentication surface rather than believed, and they are only read this way
+ * once an attempt has already reported no outcome. A first attempt answered by
+ * either of them was answered about itself.
+ */
+const RECONCILED_RETRY_CODES = ["already_initialized", "not_found"];
+
 /** Presentation state of the Init workflow. */
 type InitViewState =
   | { readonly kind: "details"; readonly code: string | null }
@@ -198,6 +218,14 @@ export interface InitWorkflowProps {
  * route alone, so this component never reloads, re-requests status, or fetches
  * any further asset across that boundary. The already-loaded page is the only
  * thing that can complete the workflow.
+ *
+ * An outcome is settled only by evidence. An absent authentication surface is
+ * not evidence, because a finalization still running and a finalization that
+ * never committed look identical from here, so such an attempt stays
+ * indeterminate however many times it is rechecked. A response that proves the
+ * original workflow committed settles it as success instead, and the only
+ * responses admitted as that proof are the ones the authentication surface
+ * itself gives.
  */
 export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
   const [systemLogModule, setSystemLogModule] = useState("");
@@ -209,6 +237,14 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
   const [acknowledged, setAcknowledged] = useState(false);
   const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
   const [state, setState] = useState<InitViewState>({ kind: "details", code: null });
+  /**
+   * Whether some attempt has already reported no outcome.
+   *
+   * Once one has, this page can never again read {@link RECONCILED_RETRY_CODES}
+   * as a determinate answer, so this is never cleared: only completion, or
+   * loading the page again, ends it.
+   */
+  const [unsettled, setUnsettled] = useState(false);
 
   const changeSystemLog = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     setSystemLogModule(event.target.value);
@@ -264,6 +300,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
 
   const reconcile = useCallback(
     (code: string) => {
+      setUnsettled(true);
       setState({ kind: "indeterminate", code, checking: true });
       void probeSession().then((probe) => {
         if (probe.kind === "absent") {
@@ -308,9 +345,13 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
           // that attempt settled.
           setPassword("");
           const code = failureCode(reason);
-          if (indeterminateFinalization(reason, code)) {
-            // Deliberately keeps the delivered key: this attempt may already
-            // have initialized and sealed this deployment with it.
+          if (
+            indeterminateFinalization(reason, code) ||
+            (unsettled && RECONCILED_RETRY_CODES.includes(code))
+          ) {
+            // Deliberately keeps the delivered key: this attempt, or the
+            // unsettled one it retried, may already have initialized and
+            // sealed this deployment with it.
             reconcile(code);
             return;
           }
@@ -329,6 +370,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
     delivered,
     onCompleted,
     reconcile,
+    unsettled,
     username,
     displayName,
     password,

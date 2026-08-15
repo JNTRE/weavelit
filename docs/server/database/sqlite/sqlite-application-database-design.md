@@ -229,6 +229,12 @@ or rewinds an accepted step, so a spent code cannot be made usable again by
 writing to the table. Enrolling a factor spans the same three tables in one
 transaction for the same reason.
 
+Issuing the session a login receives when no second factor gates it uses one
+`BEGIN IMMEDIATE` transaction in the same way: it reads the Module's enabled
+setting, tests whether the account holds a factor for that Module, and inserts
+the session, returning without writing when both hold. It touches no watermark,
+because no code was presented.
+
 Completing a checkpoint deletes every watermark row inside the same transaction
 that installs the replacement state, alongside the live session rows, so a
 Restore cannot judge a newly presented code against a history belonging to the

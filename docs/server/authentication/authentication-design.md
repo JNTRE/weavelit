@@ -337,6 +337,25 @@ already holds a factor, or when the account is required to hold one; an
 unenrolled, not-required account and an enrolled-but-not-required account whose
 Module is currently disabled both proceed straight to a session.
 
+The two inputs this table reads from live state — whether the Module is enabled
+and whether the account holds a factor for it — come from state loaded before
+the password was verified, so the rows that issue a session directly do not act
+on that reading. The decision and the session's insertion are one atomic step:
+the Application Database contract's MFA store reads both inputs again inside
+the transaction that writes the session, exactly as it does for a completed
+second factor. A Module enabled between the table's reading and that write
+therefore refuses the session instead of committing one, because enabling
+revokes no session and the disablement that does revoke reaches only the
+sessions that exist when it commits.
+
+A login refused there loses no more than the direct session it would have
+received. It is answered with the second-factor continuation the
+enabled-and-enrolled row above already produces, because that is the row the
+deployment is in once the enablement has committed, and the account holds the
+factor that row asks for. No outcome, status, or reason exists for losing that
+race, and nothing was written before the refusal. A factor enrolled in the same
+window is covered by the same re-decision.
+
 ### Password Verification
 
 Every login path costs exactly one password verification: an unknown username,
@@ -543,9 +562,13 @@ TOTP factor, in that same atomic operation, because those sessions were
 established behind a factor this deployment is no longer willing to verify.
 An enrollment already in flight cannot slip a session past that revocation,
 because its confirmation is refused by the enablement condition described in
-[Enrollment](#enrollment). Enabling the Module revokes no session. Disablement
-never removes an account's MFA requirement: a required account that holds no
-verifiable factor is denied under the
+[Enrollment](#enrollment). Enabling the Module revokes no session, and needs
+not: a login already in flight cannot commit a direct session past it, because
+the enabled state and the account's enrollment are decided inside the
+transaction that writes that session, as described in
+[Second-Factor Admission](#second-factor-admission). Disablement never removes
+an account's MFA requirement: a required account that holds no verifiable
+factor is denied under the
 [Second-Factor Admission](#second-factor-admission) table above rather than
 admitted without one.
 

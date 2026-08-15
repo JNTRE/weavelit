@@ -56,9 +56,9 @@ use weavelit_server_authentication::{
 };
 use weavelit_server_database::{
     Account, ApplicationState, DatabaseError, DeploymentIdentifier, InitializedState, LogType,
-    MfaAcceptance, MfaEnablementOutcome, MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore,
-    MfaTimeStep, Name, NewSession, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
-    SessionValidation, StateIdentifier, StoredSession,
+    MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment, MfaFactor,
+    MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession, SessionCsrfHash, SessionInstant,
+    SessionStore, SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
 };
 use weavelit_server_lifecycle::{ProtectedValueAccess, ProtectedValueKind};
 use weavelit_server_log::{
@@ -515,6 +515,11 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     /// stated that the account must present a second factor and it currently
     /// cannot verify one, so admitting the account would silently drop a
     /// requirement rather than enforce it.
+    ///
+    /// The state the three inputs are read from was loaded before the password
+    /// was verified, so the row that issues a session directly does not act on
+    /// that reading. It hands the decision to the transaction that writes the
+    /// session, which decides all three again there.
     fn admit(
         &self,
         state: &ApplicationState,
@@ -531,26 +536,41 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             .is_some_and(|candidate| candidate.mfa_required);
 
         match (enabled, enrolled, required) {
-            (true, true, _) => self
-                .continuation(PendingClaim::SecondFactor {
-                    account,
-                    client_module: client_module.clone(),
-                })
-                .map(|continuation| LoginOutcome::SecondFactorRequired { continuation }),
-            (true, false, true) => self
-                .continuation(PendingClaim::Enrollment {
-                    account,
-                    client_module: client_module.clone(),
-                })
-                .map(|continuation| LoginOutcome::EnrollmentRequired { continuation }),
-            (false, _, true) => {
-                self.record_denial(correlation_id);
-                Err(AuthenticationRejection::AuthenticationFailed)
-            }
-            (true | false, _, false) => self
-                .issue_session(account, client_module)
-                .map(LoginOutcome::SessionEstablished),
+            (true, true, _) => self.second_factor(account, client_module),
+            (true, false, true) => self.enrollment(account, client_module),
+            (false, _, true) => Err(self.deny(correlation_id)),
+            (true | false, _, false) => self.issue_session(account, client_module, correlation_id),
         }
+    }
+
+    /// Answers the row that requires an existing second factor.
+    ///
+    /// Shared by the reading [`Self::admit`] decides against and the
+    /// re-decision the issuing transaction makes, so a login that lost a race
+    /// is answered by exactly the row it is now in.
+    fn second_factor(
+        &self,
+        account: StateIdentifier,
+        client_module: &Name,
+    ) -> Result<LoginOutcome, AuthenticationRejection> {
+        self.continuation(PendingClaim::SecondFactor {
+            account,
+            client_module: client_module.clone(),
+        })
+        .map(|continuation| LoginOutcome::SecondFactorRequired { continuation })
+    }
+
+    /// Answers the row that requires a second factor the account does not hold.
+    fn enrollment(
+        &self,
+        account: StateIdentifier,
+        client_module: &Name,
+    ) -> Result<LoginOutcome, AuthenticationRejection> {
+        self.continuation(PendingClaim::Enrollment {
+            account,
+            client_module: client_module.clone(),
+        })
+        .map(|continuation| LoginOutcome::EnrollmentRequired { continuation })
     }
 
     /// Decides whether the submitted password authenticates an account.
@@ -609,15 +629,35 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     /// Kept separate from password verification so a later elevation factor can
     /// gate this step, and so rotating the cross-site request forgery token on
     /// elevation reuses the same issuance path.
+    ///
+    /// The three live inputs the truth table read — whether the Module is
+    /// enabled, whether this account holds a factor for it, and whether this
+    /// account is required to hold one — are decided again inside the
+    /// transaction that writes the session, exactly as a completed second
+    /// factor decides enablement there. A Module enabled, or a requirement
+    /// imposed, between the table's reading and this write therefore refuses
+    /// the session instead of committing one: enabling and requiring revoke
+    /// nothing, and the disablement that does revoke reaches only the sessions
+    /// that exist when it commits.
+    ///
+    /// A refused issuance is answered by the row the deployment is in once that
+    /// change has committed, through the same code that answers it for the
+    /// table's own reading. Nothing new is reported and nothing was written.
     fn issue_session(
         &self,
         account: StateIdentifier,
         client_module: &Name,
-    ) -> Result<SessionEstablished, AuthenticationRejection> {
+        correlation_id: &str,
+    ) -> Result<LoginOutcome, AuthenticationRejection> {
+        let target = totp_target()?;
         let (session, established) = self.new_session(account, client_module)?;
-        self.with_sessions(|sessions| sessions.create(&session))?;
 
-        Ok(established)
+        match self.with_mfa(|store| store.issue_direct_session(&target, account, &session))? {
+            MfaDirectSession::Issued => Ok(LoginOutcome::SessionEstablished(established)),
+            MfaDirectSession::SecondFactorRequired => self.second_factor(account, client_module),
+            MfaDirectSession::EnrollmentRequired => self.enrollment(account, client_module),
+            MfaDirectSession::Denied => Err(self.deny(correlation_id)),
+        }
     }
 
     /// Draws one session and the bearer values it is presented by.
@@ -1613,6 +1653,10 @@ pub(crate) mod tests {
     /// The identifier of the factor an already-enrolled fixture account holds.
     const ENROLLED_FACTOR_BYTES: [u8; 16] = [0xf1; 16];
 
+    /// The correlation identifier a test that calls a decision directly, rather
+    /// than through the route that generates one, presents.
+    const TEST_CORRELATION: &str = "00000000000000000000000000000000";
+
     /// The shared secret an already-enrolled fixture account holds.
     ///
     /// This is the twenty-byte secret RFC 6238 publishes its vectors against,
@@ -1919,6 +1963,9 @@ pub(crate) mod tests {
         /// state root it lives in.
         _startup: crate::RestrictedStartup,
         _root: tempfile::TempDir,
+        /// The Application Database file this surface serves, so a test can
+        /// apply an administrator's change directly to the live deployment.
+        database: PathBuf,
         runtime: Arc<AuthenticationRuntime<CountingEngine>>,
         engine: Arc<EngineState>,
         clock: Arc<AtomicI64>,
@@ -1997,6 +2044,7 @@ pub(crate) mod tests {
             Self {
                 _startup: startup,
                 _root: root,
+                database: state_root.join(crate::APPLICATION_DATABASE_FILE),
                 runtime,
                 engine,
                 clock,
@@ -3684,6 +3732,210 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// The account every admission test decides for.
+    fn active_account() -> StateIdentifier {
+        StateIdentifier::from_bytes(ACTIVE_ACCOUNT_BYTES)
+            .expect("the active account identifier must be accepted")
+    }
+
+    impl AuthSurface {
+        /// Requires the active account to hold a second factor directly, as an
+        /// administrator's policy change would, without reopening or reloading
+        /// the Application Database.
+        fn require_second_factor(&self) {
+            let changed = rusqlite::Connection::open(&self.database)
+                .expect("the test connection must open")
+                .execute(
+                    "UPDATE weavelit_account SET mfa_required = 1 WHERE account_id = ?1",
+                    rusqlite::params![ACTIVE_ACCOUNT_BYTES.as_slice()],
+                )
+                .expect("the policy change must run");
+
+            assert_eq!(changed, 1, "the sealed active account must have changed");
+        }
+
+        /// Counts the sessions the live Application Database currently holds.
+        fn session_count(&self) -> i64 {
+            rusqlite::Connection::open(&self.database)
+                .expect("the test connection must open")
+                .query_row("SELECT count(*) FROM weavelit_session", [], |row| {
+                    row.get(0)
+                })
+                .expect("the session count must be read")
+        }
+    }
+
+    /// A requirement imposed after the truth table read it issues no session.
+    ///
+    /// The state a login admits against is loaded once, before its password is
+    /// verified, so holding that one snapshot across the policy change orders
+    /// the two exactly as the race does: the table reads an account that is not
+    /// required to hold a second factor, the requirement commits, and only then
+    /// is the session written. No thread races here; the ordering is the
+    /// program's own.
+    ///
+    /// Requiring a factor revokes no session, so a session written after it
+    /// would survive while the deployment believes the account cannot sign in
+    /// without one. The issuing transaction decides the requirement again, so
+    /// each row answers as the table's own reading of it would: a disabled
+    /// Module cannot verify the demanded factor and denies, and an enabled one
+    /// sends the account to enrollment.
+    #[test]
+    fn a_requirement_imposed_before_the_session_is_written_issues_no_direct_session() {
+        for enabled in [false, true] {
+            let surface = AuthSurface::with_mfa(mfa_fixture(enabled, false, false));
+            let admitting = surface
+                .runtime
+                .initialized_state()
+                .expect("the sealed state must load");
+            assert!(
+                !admitting
+                    .state()
+                    .accounts()
+                    .iter()
+                    .any(|account| account.mfa_required),
+                "the admitting reading must hold no requirement: enabled={enabled}"
+            );
+
+            surface.require_second_factor();
+            let admitted = surface.runtime.admit(
+                admitting.state(),
+                active_account(),
+                &name(CLIENT_MODULE),
+                TEST_CORRELATION,
+            );
+
+            if enabled {
+                assert!(
+                    matches!(admitted, Ok(LoginOutcome::EnrollmentRequired { .. })),
+                    "an enabled Module must send the newly required account to \
+                     the enrollment its own table row produces"
+                );
+            } else {
+                assert!(
+                    matches!(admitted, Err(AuthenticationRejection::AuthenticationFailed)),
+                    "a disabled Module cannot verify the demanded factor, so \
+                     the login is denied exactly as its table row denies it"
+                );
+            }
+            assert_eq!(
+                surface.session_count(),
+                0,
+                "a login that lost the race must have written no session: \
+                 enabled={enabled}"
+            );
+        }
+    }
+
+    /// An uncontended not-required login still issues its session directly.
+    ///
+    /// This is the `(disabled, not enrolled, not required)` row of the table,
+    /// taken through the same issuance the race test contends with but with
+    /// nothing changing in between, so re-deciding the requirement inside the
+    /// writing transaction cannot have started refusing the row the table
+    /// issues.
+    #[test]
+    fn an_uncontended_not_required_login_issues_its_session_directly() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(false, false, false));
+        let admitting = surface
+            .runtime
+            .initialized_state()
+            .expect("the sealed state must load");
+
+        let admitted = surface.runtime.admit(
+            admitting.state(),
+            active_account(),
+            &name(CLIENT_MODULE),
+            TEST_CORRELATION,
+        );
+
+        assert!(matches!(admitted, Ok(LoginOutcome::SessionEstablished(_))));
+        assert_eq!(surface.session_count(), 1);
+    }
+
+    /// A Module enabled after the truth table read it issues no direct session.
+    ///
+    /// The state a login admits against is loaded once, before its password is
+    /// verified, so holding that one snapshot across the enablement orders the
+    /// two exactly as the race does: the table reads a disabled Module, the
+    /// enablement commits, and only then is the session written. No thread
+    /// races here; the ordering is the program's own.
+    ///
+    /// Enabling revokes no session, so a session written after it would survive
+    /// while the enabled-and-enrolled row of the table demands a second factor.
+    /// The issuing transaction decides both inputs again, so the login is
+    /// answered with that row's own continuation instead.
+    #[test]
+    fn a_module_enabled_before_the_session_is_written_issues_no_direct_session() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(false, true, false));
+        let admitting = surface
+            .runtime
+            .initialized_state()
+            .expect("the sealed state must load");
+        assert!(!module_enabled(admitting.state()));
+        assert!(enrolled_factor(admitting.state(), active_account()).is_some());
+
+        assert_eq!(
+            surface.runtime.set_module_enabled(true, 1).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 0
+            }
+        );
+        let admitted = surface.runtime.admit(
+            admitting.state(),
+            active_account(),
+            &name(CLIENT_MODULE),
+            TEST_CORRELATION,
+        );
+
+        assert!(
+            matches!(admitted, Ok(LoginOutcome::SecondFactorRequired { .. })),
+            "a login that lost the race must be answered by the second factor \
+             the enabled Module now requires"
+        );
+        // Disabling revokes the live sessions of every enrolled account, so a
+        // zero here is the observable proof that the refusal wrote none.
+        assert_eq!(
+            surface.runtime.set_module_enabled(false, 1).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 0
+            }
+        );
+    }
+
+    /// An uncontended enrolled, not-required login still issues its session.
+    ///
+    /// This is the `(disabled, enrolled, not required)` row of the table, taken
+    /// through the same issuance the race test contends with but with nothing
+    /// changing in between, so deciding the two inputs inside the writing
+    /// transaction cannot have started demanding a second factor where the
+    /// table says none applies.
+    #[test]
+    fn an_uncontended_enrolled_login_issues_its_session_directly() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(false, true, false));
+        let admitting = surface
+            .runtime
+            .initialized_state()
+            .expect("the sealed state must load");
+
+        let admitted = surface.runtime.admit(
+            admitting.state(),
+            active_account(),
+            &name(CLIENT_MODULE),
+            TEST_CORRELATION,
+        );
+
+        assert!(matches!(admitted, Ok(LoginOutcome::SessionEstablished(_))));
+        // The one revoked session is the one just issued, so the session is
+        // live and belongs to the enrolled account.
+        assert_eq!(
+            surface.runtime.set_module_enabled(false, 1).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 1
+            }
+        );
     }
 
     /// Every login path costs exactly one password verification.

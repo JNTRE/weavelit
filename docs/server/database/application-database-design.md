@@ -294,17 +294,28 @@ accepted twice, or in which a Module disabled while the code was in flight could
 still have a session issued behind the disablement's own session revocation.
 Nothing is written when the step is refused for either reason.
 
-The same contract owns enrolling a factor, changing a Module's enabled state,
-and counting enrolled accounts, because each of those is a decision the caller
-must not make from separately loaded state. Enrolling names the Module's
-configuration component and the session to issue as well as the factor: the
-store reads that component's enabled setting, refuses the enrollment when the
-Module is not enabled, and otherwise writes the factor, its confirming
-watermark, and the session, all in one transaction. It reports whether the
-factor was enrolled, was already present, or was refused because the Module was
-disabled. Changing enabled state is atomic with recounting the enrolled accounts
-an Administrator previewed and with revoking the sessions of accounts holding a
-factor.
+The same contract owns issuing the session a login receives when no second
+factor gates it, enrolling a factor, changing a Module's enabled state, and
+counting enrolled accounts, because each of those is a decision the caller must
+not make from separately loaded state.
+
+Issuing that session names the Module's configuration component, the account,
+and the session. The store reads the enabled setting, reads whether the account
+holds a factor for that Module, and writes the session, all in one transaction,
+and writes nothing when the Module is enabled and the account holds a factor.
+A caller that decided both from state it loaded earlier would write a session
+for an enrolled account behind a Module enabled while the login was in flight,
+and no enablement change can revoke it: enabling revokes nothing, and disabling
+reaches only the sessions that already exist.
+
+Enrolling names the Module's configuration component and the session to issue as
+well as the factor: the store reads that component's enabled setting, refuses
+the enrollment when the Module is not enabled, and otherwise writes the factor,
+its confirming watermark, and the session, all in one transaction. It reports
+whether the factor was enrolled, was already present, or was refused because the
+Module was disabled. Changing enabled state is atomic with recounting the
+enrolled accounts an Administrator previewed and with revoking the sessions of
+accounts holding a factor.
 
 A watermark is live operational data in the same sense as a session: it belongs
 to the running deployment rather than to the restorable aggregate. It is not a

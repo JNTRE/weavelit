@@ -597,6 +597,128 @@ describe("InitWorkflow", () => {
     expect(body.recovery_key_proof).toBe(EXPECTED_PROOF);
   });
 
+  it.each([
+    [409, "already_initialized"],
+    [404, "not_found"],
+  ])(
+    "completes when a retry is answered %i by the setup its unsettled attempt committed",
+    async (status, code) => {
+      let finalizations = 0;
+      let probes = 0;
+      const fetchMock = mockRoutedFetch({
+        prepare: () => Promise.resolve(deliveryResponse()),
+        finalize: () => {
+          finalizations += 1;
+          return Promise.resolve(
+            finalizations === 1 ? timeoutResponse() : jsonResponse({ error: code }, status),
+          );
+        },
+        probe: () => {
+          probes += 1;
+          return probes === 1 ? absentProbe() : challengedProbe();
+        },
+      });
+      const completed = vi.fn();
+
+      render(<InitWorkflow onCompleted={completed} />);
+      await reachReviewStep();
+      fireEvent.click(button("Complete setup"));
+
+      await screen.findByText(INDETERMINATE_MESSAGE);
+      fireEvent.click(button("Try setup again"));
+      fireEvent.change(screen.getByLabelText("Password"), { target: { value: PASSWORD } });
+      fireEvent.click(button("Return to review"));
+      fireEvent.click(button("Complete setup"));
+
+      // The retry was answered about the original attempt, not about itself,
+      // and the surface it was reconciled against proves that original
+      // committed. The shell is advanced rather than failed closed.
+      await waitFor(() => {
+        expect(completed).toHaveBeenCalledTimes(1);
+      });
+      expect(section().dataset.initState).not.toBe("closed");
+      expect(callsTo(fetchMock, PREPARE_PATH)).toBe(1);
+      expect(document.body.textContent).not.toContain(RECOVERY_KEY);
+      expect(document.body.textContent).not.toContain(PASSWORD);
+    },
+  );
+
+  it("keeps a retry answered already_initialized unsettled when nothing proves it", async () => {
+    let finalizations = 0;
+    const fetchMock = mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => {
+        finalizations += 1;
+        return Promise.resolve(
+          finalizations === 1
+            ? timeoutResponse()
+            : jsonResponse({ error: "already_initialized" }, 409),
+        );
+      },
+      probe: absentProbe,
+    });
+    const completed = vi.fn();
+
+    render(<InitWorkflow onCompleted={completed} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+
+    await screen.findByText(INDETERMINATE_MESSAGE);
+    fireEvent.click(button("Try setup again"));
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: PASSWORD } });
+    fireEvent.click(button("Return to review"));
+    fireEvent.click(button("Complete setup"));
+
+    await waitFor(() => {
+      expect(document.querySelector("[data-init-error]")?.getAttribute("data-init-error")).toBe(
+        "already_initialized",
+      );
+    });
+    // The code is reconciled, never believed: a Server that failed closed
+    // reports it too, so with no evidence the attempt stays unsettled and the
+    // delivered key stays with it.
+    expect(section().dataset.initState).toBe("indeterminate");
+    expect(completed).not.toHaveBeenCalled();
+    fireEvent.click(button("Try setup again"));
+    expect(button("Return to review")).toBeDefined();
+    expect(callsTo(fetchMock, PREPARE_PATH)).toBe(1);
+  });
+
+  it("still fails closed, and drops the key, on a determinate failure after an unsettled attempt", async () => {
+    let finalizations = 0;
+    const fetchMock = mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => {
+        finalizations += 1;
+        return Promise.resolve(
+          finalizations === 1 ? timeoutResponse() : jsonResponse({ error: "init_refused" }, 409),
+        );
+      },
+      probe: absentProbe,
+    });
+    const completed = vi.fn();
+
+    render(<InitWorkflow onCompleted={completed} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+
+    await screen.findByText(INDETERMINATE_MESSAGE);
+    fireEvent.click(button("Try setup again"));
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: PASSWORD } });
+    fireEvent.click(button("Return to review"));
+    fireEvent.click(button("Complete setup"));
+
+    // A rejection only the finalization route itself can report is evidence
+    // about this attempt, so it settles and the key it held is dropped.
+    await screen.findByText(CLOSED_MESSAGE);
+    expect(section().dataset.initState).toBe("closed");
+    expect(completed).not.toHaveBeenCalled();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(document.body.textContent).not.toContain(RECOVERY_KEY);
+    // Nothing was reconciled: only the first attempt ever reached the surface.
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+  });
+
   it("lets a rejected preparation be corrected and retried", async () => {
     let preparations = 0;
     mockRoutedFetch({

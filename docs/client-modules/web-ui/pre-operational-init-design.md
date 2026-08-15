@@ -313,6 +313,34 @@ no code of its own must therefore distinguish the two by whether a response
 carried a code at all, not by the code it presents, so a determinate rejection
 is never mistaken for an outcome that was never established.
 
+The later observation is not this surface, which a sealed deployment stops
+serving entirely. It is the authentication surface owned by the
+[Server Authentication Design](../../server/authentication/authentication-design.md),
+which a published normal operation serves in its place, and an outcome is
+settled only by what that surface proves. An absent authentication surface
+proves nothing — finalization still running and finalization that never
+committed present the same absence — so the attempt stays unsettled and the
+delivered key stays with it until something proves what happened. A client must
+not discard a delivered key while an attempt is unsettled, and must not write it
+anywhere to keep it.
+
+Once an attempt has gone unsettled, two answers stop being determinate for
+that client. `already_initialized`, defined in the table above, is answered
+whenever the deployment record has left `Uninitialized`, which is exactly what
+a finalization that committed leaves behind, and the `404 Not Found`,
+`{"error":"not_found"}` answer a published normal operation gives on every
+route it does not mount is what a sealed deployment answers here. Neither
+proves the unsettled attempt committed,
+because a lifecycle pending some other workflow answers the first and a Server
+serving nothing at all answers the second, so a client must reconcile a retry
+answered by either against the authentication surface rather than believe it.
+Proof of an operational surface settles the attempt as a completed Init; no
+such proof leaves it unsettled, never failed. This applies only after an
+attempt has reported no outcome: a first submission answered by either code was
+answered about itself and is presented as the rejection it is. The Server's
+responses are unchanged by any of this; the reconciliation is entirely a client
+obligation.
+
 ## Bounds And Exposure
 
 Both routes accept at most 1 KiB of request body and stay within the
@@ -383,6 +411,7 @@ The Server quality gate remains `make -C server check`.
 - [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
 - [Server Init Design](../../server/lifecycle/init/init-design.md)
 - [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md)
+- [Server Authentication Design](../../server/authentication/authentication-design.md)
 - [Technical Specification](../../spec.md)
 - [Security Model](../../security-model.md)
 - [Testing and Validation Policy](../../testing.md)
