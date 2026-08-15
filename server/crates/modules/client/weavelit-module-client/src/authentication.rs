@@ -31,7 +31,7 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 use zeroize::Zeroizing;
 
 use crate::{
-    CSRF_HEADER_NAME, ExpectedOrigin, JSON_MEDIA_TYPE, accepts_json,
+    CSRF_HEADER_NAME, ExpectedOrigin, JSON_MEDIA_TYPE, WipedBody, accepts_json,
     cookie::{CSRF_COOKIE_NAME, CookieEffect, CookieValue, SESSION_COOKIE_NAME},
     has_request_body, json_response_body, single_header,
     typed_json::{
@@ -507,6 +507,16 @@ impl<'de> Deserialize<'de> for LoginBody {
     }
 }
 
+/// Parses the login body out of a buffer that is wiped when dropped.
+///
+/// The login body carries the plaintext password, so it is read through the
+/// shared [`WipedBody`] guard: the buffer is cleared on the parsed path and on
+/// every rejection path alike, because the guard owns it for the whole call.
+fn parse_login_body_wiped<B: AsMut<[u8]>>(buffer: B) -> Result<LoginBody, AuthenticationRejection> {
+    let mut body = WipedBody::new(buffer);
+    parse_login_body(body.bytes())
+}
+
 /// Parses the exact accepted login body.
 ///
 /// An unknown field, duplicate key, missing field, wrongly typed value, array
@@ -541,11 +551,19 @@ async fn login_response(request: Request, capability: Arc<AuthenticationCapabili
     let Ok(body) = to_bytes(body, MAX_LOGIN_BODY_BYTES).await else {
         return AuthenticationRejection::BadRequest.response(&correlation_id);
     };
-    let submitted = match parse_login_body(&body) {
+    // `Bytes` is shared and immutable, so the collected buffer can only be
+    // wiped once this crate holds it uniquely, which is the ordinary outcome
+    // for a collected request body. If a clone is outstanding the fallback
+    // still wipes the copy this crate owns; the shared original is out of
+    // reach and is left to its own owner.
+    let parsed = match body.try_into_mut() {
+        Ok(unique) => parse_login_body_wiped(unique),
+        Err(shared) => parse_login_body_wiped(shared.to_vec()),
+    };
+    let submitted = match parsed {
         Ok(submitted) => submitted,
         Err(rejection) => return rejection.response(&correlation_id),
     };
-    drop(body);
 
     match (capability.login)(LoginSubmission {
         username: submitted.username,
@@ -738,12 +756,13 @@ mod tests {
         AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE, AuthenticationCapability,
         AuthenticationDeclaration, AuthenticationRejection, LoginOutcome, LoginSubmission,
         MAX_LOGIN_BODY_BYTES, SessionEstablished, SessionIdentity, SessionSubmission,
-        parse_login_body,
+        parse_login_body, parse_login_body_wiped,
     };
     use crate::{
         ExpectedOrigin,
         cookie::CookieEffect,
         typed_json::{TypedJsonEnvelope, typed_json_response},
+        wiped_body_support::parse_and_observe,
     };
 
     const LISTENER: &str = "127.0.0.1:8443";
@@ -1156,6 +1175,39 @@ mod tests {
 
         let oversized = vec![b'a'; MAX_LOGIN_BODY_BYTES + 1];
         assert!(parse_login_body(&oversized).is_err());
+    }
+
+    #[test]
+    fn the_login_body_is_cleared_on_the_parsed_and_rejected_paths_alike() {
+        let (parsed, released) = parse_and_observe(
+            "{\"username\":\"admin\",\"password\":\"secret\",\"client_module\":\"web-ui\"}",
+            parse_login_body_wiped,
+        );
+        assert_eq!(
+            parsed.map(|body| body.password.as_str().to_owned()),
+            Ok("secret".to_owned())
+        );
+        assert_eq!(
+            released,
+            vec![0u8; released.len()],
+            "a parsed login body must leave no readable password bytes behind"
+        );
+        assert!(!released.is_empty());
+
+        let (rejected, released) = parse_and_observe(
+            "{\"username\":\"admin\",\"password\":\"secret\",\"client_module\":\"web-ui\"",
+            parse_login_body_wiped,
+        );
+        assert_eq!(
+            rejected.map(|body| body.password.as_str().to_owned()),
+            Err(AuthenticationRejection::BadRequest)
+        );
+        assert_eq!(
+            released,
+            vec![0u8; released.len()],
+            "a rejected login body must leave no readable password bytes behind"
+        );
+        assert!(!released.is_empty());
     }
 
     #[test]

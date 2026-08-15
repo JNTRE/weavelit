@@ -33,7 +33,7 @@ use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, Vis
 use zeroize::Zeroizing;
 
 use crate::{
-    ExpectedOrigin, JSON_MEDIA_TYPE, SelectedBackend, accepts_json, json_response_body,
+    ExpectedOrigin, JSON_MEDIA_TYPE, SelectedBackend, WipedBody, accepts_json, json_response_body,
     single_header,
     typed_json::{
         OpaqueToken, RecoveryKeyLine, ResponseCorrelation, StableCode, TypedJsonEnvelope,
@@ -819,6 +819,20 @@ fn deserialize_setting<'de, D: Deserializer<'de>>(
     deserializer.deserialize_map(BodyVisitor { expecting })
 }
 
+/// Parses one Init body out of a buffer that is wiped when dropped.
+///
+/// An Init body carries the initial credential and recovery-key proof
+/// material, so it is read through the shared [`WipedBody`] guard: the buffer
+/// is cleared on the parsed path and on every rejection path alike, because
+/// the guard owns it for the whole call.
+fn parse_init_body_wiped<B: AsMut<[u8]>>(
+    buffer: B,
+    proof: ProofPolicy,
+) -> Result<InitBody, InitRejection> {
+    let mut body = WipedBody::new(buffer);
+    parse_init_body(body.bytes(), proof)
+}
+
 /// Parses one exact accepted Init body.
 ///
 /// The body bound is checked before parsing, so an oversized body is refused
@@ -849,11 +863,19 @@ async fn init_recovery_key_response(request: Request, capability: Arc<InitCapabi
     let Ok(body) = to_bytes(body, MAX_INIT_BODY_BYTES).await else {
         return InitRejection::BadRequest.response();
     };
-    let parsed = match parse_init_body(&body, ProofPolicy::Forbidden) {
+    // `Bytes` is shared and immutable, so the collected buffer can only be
+    // wiped once this crate holds it uniquely, which is the ordinary outcome
+    // for a collected request body. If a clone is outstanding the fallback
+    // still wipes the copy this crate owns; the shared original is out of
+    // reach and is left to its own owner.
+    let parsed = match body.try_into_mut() {
+        Ok(unique) => parse_init_body_wiped(unique, ProofPolicy::Forbidden),
+        Err(shared) => parse_init_body_wiped(shared.to_vec(), ProofPolicy::Forbidden),
+    };
+    let parsed = match parsed {
         Ok(parsed) => parsed,
         Err(rejection) => return rejection.response(),
     };
-    drop(body);
 
     match (capability.prepare_recovery_key)(InitRecoveryKeySubmission {
         request: parsed.request,
@@ -876,11 +898,16 @@ async fn init_finalize_response(request: Request, capability: Arc<InitCapability
     let Ok(body) = to_bytes(body, MAX_INIT_BODY_BYTES).await else {
         return InitRejection::BadRequest.response();
     };
-    let parsed = match parse_init_body(&body, ProofPolicy::Required) {
+    // The same unique-ownership reasoning as the recovery-key request applies
+    // here: the fallback wipes the copy this crate owns rather than rejecting.
+    let parsed = match body.try_into_mut() {
+        Ok(unique) => parse_init_body_wiped(unique, ProofPolicy::Required),
+        Err(shared) => parse_init_body_wiped(shared.to_vec(), ProofPolicy::Required),
+    };
+    let parsed = match parsed {
         Ok(parsed) => parsed,
         Err(rejection) => return rejection.response(),
     };
-    drop(body);
     let recovery_key_proof = match submitted_recovery_proof(parsed.recovery_key_proof) {
         Ok(proof) => proof,
         Err(rejection) => return rejection.response(),
@@ -962,12 +989,15 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 
     use super::{
-        INIT_ROUTE, InitBodySeed, InitCompleted, InitRecoveryKeyPrepared, InitRejection,
+        INIT_ROUTE, InitBody, InitBodySeed, InitCompleted, InitRecoveryKeyPrepared, InitRejection,
         MAX_INIT_BODY_BYTES, MAX_INIT_LOG_MODULES, ProofPolicy, RECOVERY_PROOF_BASE64_CHARS,
         init_completed_response, init_recovery_key_prepared_response, parse_init_body,
-        submitted_recovery_proof, validate_init_request,
+        parse_init_body_wiped, submitted_recovery_proof, validate_init_request,
     };
-    use crate::{CSRF_HEADER_NAME, ExpectedOrigin, SelectedBackend, typed_json::TypedJsonEnvelope};
+    use crate::{
+        CSRF_HEADER_NAME, ExpectedOrigin, SelectedBackend, typed_json::TypedJsonEnvelope,
+        wiped_body_support::parse_and_observe,
+    };
     use serde::de::DeserializeSeed;
     use zeroize::Zeroizing;
 
@@ -1095,6 +1125,45 @@ mod tests {
         let parsed = parse_init_body(without.as_bytes(), ProofPolicy::Forbidden)
             .expect("an omitted display name must be accepted");
         assert_eq!(parsed.request.administrator.display_name, None);
+    }
+
+    #[test]
+    fn each_init_body_is_cleared_on_the_parsed_and_rejected_paths_alike() {
+        let password = |parsed: InitBody| parsed.request.administrator.password.as_str().to_owned();
+
+        let (parsed, released) = parse_and_observe(&body(None), |buffer| {
+            parse_init_body_wiped(buffer, ProofPolicy::Forbidden)
+        });
+        assert_eq!(parsed.map(password), Ok(PASSWORD.to_owned()));
+        assert_eq!(
+            released,
+            vec![0u8; released.len()],
+            "a parsed recovery-key request must leave no readable credential bytes behind"
+        );
+        assert!(!released.is_empty());
+
+        let (parsed, released) = parse_and_observe(&body(Some(PROOF)), |buffer| {
+            parse_init_body_wiped(buffer, ProofPolicy::Required)
+        });
+        assert_eq!(parsed.map(password), Ok(PASSWORD.to_owned()));
+        assert_eq!(
+            released,
+            vec![0u8; released.len()],
+            "a parsed finalize request must leave no readable credential bytes behind"
+        );
+        assert!(!released.is_empty());
+
+        let malformed = format!("{} trail", body(Some(PROOF)));
+        let (rejected, released) = parse_and_observe(&malformed, |buffer| {
+            parse_init_body_wiped(buffer, ProofPolicy::Required)
+        });
+        assert_eq!(rejected.map(password), Err(InitRejection::BadRequest));
+        assert_eq!(
+            released,
+            vec![0u8; released.len()],
+            "a rejected Init body must leave no readable credential bytes behind"
+        );
+        assert!(!released.is_empty());
     }
 
     #[test]

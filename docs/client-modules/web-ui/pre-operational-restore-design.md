@@ -125,7 +125,10 @@ identity line is decided there.
 
 ### Recovery-Key Body Handling
 
-The recovery-key body is plaintext private-key material, so the collected
+The recovery-key body is plaintext private-key material, so it follows the
+shared secret request-body contract the
+[API Contract Design](../../server/api/api-contract-design.md#secret-request-body-handling)
+defines. The collected
 request buffer is taken into sole ownership before it is read and is cleared
 when that ownership ends. The clear runs on release rather than at one exit
 point, so the accepted path, every rejection path, and any path added later

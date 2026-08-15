@@ -260,6 +260,33 @@ enrollment unopenable. The
 [Server Authentication Design](../authentication/authentication-design.md#provisioning-uri-construction)
 owns how the URI is fitted.
 
+## Secret Request-Body Handling
+
+Some request bodies carry plaintext secret material: the login route's
+`password`, the second-factor routes' one-time `code` and `continuation`
+values, the session-bearing enrollment route's re-verified `password`, both
+Init requests' initial credential and recovery-key proof material, and the
+Restore recovery key. For every one of them the shared
+`weavelit-module-client` crate takes sole ownership of the collected request
+buffer before deserializing it and clears that buffer when its ownership ends.
+
+The clear runs on release rather than at one exit point, so the accepted path,
+every rejection path, and any path added later clear the same buffer. Parsed
+secret values are then held only in clearing wrappers for the rest of the
+request. This changes no bound, no status, no error code, and no rejection
+ordering: an oversized, malformed, or unparseable body is refused exactly as it
+was before.
+
+If sole ownership of the collected buffer cannot be taken, the surface clears
+the copy it does own and leaves the shared original to its owner; that fallback
+is never a rejection. This handling is defense in depth, not a whole-process
+guarantee: the transport layer's own read buffers are outside this Module, so
+what is guaranteed is that this Module retains no uncleared copy, not that no
+copy exists anywhere in the process.
+
+Bodies that carry no plaintext secret are deliberately excluded, including the
+encrypted Restore artifact, which discloses nothing on its own.
+
 ## Pagination
 
 A collection response is cursor-paginated. A request MAY supply `limit` and

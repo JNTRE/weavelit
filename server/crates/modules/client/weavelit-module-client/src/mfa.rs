@@ -31,7 +31,7 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 use zeroize::Zeroizing;
 
 use crate::{
-    CSRF_HEADER_NAME, ExpectedOrigin, JSON_MEDIA_TYPE, accepts_json,
+    CSRF_HEADER_NAME, ExpectedOrigin, JSON_MEDIA_TYPE, WipedBody, accepts_json,
     authentication::{
         AuthenticationRejection, CorrelationSource, SessionEstablished,
         session_established_response, submitted_csrf_token, submitted_session_token,
@@ -430,6 +430,19 @@ impl<'de> Deserialize<'de> for SelfEnrollmentBody {
     }
 }
 
+/// Parses one accepted body out of a buffer that is wiped when dropped.
+///
+/// These bodies carry one-time codes, continuation bearers, and
+/// self-enrollment credential material, so each is read through the shared
+/// [`WipedBody`] guard: the buffer is cleared on the parsed path and on every
+/// rejection path alike, because the guard owns it for the whole call.
+fn parse_body_wiped<T: for<'de> Deserialize<'de>, B: AsMut<[u8]>>(
+    buffer: B,
+) -> Result<T, AuthenticationRejection> {
+    let mut body = WipedBody::new(buffer);
+    parse_body(body.bytes())
+}
+
 /// Parses one accepted body, rejecting anything outside its exact shape.
 fn parse_body<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, AuthenticationRejection> {
     if body.len() > MAX_MFA_BODY_BYTES {
@@ -518,13 +531,19 @@ async fn enrollment_response(request: Request, capability: Arc<MfaCapability>) -
     let Ok(bytes) = to_bytes(body, MAX_MFA_BODY_BYTES).await else {
         return AuthenticationRejection::BadRequest.response(&correlation_id);
     };
-    let submitted = match parse_body::<EnrollmentBody>(&bytes)
-        .and_then(|parsed| submitted_bearer(parsed.continuation))
-    {
+    // `Bytes` is shared and immutable, so the collected buffer can only be
+    // wiped once this crate holds it uniquely, which is the ordinary outcome
+    // for a collected request body. If a clone is outstanding the fallback
+    // still wipes the copy this crate owns; the shared original is out of
+    // reach and is left to its own owner.
+    let parsed = match bytes.try_into_mut() {
+        Ok(unique) => parse_body_wiped::<EnrollmentBody, _>(unique),
+        Err(shared) => parse_body_wiped::<EnrollmentBody, _>(shared.to_vec()),
+    };
+    let submitted = match parsed.and_then(|parsed| submitted_bearer(parsed.continuation)) {
         Ok(submitted) => submitted,
         Err(rejection) => return rejection.response(&correlation_id),
     };
-    drop(bytes);
 
     match (capability.open_enrollment)(MfaEnrollmentSubmission {
         continuation: submitted,
@@ -561,11 +580,16 @@ async fn self_enrollment_response(request: Request, capability: Arc<MfaCapabilit
     let Ok(bytes) = to_bytes(body, MAX_MFA_BODY_BYTES).await else {
         return AuthenticationRejection::BadRequest.response(&correlation_id);
     };
-    let submitted = match parse_body::<SelfEnrollmentBody>(&bytes) {
+    // The same unique-ownership reasoning as the enrollment request applies
+    // here: the fallback wipes the copy this crate owns rather than rejecting.
+    let parsed = match bytes.try_into_mut() {
+        Ok(unique) => parse_body_wiped::<SelfEnrollmentBody, _>(unique),
+        Err(shared) => parse_body_wiped::<SelfEnrollmentBody, _>(shared.to_vec()),
+    };
+    let submitted = match parsed {
         Ok(submitted) => submitted,
         Err(rejection) => return rejection.response(&correlation_id),
     };
-    drop(bytes);
 
     match (capability.open_self_enrollment)(MfaSelfEnrollmentSubmission {
         session_token,
@@ -592,7 +616,12 @@ async fn code_submission(
     let bytes = to_bytes(body, MAX_MFA_BODY_BYTES)
         .await
         .map_err(|_| AuthenticationRejection::BadRequest)?;
-    let parsed = parse_body::<VerifyBody>(&bytes)?;
+    // The same unique-ownership reasoning as the enrollment request applies
+    // here: the fallback wipes the copy this crate owns rather than rejecting.
+    let parsed = match bytes.try_into_mut() {
+        Ok(unique) => parse_body_wiped::<VerifyBody, _>(unique),
+        Err(shared) => parse_body_wiped::<VerifyBody, _>(shared.to_vec()),
+    }?;
 
     Ok(MfaCodeSubmission {
         continuation: submitted_bearer(parsed.continuation)?,
@@ -613,7 +642,12 @@ async fn confirm_submission(
     let bytes = to_bytes(body, MAX_MFA_BODY_BYTES)
         .await
         .map_err(|_| AuthenticationRejection::BadRequest)?;
-    let parsed = parse_body::<ConfirmBody>(&bytes)?;
+    // The same unique-ownership reasoning as the enrollment request applies
+    // here: the fallback wipes the copy this crate owns rather than rejecting.
+    let parsed = match bytes.try_into_mut() {
+        Ok(unique) => parse_body_wiped::<ConfirmBody, _>(unique),
+        Err(shared) => parse_body_wiped::<ConfirmBody, _>(shared.to_vec()),
+    }?;
 
     Ok(MfaCodeSubmission {
         continuation: submitted_bearer(parsed.enrollment)?,
@@ -720,20 +754,23 @@ mod tests {
         response::Response,
         routing::MethodRouter,
     };
+    use serde::de::Deserialize;
     use tower::ServiceExt as _;
     use zeroize::Zeroizing;
 
     use super::{
         AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
-        AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, MFA_ENROLLMENT_REQUIRED_CODE,
-        MFA_REQUIRED_CODE, MfaCapability, MfaDeclaration, MfaEnrollmentOpened,
-        continuation_response,
+        AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, ConfirmBody, EnrollmentBody,
+        MFA_ENROLLMENT_REQUIRED_CODE, MFA_REQUIRED_CODE, MfaCapability, MfaDeclaration,
+        MfaEnrollmentOpened, SelfEnrollmentBody, VerifyBody, continuation_response,
+        parse_body_wiped,
     };
     use crate::{
         ExpectedOrigin,
-        authentication::SessionEstablished,
+        authentication::{AuthenticationRejection, SessionEstablished},
         cookie::CookieEffect,
         typed_json::{ProvisioningUri, TypedJsonEnvelope},
+        wiped_body_support::parse_and_observe,
     };
 
     const LISTENER: &str = "127.0.0.1:8443";
@@ -897,6 +934,44 @@ mod tests {
             let response = answered(submission(route, body)).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{route} {body}");
         }
+    }
+
+    #[test]
+    fn every_second_factor_body_is_cleared_on_the_parsed_and_rejected_paths_alike() {
+        assert_cleared::<VerifyBody>(&format!(
+            "{{\"continuation\":\"{CONTINUATION}\",\"code\":\"287082\"}}"
+        ));
+        assert_cleared::<EnrollmentBody>(&format!("{{\"continuation\":\"{CONTINUATION}\"}}"));
+        assert_cleared::<ConfirmBody>(&format!(
+            "{{\"enrollment\":\"{ENROLLMENT}\",\"code\":\"287082\"}}"
+        ));
+        assert_cleared::<SelfEnrollmentBody>("{\"password\":\"correct horse battery staple\"}");
+    }
+
+    /// Asserts that `body` and a malformed variant of it are both cleared.
+    fn assert_cleared<T: for<'de> Deserialize<'de>>(body: &str) {
+        let (parsed, released) = parse_and_observe(body, parse_body_wiped::<T, _>);
+        assert!(parsed.is_ok(), "the fixture body must parse: {body}");
+        assert_eq!(
+            released,
+            vec![0u8; released.len()],
+            "a parsed body must leave no readable secret bytes behind: {body}"
+        );
+        assert!(!released.is_empty());
+
+        let malformed = format!("{body} trail");
+        let (parsed, released) = parse_and_observe(&malformed, parse_body_wiped::<T, _>);
+        assert_eq!(
+            parsed.err(),
+            Some(AuthenticationRejection::BadRequest),
+            "the malformed body must be refused: {malformed}"
+        );
+        assert_eq!(
+            released,
+            vec![0u8; released.len()],
+            "a rejected body must leave no readable secret bytes behind: {malformed}"
+        );
+        assert!(!released.is_empty());
     }
 
     #[tokio::test]

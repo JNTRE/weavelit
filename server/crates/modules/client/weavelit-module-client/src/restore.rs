@@ -24,10 +24,10 @@ use axum::{
     routing::{MethodRouter, any},
 };
 use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::{
-    ExpectedOrigin, JSON_MEDIA_TYPE, accepts_json, json_response_body, single_header,
+    ExpectedOrigin, JSON_MEDIA_TYPE, WipedBody, accepts_json, json_response_body, single_header,
     typed_json::{
         OpaqueToken, ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
         typed_json_response,
@@ -360,40 +360,12 @@ impl<'de> Deserialize<'de> for RecoveryKeyBody {
     }
 }
 
-/// A request-body buffer this crate owns uniquely and clears when dropped.
-///
-/// The recovery-key body carries the plaintext age private key, so the
-/// collected bytes must not outlive the handler as readable memory. The wipe
-/// runs in `Drop` rather than at one exit point, so every return path —
-/// parsed, rejected, or added later — clears the same buffer.
-///
-/// This is defense in depth, not a whole-process guarantee: the transport
-/// layer's own read buffers are outside this crate's control, so what is
-/// promised here is that this crate retains no unwiped copy.
-struct WipedBody<B: AsMut<[u8]>> {
-    buffer: B,
-}
-
-impl<B: AsMut<[u8]>> WipedBody<B> {
-    fn new(buffer: B) -> Self {
-        Self { buffer }
-    }
-
-    fn bytes(&mut self) -> &[u8] {
-        self.buffer.as_mut()
-    }
-}
-
-impl<B: AsMut<[u8]>> Drop for WipedBody<B> {
-    fn drop(&mut self) {
-        self.buffer.as_mut().zeroize();
-    }
-}
-
 /// Parses the recovery-key body out of a buffer that is wiped when dropped.
 ///
-/// The buffer is cleared on the parsed path and on every rejection path alike,
-/// because the guard owns it for the whole call.
+/// The recovery-key body carries the plaintext age private key, so it is read
+/// through the shared [`WipedBody`] guard: the buffer is cleared on the parsed
+/// path and on every rejection path alike, because the guard owns it for the
+/// whole call.
 fn parse_recovery_key_wiped<B: AsMut<[u8]>>(
     buffer: B,
 ) -> Result<Zeroizing<String>, RestoreRejection> {
@@ -534,8 +506,6 @@ fn typed_field(name: &str, value: TypedValue) -> Option<TypedResult> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use std::sync::Arc;
 
     use axum::{
@@ -550,11 +520,14 @@ mod tests {
     use super::{
         MAX_RESTORE_KEY_BODY_BYTES, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, RestoreCapability,
         RestoreCompleted, RestoreDeclaration, RestoreKeySubmission, RestoreRejection,
-        RestoreTicketIssued, WipedBody, parse_recovery_key, parse_recovery_key_wiped,
+        RestoreTicketIssued, parse_recovery_key, parse_recovery_key_wiped,
         restore_completed_response, restore_ticket_response, submitted_restore_ticket,
         validate_restore_artifact_request, validate_restore_key_request,
     };
-    use crate::{CSRF_HEADER_NAME, ExpectedOrigin, typed_json::TypedJsonEnvelope};
+    use crate::{
+        CSRF_HEADER_NAME, ExpectedOrigin, typed_json::TypedJsonEnvelope,
+        wiped_body_support::parse_and_observe,
+    };
 
     const TICKET: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
     const CORRELATION: &str = "0123456789abcdef0123456789abcdef";
@@ -586,41 +559,10 @@ mod tests {
             .serialize()
     }
 
-    /// A buffer that records its own contents at the moment it is dropped.
-    ///
-    /// [`WipedBody`] clears the buffer in its own `Drop`, which runs before
-    /// this field is dropped, so the recorded contents show whether the wipe
-    /// happened. The observation is made from inside the buffer rather than
-    /// from freed memory, which would be undefined behavior.
-    struct SpyBuffer {
-        bytes: Vec<u8>,
-        observed: Rc<RefCell<Option<Vec<u8>>>>,
-    }
-
-    impl AsMut<[u8]> for SpyBuffer {
-        fn as_mut(&mut self) -> &mut [u8] {
-            &mut self.bytes
-        }
-    }
-
-    impl Drop for SpyBuffer {
-        fn drop(&mut self) {
-            *self.observed.borrow_mut() = Some(self.bytes.clone());
-        }
-    }
-
-    fn parse_and_observe(body: &str) -> (Result<String, RestoreRejection>, Vec<u8>) {
-        let observed = Rc::new(RefCell::new(None));
-        let parsed = parse_recovery_key_wiped(SpyBuffer {
-            bytes: body.as_bytes().to_vec(),
-            observed: Rc::clone(&observed),
-        })
-        .map(|key| key.as_str().to_owned());
-        let released = observed
-            .borrow_mut()
-            .take()
-            .expect("the guard must release the buffer it owned");
-        (parsed, released)
+    /// Parses a recovery-key body through a buffer that observes its own wipe.
+    fn parse_recovery_key_and_observe(body: &str) -> (Result<String, RestoreRejection>, Vec<u8>) {
+        let (parsed, released) = parse_and_observe(body, parse_recovery_key_wiped);
+        (parsed.map(|key| key.as_str().to_owned()), released)
     }
 
     fn key_route_harness(submitted: Arc<std::sync::Mutex<Vec<String>>>) -> Router {
@@ -662,22 +604,9 @@ mod tests {
     }
 
     #[test]
-    fn the_body_guard_clears_the_buffer_it_owns_when_dropped() {
-        let observed = Rc::new(RefCell::new(None));
-        drop(WipedBody::new(SpyBuffer {
-            bytes: b"AGE-SECRET-KEY-1TEST".to_vec(),
-            observed: Rc::clone(&observed),
-        }));
-        assert_eq!(
-            observed.borrow().as_deref(),
-            Some(&[0u8; 20][..]),
-            "the guard must clear the buffer before releasing it"
-        );
-    }
-
-    #[test]
     fn the_recovery_key_body_is_cleared_on_the_parsed_and_rejected_paths_alike() {
-        let (parsed, released) = parse_and_observe("{\"recovery_key\":\"AGE-SECRET-KEY-1TEST\"}");
+        let (parsed, released) =
+            parse_recovery_key_and_observe("{\"recovery_key\":\"AGE-SECRET-KEY-1TEST\"}");
         assert_eq!(parsed, Ok("AGE-SECRET-KEY-1TEST".to_owned()));
         assert_eq!(
             released,
@@ -686,7 +615,8 @@ mod tests {
         );
         assert!(!released.is_empty());
 
-        let (rejected, released) = parse_and_observe("{\"recovery_key\":\"AGE-SECRET-KEY-1TEST\"");
+        let (rejected, released) =
+            parse_recovery_key_and_observe("{\"recovery_key\":\"AGE-SECRET-KEY-1TEST\"");
         assert_eq!(rejected, Err(RestoreRejection::BadRequest));
         assert_eq!(
             released,

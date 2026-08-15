@@ -21,28 +21,30 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and shared Client Module crate-boundary rules.
 - `Cargo.toml`: Compiled-in shared Client Module package manifest.
-- `src/lib.rs`: Canonical route paths, the pre-operational and operational capability declarations and their mounting, pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the shared fixed-profile response helpers, and contract tests.
+- `src/lib.rs`: Canonical route paths, the pre-operational and operational capability declarations and their mounting, pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the shared fixed-profile response helpers, the shared release-time clearing owner every collected secret-bearing request body is parsed through, and contract tests.
 - `src/restore.rs`: The two-step Restore submission contract: both canonical
   route paths, the ticket header, every header precondition, the recovery-key
-  request schema and the release-time clearing of its collected body, the
-  payload-free rejection contract, the two typed success envelopes, and the
+  request schema and the shared release-time clearing of its collected body,
+  the payload-free rejection contract, the two typed success envelopes, and the
   Server-core hooks the declaration is composed over.
 - `src/init.rs`: The two-request Init submission contract: both canonical
   route paths, the bounded request schema, every header precondition, the
-  proof-of-possession shape check, the payload-free rejection contract, the
-  two typed success envelopes, and the Server-core hooks the declaration is
-  composed over. Not yet declared by a per-client crate or mounted by a
-  runtime composition.
+  proof-of-possession shape check, the shared release-time clearing of each
+  collected body, the payload-free rejection contract, the two typed success
+  envelopes, and the Server-core hooks the declaration is composed over. Not
+  yet declared by a per-client crate or mounted by a runtime composition.
 - `src/authentication.rs`: The shared login, session-validation, and logout
-  route contract: the three canonical route paths, the login request schema,
-  every header and cookie precondition, the payload-free rejection contract,
-  and the Server-core hooks the declaration is composed over.
+  route contract: the three canonical route paths, the login request schema and
+  the shared release-time clearing of its collected body, every header and
+  cookie precondition, the payload-free rejection contract, and the Server-core
+  hooks the declaration is composed over.
 - `src/mfa.rs`: The shared second-factor and enrollment route contract: the
   four canonical route paths (code verification, enrollment from a login
   continuation, self-enrollment from a live session, and enrollment
-  confirmation), their request schemas, every header, CSRF, and session
-  precondition, the one-time provisioning disclosure, and the Server-core
-  hooks each declaration is composed over.
+  confirmation), their request schemas and the shared release-time clearing of
+  each collected body, every header, CSRF, and session precondition, the
+  one-time provisioning disclosure, and the Server-core hooks each declaration
+  is composed over.
 - `src/authorization.rs`: The shared operational authorization denial contract:
   the single `AuthorizationRejection` value, the fixed `403` status and
   `authorization_denied` code, and the byte-identical response every denial

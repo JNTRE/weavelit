@@ -29,6 +29,7 @@ use axum::{
 };
 use serde::Deserialize;
 use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
+use zeroize::Zeroize;
 
 pub mod authentication;
 pub mod authorization;
@@ -675,6 +676,87 @@ pub(crate) fn single_header<N: AsHeaderName>(headers: &HeaderMap, name: N) -> Op
 }
 
 // ---------------------------------------------------------------------------
+// Shared request-body clearing
+// ---------------------------------------------------------------------------
+
+/// A collected request body this crate owns uniquely and clears when dropped.
+///
+/// The login, Init, second-factor, and Restore bodies carry plaintext secret
+/// material, so the collected bytes must not outlive their handler as readable
+/// memory. The wipe runs in `Drop` rather than at one exit point, so every
+/// return path — parsed, rejected, or added later — clears the same buffer.
+///
+/// This is defense in depth, not a whole-process guarantee: the transport
+/// layer's own read buffers are outside this crate's control, so what is
+/// promised here is that this crate retains no unwiped copy.
+pub(crate) struct WipedBody<B: AsMut<[u8]>> {
+    buffer: B,
+}
+
+impl<B: AsMut<[u8]>> WipedBody<B> {
+    pub(crate) fn new(buffer: B) -> Self {
+        Self { buffer }
+    }
+
+    pub(crate) fn bytes(&mut self) -> &[u8] {
+        self.buffer.as_mut()
+    }
+}
+
+impl<B: AsMut<[u8]>> Drop for WipedBody<B> {
+    fn drop(&mut self) {
+        self.buffer.as_mut().zeroize();
+    }
+}
+
+/// Shared observation helpers for the release-time body-clearing guard.
+#[cfg(test)]
+pub(crate) mod wiped_body_support {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A buffer that records its own contents at the moment it is dropped.
+    ///
+    /// [`super::WipedBody`] clears the buffer in its own `Drop`, which runs
+    /// before this field is dropped, so the recorded contents show whether the
+    /// wipe happened. The observation is made from inside the buffer rather
+    /// than from freed memory, which would be undefined behavior.
+    pub(crate) struct SpyBuffer {
+        pub(crate) bytes: Vec<u8>,
+        pub(crate) observed: Rc<RefCell<Option<Vec<u8>>>>,
+    }
+
+    impl AsMut<[u8]> for SpyBuffer {
+        fn as_mut(&mut self) -> &mut [u8] {
+            &mut self.bytes
+        }
+    }
+
+    impl Drop for SpyBuffer {
+        fn drop(&mut self) {
+            *self.observed.borrow_mut() = Some(self.bytes.clone());
+        }
+    }
+
+    /// Parses `body` through a spying buffer and returns what it released.
+    pub(crate) fn parse_and_observe<T, E>(
+        body: &str,
+        parse: impl FnOnce(SpyBuffer) -> Result<T, E>,
+    ) -> (Result<T, E>, Vec<u8>) {
+        let observed = Rc::new(RefCell::new(None));
+        let parsed = parse(SpyBuffer {
+            bytes: body.as_bytes().to_vec(),
+            observed: Rc::clone(&observed),
+        });
+        let released = observed
+            .borrow_mut()
+            .take()
+            .expect("the guard must release the buffer it owned");
+        (parsed, released)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared fixed-profile response helpers
 // ---------------------------------------------------------------------------
 
@@ -739,6 +821,28 @@ pub fn json_response_body(status: StatusCode, body: &'static str) -> Response {
         .header(CONTENT_TYPE, "application/json; charset=utf-8")
         .body(Body::from(body))
         .expect("fixed pre-operational responses must be valid")
+}
+
+#[cfg(test)]
+mod wiped_body_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::{WipedBody, wiped_body_support::SpyBuffer};
+
+    #[test]
+    fn the_body_guard_clears_the_buffer_it_owns_when_dropped() {
+        let observed = Rc::new(RefCell::new(None));
+        drop(WipedBody::new(SpyBuffer {
+            bytes: b"AGE-SECRET-KEY-1TEST".to_vec(),
+            observed: Rc::clone(&observed),
+        }));
+        assert_eq!(
+            observed.borrow().as_deref(),
+            Some(&[0u8; 20][..]),
+            "the guard must clear the buffer before releasing it"
+        );
+    }
 }
 
 #[cfg(test)]

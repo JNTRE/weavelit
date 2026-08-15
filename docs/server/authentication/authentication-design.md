@@ -254,7 +254,12 @@ session-validation, and logout route decisions, the single-permit login
 admission lane, and authentication-failure System Log recording are owned by
 the Server executable crate (`weavelit-server`); the shared route contract,
 every header and cookie precondition, and the closed cookie effect are owned by
-the shared Client Module contract crate (`weavelit-module-client`).
+the shared Client Module contract crate (`weavelit-module-client`). That crate
+also clears the collected login and second-factor request buffers when their
+ownership ends, under the shared secret request-body contract the
+[API Contract Design](../api/api-contract-design.md#secret-request-body-handling)
+defines, including its defense-in-depth limit and its non-rejecting fallback
+for a buffer it cannot own solely.
 
 The `argon2` and `subtle` dependency records, and the authentication crate's use
 of the already-approved `sha2`, `base64`, `getrandom`, and `zeroize`

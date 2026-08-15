@@ -241,6 +241,21 @@ The precondition is evaluated before media-type validation and before any body
 handling, so a cross-site request is denied without revealing negotiation or
 schema detail.
 
+## Credential Body Handling
+
+Both Init bodies carry plaintext secret material: the initial administrator
+password, protected Log Module settings, and the recovery-key proof. Both
+therefore follow the shared secret request-body contract defined by the
+[API Contract Design](../../server/api/api-contract-design.md#secret-request-body-handling)
+without variation. The collected request buffer is taken into sole ownership
+before it is read and is cleared when that ownership ends, on the accepted path
+and on every rejection path alike.
+
+That contract's limits apply here unchanged: the clear is defense in depth
+rather than a whole-process guarantee, because the transport layer's own read
+buffers are outside this surface, and a buffer this surface cannot take sole
+ownership of is cleared only in the copy it owns, never rejected.
+
 ## Rejections
 
 Every error response has `Content-Type: application/json; charset=utf-8` and
@@ -304,6 +319,11 @@ duplicate keys, an oversized body, an oversized `log_modules`, `settings`, or
 and CSRF rejection; an absent, empty, and malformed proof of possession; both
 success envelopes; and the absence of any submitted secret or delivered key
 from a rendered rejection, request, or debug form.
+
+Implementation must also prove that each collected Init buffer is cleared when
+its ownership ends, on the accepted path and on a parse rejection alike. The
+proof must observe the buffer while it is still owned; reading released memory
+is not a permitted test.
 
 `weavelit-server`'s composition tests now prove the mounting behavior: that
 the finalization route is reachable only after the recovery-key route has
