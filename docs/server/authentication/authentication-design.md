@@ -378,6 +378,48 @@ replay watermark that already consumed the confirming code are written
 together in one operation, so the enrollment cannot be reopened and confirmed a
 second time and the confirming code cannot be presented again.
 
+### Provisioning URI Construction
+
+The URI's issuer, secret, and profile parameters are exact: the issuer is the
+deployment's fixed provisioning issuer, and the `secret`, `algorithm`,
+`digits`, and `period` parameters carry the enrolled values unchanged. The
+account portion of the URI's label is cosmetic. An authenticator displays it,
+and nothing about verification, enrollment, or the account's canonical username
+depends on it.
+
+The Server therefore fits the account label to the byte bound its response
+envelope enforces on a disclosed URI rather than refusing a name that will not
+fit. A label that already fits is percent-encoded and carried unchanged, so an
+ordinary account name produces exactly the URI it always has. A longer one is
+encoded one Unicode scalar at a time and cut only on a scalar boundary, so the
+result never ends inside a multi-byte character or a partial percent escape,
+and a trailing `~` marks that it was shortened. A colon in an account name is
+shown as an unreserved substitute, because a colon is what separates the issuer
+from the account in the label itself. A name that leaves nothing displayable
+falls back to a short fixed label. Construction therefore succeeds for every
+accepted account name.
+
+This is deliberate. The account-name bound and the URI bound are set
+independently, so an accepted username can be longer than a conforming URI can
+carry. Refusing that enrollment would leave an account that is required to hold
+a second factor permanently unable to sign in, which is a far worse outcome
+than an authenticator showing a shortened display label. No account name
+produces an enrollment-specific refusal or a distinguishing error code.
+
+### Ordering Around The Confirmation Ticket
+
+Opening an enrollment builds the secret and the complete provisioning URI, and
+accepts that URI into the bounded type the response carries, before it issues
+the one-time confirmation ticket. Nothing between issuing that ticket and
+returning the response can refuse.
+
+A caller therefore either receives the whole disclosure — the secret, a
+conforming URI, and a ticket that confirms it — or receives a refusal that
+consumed no claim and can simply open an enrollment again. Issuing the ticket
+first would let any later refusal burn the one-time claim that ticket names,
+which for an account required to use MFA is an unrecoverable lockout rather
+than a retryable failure.
+
 ### Replay Watermark
 
 An acceptance window that spans three time steps would otherwise let a code

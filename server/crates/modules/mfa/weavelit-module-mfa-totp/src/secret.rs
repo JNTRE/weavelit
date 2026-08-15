@@ -52,12 +52,17 @@ impl TotpSecret {
     }
 
     /// Builds the provisioning URI disclosed once at enrollment.
+    ///
+    /// `maximum_bytes` is the caller's own bound on the URI it can disclose.
+    /// The account label is fitted to it, so a caller that passes the bound its
+    /// response profile enforces always receives a URI that profile accepts.
     pub fn provisioning_uri(
         &self,
         issuer: &str,
         account: &str,
+        maximum_bytes: usize,
     ) -> Result<ProvisioningText, ProvisioningError> {
-        provisioning_uri(issuer, account, &self.base32())
+        provisioning_uri(issuer, account, &self.base32(), maximum_bytes)
     }
 
     /// Returns the time step `code` matched at `unix_seconds`, when it matches.
@@ -229,7 +234,7 @@ mod tests {
     #[test]
     fn the_provisioning_uri_carries_the_pinned_secret_encoding() {
         let uri = secret()
-            .provisioning_uri("Weavelit", "ops+admin@example.com")
+            .provisioning_uri("Weavelit", "ops+admin@example.com", 288)
             .unwrap();
 
         assert_eq!(

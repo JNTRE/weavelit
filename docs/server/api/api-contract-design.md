@@ -234,6 +234,32 @@ bounded and fails closed rather than emitting a partial `Set-Cookie` line; see
 the [Server Authentication Design](../authentication/authentication-design.md#cookie-emission)
 for the exact bound.
 
+#### Producer Obligations
+
+Failing closed is the envelope's last defence, not a route's error-handling
+strategy. A route that fails closed after taking an effect the caller cannot
+retry converts a formatting problem into a permanent one, so a producer of a
+bounded result field carries two obligations.
+
+First, a producer fits its value to the bound the envelope enforces instead of
+handing over a value the envelope will reject. Where a field's own input bound
+and the envelope's bound are set independently, the producer is responsible for
+reconciling them; it may not assume an accepted input can always be rendered.
+
+Second, a producer builds and accepts every bounded field into its
+response-bearing type before it takes any single-use or otherwise irreversible
+effect. Nothing between that effect and the composed response may refuse. A
+caller then either receives the whole result or receives a refusal that
+consumed nothing and can be retried.
+
+The one-time MFA provisioning result is the worked example of both: its
+`provisioning_uri` is fitted to the typed profile's provisioning bound and
+accepted into its bounded type before the confirming enrollment continuation is
+issued. The bound itself is unchanged, and no account name can make an
+enrollment unopenable. The
+[Server Authentication Design](../authentication/authentication-design.md#provisioning-uri-construction)
+owns how the URI is fitted.
+
 ## Pagination
 
 A collection response is cursor-paginated. A request MAY supply `limit` and

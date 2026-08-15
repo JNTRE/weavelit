@@ -45,6 +45,7 @@ use weavelit_module_client::{
     MfaCodeSubmission, MfaDeclaration, MfaEnrollmentOpened, MfaEnrollmentSubmission,
     MfaSelfEnrollmentSubmission, SessionEstablished, SessionIdentity, SessionSubmission,
     mfa::{validate_mfa_request, validate_mfa_session_request},
+    typed_json::{MAX_PROVISIONING_URI_BYTES, ProvisioningUri},
     validate_login_request,
 };
 use weavelit_module_mfa_totp::{SECRET_LENGTH, TotpSecret};
@@ -780,6 +781,14 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     /// continuation this returns and is written to the database only once a
     /// code proves the caller holds it, so an abandoned enrollment leaves no
     /// factor behind.
+    ///
+    /// The provisioning URI is built and accepted into its response-bearing
+    /// type before the confirmation ticket is issued. Nothing between the
+    /// ticket and the returned response can refuse, so a caller either receives
+    /// a ticket it can confirm or receives nothing and can open an enrollment
+    /// again. Issuing the ticket first would let a refusal here burn the
+    /// one-time claim that ticket names and leave an account that must enroll
+    /// unable to.
     fn open_secret(
         &self,
         account: StateIdentifier,
@@ -792,8 +801,13 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         let secret = TotpSecret::from_bytes(bytes);
         let base32 = secret.base32();
         let uri = secret
-            .provisioning_uri(PROVISIONING_ISSUER, username.as_str())
+            .provisioning_uri(
+                PROVISIONING_ISSUER,
+                username.as_str(),
+                MAX_PROVISIONING_URI_BYTES,
+            )
             .map_err(|_| unavailable)?;
+        let provisioning_uri = ProvisioningUri::new(uri.expose()).ok_or(unavailable)?;
 
         let enrollment = self.continuations.issue(
             PendingClaim::EnrollmentConfirm {
@@ -806,7 +820,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
 
         Ok(MfaEnrollmentOpened {
             secret: Zeroizing::new(base32.expose().to_owned()),
-            provisioning_uri: Zeroizing::new(uri.expose().to_owned()),
+            provisioning_uri,
             enrollment: Zeroizing::new(enrollment.as_str().to_owned()),
         })
     }
@@ -1463,8 +1477,8 @@ pub(crate) mod tests {
         Argon2Profile, AuthenticationError, CONTINUATION_TEXT_BYTES, SESSION_TOKEN_TEXT_BYTES,
     };
     use weavelit_server_database::{
-        Account, AccountPasswordVerifier, PasswordVerifier, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
-        SESSION_IDLE_TIMEOUT_MILLISECONDS,
+        Account, AccountPasswordVerifier, MAX_NAME_LENGTH, PasswordVerifier,
+        SESSION_ABSOLUTE_LIFETIME_MILLISECONDS, SESSION_IDLE_TIMEOUT_MILLISECONDS,
     };
     use weavelit_server_log::{
         CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
@@ -1811,6 +1825,8 @@ pub(crate) mod tests {
         runtime: Arc<AuthenticationRuntime<CountingEngine>>,
         engine: Arc<EngineState>,
         clock: Arc<AtomicI64>,
+        /// The username the sealed active account answers to.
+        username: String,
     }
 
     impl AuthSurface {
@@ -1843,6 +1859,7 @@ pub(crate) mod tests {
                 .path()
                 .canonicalize()
                 .expect("the test state root must resolve");
+            let username = fixture.username().to_owned();
             seal_deployment_from(&state_root, |sealer| authentication_state(&fixture, sealer));
 
             let startup = classify_restricted_startup(&state_root)
@@ -1876,6 +1893,7 @@ pub(crate) mod tests {
                 runtime,
                 engine,
                 clock,
+                username,
             }
         }
 
@@ -1890,6 +1908,16 @@ pub(crate) mod tests {
 
         fn set_clock(&self, milliseconds: i64) {
             self.clock.store(milliseconds, Ordering::SeqCst);
+        }
+
+        /// Returns the instant the injected clock currently reports.
+        fn clock(&self) -> i64 {
+            self.clock.load(Ordering::SeqCst)
+        }
+
+        /// Returns the username the sealed active account answers to.
+        fn username(&self) -> &str {
+            &self.username
         }
     }
 
@@ -1908,6 +1936,8 @@ pub(crate) mod tests {
         required: bool,
         /// The secret the active account is enrolled with, when it is enrolled.
         secret: Option<[u8; SECRET_LENGTH]>,
+        /// The active account's username, when it is not [`ACTIVE_USERNAME`].
+        username: Option<String>,
     }
 
     impl MfaFixture {
@@ -1918,14 +1948,25 @@ pub(crate) mod tests {
             }
         }
 
-        const fn requiring(mut self) -> Self {
+        fn requiring(mut self) -> Self {
             self.required = true;
             self
         }
 
-        const fn enrolled(mut self) -> Self {
+        fn enrolled(mut self) -> Self {
             self.secret = Some(ENROLLED_SECRET);
             self
+        }
+
+        /// Seals the active account under `username` rather than the default.
+        fn named(mut self, username: &str) -> Self {
+            self.username = Some(username.to_owned());
+            self
+        }
+
+        /// Returns the username the active account is sealed under.
+        fn username(&self) -> &str {
+            self.username.as_deref().unwrap_or(ACTIVE_USERNAME)
         }
     }
 
@@ -1967,7 +2008,7 @@ pub(crate) mod tests {
             accounts: vec![
                 Account {
                     identifier: active,
-                    username: name(ACTIVE_USERNAME),
+                    username: name(fixture.username()),
                     display_name: None,
                     active: true,
                     mfa_required: fixture.required,
@@ -2389,7 +2430,7 @@ pub(crate) mod tests {
 
     /// Logs in and returns the continuation a login stopped at `stage` issued.
     async fn stopped_login(surface: &AuthSurface, stage: &str) -> String {
-        let response = login(surface, ACTIVE_USERNAME, CORRECT_PASSWORD).await;
+        let response = login(surface, surface.username(), CORRECT_PASSWORD).await;
         assert_eq!(response.status, StatusCode::ACCEPTED);
         let body = body_text(&response);
         assert_eq!(string_field(&body, "mfa"), stage);
@@ -3809,6 +3850,50 @@ pub(crate) mod tests {
     // -----------------------------------------------------------------------
     // Enrollment confirmation
     // -----------------------------------------------------------------------
+
+    /// An account whose username is at its bound still enrolls end to end.
+    ///
+    /// The account name is as long as a `Name` accepts, so its percent-encoded
+    /// label cannot fit the provisioning URI the typed response profile is
+    /// bounded to. The label is cosmetic and is shortened to fit rather than
+    /// refused, so the account receives the secret, a conforming URI, and a
+    /// ticket it can actually confirm. Refusing instead would spend the
+    /// one-time enrollment claim on a response the account cannot act on and
+    /// leave an MFA-required account permanently unable to sign in.
+    ///
+    /// The replay in the middle proves the shortened label bought nothing: the
+    /// continuation the enrollment was opened from is still spent by that one
+    /// opening, and the ticket that opening returned still confirms afterwards.
+    #[tokio::test]
+    async fn an_account_with_a_maximal_username_opens_and_confirms_an_enrollment() {
+        let username = "u".repeat(MAX_NAME_LENGTH);
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, true).named(&username));
+
+        let continuation = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let opened = opened_enrollment(&surface, &continuation).await;
+        assert_eq!(opened.status, StatusCode::OK);
+
+        let uri = string_field(&body_text(&opened), "provisioning_uri");
+        assert!(uri.len() <= MAX_PROVISIONING_URI_BYTES, "{}", uri.len());
+        assert!(uri.starts_with("otpauth://totp/Weavelit:uuu"), "{uri}");
+        assert!(uri.contains("~?secret="), "{uri}");
+        assert!(uri.contains("&issuer=Weavelit&algorithm=SHA1&digits=6&period=30"));
+
+        // The opening continuation is spent by the one enrollment it opened.
+        let replayed = opened_enrollment(&surface, &continuation).await;
+        assert_eq!(replayed.status, StatusCode::UNAUTHORIZED);
+        assert!(!body_text(&replayed).contains("secret"));
+
+        let (disclosed, ticket) = opened_parts(&opened);
+        let code = current_code(&disclosed, surface.clock());
+        let confirmed = confirm_code(&surface, &ticket, &code).await;
+        assert_eq!(confirmed.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&confirmed).await).len(), 2);
+
+        // The account holds a factor from here on, so a later login stops at
+        // the second factor rather than at enrollment again.
+        stopped_login(&surface, MFA_REQUIRED_CODE).await;
+    }
 
     /// Confirming an enrollment costs a verified password and a current code.
     ///

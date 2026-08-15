@@ -142,7 +142,12 @@ pub struct MfaEnrollmentOpened {
     /// The unpadded Base32 shared secret.
     pub secret: Zeroizing<String>,
     /// The `otpauth://` provisioning URI carrying that same secret.
-    pub provisioning_uri: Zeroizing<String>,
+    ///
+    /// The typed value is built by the Server core before it issues the
+    /// one-time confirmation ticket, so a URI this envelope could not carry is
+    /// refused while the enrollment is still repeatable. Rendering it here is
+    /// therefore infallible.
+    pub provisioning_uri: ProvisioningUri,
     /// The one-time value that confirms this enrollment.
     pub enrollment: Zeroizing<String>,
 }
@@ -661,9 +666,8 @@ pub fn continuation_response(stage: &str, continuation: &str, correlation_id: &s
 /// value is cleared by its owner as soon as this call returns.
 fn enrollment_opened_response(opened: &MfaEnrollmentOpened, correlation_id: &str) -> Response {
     let unavailable = AuthenticationRejection::ServiceUnavailable;
-    let (Some(secret), Some(uri), Some(enrollment), Some(correlation)) = (
+    let (Some(secret), Some(enrollment), Some(correlation)) = (
         OpaqueToken::new(&opened.secret),
-        ProvisioningUri::new(&opened.provisioning_uri),
         OpaqueToken::new(&opened.enrollment),
         ResponseCorrelation::new(correlation_id),
     ) else {
@@ -673,7 +677,7 @@ fn enrollment_opened_response(opened: &MfaEnrollmentOpened, correlation_id: &str
         .and_then(|result| {
             result.with_field(
                 StableCode::new(PROVISIONING_URI_FIELD)?,
-                TypedValue::Uri(uri),
+                TypedValue::Uri(opened.provisioning_uri.clone()),
             )
         })
         .and_then(|result| {
@@ -726,8 +730,10 @@ mod tests {
         continuation_response,
     };
     use crate::{
-        ExpectedOrigin, authentication::SessionEstablished, cookie::CookieEffect,
-        typed_json::TypedJsonEnvelope,
+        ExpectedOrigin,
+        authentication::SessionEstablished,
+        cookie::CookieEffect,
+        typed_json::{ProvisioningUri, TypedJsonEnvelope},
     };
 
     const LISTENER: &str = "127.0.0.1:8443";
@@ -746,7 +752,8 @@ mod tests {
     fn opened() -> MfaEnrollmentOpened {
         MfaEnrollmentOpened {
             secret: Zeroizing::new(SECRET.to_owned()),
-            provisioning_uri: Zeroizing::new(URI.to_owned()),
+            provisioning_uri: ProvisioningUri::new(URI)
+                .expect("the fixture provisioning uri must be accepted"),
             enrollment: Zeroizing::new(ENROLLMENT.to_owned()),
         }
     }
