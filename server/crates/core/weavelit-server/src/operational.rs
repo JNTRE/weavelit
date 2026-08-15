@@ -56,6 +56,15 @@ pub struct OperationalRuntime {
     pub protection: Arc<dyn ProtectedValueAccess>,
 }
 
+/// The pause a test drives a database registration through.
+///
+/// Registering the database is the moment a shutdown's close stops being a
+/// silent no-op, so a test that must place a stop inside the window between a
+/// sealed record and its serving handle has no other deterministic boundary to
+/// park at.
+#[cfg(test)]
+pub(crate) type ActivationHook = Arc<dyn Fn() + Send + Sync>;
+
 /// The process-wide owner of whichever Application Database is serving.
 ///
 /// A deployment becomes operational from a sealed startup or from an in-process
@@ -67,12 +76,43 @@ pub struct OperationalRuntime {
 #[derive(Clone, Default)]
 pub struct ActiveDatabase {
     active: Arc<Mutex<Option<OperationalDatabase>>>,
+    /// The pause a test drives an activation through.
+    #[cfg(test)]
+    activating: Arc<Mutex<Option<ActivationHook>>>,
 }
 
 impl ActiveDatabase {
     /// Records the database an operational composition serves from.
     fn activate(&self, database: OperationalDatabase) {
+        #[cfg(test)]
+        self.pause_activation();
         *self.held() = Some(database);
+    }
+
+    /// Runs the installed pause, if any, immediately before the slot is filled.
+    ///
+    /// The hook is cloned out of its lock before it runs, so a parked chain
+    /// holds nothing the test needs, and it runs outside the slot's own lock,
+    /// so a close racing the pause observes the slot as it really is.
+    #[cfg(test)]
+    fn pause_activation(&self) {
+        let hook = self
+            .activating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Installs the pause a test drives an activation through.
+    #[cfg(test)]
+    pub(crate) fn pause_activation_with(&self, hook: ActivationHook) {
+        *self
+            .activating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
     }
 
     /// Closes the operational database, if one was ever activated.
@@ -294,10 +334,12 @@ impl fmt::Debug for OperationalComposer {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     };
 
+    use tokio::sync::oneshot;
     use weavelit_server_database::SessionStore;
     use weavelit_server_lifecycle::{
         ApplicationDatabase, ApplicationState, DatabaseError, DatabaseInspection,
@@ -385,6 +427,63 @@ pub(crate) mod test_support {
     /// Registers a database that closes cleanly with a process-wide owner.
     pub(crate) fn activated() -> (ActiveDatabase, OperationalDatabase, Arc<AtomicUsize>) {
         activated_closing(Ok(()))
+    }
+
+    /// Parks a lifecycle transition immediately before it registers the
+    /// database it committed through.
+    ///
+    /// That window is the one a shutdown must not close through: the record is
+    /// already sealed, but the owner's slot is still empty, so a close taken
+    /// there closes nothing at all. Parking there lets a test place the stop
+    /// inside the window by construction rather than by interleaving.
+    ///
+    /// Only the first activation parks, so a surface that composes again runs
+    /// straight past this boundary.
+    pub(crate) struct ActivationBarrier {
+        arrived: oneshot::Receiver<()>,
+        release: mpsc::Sender<()>,
+    }
+
+    impl ActivationBarrier {
+        /// Installs the pause on the owner an operational composition registers
+        /// its database with.
+        pub(crate) fn install(active: &ActiveDatabase) -> Self {
+            let (arrival, arrived) = oneshot::channel();
+            let (release, blocked) = mpsc::channel();
+            let arrival = Mutex::new(Some(arrival));
+            let blocked = Mutex::new(Some(blocked));
+
+            active.pause_activation_with(Arc::new(move || {
+                let arrival = arrival
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                let blocked = blocked
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some(arrival) = arrival {
+                    let _ = arrival.send(());
+                }
+                if let Some(blocked) = blocked {
+                    let _ = blocked.recv();
+                }
+            }));
+
+            Self { arrived, release }
+        }
+
+        /// Resolves once the transition is parked before its registration.
+        pub(crate) async fn reached(&mut self) {
+            (&mut self.arrived)
+                .await
+                .expect("the committing chain reaches its activation");
+        }
+
+        /// Lets the parked transition register its database and run on.
+        pub(crate) fn release(self) {
+            let _ = self.release.send(());
+        }
     }
 
     /// Registers a database whose own close reports `outcome`.

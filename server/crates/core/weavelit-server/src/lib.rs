@@ -4373,7 +4373,7 @@ pub(crate) mod tests {
     }
 
     /// Asserts a closed SQLite Application Database left no recovery work.
-    fn assert_no_write_ahead_log(state_root: &Path) {
+    pub(crate) fn assert_no_write_ahead_log(state_root: &Path) {
         for sidecar in ["application.sqlite3-wal", "application.sqlite3-shm"] {
             assert!(!state_root.join(sidecar).exists(), "{sidecar}");
         }
@@ -7857,6 +7857,70 @@ pub(crate) mod tests {
 
         assert!(restored.is_ok(), "{restored:?}");
         assert_eq!(sealed_when_released, LifecycleState::Initialized);
+    }
+
+    /// A stop signalled while a Restore stands between its sealed record and
+    /// the database it hands over closes that database, rather than an empty
+    /// slot the replacement fills immediately afterwards.
+    ///
+    /// Closing an owner nothing has registered yet succeeds while closing
+    /// nothing, so a wait that returned inside this window would let the
+    /// process exit with the replacement's own SQLite handle still open. The
+    /// retained write-ahead log that leaves behind is what the next startup
+    /// classifies as a deployment needing redeployment, so the absence of one
+    /// is what proves the close reached the real handle.
+    ///
+    /// The replacement is parked exactly inside the window, so the stop lands
+    /// there by construction rather than by an interleaving this test hopes
+    /// for.
+    #[tokio::test]
+    async fn a_shutdown_inside_a_restores_activation_closes_the_database_it_committed_through() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let gate = Arc::clone(&surface.startup.composition.adapter.transition_gate);
+        let activating =
+            test_support::ActivationBarrier::install(surface.startup.active_database());
+
+        let (restored, closed) = tokio::join!(
+            surface.restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            ),
+            async {
+                let mut activating = activating;
+                activating.reached().await;
+
+                // The record is sealed and the database it committed through is
+                // not registered yet, which is the one window a shutdown must
+                // not take its close in.
+                gate.begin_stopping();
+                assert!(
+                    gate.is_occupied(),
+                    "the replacement must hold the region until its database is registered"
+                );
+
+                // Released before the wait, so the wait is satisfied only by
+                // the replacement leaving the region and never by this test
+                // ordering the two by hand.
+                activating.release();
+                let quiesced = gate.quiesce(SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET).await;
+                assert!(
+                    quiesced.is_some(),
+                    "the region must empty inside its budget"
+                );
+
+                close_active_database(
+                    surface.startup.active_database().clone(),
+                    SHUTDOWN_DATABASE_BUDGET,
+                )
+                .await
+            },
+        );
+
+        assert!(restored.is_ok(), "{restored:?}");
+        assert!(closed, "the shutdown must close the restored database");
+        assert_no_write_ahead_log(&surface.state_root);
     }
 
     /// A deadline crossed while state is rebuilt stops before any mutation.

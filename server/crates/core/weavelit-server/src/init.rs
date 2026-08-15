@@ -811,9 +811,6 @@ impl InitOrchestrator {
             .map_err(|_| closed())?
             .seal()
             .map_err(|_| closed())?;
-        // The record is sealed, so an interruption from here on can no longer
-        // strand durable state and a waiting shutdown is released.
-        drop(transition);
 
         // The database sealing handed back is retained here and composed into
         // the operational surface, so normal operation begins on the handle the
@@ -830,6 +827,11 @@ impl InitOrchestrator {
             ))
             .mount();
         self.serving_modes.publish_operational(mount);
+        // The record is sealed and the database it committed through is
+        // registered, so a shutdown from here on closes the handle this took
+        // over. Releasing any earlier would let a shutdown find the slot still
+        // empty, close nothing, and leave this activation's writes behind.
+        drop(transition);
 
         Ok(InitCompleted {
             correlation_id: pending.correlation_identifier.clone(),
@@ -1258,9 +1260,13 @@ mod tests {
     };
     use crate::{
         APPLICATION_DATABASE_FILE, PreoperationalComposer, RateLimiter,
-        ResponseWriteAcknowledgement, RestrictedStartup, ServingMode, ServingModeSwitch,
-        StartupError, StartupOutcome, bounded_response_from_axum, classify_restricted_startup,
-        fallback_router, server_components, sqlite_catalog,
+        ResponseWriteAcknowledgement, RestrictedStartup, SHUTDOWN_DATABASE_BUDGET,
+        SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET, ServingMode, ServingModeSwitch, StartupError,
+        StartupOutcome, bounded_response_from_axum, classify_restricted_startup,
+        close_active_database, fallback_router,
+        operational::test_support::ActivationBarrier,
+        server_components, sqlite_catalog,
+        tests::assert_no_write_ahead_log,
         transport::{BodyAdmission, MountedSurface, PreBodyRejection, TransportProfile},
     };
 
@@ -2322,6 +2328,64 @@ mod tests {
     // -----------------------------------------------------------------------
     // Completion
     // -----------------------------------------------------------------------
+
+    /// A stop signalled while a finalization stands between its sealed record
+    /// and the database it hands over closes that database, rather than an
+    /// empty slot the Init fills immediately afterwards.
+    ///
+    /// Closing an owner nothing has registered yet succeeds while closing
+    /// nothing, so a wait that returned inside this window would let the
+    /// process exit with the Init's own SQLite handle still open. The retained
+    /// write-ahead log that leaves behind is what the next startup classifies
+    /// as a deployment needing redeployment, so the absence of one is what
+    /// proves the close reached the real handle.
+    ///
+    /// The finalization is parked exactly inside the window, so the stop lands
+    /// there by construction rather than by an interleaving this test hopes
+    /// for.
+    #[tokio::test]
+    async fn a_shutdown_inside_a_finalizations_activation_closes_the_database_it_committed_through()
+    {
+        let surface = InitSurface::new();
+        let delivered = surface.deliver_key().await;
+        let gate = Arc::clone(&surface.startup.composition.adapter.transition_gate);
+        let mut activating = ActivationBarrier::install(surface.startup.active_database());
+
+        let request = spawn_request(&surface, INIT_ROUTE, finalization_body(&delivered.proof()));
+        activating.reached().await;
+
+        // The record is sealed and the database it committed through is not
+        // registered yet, which is the one window a shutdown must not take its
+        // close in.
+        gate.begin_stopping();
+        assert!(
+            gate.is_occupied(),
+            "the finalization must hold the region until its database is registered"
+        );
+
+        // Released before the wait, so the wait is satisfied only by the
+        // finalization leaving the region and never by this test ordering the
+        // two by hand.
+        activating.release();
+        let quiesced = gate.quiesce(SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET).await;
+        assert!(
+            quiesced.is_some(),
+            "the region must empty inside its budget"
+        );
+        assert!(
+            close_active_database(
+                surface.startup.active_database().clone(),
+                SHUTDOWN_DATABASE_BUDGET,
+            )
+            .await,
+            "the shutdown must close the sealed database"
+        );
+
+        let served = request.await.unwrap();
+        assert_eq!(served.status, StatusCode::OK, "{}", served.body);
+        assert_eq!(surface.record_state(), LifecycleState::Initialized);
+        assert_no_write_ahead_log(&surface.state_root);
+    }
 
     /// One complete Init over a real SQLite deployment, driven end to end
     /// through the production composer, seals the deployment in the same

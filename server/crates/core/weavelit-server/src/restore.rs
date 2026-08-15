@@ -470,9 +470,6 @@ impl RestoreOrchestrator {
             record_identifier,
             &record,
         )?;
-        // The record is sealed, so an interruption from here on can no longer
-        // strand durable state and a waiting shutdown is released.
-        drop(transition);
 
         // The database sealing handed back is retained here and composed into
         // the operational surface, so normal operation begins on the handle the
@@ -489,6 +486,11 @@ impl RestoreOrchestrator {
             ))
             .mount();
         self.serving_modes.publish_operational(mount);
+        // The replacement is sealed and the database it committed through is
+        // registered, so a shutdown from here on closes the handle this took
+        // over. Releasing any earlier would let a shutdown find the slot still
+        // empty, close nothing, and leave this activation's writes behind.
+        drop(transition);
         Ok(state)
     }
 
