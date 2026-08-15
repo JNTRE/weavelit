@@ -891,6 +891,12 @@ fn reject_unreadable_module_data(
 /// the check needs no reasoning about account topology and stays a field
 /// rejection like its neighbours.
 ///
+/// It covers supplied entries only. An account with no verifier is a modeled
+/// credential state, so no verifier is required to exist here and no
+/// administrator-topology check belongs here: the specification accepts a
+/// deployment no Administrator can authenticate to and forbids Restore from
+/// claiming to guarantee renewed administrative access.
+///
 /// The allowlist is resolved through [`PasswordPolicy::approved`] against the
 /// same PHC reader the authentication decision parses with, so a backup is
 /// accepted here exactly when the Server would later attempt what it carries.

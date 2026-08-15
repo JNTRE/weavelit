@@ -109,5 +109,12 @@ state normalization performed before any deployment state is replaced.
   closed Argon2 profile allowlist `weavelit-server-authentication` owns, before
   constructing restored state. Resolve it through `PasswordPolicy::approved` and
   that crate's PHC reader; never restate the allowlist or parse PHC here.
+- Keep that rejection to supplied entries only. Never require a verifier to
+  exist for an account, and never add an administrator-topology or
+  verifier-presence check: an absent verifier is a modeled credential state, and
+  the Technical Specification's Multifactor Authentication section accepts a
+  fail-closed deployment and forbids Restore from claiming to guarantee renewed
+  administrative access. `tests/content.rs` pins that acceptance; changing it
+  requires changing the specification first.
 - Enforce the approved transfer bounds, deadlines, and single-operation permit
   in the crate rather than relying on callers.

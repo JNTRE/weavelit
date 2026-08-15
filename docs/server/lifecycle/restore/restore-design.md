@@ -343,6 +343,20 @@ invalid-backup cause. The check covers every verifier rather than only the last
 Administrator's, so it requires no reasoning about account topology, and it
 reuses the allowlist rather than restating it, so the two decisions cannot drift.
 
+That check covers supplied entries only. Restore does not require a verifier to
+exist for any account, including the only account that holds the Server
+Administration Permission, and an absent verifier is a modeled credential state
+rather than invalid content: a backup may legitimately carry an intentionally
+passwordless, disabled, or pending-enrollment account. Restore therefore makes
+no credential-continuity promise. The
+[Technical Specification](../../../spec.md#multifactor-authentication) states
+that a deployment no Administrator can authenticate to MUST remain inaccessible,
+that this fail-closed condition is an accepted outcome, and that Restore MUST
+NOT claim to guarantee renewed administrative access; requiring a reachable
+Administrator to carry a verifier would assert exactly that guarantee.
+Administrator-account continuity and credential custody remain the deployment
+operator's responsibility.
+
 ## Checkpoint, Atomic Restore, And Sealing
 
 Every step that can fail without leaving retained state runs before the

@@ -92,6 +92,16 @@ a random salt and a random output, so no submitted password can match it. A
 denial is not reported as an error, so no caller can separate "no such account"
 from "wrong password" by inspecting a failure value.
 
+An account with no stored verifier is a modeled credential state rather than an
+error or a data defect. The password decision represents it explicitly, denies
+it like any other cause, and neither the decision nor any state-producing
+operation treats a missing verifier as invalid: an account may be intentionally
+passwordless, disabled, or still pending enrollment. **[Restore](../../glossary.md#states-and-requests)**
+therefore validates the verifiers a backup supplies without requiring any
+account to have one, as the
+[Server Restore Design](../lifecycle/restore/restore-design.md#backup-validation-and-restored-state)
+records.
+
 This equal-work property is proved by counting the verification operations a
 decision performs through an injected verification seam, not by comparing
 elapsed time.

@@ -6,9 +6,9 @@ use base64::Engine as _;
 use support::{FIXTURE_TOTP_SECRET, committed, committed_text, components};
 use weavelit_server_database::MAX_NAME_LENGTH;
 use weavelit_server_restore::{
-    AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
-    LogSettingsFormat, MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS, MAX_SENSITIVE_VALUE_BYTES,
-    Name, RestoreError, SensitiveBytes, normalize,
+    Account, AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
+    GroupGrant, LogSettingsFormat, MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS,
+    MAX_SENSITIVE_VALUE_BYTES, Name, NormalizedBackup, RestoreError, SensitiveBytes, normalize,
 };
 
 fn sqlite() -> BackendIdentifier {
@@ -394,6 +394,86 @@ fn an_off_profile_password_verifier_is_indistinguishable_from_any_other_invalid_
         assert_eq!(rejected.to_string(), other.to_string());
         assert_eq!(format!("{rejected:?}"), format!("{other:?}"), "{verifier}");
     }
+}
+
+/// The fixture account that holds Server Administration through its Group.
+const FIXTURE_ADMINISTRATOR: &str = "AgMEBQYHCAkKCwwNDg8QEQ";
+
+/// Returns the active accounts holding Server Administration through a Group
+/// that carry no password verifier.
+fn administrators_without_a_verifier(backup: &NormalizedBackup) -> Vec<&Account> {
+    let administering = backup
+        .group_grants()
+        .iter()
+        .filter(|record| record.grant == GroupGrant::ServerAdministration)
+        .map(|record| record.group)
+        .collect::<Vec<_>>();
+
+    backup
+        .accounts()
+        .iter()
+        .filter(|account| account.active)
+        .filter(|account| {
+            backup.group_memberships().iter().any(|membership| {
+                membership.account == account.identifier
+                    && administering.contains(&membership.group)
+            })
+        })
+        .filter(|account| {
+            !backup
+                .password_verifiers()
+                .iter()
+                .any(|entry| entry.account == account.identifier)
+        })
+        .collect()
+}
+
+/// Pins that a backup whose only Administrator has no password verifier is
+/// valid Restore content, both when the collection is empty and when it is
+/// non-empty but omits that account.
+///
+/// This test records accepted behavior; it is not a missing rejection. The
+/// [Technical Specification](../../../../../docs/spec.md) states that if no
+/// Administrator can authenticate "the deployment MUST remain inaccessible
+/// through supported application interfaces", that "this fail-closed condition
+/// is an accepted outcome", and that Restore "MAY reproduce unusable passwords
+/// or MFA enrollments and MUST NOT claim to guarantee renewed administrative
+/// access". An account with no verifier is a modeled credential state, not
+/// invalid content, and a backup may legitimately carry accounts that are
+/// intentionally passwordless, disabled, or still pending enrollment.
+///
+/// Requiring a reachable Administrator to carry a verifier would make Restore
+/// assert exactly the continuity guarantee the specification forbids it from
+/// claiming. Changing this test therefore requires changing the specification
+/// first. It is distinct from
+/// [`a_password_verifier_outside_the_approved_profile_is_rejected`], which
+/// rejects a *supplied* verifier whose content no policy-conforming Weavelit
+/// could have written.
+#[test]
+fn a_backup_whose_only_administrator_has_no_password_verifier_is_accepted_content() {
+    let verifier_entry =
+        format!("{{\"account\":\"{FIXTURE_ADMINISTRATOR}\",\"verifier\":\"{APPROVED_VERIFIER}\"}}");
+
+    let empty = replaced(&verifier_entry, "");
+    let backup = normalize(empty.as_bytes(), &sqlite(), &components())
+        .expect("a backup carrying no password verifier is valid content");
+    assert!(backup.password_verifiers().is_empty());
+    assert_eq!(administrators_without_a_verifier(&backup).len(), 1);
+
+    // The same acceptance holds when the collection is non-empty and simply
+    // omits the only account that can administer the deployment.
+    let document = accounts(&[("AAAAAAAAAAAAAAAAAAAAAQ", "operator")]);
+    assert!(document.contains(&verifier_entry), "the fixture verifier");
+    let document = document.replace(
+        &verifier_entry,
+        &format!("{{\"account\":\"AAAAAAAAAAAAAAAAAAAAAQ\",\"verifier\":\"{APPROVED_VERIFIER}\"}}"),
+    );
+    let backup = normalize(document.as_bytes(), &sqlite(), &components())
+        .expect("a backup whose Administrator has no password verifier is valid content");
+    assert_eq!(backup.password_verifiers().len(), 1);
+    let unverified = administrators_without_a_verifier(&backup);
+    assert_eq!(unverified.len(), 1);
+    assert_eq!(unverified[0].username.as_str(), "administrator");
 }
 
 /// Builds one collection body of `count` copies of `entry` plus one surplus
