@@ -236,7 +236,8 @@ struct ConfigurationEntryV1 {
 struct ProtectedSecretV1 {
     component: String,
     key: String,
-    value: String,
+    /// Encoded secret; the owned buffer is wiped when the entry is dropped.
+    value: Zeroizing<String>,
 }
 
 #[derive(Deserialize)]
@@ -298,7 +299,8 @@ struct MfaFactorV1 {
     identifier: String,
     account: String,
     module: String,
-    factor_data: String,
+    /// Encoded secret; the owned buffer is wiped when the entry is dropped.
+    factor_data: Zeroizing<String>,
 }
 
 #[derive(Deserialize)]
@@ -307,7 +309,8 @@ struct ServiceConnectionV1 {
     identifier: String,
     service_module: String,
     name: String,
-    credential: String,
+    /// Encoded secret; the owned buffer is wiped when the entry is dropped.
+    credential: Zeroizing<String>,
 }
 
 #[derive(Deserialize)]
@@ -669,7 +672,10 @@ fn decode_bytes(value: &str) -> Result<Vec<u8>, ContentError> {
     let decoded = URL_SAFE_NO_PAD
         .decode(value)
         .map_err(|_| ContentError::EncodingInvalid)?;
-    if URL_SAFE_NO_PAD.encode(&decoded) != value {
+    // The canonical re-encoding reproduces the caller's encoded secret, so it is
+    // wiped on both the accepting and the rejecting path.
+    let canonical = Zeroizing::new(URL_SAFE_NO_PAD.encode(&decoded));
+    if canonical.as_str() != value {
         return Err(ContentError::EncodingInvalid);
     }
     Ok(decoded)
@@ -718,4 +724,42 @@ fn require_component(available: bool) -> Result<(), ContentError> {
         return Ok(());
     }
     Err(ContentError::ComponentUnavailable)
+}
+
+// ---------------------------------------------------------------------------
+// Wire model type pins
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{MfaFactorV1, ProtectedSecretV1, ServiceConnectionV1, Zeroizing};
+
+    /// Pins the wire model's secret fields to the wiping string type.
+    ///
+    /// Each binding is an explicit type annotation, so returning any of these
+    /// fields to a plain `String` fails to compile rather than silently
+    /// reintroducing an encoded secret that is dropped without being wiped.
+    #[test]
+    fn the_wire_secret_fields_are_zeroizing_strings() {
+        let secret: ProtectedSecretV1 = serde_json::from_str(
+            r#"{"component":"weavelit-server","key":"provider","value":"cHJvdmlkZXItdG9rZW4"}"#,
+        )
+        .expect("the protected secret entry parses");
+        let value: Zeroizing<String> = secret.value;
+        assert_eq!(value.as_str(), "cHJvdmlkZXItdG9rZW4");
+
+        let factor: MfaFactorV1 = serde_json::from_str(
+            r#"{"identifier":"AgMEBQYHCAkKCwwNDg8QEQ","account":"AgMEBQYHCAkKCwwNDg8QEQ","module":"totp","factor_data":"dG90cC1zZWVk"}"#,
+        )
+        .expect("the MFA factor entry parses");
+        let factor_data: Zeroizing<String> = factor.factor_data;
+        assert_eq!(factor_data.as_str(), "dG90cC1zZWVk");
+
+        let connection: ServiceConnectionV1 = serde_json::from_str(
+            r#"{"identifier":"AgMEBQYHCAkKCwwNDg8QEQ","service_module":"zendesk","name":"primary","credential":"cHJvdmlkZXItdG9rZW4"}"#,
+        )
+        .expect("the Service Connection entry parses");
+        let credential: Zeroizing<String> = connection.credential;
+        assert_eq!(credential.as_str(), "cHJvdmlkZXItdG9rZW4");
+    }
 }

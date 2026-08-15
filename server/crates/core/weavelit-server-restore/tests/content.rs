@@ -328,3 +328,70 @@ fn component_names_are_matched_exactly() {
         ContentError::ComponentUnavailable
     );
 }
+
+/// The secret-bearing fields changed from `String` to `Zeroizing<String>` in the
+/// wire model. These pin the parse and rejection behavior across that change;
+/// they observe decoded values and errors, not the wipe itself, which is not
+/// observable in safe Rust.
+#[test]
+fn every_secret_bearing_collection_still_decodes() {
+    let backup = normalize(&committed("valid-plaintext.json"), &sqlite(), &components())
+        .expect("the committed plaintext is valid content");
+
+    let secret = backup
+        .protected_secrets()
+        .first()
+        .expect("the fixture carries a protected secret");
+    assert_eq!(secret.value.expose(), b"at-rest-value");
+
+    let factor = backup
+        .mfa_factors()
+        .first()
+        .expect("the fixture carries an MFA factor");
+    assert_eq!(factor.factor_data.expose(), b"totp-seed");
+
+    let connection = backup
+        .service_connections()
+        .first()
+        .expect("the fixture carries a Service Connection");
+    assert_eq!(connection.credential.expose(), b"provider-token");
+}
+
+#[test]
+fn an_invalid_secret_bearing_field_is_rejected_with_an_unchanged_error() {
+    for field in [
+        "\"value\":\"YXQtcmVzdC12YWx1ZQ\"",
+        "\"factor_data\":\"dG90cC1zZWVk\"",
+        "\"credential\":\"cHJvdmlkZXItdG9rZW4\"",
+    ] {
+        let name = field.split('"').nth(1).expect("the field name is quoted");
+
+        let non_canonical = replaced(field, &format!("\"{name}\":\"cHJvdmlkZXI+dG9rZW4\""));
+        assert_eq!(
+            reject(&non_canonical),
+            ContentError::EncodingInvalid,
+            "{name}"
+        );
+        assert_eq!(
+            RestoreError::from(reject(&non_canonical)).category_reason(),
+            ("backup_invalid", "backup_invalid"),
+            "{name}"
+        );
+
+        let empty = replaced(field, &format!("\"{name}\":\"\""));
+        assert_eq!(reject(&empty), ContentError::DomainInvalid, "{name}");
+        assert_eq!(
+            RestoreError::from(reject(&empty)).category_reason(),
+            ("backup_invalid", "backup_invalid"),
+            "{name}"
+        );
+
+        let wrong_type = replaced(field, &format!("\"{name}\":1"));
+        assert_eq!(reject(&wrong_type), ContentError::Malformed, "{name}");
+        assert_eq!(
+            RestoreError::from(reject(&wrong_type)).category_reason(),
+            ("backup_invalid", "backup_invalid"),
+            "{name}"
+        );
+    }
+}
