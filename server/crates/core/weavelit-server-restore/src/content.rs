@@ -682,6 +682,7 @@ pub fn normalize(
     reject_unresolved_references(&backup)?;
     reject_invalid_assignments(&backup)?;
     reject_unavailable_components(&backup, components)?;
+    reject_unreadable_module_data(&backup, components)?;
 
     Ok(backup)
 }
@@ -816,6 +817,34 @@ fn reject_unavailable_components(
                 require_component(components.has_operation(operation))?;
             }
             GroupGrant::ServerAdministration => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Rejects state a compiled-in module could not read once it was restored.
+///
+/// A factor naming a module this build does not compile in was already refused
+/// as unavailable, so every factor reaching here names a module whose declared
+/// format the inventory carries. Checking the format here means a factor the
+/// named module could never open is refused as an invalid backup rather than
+/// sealed, activated, and then discovered at the account's next sign-in, which
+/// for the only required Administrator would leave the deployment unreachable.
+///
+/// The format is the module crate's own declaration carried on the inventory,
+/// so a second MFA Module is covered by supplying its format there rather than
+/// by extending this check.
+fn reject_unreadable_module_data(
+    backup: &NormalizedBackup,
+    components: &AvailableComponents,
+) -> Result<(), ContentError> {
+    for factor in &backup.mfa_factors {
+        let readable = components
+            .mfa_factor_format(&factor.module)
+            .is_some_and(|format| format.accepts(factor.factor_data.expose()));
+        if !readable {
+            return Err(ContentError::FactorDataInvalid);
         }
     }
 

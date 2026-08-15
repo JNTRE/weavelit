@@ -274,6 +274,17 @@ belongs to the store because a caller that read, decided, and then wrote would
 leave a window in which a concurrent presentation of the same code could be
 accepted twice.
 
+The same contract owns enrolling a factor, changing a Module's enabled state,
+and counting enrolled accounts, because each of those is a decision the caller
+must not make from separately loaded state. Enrolling names the Module's
+configuration component as well as the factor: the store reads that component's
+enabled setting, refuses the enrollment when the Module is not enabled, and
+otherwise writes the factor and its confirming watermark, all in one
+transaction. It reports whether the factor was enrolled, was already present, or
+was refused because the Module was disabled. Changing enabled state is atomic
+with recounting the enrolled accounts an Administrator previewed and with
+revoking the sessions of accounts holding a factor.
+
 A watermark is live operational data in the same sense as a session: it belongs
 to the running deployment rather than to the restorable aggregate. It is not a
 member of `ApplicationState`, it never reaches a backup, and completing a state

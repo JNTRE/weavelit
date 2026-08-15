@@ -28,8 +28,8 @@ use weavelit_server_authentication::{
     Argon2Engine as _, CURRENT_ARGON2_PROFILE, PasswordPolicy, RustCryptoArgon2,
 };
 use weavelit_server_restore::{
-    AvailableComponents, BackendIdentifier, DeploymentIdentifier, Name, RequestBudget,
-    RestoreAuthority, RestoreError, RestoreRequest, RestoreTarget, RestoreValidator,
+    AvailableComponents, BackendIdentifier, DeploymentIdentifier, MfaFactorFormat, Name,
+    RequestBudget, RestoreAuthority, RestoreError, RestoreRequest, RestoreTarget, RestoreValidator,
 };
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -110,6 +110,16 @@ pub fn administrator_verifier() -> &'static str {
             .expect("the approved profile must produce a verifier")
     })
 }
+
+/// The enrolled factor data every valid fixture carries for the `totp` module.
+///
+/// Content validation accepts a factor only when its data is exactly what the
+/// named MFA Module can open, so the fixture carries a whole 160-bit secret
+/// rather than a shorter placeholder. [`components`] declares that same length
+/// as the module's format, and the Server's own inventory declares it from the
+/// TOTP Module's registration, so a fixture that stopped matching the real
+/// profile fails there.
+pub const FIXTURE_TOTP_SECRET: [u8; 20] = *b"totp-seed-0123456789";
 
 /// Fixed outer envelope constants, duplicated so a production change is caught.
 const MAGIC: [u8; 8] = *b"WLBKUP\r\n";
@@ -372,7 +382,7 @@ fn padded_backup_plaintext(
     let connection = encode_identifier(0x04);
     let log_configuration = encode_identifier(0x05);
     let secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"provider-token");
-    let factor_data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"totp-seed");
+    let factor_data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(FIXTURE_TOTP_SECRET);
     let component_secret =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"at-rest-value");
     let (mfa_factors, service_connections) = match referenced {
@@ -752,7 +762,14 @@ pub fn components() -> AvailableComponents {
 
     AvailableComponents {
         client_modules: names(&["web-ui", "weavelit-cli", "mcp"]),
-        mfa_modules: names(&["totp"]),
+        mfa_modules: [(
+            Name::new("totp").expect("the component name is valid"),
+            MfaFactorFormat {
+                factor_data_bytes: FIXTURE_TOTP_SECRET.len(),
+            },
+        )]
+        .into_iter()
+        .collect(),
         service_modules: names(&["zendesk"]),
         log_modules: names(&["sqlite"]),
         operations: names(&["ticket-search"]),

@@ -91,12 +91,30 @@ literal restated in the runtime, so a compiled-in module and the inventory it is
 judged by cannot drift apart. Adding a module to the build adds its name here;
 nothing else may.
 
+An MFA Module carries one further declaration on the inventory: the exact
+factor-data format it can open, expressed as the decrypted byte length its
+registration declares. That length is read from the module's own registration on
+the same terms as its name, so the format a Restore judges a factor by is the
+format the module really enforces at sign-in. A second MFA Module is covered by
+declaring its format on the inventory alongside its name; the validation itself
+does not name any module.
+
 Content validation resolves every component a backup references against that
 inventory: each Log Module configuration's module, each enrolled MFA factor's
 module, each Service Connection's Service Module, and each Group grant naming a
 Client Module, a Service Module, or an operation. A backup referencing anything
 outside the inventory is refused as `backup_incompatible` before any checkpoint
 exists.
+
+Every MFA factor that survives that resolution names a compiled-in module, so
+its decrypted factor data is then checked against that module's declared format
+and a factor the named module could never open is refused as `backup_invalid`,
+again before any checkpoint exists. Sealing such a factor would activate a
+deployment whose enrolled account cannot complete a second factor at all, and
+for a deployment whose only required Administrator holds that factor there would
+be no remaining way in. The refusal reuses the existing invalid-backup outcome
+and adds no operator-visible detail about the factor, so it discloses nothing
+about the artifact's contents.
 
 This is an operator-visible constraint, not an internal detail. A backup taken
 from a deployment that configured a Service Connection, or that enrolled an MFA
@@ -256,7 +274,9 @@ Each value is sealed under its own protected-value kind, so a component secret,
 MFA factor data, and a Service Connection credential cannot be interchanged. A
 decrypted value that exceeds the plaintext bound that capability accepts is
 refused during content validation, before any checkpoint exists, because it
-could never be written back. The private recovery key is never repurposed as an
+could never be written back. Factor data within that bound but outside the
+format its named MFA Module declares is refused there too, because the module
+could never read it back. The private recovery key is never repurposed as an
 at-rest key.
 
 ## Checkpoint, Atomic Restore, And Sealing
@@ -490,6 +510,15 @@ from the plaintext expectation beside it, and asserts the real
 documented fixture password against both valid artifacts, pinning the verifier
 to the *current* approved profile rather than merely an accepted one, and
 denies every other tried password.
+
+For the same reason, the MFA factor `valid.wlitbackup` carries is a whole secret
+of the length the `totp` module declares rather than a shorter placeholder:
+content validation now requires factor data the named module could actually
+open, so a placeholder would be refused. The fixture harness declares that
+length on its own inventory while the Server declares it from the TOTP Module's
+registration, and `weavelit-server` restores the same fixture against that real
+inventory, so a fixture secret that stopped matching the module's real format
+fails there.
 
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify

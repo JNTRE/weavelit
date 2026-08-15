@@ -2,7 +2,8 @@
 
 mod support;
 
-use support::{committed, committed_text, components};
+use base64::Engine as _;
+use support::{FIXTURE_TOTP_SECRET, committed, committed_text, components};
 use weavelit_server_database::MAX_NAME_LENGTH;
 use weavelit_server_restore::{
     AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
@@ -226,6 +227,56 @@ fn a_component_the_deployment_does_not_offer_is_unavailable() {
     }
 }
 
+/// Returns the fixture document with the MFA factor carrying `bytes`.
+fn with_factor_data(bytes: &[u8]) -> String {
+    fn encoded(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    replaced(
+        &format!("\"factor_data\":\"{}\"", encoded(&FIXTURE_TOTP_SECRET)),
+        &format!("\"factor_data\":\"{}\"", encoded(bytes)),
+    )
+}
+
+/// Factor data the named MFA Module could not open is an invalid backup.
+///
+/// The module is compiled in, so this is not a compatibility refusal: the
+/// deployment can serve the named module and the backup carries a value that
+/// module cannot read. Sealing it would activate a deployment whose account
+/// fails every later second-factor attempt, which for the only required
+/// Administrator leaves the deployment permanently unreachable.
+#[test]
+fn factor_data_a_known_mfa_module_cannot_open_is_rejected_as_an_invalid_backup() {
+    let declared = components()
+        .mfa_factor_format(&Name::new("totp").expect("the module name is valid"))
+        .expect("the fixture inventory carries the TOTP Module")
+        .factor_data_bytes;
+
+    for length in [declared - 1, declared + 1] {
+        let document = with_factor_data(&vec![0x5a; length]);
+        assert_eq!(
+            reject(&document),
+            ContentError::FactorDataInvalid,
+            "{length}"
+        );
+        assert_eq!(
+            RestoreError::from(reject(&document)).category_reason(),
+            ("backup_invalid", "backup_invalid"),
+            "{length}"
+        );
+    }
+
+    // The same substitution at the declared length still normalizes, so the
+    // refusal above is the format rather than the rewritten document.
+    normalize(
+        with_factor_data(&vec![0x5a; declared]).as_bytes(),
+        &sqlite(),
+        &components(),
+    )
+    .expect("factor data of the declared length is valid content");
+}
+
 #[test]
 fn non_canonical_binary_encoding_is_rejected() {
     for encoded in [
@@ -383,6 +434,7 @@ fn content_failures_render_uniformly() {
         ContentError::DuplicateEntry,
         ContentError::UnresolvedReference,
         ContentError::AssignmentInvalid,
+        ContentError::FactorDataInvalid,
     ]
     .iter()
     .map(|error| error.to_string())
@@ -428,7 +480,7 @@ fn every_secret_bearing_collection_still_decodes() {
         .mfa_factors()
         .first()
         .expect("the fixture carries an MFA factor");
-    assert_eq!(factor.factor_data.expose(), b"totp-seed");
+    assert_eq!(factor.factor_data.expose(), FIXTURE_TOTP_SECRET);
 
     let connection = backup
         .service_connections()
@@ -441,7 +493,7 @@ fn every_secret_bearing_collection_still_decodes() {
 fn an_invalid_secret_bearing_field_is_rejected_with_an_unchanged_error() {
     for field in [
         "\"value\":\"YXQtcmVzdC12YWx1ZQ\"",
-        "\"factor_data\":\"dG90cC1zZWVk\"",
+        "\"factor_data\":\"dG90cC1zZWVkLTAxMjM0NTY3ODk\"",
         "\"credential\":\"cHJvdmlkZXItdG9rZW4\"",
     ] {
         let name = field.split('"').nth(1).expect("the field name is quoted");

@@ -46,7 +46,7 @@ use weavelit_module_client::{
     CookieEffect, CookieLines, DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource,
     SelectedBackend, SelectionCommit,
 };
-use weavelit_server_components::AvailableComponents;
+use weavelit_server_components::{AvailableComponents, MfaFactorFormat};
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
@@ -2042,18 +2042,31 @@ fn fallback_router() -> Router {
 /// A pre-operational workflow is judged against what this build can actually
 /// serve. The names come from the module crates themselves rather than from
 /// string literals restated here, so a compiled-in module and the inventory it
-/// is judged by cannot drift apart. This build compiles in one Client Module,
-/// one Log Module, and one MFA Module, and no Service Module or named
-/// operation.
+/// is judged by cannot drift apart. An MFA Module carries the factor-data
+/// format it declares alongside its name, on the same terms. This build
+/// compiles in one Client Module, one Log Module, and one MFA Module, and no
+/// Service Module or named operation.
 fn server_components() -> AvailableComponents {
     fn named(identifier: &str) -> BTreeSet<Name> {
         Name::new(identifier).into_iter().collect()
     }
 
+    let totp = weavelit_module_mfa_totp::registration();
+
     AvailableComponents {
         client_modules: named(weavelit_module_client_webui::MODULE_IDENTIFIER),
         log_modules: named(weavelit_module_log_sqlite::MODULE_IDENTIFIER),
-        mfa_modules: named(weavelit_module_mfa_totp::MODULE_IDENTIFIER),
+        mfa_modules: named(totp.identifier())
+            .into_iter()
+            .map(|module| {
+                (
+                    module,
+                    MfaFactorFormat {
+                        factor_data_bytes: totp.secret_length(),
+                    },
+                )
+            })
+            .collect(),
         service_modules: BTreeSet::new(),
         operations: BTreeSet::new(),
     }
@@ -6622,9 +6635,18 @@ pub(crate) mod tests {
                 .collect()
         }
 
+        let totp = weavelit_module_mfa_totp::registration();
+
         AvailableComponents {
             client_modules: names(&["web-ui"]),
-            mfa_modules: names(&["totp"]),
+            mfa_modules: [(
+                Name::new(totp.identifier()).unwrap(),
+                super::MfaFactorFormat {
+                    factor_data_bytes: totp.secret_length(),
+                },
+            )]
+            .into_iter()
+            .collect(),
             service_modules: names(&["zendesk"]),
             log_modules: names(&["sqlite"]),
             operations: names(&["ticket-search"]),

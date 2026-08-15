@@ -868,7 +868,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
 
         let identifier = StateIdentifier::from_bytes(random_bytes::<16>().ok_or(unavailable)?)
             .map_err(|_| unavailable)?;
-        let module = Name::new(TOTP_MODULE).map_err(|_| unavailable)?;
+        let target = totp_target()?;
         let protected_factor_data = self
             .protection
             .seal(ProtectedValueKind::MfaFactorData, secret.as_slice())
@@ -876,16 +876,21 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         let factor = MfaFactor {
             identifier,
             account,
-            module,
+            module: target.module.clone(),
             protected_factor_data,
         };
 
         // The factor and the watermark that already consumed the confirming
         // code are written together, so the code that enrolled the factor
-        // cannot immediately be replayed against it.
-        match self.with_mfa(|store| store.enroll(&factor, step))? {
+        // cannot immediately be replayed against it. The module's enabled
+        // state is read inside that same transaction, so an enrollment opened
+        // while the module was enabled and confirmed after it was disabled
+        // persists no factor and reaches no session issuance.
+        match self.with_mfa(|store| store.enroll(&target, &factor, step))? {
             MfaEnrollment::Enrolled => self.issue_session(account, &client_module),
-            MfaEnrollment::AlreadyEnrolled => Err(self.deny(correlation_id)),
+            MfaEnrollment::AlreadyEnrolled | MfaEnrollment::ModuleDisabled => {
+                Err(self.deny(correlation_id))
+            }
         }
     }
 
@@ -919,11 +924,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         enabled: bool,
         expected_enrolled: usize,
     ) -> Result<MfaEnablementOutcome, AuthenticationRejection> {
-        let unavailable = AuthenticationRejection::ServiceUnavailable;
-        let target = MfaModuleTarget {
-            module: Name::new(TOTP_MODULE).map_err(|_| unavailable)?,
-            component: Name::new(TOTP_COMPONENT).map_err(|_| unavailable)?,
-        };
+        let target = totp_target()?;
         self.with_mfa(|store| store.set_module_enabled(&target, enabled, expected_enrolled))
     }
 
@@ -1363,6 +1364,20 @@ impl PreBodyCheck for MfaSessionPreconditions {
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
+
+/// Returns the two names this build's MFA Module is addressed by.
+///
+/// A factor records the module name while the module's enabled state belongs
+/// to its own configuration component, so an operation spanning both is given
+/// both from one place.
+fn totp_target() -> Result<MfaModuleTarget, AuthenticationRejection> {
+    let unavailable = AuthenticationRejection::ServiceUnavailable;
+
+    Ok(MfaModuleTarget {
+        module: Name::new(TOTP_MODULE).map_err(|_| unavailable)?,
+        component: Name::new(TOTP_COMPONENT).map_err(|_| unavailable)?,
+    })
+}
 
 /// Reports whether the deployment currently verifies second factors.
 ///
@@ -4028,6 +4043,76 @@ pub(crate) mod tests {
         let accepted = verify_code(&surface, &stopped, &current_code(&disclosed, later)).await;
         assert_eq!(accepted.status, StatusCode::OK);
         assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+    }
+
+    /// Disabling the module between opening and confirming refuses the
+    /// confirmation.
+    ///
+    /// The deployment stops verifying second factors while an enrollment is in
+    /// flight. The confirmation is still inside its window and carries a code
+    /// the module really accepts, so the only thing refusing it is the
+    /// enablement the write itself is decided against. Nothing is written and
+    /// no session is issued, which is what keeps an `mfa_required` account from
+    /// signing in behind a module the deployment is no longer willing to
+    /// verify. Re-enabling and enrolling again then succeeds, so the refusal is
+    /// the disabled module rather than a spent or broken enrollment.
+    #[tokio::test]
+    async fn an_enrollment_confirmed_after_the_module_was_disabled_writes_nothing() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, true));
+        let stopped = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let opened = opened_enrollment(&surface, &stopped).await;
+        assert_eq!(opened.status, StatusCode::OK);
+        let (disclosed, ticket) = opened_parts(&opened);
+
+        // No account holds a factor yet, so the preview the decision is checked
+        // against is zero and no live session is revoked by disabling.
+        assert_eq!(surface.runtime.enrolled_accounts().unwrap(), 0);
+        assert_eq!(
+            surface.runtime.set_module_enabled(false, 0).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 0
+            }
+        );
+
+        // The clock has not moved, so the enrollment is well inside its window
+        // and the code is current for the secret that enrollment disclosed.
+        let code = current_code(&disclosed, surface.clock());
+        let refused = confirm_code(&surface, &ticket, &code).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        assert!(refused.cookies.is_none());
+        assert!(!rendered(&refused).await.contains("Set-Cookie"));
+        assert_eq!(
+            surface.runtime.enrolled_accounts().unwrap(),
+            0,
+            "a refused confirmation must persist no factor"
+        );
+
+        // The account is required to enroll, so with the module disabled its
+        // login is denied outright rather than admitted without a factor.
+        let denied = login(&surface, surface.username(), CORRECT_PASSWORD).await;
+        assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
+        assert!(!rendered(&denied).await.contains("Set-Cookie"));
+
+        // Enabling again and enrolling from scratch still succeeds.
+        assert_eq!(
+            surface.runtime.set_module_enabled(true, 0).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 0
+            }
+        );
+        let resumed = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let reopened = opened_enrollment(&surface, &resumed).await;
+        assert_eq!(reopened.status, StatusCode::OK);
+        let (reopened_secret, reopened_ticket) = opened_parts(&reopened);
+        let confirmed = confirm_code(
+            &surface,
+            &reopened_ticket,
+            &current_code(&reopened_secret, surface.clock()),
+        )
+        .await;
+        assert_eq!(confirmed.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&confirmed).await).len(), 2);
+        assert_eq!(surface.runtime.enrolled_accounts().unwrap(), 1);
     }
 
     // -----------------------------------------------------------------------

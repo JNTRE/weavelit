@@ -378,6 +378,19 @@ replay watermark that already consumed the confirming code are written
 together in one operation, so the enrollment cannot be reopened and confirmed a
 second time and the confirming code cannot be presented again.
 
+That same operation also decides the Module's enablement. An enrollment is
+opened before it is confirmed, and the Module can be disabled in between, so
+confirmation reads the enabled state and writes the factor inside one
+transaction and refuses the confirmation when the Module is not enabled. The
+refusal writes no factor and issues no session, and is the same denial a login
+against a disabled Module receives. Deciding enablement from state loaded
+before the write would only narrow that window: the confirmation would persist a
+factor and issue a session behind a Module the deployment had already stopped
+verifying, and because disabling revokes only the sessions of accounts enrolled
+at that moment, the newly issued session would survive the very operation meant
+to end it. The continuation's own five-minute lifetime is unchanged; enablement
+is an additional condition on the write, not a shorter window.
+
 ### Provisioning URI Construction
 
 The URI's issuer, secret, and profile parameters are exact: the issuer is the
@@ -436,7 +449,8 @@ inside a single transaction, so no concurrent presentation of the same code can
 observe the pre-update watermark and be accepted alongside the first. The
 decision belongs to the store rather than to a caller precisely because a
 caller that read the watermark, decided, and then wrote it would reopen that
-window.
+window. The enablement condition on a confirmed enrollment belongs to the store
+for exactly the same reason.
 
 A watermark is live operational state, not restorable state. It records what a
 factor did in this running deployment, whereas an enrolled factor is part of
@@ -478,10 +492,13 @@ Module with dependent enrollments.
 Disabling the Module also revokes the live session of every account holding a
 TOTP factor, in that same atomic operation, because those sessions were
 established behind a factor this deployment is no longer willing to verify.
-Enabling the Module revokes no session. Disablement never removes an account's
-MFA requirement: a required account that holds no verifiable factor is denied
-under the [Second-Factor Admission](#second-factor-admission) table above
-rather than admitted without one.
+An enrollment already in flight cannot slip a session past that revocation,
+because its confirmation is refused by the enablement condition described in
+[Enrollment](#enrollment). Enabling the Module revokes no session. Disablement
+never removes an account's MFA requirement: a required account that holds no
+verifiable factor is denied under the
+[Second-Factor Admission](#second-factor-admission) table above rather than
+admitted without one.
 
 These two operations are Server-core primitives; no Administration Plane route
 composes them yet, so the Security Model's enablement requirement is satisfied

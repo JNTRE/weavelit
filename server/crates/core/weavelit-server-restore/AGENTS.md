@@ -64,6 +64,10 @@ state normalization performed before any deployment state is replaced.
   fixture change requires regenerating with
   `cargo run --example generate-restore-fixtures -p weavelit-server-restore`
   and an explicit format decision recorded in the Server Restore Design.
+- Keep `tests/support/mod.rs`'s `FIXTURE_TOTP_SECRET` the exact length the TOTP
+  Module declares. Content validation refuses factor data a named MFA Module
+  could not open, so a shorter placeholder would make the canonical valid
+  fixture invalid.
 - Never edit a vendored vector under `tests/vectors/`. Refresh the whole set
   from the pinned upstream commit instead, and update `tests/vectors/README.md`,
   `tests/vectors/vectors.json`, and the pinned expectation table in

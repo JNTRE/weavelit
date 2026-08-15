@@ -9,17 +9,37 @@
 //! runtime derives it once from the module crates themselves and supplies it as
 //! an inbound value; this crate owns only its representation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use weavelit_server_database::Name;
+
+/// The shape of the stored factor data one MFA Module can open.
+///
+/// The value is declared by the module crate that supplies the module, exactly
+/// as its name is, so a workflow judging stored state against the inventory
+/// judges it against the format the compiled-in module actually reads rather
+/// than against a length restated by the workflow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MfaFactorFormat {
+    /// Exact decrypted factor-data length, in bytes, the module can open.
+    pub factor_data_bytes: usize,
+}
+
+impl MfaFactorFormat {
+    /// Returns whether `factor_data` is a value the module can open.
+    #[must_use]
+    pub fn accepts(&self, factor_data: &[u8]) -> bool {
+        factor_data.len() == self.factor_data_bytes
+    }
+}
 
 /// Compiled-in components a pre-operational workflow may reference.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AvailableComponents {
     /// Compiled-in Client Modules.
     pub client_modules: BTreeSet<Name>,
-    /// Compiled-in MFA Modules.
-    pub mfa_modules: BTreeSet<Name>,
+    /// Compiled-in MFA Modules, each with the factor-data format it declares.
+    pub mfa_modules: BTreeMap<Name, MfaFactorFormat>,
     /// Compiled-in Service Modules.
     pub service_modules: BTreeSet<Name>,
     /// Compiled-in Log Modules.
@@ -38,7 +58,13 @@ impl AvailableComponents {
     /// Returns whether the named MFA Module is compiled in.
     #[must_use]
     pub fn has_mfa_module(&self, module: &Name) -> bool {
-        self.mfa_modules.contains(module)
+        self.mfa_modules.contains_key(module)
+    }
+
+    /// Returns the factor-data format the named MFA Module declares.
+    #[must_use]
+    pub fn mfa_factor_format(&self, module: &Name) -> Option<MfaFactorFormat> {
+        self.mfa_modules.get(module).copied()
     }
 
     /// Returns whether the named Service Module is compiled in.
@@ -62,11 +88,17 @@ impl AvailableComponents {
 
 #[cfg(test)]
 mod tests {
-    use super::AvailableComponents;
+    use super::{AvailableComponents, MfaFactorFormat};
     use weavelit_server_database::Name;
 
     fn name(value: &str) -> Name {
         Name::new(value).expect("the test name must be accepted")
+    }
+
+    fn format(bytes: usize) -> MfaFactorFormat {
+        MfaFactorFormat {
+            factor_data_bytes: bytes,
+        }
     }
 
     #[test]
@@ -74,6 +106,7 @@ mod tests {
         let components = AvailableComponents::default();
         assert!(!components.has_client_module(&name("web-ui")));
         assert!(!components.has_mfa_module(&name("totp")));
+        assert!(components.mfa_factor_format(&name("totp")).is_none());
         assert!(!components.has_service_module(&name("zendesk")));
         assert!(!components.has_log_module(&name("sqlite")));
         assert!(!components.has_operation(&name("ticket-search")));
@@ -83,7 +116,7 @@ mod tests {
     fn an_inventory_reports_only_the_components_it_was_built_with() {
         let components = AvailableComponents {
             client_modules: [name("web-ui")].into_iter().collect(),
-            mfa_modules: [name("totp")].into_iter().collect(),
+            mfa_modules: [(name("totp"), format(20))].into_iter().collect(),
             log_modules: [name("sqlite")].into_iter().collect(),
             ..AvailableComponents::default()
         };
@@ -94,5 +127,22 @@ mod tests {
         assert!(!components.has_service_module(&name("zendesk")));
         assert!(!components.has_operation(&name("ticket-search")));
         assert!(!components.has_client_module(&name("cli")));
+    }
+
+    #[test]
+    fn an_inventory_reports_the_factor_format_its_mfa_module_declares() {
+        let components = AvailableComponents {
+            mfa_modules: [(name("totp"), format(20))].into_iter().collect(),
+            ..AvailableComponents::default()
+        };
+
+        let declared = components
+            .mfa_factor_format(&name("totp"))
+            .expect("a compiled-in MFA Module declares its factor format");
+        assert!(declared.accepts(&[0; 20]));
+        assert!(!declared.accepts(&[0; 19]));
+        assert!(!declared.accepts(&[0; 21]));
+        assert!(!declared.accepts(&[]));
+        assert!(components.mfa_factor_format(&name("webauthn")).is_none());
     }
 }

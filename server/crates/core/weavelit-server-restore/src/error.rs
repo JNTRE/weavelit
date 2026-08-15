@@ -145,6 +145,8 @@ pub enum ContentError {
     UnresolvedReference,
     /// A required log-type assignment was absent or pointed at a disabled configuration.
     AssignmentInvalid,
+    /// A factor named a known MFA Module but carried data that module cannot open.
+    FactorDataInvalid,
 }
 
 impl fmt::Display for ContentError {

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use weavelit_server_authentication::{
     PasswordAuthenticator, PasswordPolicy, PasswordVerdict, RustCryptoArgon2, StoredCredential,
 };
-use weavelit_server_components::AvailableComponents;
+use weavelit_server_components::{AvailableComponents, MfaFactorFormat};
 use weavelit_server_database::{
     CompletionObligation, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
     DeploymentIdentifier, GroupGrant, LogClassification, LogDetail, LogModuleSetting, LogType,
@@ -47,7 +47,14 @@ fn key(value: &str) -> ConfigurationKey {
 fn components() -> AvailableComponents {
     AvailableComponents {
         client_modules: [name(WEB_UI)].into_iter().collect(),
-        mfa_modules: [name("totp")].into_iter().collect(),
+        mfa_modules: [(
+            name("totp"),
+            MfaFactorFormat {
+                factor_data_bytes: 20,
+            },
+        )]
+        .into_iter()
+        .collect(),
         log_modules: [name(LOG_MODULE)].into_iter().collect(),
         ..AvailableComponents::default()
     }

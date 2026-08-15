@@ -31,6 +31,8 @@ const INSERT_FACTOR: &str = "INSERT INTO weavelit_mfa_factor \
      ON CONFLICT (account_id, module) DO NOTHING";
 const COUNT_ENROLLED_ACCOUNTS: &str =
     "SELECT COUNT(DISTINCT account_id) FROM weavelit_mfa_factor WHERE module = ?1";
+const SELECT_ENABLEMENT: &str = "SELECT setting_value FROM weavelit_configuration \
+     WHERE component = ?1 AND setting_key = ?2";
 const SET_ENABLEMENT: &str = "INSERT INTO weavelit_configuration \
      (component, setting_key, setting_value) VALUES (?1, ?2, ?3) \
      ON CONFLICT (component, setting_key) DO UPDATE SET setting_value = excluded.setting_value";
@@ -115,6 +117,7 @@ impl MfaStore for SqliteDatabase {
 
     fn enroll(
         &mut self,
+        target: &MfaModuleTarget,
         factor: &MfaFactor,
         accepted_step: MfaTimeStep,
     ) -> Result<MfaEnrollment, DatabaseError> {
@@ -122,6 +125,22 @@ impl MfaStore for SqliteDatabase {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        // The enablement read and the two writes share this one transaction,
+        // so a module disabled between opening the enrollment and confirming
+        // it cannot have a factor written against it, and no session can be
+        // issued behind one.
+        let enabled: Option<String> = transaction
+            .query_row(
+                SELECT_ENABLEMENT,
+                params![target.component.as_str(), MODULE_ENABLED_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        // Rolled back rather than committed, so a disabled module writes nothing.
+        if enabled.as_deref() != Some(COMPONENT_ENABLED_VALUE) {
+            return Ok(MfaEnrollment::ModuleDisabled);
+        }
         let written = transaction
             .execute(
                 INSERT_FACTOR,

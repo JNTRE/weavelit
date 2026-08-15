@@ -62,6 +62,8 @@ pub enum MfaEnrollment {
     Enrolled,
     /// The account already holds a factor for that MFA Module.
     AlreadyEnrolled,
+    /// The MFA Module was disabled when the enrollment was presented.
+    ModuleDisabled,
 }
 
 /// The two names one MFA Module is addressed by.
@@ -129,8 +131,17 @@ pub trait MfaStore {
     /// watermark would accept the very code that confirmed it a second time,
     /// and a watermark without its factor would refuse a later code on
     /// evidence of an enrollment this deployment never completed.
+    ///
+    /// The module's enabled state is read inside that same operation and the
+    /// enrollment is refused when it is not enabled. An enrollment is opened
+    /// before it is confirmed, so a caller that decided enablement on state it
+    /// loaded earlier would persist a factor, and issue the session behind it,
+    /// against a module the deployment stopped verifying in between. `target`
+    /// names the configuration component that owns the enabled setting for the
+    /// module the factor records.
     fn enroll(
         &mut self,
+        target: &MfaModuleTarget,
         factor: &MfaFactor,
         accepted_step: MfaTimeStep,
     ) -> Result<MfaEnrollment, DatabaseError>;
