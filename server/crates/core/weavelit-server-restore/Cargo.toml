@@ -19,9 +19,7 @@ weavelit-server-components = { path = "../weavelit-server-components" }
 weavelit-server-database = { path = "../../database/weavelit-server-database" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
 weavelit-server-recovery-key = { path = "../weavelit-server-recovery-key" }
-# `serde` lets the wire model deserialize an encoded secret straight into a
-# `Zeroizing<String>` instead of a plain `String` that would be dropped unwiped.
-zeroize = { version = "=1.9.0", default-features = false, features = ["alloc", "serde"] }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 
 # The fixture generator is a second, independent age v1 writer over the same
 # primitives; the crate's own dependencies are available to it, so only the

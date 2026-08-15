@@ -90,6 +90,28 @@ fn a_wrong_recovery_key_is_indistinguishable_from_a_corrupt_backup() {
 }
 
 #[test]
+fn a_backup_declaring_another_recipient_is_indistinguishable_from_a_corrupt_backup() {
+    let error = validate(&support::mismatched_recipient_backup(), &identity())
+        .expect_err("a backup that declares an unrelated recipient must be rejected");
+
+    assert_eq!(
+        support::category(error),
+        ("backup_invalid", "backup_invalid")
+    );
+}
+
+#[test]
+fn a_backup_declaring_a_non_canonical_recipient_is_not_reported_as_a_key_failure() {
+    let error = validate(&support::non_canonical_recipient_backup(), &identity())
+        .expect_err("a backup that declares a non-canonical recipient must be rejected");
+
+    assert_eq!(
+        support::category(error),
+        ("backup_invalid", "backup_invalid")
+    );
+}
+
+#[test]
 fn an_unsupported_outer_format_version_is_incompatible() {
     let error = validate(&committed("wrong-outer-version.wlitbackup"), &identity())
         .expect_err("an unsupported envelope version must be rejected");

@@ -126,13 +126,28 @@ maintained parser and rejects unknown required fields, duplicate identities,
 invalid references, unsupported versions, unavailable required compiled-in
 components, and values outside Server domain constraints.
 
+The collection and string bounds are enforced during deserialization, not after
+it. Every backup collection deserializes at most its accepted number of typed
+entries — 100,000 for a top-level collection and 256 for one Log Module
+configuration's settings — and consumes any further entry as an ignored value
+without building it into the wire model. Every wire string is rejected before it
+is owned when it exceeds the bound of the domain value it becomes, including the
+22-character encoded state identifier and the encoded ceiling of the maximum
+decrypted protected value. A document that declares far more entries than the
+Server accepts therefore cannot multiply the authenticated plaintext into
+vector and string allocations before the bound applies; a single escaped string
+may still occupy one parser buffer, which stays linear in the plaintext. An
+over-full collection is still rejected as an oversized collection, and every
+rejection remains `backup_invalid`.
+
 The private recovery key is accepted only to authenticate and decrypt the
 submitted backup. It is not an application identity, proof of host authority,
-or authorization for another action. The Restore crate verifies that it matches
-the artifact's recovery public key, retains only the corresponding public key
-for future backups, and keeps the private key, unwrapped data key, and plaintext
-only in bounded transient memory. Sensitive buffers are cleared through the
-selected maintained cryptographic facilities when no longer needed.
+or authorization for another action. The Restore crate verifies that the
+submitted key decrypts the artifact and that the artifact's declared recovery
+public key is that key's own recipient, retains only that public key for future
+backups, and keeps the private key, unwrapped data key, and plaintext only in
+bounded transient memory. Sensitive buffers are cleared through the selected
+maintained cryptographic facilities when no longer needed.
 
 The Milestone 1 Restore request is held entirely in bounded transient memory.
 The Server does not persist the encrypted artifact, the private recovery key,
@@ -197,7 +212,8 @@ attacker-controlled work and performs no state mutation until it is complete:
    recovery key under configured cryptographic-work limits;
 7. authenticated-plaintext size bounds;
 8. the inner `format_version` and Server/source-backend compatibility;
-9. internal references, required components, and domain semantics;
+9. internal references, required components, domain semantics, and the binding
+   of the retained recovery public key to the submitted recovery key;
 10. clearing of the private recovery key and unwrapped data key from transient
     memory, retaining only the recovery public key; and
 11. checkpoint creation and atomic replacement, detailed in
@@ -206,6 +222,17 @@ attacker-controlled work and performs no state mutation until it is complete:
 A failure at any step releases transient resources without continuing to a
 later step, leaves the selected database without application state, and
 returns only a stable, redacted error.
+
+Step 9's recipient binding is what makes the retained recovery public key
+trustworthy. The backup declares that key in its authenticated plaintext, so a
+backup encrypted to one recovery key could otherwise declare an unrelated one,
+and every backup the restored deployment later produced would be encrypted to a
+private key the operator may not hold. Restore therefore parses the declared key
+as a canonical age recipient and requires it to equal the submitted recovery
+key's own recipient. A declared key that is not a canonical recipient and one
+that belongs to another identity are both rejected as `backup_invalid`,
+indistinguishable from a wrong recovery key or an altered artifact, so the
+rejection discloses nothing about which condition failed.
 
 A valid backup supplies the application-owned state required for operation,
 including account records, password verifiers, Groups and grants, enabled

@@ -571,6 +571,37 @@ fn generate_backup(plaintext_length: usize, flag_final: bool) -> GeneratedBackup
     }
 }
 
+/// Generates a backup encrypted to the fixture identity whose plaintext
+/// declares an unrelated recovery public key.
+///
+/// The artifact authenticates under the fixture recovery key, so nothing before
+/// the recipient binding can reject it.
+pub fn mismatched_recipient_backup() -> Vec<u8> {
+    let recipient_key = PublicKey::from(&StaticSecret::from(RECOVERY_SECRET));
+    let unrelated = PublicKey::from(&StaticSecret::from(WRONG_SECRET));
+    let plaintext = backup_plaintext(
+        1,
+        "sqlite",
+        &encode_recipient(unrelated.as_bytes()),
+        Referenced::Full,
+    );
+    artifact(&plaintext, &recipient_key)
+}
+
+/// Generates the same backup declaring a recipient whose Bech32 checksum is wrong.
+///
+/// The declared key still satisfies the stored recovery-public-key domain, so
+/// only canonical recipient parsing rejects it.
+pub fn non_canonical_recipient_backup() -> Vec<u8> {
+    let recipient_key = PublicKey::from(&StaticSecret::from(RECOVERY_SECRET));
+    let mut declared = encode_recipient(recipient_key.as_bytes()).into_bytes();
+    let last = declared.len() - 1;
+    declared[last] = if declared[last] == b'q' { b'p' } else { b'q' };
+    let declared = String::from_utf8(declared).expect("the mutated recipient stays ASCII");
+    let plaintext = backup_plaintext(1, "sqlite", &declared, Referenced::Full);
+    artifact(&plaintext, &recipient_key)
+}
+
 /// Wraps arbitrary age stream bytes in a well-formed outer Weavelit envelope.
 pub fn envelope(stream: &[u8]) -> Vec<u8> {
     let mut artifact = Vec::with_capacity(20 + stream.len());

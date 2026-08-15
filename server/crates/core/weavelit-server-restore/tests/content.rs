@@ -3,6 +3,7 @@
 mod support;
 
 use support::{committed, committed_text, components};
+use weavelit_server_database::MAX_NAME_LENGTH;
 use weavelit_server_restore::{
     AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
     MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS, MAX_SENSITIVE_VALUE_BYTES, Name, RestoreError,
@@ -269,6 +270,85 @@ fn an_out_of_domain_value_is_rejected() {
         )),
         ContentError::DomainInvalid
     );
+}
+
+/// Builds one collection body of `count` copies of `entry` plus one surplus
+/// entry that cannot deserialize as the collection's wire type.
+///
+/// The surplus entry is valid JSON, so it can still be consumed and counted
+/// without being parsed into the wire model.
+fn overflowing(entry: &str, count: usize, surplus: &str) -> String {
+    let mut entries = String::with_capacity((entry.len() + 1) * count + surplus.len());
+    for _ in 0..count {
+        entries.push_str(entry);
+        entries.push(',');
+    }
+    entries.push_str(surplus);
+    entries
+}
+
+#[test]
+fn a_top_level_collection_past_its_limit_is_rejected_without_parsing_the_surplus_entry() {
+    const ENTRY: &str = r#"{"component":"weavelit-server","key":"site-name","value":"Example"}"#;
+
+    let document = replaced(
+        &format!("\"configuration\":[{ENTRY}]"),
+        &format!(
+            "\"configuration\":[{}]",
+            overflowing(
+                ENTRY,
+                MAX_COLLECTION_ENTRIES,
+                r#"{"component":1,"key":2,"value":3}"#
+            )
+        ),
+    );
+
+    assert_eq!(reject(&document), ContentError::CollectionTooLarge);
+    assert_eq!(
+        RestoreError::from(reject(&document)).category_reason(),
+        ("backup_invalid", "backup_invalid")
+    );
+}
+
+#[test]
+fn a_log_module_settings_collection_past_its_limit_is_rejected_without_parsing_the_surplus_entry() {
+    const ENTRY: &str = r#"{"key":"retention-days","value":"30"}"#;
+
+    let document = replaced(
+        &format!("\"settings\":[{ENTRY}]"),
+        &format!(
+            "\"settings\":[{}]",
+            overflowing(ENTRY, MAX_LOG_MODULE_SETTINGS, r#"{"key":1,"value":2}"#)
+        ),
+    );
+
+    assert_eq!(reject(&document), ContentError::CollectionTooLarge);
+    assert_eq!(
+        RestoreError::from(reject(&document)).category_reason(),
+        ("backup_invalid", "backup_invalid")
+    );
+}
+
+#[test]
+fn a_wire_string_past_its_domain_bound_is_rejected() {
+    let document = replaced(
+        "\"username\":\"administrator\"",
+        &format!("\"username\":\"{}\"", "a".repeat(MAX_NAME_LENGTH + 1)),
+    );
+    assert_eq!(reject(&document), ContentError::Malformed);
+    assert_eq!(
+        RestoreError::from(reject(&document)).category_reason(),
+        ("backup_invalid", "backup_invalid")
+    );
+
+    let document = replaced(
+        "\"credential\":\"cHJvdmlkZXItdG9rZW4\"",
+        &format!(
+            "\"credential\":\"{}\"",
+            "a".repeat(MAX_SENSITIVE_VALUE_BYTES * 2)
+        ),
+    );
+    assert_eq!(reject(&document), ContentError::Malformed);
 }
 
 #[test]

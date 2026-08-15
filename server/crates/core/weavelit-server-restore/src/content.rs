@@ -1,15 +1,22 @@
-use std::{collections::BTreeSet, fmt};
+use std::{collections::BTreeSet, fmt, marker::PhantomData};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::Deserialize;
+use serde::{
+    Deserialize, Deserializer,
+    de::{Error as DeserializeError, IgnoredAny, SeqAccess, Visitor},
+};
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
     Account, AccountPasswordVerifier, ConfigurationEntry, ConfigurationKey, Group, GroupGrant,
     GroupGrantRecord, GroupMembership, LogAssignment, LogModuleConfiguration, LogModuleSetting,
-    LogType, MAX_PROTECTED_VALUE_LENGTH, Name, PasswordVerifier, RecoveryPublicKey,
+    LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
+    MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
+    MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name, PasswordVerifier, RecoveryPublicKey,
     STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
-use weavelit_server_lifecycle::{BackendIdentifier, MAX_PROTECTED_PLAINTEXT_BYTES};
+use weavelit_server_lifecycle::{
+    BackendIdentifier, MAX_IDENTIFIER_LENGTH, MAX_PROTECTED_PLAINTEXT_BYTES,
+};
 use zeroize::Zeroizing;
 
 use crate::ContentError;
@@ -201,6 +208,192 @@ impl NormalizedBackup {
 }
 
 // ---------------------------------------------------------------------------
+// Bounded wire primitives
+// ---------------------------------------------------------------------------
+
+/// Returns the length of the canonical unpadded Base64 encoding of `bytes`.
+const fn encoded_length(bytes: usize) -> usize {
+    bytes / 3 * 4
+        + match bytes % 3 {
+            0 => 0,
+            1 => 2,
+            _ => 3,
+        }
+}
+
+/// Encoded length of one opaque state identifier.
+const WIRE_IDENTIFIER_LENGTH: usize = encoded_length(STATE_IDENTIFIER_LENGTH);
+
+const _: () = assert!(WIRE_IDENTIFIER_LENGTH == 22);
+
+/// Encoded ceiling of one decrypted protected value.
+const WIRE_SENSITIVE_VALUE_LENGTH: usize = encoded_length(MAX_SENSITIVE_VALUE_BYTES);
+
+/// Wire sequence that deserializes at most `MAX` typed elements.
+///
+/// Every element past the limit is consumed as [`IgnoredAny`] and is never
+/// deserialized as `Element`, so a document that declares more entries than the
+/// Server accepts cannot allocate the surplus records or their strings before
+/// the bound is applied. Overflow is recorded rather than rejected here, so
+/// [`ContentError::CollectionTooLarge`] stays attributed to `map_collection`.
+struct BoundedCollection<Element, const MAX: usize> {
+    entries: Vec<Element>,
+    overflow: bool,
+}
+
+struct BoundedCollectionVisitor<Element, const MAX: usize>(PhantomData<fn() -> Element>);
+
+impl<'de, Element: Deserialize<'de>, const MAX: usize> Visitor<'de>
+    for BoundedCollectionVisitor<Element, MAX>
+{
+    type Value = BoundedCollection<Element, MAX>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "a sequence of at most {MAX} entries")
+    }
+
+    fn visit_seq<Access: SeqAccess<'de>>(
+        self,
+        mut sequence: Access,
+    ) -> Result<Self::Value, Access::Error> {
+        let mut entries = Vec::new();
+        while entries.len() < MAX {
+            let Some(entry) = sequence.next_element::<Element>()? else {
+                return Ok(BoundedCollection {
+                    entries,
+                    overflow: false,
+                });
+            };
+            entries.push(entry);
+        }
+
+        let mut overflow = false;
+        while sequence.next_element::<IgnoredAny>()?.is_some() {
+            overflow = true;
+        }
+        Ok(BoundedCollection { entries, overflow })
+    }
+}
+
+impl<'de, Element: Deserialize<'de>, const MAX: usize> Deserialize<'de>
+    for BoundedCollection<Element, MAX>
+{
+    fn deserialize<Source: Deserializer<'de>>(source: Source) -> Result<Self, Source::Error> {
+        source.deserialize_seq(BoundedCollectionVisitor::<Element, MAX>(PhantomData))
+    }
+}
+
+/// Wire text rejected before it is owned when it exceeds `MAX` encoded bytes.
+///
+/// The domain constructor applies the same bound again, together with the rest
+/// of its contract; this wrapper only stops an over-long value from being
+/// allocated in the first place.
+struct WireText<const MAX: usize>(String);
+
+impl<const MAX: usize> WireText<MAX> {
+    fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl<const MAX: usize> std::ops::Deref for WireText<MAX> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+struct WireTextVisitor<const MAX: usize>;
+
+impl<const MAX: usize> Visitor<'_> for WireTextVisitor<MAX> {
+    type Value = WireText<MAX>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "a string of at most {MAX} bytes")
+    }
+
+    fn visit_str<Failure: DeserializeError>(self, value: &str) -> Result<Self::Value, Failure> {
+        if value.len() > MAX {
+            return Err(Failure::invalid_length(value.len(), &self));
+        }
+        Ok(WireText(value.to_owned()))
+    }
+
+    fn visit_string<Failure: DeserializeError>(
+        self,
+        value: String,
+    ) -> Result<Self::Value, Failure> {
+        if value.len() > MAX {
+            return Err(Failure::invalid_length(value.len(), &self));
+        }
+        Ok(WireText(value))
+    }
+}
+
+impl<'de, const MAX: usize> Deserialize<'de> for WireText<MAX> {
+    fn deserialize<Source: Deserializer<'de>>(source: Source) -> Result<Self, Source::Error> {
+        source.deserialize_str(WireTextVisitor::<MAX>)
+    }
+}
+
+/// Encoded wire secret bounded the same way, whose buffer is wiped when dropped.
+struct WireSecret<const MAX: usize>(Zeroizing<String>);
+
+impl<const MAX: usize> std::ops::Deref for WireSecret<MAX> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+struct WireSecretVisitor<const MAX: usize>;
+
+impl<const MAX: usize> Visitor<'_> for WireSecretVisitor<MAX> {
+    type Value = WireSecret<MAX>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "an encoded secret of at most {MAX} bytes")
+    }
+
+    fn visit_str<Failure: DeserializeError>(self, value: &str) -> Result<Self::Value, Failure> {
+        if value.len() > MAX {
+            return Err(Failure::invalid_length(value.len(), &self));
+        }
+        Ok(WireSecret(Zeroizing::new(value.to_owned())))
+    }
+
+    fn visit_string<Failure: DeserializeError>(
+        self,
+        value: String,
+    ) -> Result<Self::Value, Failure> {
+        // The buffer is wiped on both the accepting and the rejecting path.
+        let value = Zeroizing::new(value);
+        if value.len() > MAX {
+            return Err(Failure::invalid_length(value.len(), &self));
+        }
+        Ok(WireSecret(value))
+    }
+}
+
+impl<'de, const MAX: usize> Deserialize<'de> for WireSecret<MAX> {
+    fn deserialize<Source: Deserializer<'de>>(source: Source) -> Result<Self, Source::Error> {
+        source.deserialize_str(WireSecretVisitor::<MAX>)
+    }
+}
+
+type WireBackendIdentifier = WireText<MAX_IDENTIFIER_LENGTH>;
+type WireConfigurationKey = WireText<MAX_CONFIGURATION_KEY_LENGTH>;
+type WireConfigurationValue = WireText<MAX_CONFIGURATION_VALUE_LENGTH>;
+type WireDescription = WireText<MAX_DESCRIPTION_LENGTH>;
+type WireIdentifier = WireText<WIRE_IDENTIFIER_LENGTH>;
+type WireName = WireText<MAX_NAME_LENGTH>;
+type WirePasswordVerifier = WireText<MAX_PASSWORD_VERIFIER_LENGTH>;
+type WireRecoveryPublicKey = WireText<MAX_RECOVERY_PUBLIC_KEY_LENGTH>;
+type WireSensitiveValue = WireSecret<WIRE_SENSITIVE_VALUE_LENGTH>;
+
+// ---------------------------------------------------------------------------
 // Version 1 wire model
 // ---------------------------------------------------------------------------
 
@@ -208,44 +401,44 @@ impl NormalizedBackup {
 #[serde(deny_unknown_fields)]
 struct BackupDocumentV1 {
     format_version: u32,
-    source_backend: String,
-    recovery_public_key: String,
-    configuration: Vec<ConfigurationEntryV1>,
-    protected_secrets: Vec<ProtectedSecretV1>,
-    accounts: Vec<AccountV1>,
-    password_verifiers: Vec<PasswordVerifierV1>,
-    groups: Vec<GroupV1>,
-    group_memberships: Vec<GroupMembershipV1>,
-    group_grants: Vec<GroupGrantV1>,
-    mfa_factors: Vec<MfaFactorV1>,
-    service_connections: Vec<ServiceConnectionV1>,
-    log_module_configurations: Vec<LogModuleConfigurationV1>,
-    log_assignments: Vec<LogAssignmentV1>,
+    source_backend: WireBackendIdentifier,
+    recovery_public_key: WireRecoveryPublicKey,
+    configuration: BoundedCollection<ConfigurationEntryV1, MAX_COLLECTION_ENTRIES>,
+    protected_secrets: BoundedCollection<ProtectedSecretV1, MAX_COLLECTION_ENTRIES>,
+    accounts: BoundedCollection<AccountV1, MAX_COLLECTION_ENTRIES>,
+    password_verifiers: BoundedCollection<PasswordVerifierV1, MAX_COLLECTION_ENTRIES>,
+    groups: BoundedCollection<GroupV1, MAX_COLLECTION_ENTRIES>,
+    group_memberships: BoundedCollection<GroupMembershipV1, MAX_COLLECTION_ENTRIES>,
+    group_grants: BoundedCollection<GroupGrantV1, MAX_COLLECTION_ENTRIES>,
+    mfa_factors: BoundedCollection<MfaFactorV1, MAX_COLLECTION_ENTRIES>,
+    service_connections: BoundedCollection<ServiceConnectionV1, MAX_COLLECTION_ENTRIES>,
+    log_module_configurations: BoundedCollection<LogModuleConfigurationV1, MAX_COLLECTION_ENTRIES>,
+    log_assignments: BoundedCollection<LogAssignmentV1, MAX_COLLECTION_ENTRIES>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigurationEntryV1 {
-    component: String,
-    key: String,
-    value: String,
+    component: WireName,
+    key: WireConfigurationKey,
+    value: WireConfigurationValue,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProtectedSecretV1 {
-    component: String,
-    key: String,
+    component: WireName,
+    key: WireConfigurationKey,
     /// Encoded secret; the owned buffer is wiped when the entry is dropped.
-    value: Zeroizing<String>,
+    value: WireSensitiveValue,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccountV1 {
-    identifier: String,
-    username: String,
-    display_name: Option<String>,
+    identifier: WireIdentifier,
+    username: WireName,
+    display_name: Option<WireName>,
     active: bool,
     /// Absent in a document written before the requirement existed.
     ///
@@ -258,83 +451,83 @@ struct AccountV1 {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PasswordVerifierV1 {
-    account: String,
-    verifier: String,
+    account: WireIdentifier,
+    verifier: WirePasswordVerifier,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GroupV1 {
-    identifier: String,
-    name: String,
-    description: Option<String>,
+    identifier: WireIdentifier,
+    name: WireName,
+    description: Option<WireDescription>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GroupMembershipV1 {
-    group: String,
-    account: String,
+    group: WireIdentifier,
+    account: WireIdentifier,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GroupGrantV1 {
-    group: String,
+    group: WireIdentifier,
     grant: GrantV1,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 enum GrantV1 {
-    ClientModule(String),
-    ServiceModule(String),
-    Operation(String),
+    ClientModule(WireName),
+    ServiceModule(WireName),
+    Operation(WireName),
     ServerAdministration,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MfaFactorV1 {
-    identifier: String,
-    account: String,
-    module: String,
+    identifier: WireIdentifier,
+    account: WireIdentifier,
+    module: WireName,
     /// Encoded secret; the owned buffer is wiped when the entry is dropped.
-    factor_data: Zeroizing<String>,
+    factor_data: WireSensitiveValue,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServiceConnectionV1 {
-    identifier: String,
-    service_module: String,
-    name: String,
+    identifier: WireIdentifier,
+    service_module: WireName,
+    name: WireName,
     /// Encoded secret; the owned buffer is wiped when the entry is dropped.
-    credential: Zeroizing<String>,
+    credential: WireSensitiveValue,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogModuleConfigurationV1 {
-    identifier: String,
-    module: String,
-    name: String,
+    identifier: WireIdentifier,
+    module: WireName,
+    name: WireName,
     enabled: bool,
-    settings: Vec<LogModuleSettingV1>,
+    settings: BoundedCollection<LogModuleSettingV1, MAX_LOG_MODULE_SETTINGS>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogModuleSettingV1 {
-    key: String,
-    value: String,
+    key: WireConfigurationKey,
+    value: WireConfigurationValue,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogAssignmentV1 {
     log_type: LogTypeV1,
-    configuration: String,
+    configuration: WireIdentifier,
 }
 
 #[derive(Deserialize)]
@@ -365,13 +558,13 @@ pub fn normalize(
     if document.format_version != BACKUP_CONTENT_FORMAT_VERSION {
         return Err(ContentError::UnsupportedFormatVersion);
     }
-    let source_backend = BackendIdentifier::new(document.source_backend.clone())
+    let source_backend = BackendIdentifier::new(document.source_backend.into_inner())
         .map_err(|_| ContentError::DomainInvalid)?;
     if source_backend.as_str() != selected_backend.as_str() {
         return Err(ContentError::BackendMismatch);
     }
 
-    let recovery_public_key = RecoveryPublicKey::new(document.recovery_public_key)
+    let recovery_public_key = RecoveryPublicKey::new(document.recovery_public_key.into_inner())
         .map_err(|_| ContentError::DomainInvalid)?;
 
     let configuration = map_collection(document.configuration, |entry| {
@@ -400,7 +593,7 @@ pub fn normalize(
     let password_verifiers = map_collection(document.password_verifiers, |entry| {
         Ok(AccountPasswordVerifier {
             account: identifier(&entry.account)?,
-            verifier: PasswordVerifier::new(entry.verifier)
+            verifier: PasswordVerifier::new(entry.verifier.into_inner())
                 .map_err(|_| ContentError::DomainInvalid)?,
         })
     })?;
@@ -445,24 +638,17 @@ pub fn normalize(
         })
     })?;
     let log_module_configurations = map_collection(document.log_module_configurations, |entry| {
-        if entry.settings.len() > MAX_LOG_MODULE_SETTINGS {
-            return Err(ContentError::CollectionTooLarge);
-        }
         Ok(LogModuleConfiguration {
             identifier: identifier(&entry.identifier)?,
             module: name(entry.module)?,
             name: name(entry.name)?,
             enabled: entry.enabled,
-            settings: entry
-                .settings
-                .into_iter()
-                .map(|setting| {
-                    Ok(LogModuleSetting {
-                        key: bounded(setting.key)?,
-                        value: bounded(setting.value)?,
-                    })
+            settings: map_collection(entry.settings, |setting| {
+                Ok(LogModuleSetting {
+                    key: bounded(setting.key)?,
+                    value: bounded(setting.value)?,
                 })
-                .collect::<Result<Vec<_>, ContentError>>()?,
+            })?,
         })
     })?;
     let log_assignments = map_collection(document.log_assignments, |entry| {
@@ -640,24 +826,25 @@ fn reject_unavailable_components(
 // Field helpers
 // ---------------------------------------------------------------------------
 
-fn map_collection<Wire, Value>(
-    entries: Vec<Wire>,
+fn map_collection<Wire, Value, const MAX: usize>(
+    entries: BoundedCollection<Wire, MAX>,
     convert: impl Fn(Wire) -> Result<Value, ContentError>,
 ) -> Result<Vec<Value>, ContentError> {
-    if entries.len() > MAX_COLLECTION_ENTRIES {
+    if entries.overflow {
         return Err(ContentError::CollectionTooLarge);
     }
-    entries.into_iter().map(convert).collect()
+    entries.entries.into_iter().map(convert).collect()
 }
 
-fn name(value: String) -> Result<Name, ContentError> {
+fn name(value: WireName) -> Result<Name, ContentError> {
     bounded(value)
 }
 
 fn bounded<const MAX: usize>(
-    value: String,
+    value: WireText<MAX>,
 ) -> Result<weavelit_server_database::BoundedText<MAX>, ContentError> {
-    weavelit_server_database::BoundedText::new(value).map_err(|_| ContentError::DomainInvalid)
+    weavelit_server_database::BoundedText::new(value.into_inner())
+        .map_err(|_| ContentError::DomainInvalid)
 }
 
 fn identifier(value: &str) -> Result<StateIdentifier, ContentError> {
@@ -732,7 +919,14 @@ fn require_component(available: bool) -> Result<(), ContentError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MfaFactorV1, ProtectedSecretV1, ServiceConnectionV1, Zeroizing};
+    use std::cell::Cell;
+
+    use serde::{Deserialize, Deserializer};
+
+    use super::{
+        BoundedCollection, MfaFactorV1, ProtectedSecretV1, ServiceConnectionV1,
+        WIRE_SENSITIVE_VALUE_LENGTH, WireSecret, Zeroizing,
+    };
 
     /// Pins the wire model's secret fields to the wiping string type.
     ///
@@ -745,21 +939,67 @@ mod tests {
             r#"{"component":"weavelit-server","key":"provider","value":"cHJvdmlkZXItdG9rZW4"}"#,
         )
         .expect("the protected secret entry parses");
-        let value: Zeroizing<String> = secret.value;
+        let value: WireSecret<WIRE_SENSITIVE_VALUE_LENGTH> = secret.value;
+        let value: Zeroizing<String> = value.0;
         assert_eq!(value.as_str(), "cHJvdmlkZXItdG9rZW4");
 
         let factor: MfaFactorV1 = serde_json::from_str(
             r#"{"identifier":"AgMEBQYHCAkKCwwNDg8QEQ","account":"AgMEBQYHCAkKCwwNDg8QEQ","module":"totp","factor_data":"dG90cC1zZWVk"}"#,
         )
         .expect("the MFA factor entry parses");
-        let factor_data: Zeroizing<String> = factor.factor_data;
+        let factor_data: WireSecret<WIRE_SENSITIVE_VALUE_LENGTH> = factor.factor_data;
+        let factor_data: Zeroizing<String> = factor_data.0;
         assert_eq!(factor_data.as_str(), "dG90cC1zZWVk");
 
         let connection: ServiceConnectionV1 = serde_json::from_str(
             r#"{"identifier":"AgMEBQYHCAkKCwwNDg8QEQ","service_module":"zendesk","name":"primary","credential":"cHJvdmlkZXItdG9rZW4"}"#,
         )
         .expect("the Service Connection entry parses");
-        let credential: Zeroizing<String> = connection.credential;
+        let credential: WireSecret<WIRE_SENSITIVE_VALUE_LENGTH> = connection.credential;
+        let credential: Zeroizing<String> = credential.0;
         assert_eq!(credential.as_str(), "cHJvdmlkZXItdG9rZW4");
+    }
+
+    thread_local! {
+        /// Number of times [`Recorded`] was asked to deserialize an element.
+        static ELEMENT_DESERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Element that records every attempt to deserialize it.
+    struct Recorded;
+
+    impl<'de> Deserialize<'de> for Recorded {
+        fn deserialize<Source: Deserializer<'de>>(source: Source) -> Result<Self, Source::Error> {
+            ELEMENT_DESERIALIZATIONS.with(|count| count.set(count.get() + 1));
+            u32::deserialize(source)?;
+            Ok(Self)
+        }
+    }
+
+    #[test]
+    fn a_bounded_collection_never_deserializes_an_element_past_its_limit() {
+        ELEMENT_DESERIALIZATIONS.with(|count| count.set(0));
+
+        // The fourth entry could not deserialize as `Recorded`, so accepting the
+        // document proves the surplus entries were consumed as `IgnoredAny`.
+        let collection: BoundedCollection<Recorded, 3> =
+            serde_json::from_str(r#"[1,2,3,"not a number",{"nested":[4,5]}]"#)
+                .expect("entries past the limit are ignored rather than deserialized");
+
+        assert_eq!(collection.entries.len(), 3);
+        assert!(collection.overflow);
+        assert_eq!(ELEMENT_DESERIALIZATIONS.with(Cell::get), 3);
+    }
+
+    #[test]
+    fn a_bounded_collection_at_its_limit_does_not_report_overflow() {
+        ELEMENT_DESERIALIZATIONS.with(|count| count.set(0));
+
+        let collection: BoundedCollection<Recorded, 3> =
+            serde_json::from_str("[1,2,3]").expect("a collection at its limit is accepted");
+
+        assert_eq!(collection.entries.len(), 3);
+        assert!(!collection.overflow);
+        assert_eq!(ELEMENT_DESERIALIZATIONS.with(Cell::get), 3);
     }
 }

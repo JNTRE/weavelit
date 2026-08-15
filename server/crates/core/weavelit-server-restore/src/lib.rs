@@ -188,9 +188,24 @@ impl RestoreValidator {
         budget.check()?;
         let plaintext = crypto::decrypt_payload(envelope.payload(), &identity, self.bounds)?;
 
-        // 8-9. Compatibility, references, components, and domain semantics.
+        // 8-9. Compatibility, references, components, domain semantics, and the
+        // recipient binding below.
         budget.check()?;
         let backup = normalize(&plaintext, target.selected_backend(), &self.components)?;
+
+        // The retained recovery public key must be the submitted identity's own
+        // recipient. Without this the backup could declare any syntactically
+        // valid recipient, and every future backup would be encrypted to a
+        // private key the operator may not hold. A declared key that is not a
+        // canonical recipient and one that belongs to another identity are both
+        // reported as an invalid backup, indistinguishable from a wrong key.
+        let declared = match RecoveryKey::parse(backup.recovery_public_key().as_str()) {
+            Ok(RecoveryKey::Recipient(recipient)) => recipient,
+            Ok(RecoveryKey::Identity(_)) | Err(_) => return Err(RestoreError::BackupInvalid),
+        };
+        if declared != identity.recipient() {
+            return Err(RestoreError::BackupInvalid);
+        }
 
         // 10. Clear the private recovery key, unwrapped data key, and plaintext.
         drop(identity);
