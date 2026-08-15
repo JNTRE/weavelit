@@ -92,6 +92,14 @@ const _: () = assert!(
     "the pre-operational mutation lane admits exactly one Restore at a time"
 );
 
+/// The pause a test drives the blocking replacement chain through.
+///
+/// The chain is uninterruptible by construction, so the only way to place a
+/// stop inside its irreversible region deterministically is for the chain
+/// itself to announce that it is already inside one.
+#[cfg(test)]
+pub(crate) type ReplacementHook = Arc<dyn Fn() + Send + Sync>;
+
 /// Server-owned composition that runs one Restore at a time.
 ///
 /// It shares the startup composition's `WorkflowArbiter` and mutation lane, so
@@ -123,6 +131,9 @@ pub struct RestoreOrchestrator {
     /// retains that same open handle for the operational runtime instead of
     /// letting it close and reopening the target afterwards.
     operational: Mutex<Option<OperationalComposer>>,
+    /// The pause a test drives the blocking replacement chain through.
+    #[cfg(test)]
+    replacement_hook: Mutex<Option<ReplacementHook>>,
 }
 
 impl RestoreOrchestrator {
@@ -162,6 +173,8 @@ impl RestoreOrchestrator {
             log_authority,
             operational_runtime,
             operational: Mutex::new(None),
+            #[cfg(test)]
+            replacement_hook: Mutex::new(None),
         })
     }
 
@@ -461,6 +474,8 @@ impl RestoreOrchestrator {
         // fail-closed surface before any durable state changes, and keeps
         // observing it if the replacement does not complete.
         self.serving_modes.publish_fail_closed();
+        #[cfg(test)]
+        self.pause_replacement();
 
         let sealed = self.replace_state(
             permit,
@@ -492,6 +507,35 @@ impl RestoreOrchestrator {
         // empty, close nothing, and leave this activation's writes behind.
         drop(transition);
         Ok(state)
+    }
+
+    /// Runs the installed pause, if any, inside the irreversible region.
+    ///
+    /// The hook is cloned out of its lock before it runs, so a parked chain
+    /// holds nothing the test needs.
+    #[cfg(test)]
+    fn pause_replacement(&self) {
+        let hook = self
+            .replacement_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Installs the pause a test drives the blocking replacement chain through.
+    ///
+    /// It runs after the gate admitted this Restore and before any durable
+    /// state is replaced, so a test that acts from inside it acts on a region
+    /// that is already occupied rather than on one being entered.
+    #[cfg(test)]
+    pub(crate) fn pause_replacement_with(&self, hook: ReplacementHook) {
+        *self
+            .replacement_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
     }
 
     /// Replaces retained state atomically and seals the deployment.

@@ -77,11 +77,31 @@ export interface DeliveredRecoveryKey {
 export class InitFailedError extends Error {
   readonly code: string;
 
-  constructor(code: string) {
+  /**
+   * Whether this failure reports no outcome for the request that produced it.
+   *
+   * Set only when this client never read the route's answer at all, which is
+   * the one condition under which the route's own work may still run to
+   * completion after the request was abandoned. A rejection the route reported
+   * is a determinate answer whatever it rejected for, and is never marked.
+   *
+   * The distinction is carried here rather than in the code, because the code
+   * is a fixed presentation value a caller can also reach for a failure that
+   * never issued a request at all.
+   */
+  readonly indeterminate: boolean;
+
+  constructor(code: string, indeterminate = false) {
     super("init_failed");
     this.name = "InitFailedError";
     this.code = code;
+    this.indeterminate = indeterminate;
   }
+}
+
+/** Builds the failure of a request whose outcome this client never read. */
+function unreported(): InitFailedError {
+  return new InitFailedError(UNREPORTED_FAILURE_CODE, true);
 }
 
 function objectPayload(payload: unknown): Record<string, unknown> | null {
@@ -92,18 +112,21 @@ function objectPayload(payload: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Returns the stable error code a rejection body reported.
+ * Returns the stable error code a rejection body reported, or `null`.
  *
  * Any value outside the closed stable-code shape is discarded rather than
  * rendered, so a body that is not the documented rejection contract cannot
- * place arbitrary text on the page.
+ * place arbitrary text on the page. `null` distinguishes a body that reported
+ * no code at all from one that reported a code of its own.
  */
-export function parseStableErrorCode(payload: unknown): string {
+function reportedStableErrorCode(payload: unknown): string | null {
   const error = objectPayload(payload)?.error;
-  if (typeof error !== "string" || !STABLE_CODE_PATTERN.test(error)) {
-    return UNREPORTED_FAILURE_CODE;
-  }
-  return error;
+  return typeof error === "string" && STABLE_CODE_PATTERN.test(error) ? error : null;
+}
+
+/** Returns the reported stable error code, or the fixed presented fallback. */
+export function parseStableErrorCode(payload: unknown): string {
+  return reportedStableErrorCode(payload) ?? UNREPORTED_FAILURE_CODE;
 }
 
 function typedResult(payload: unknown): Record<string, unknown> | null {
@@ -179,11 +202,15 @@ export function initRequestBody(details: InitDetails, proof: string | null): str
 }
 
 async function rejection(response: Response): Promise<InitFailedError> {
+  let reported: string | null;
   try {
-    return new InitFailedError(parseStableErrorCode(await response.json()));
+    reported = reportedStableErrorCode(await response.json());
   } catch {
-    return new InitFailedError(UNREPORTED_FAILURE_CODE);
+    return unreported();
   }
+  // A body outside the rejection contract reports no code of its own, so what
+  // the route did with the request was never read from it either.
+  return reported === null ? unreported() : new InitFailedError(reported);
 }
 
 async function submit(path: string, body: string): Promise<unknown> {
@@ -202,7 +229,7 @@ async function submit(path: string, body: string): Promise<unknown> {
       redirect: "error",
     });
   } catch {
-    throw new InitFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
 
   if (response.status !== ACCEPTED_STATUS) {
@@ -212,7 +239,7 @@ async function submit(path: string, body: string): Promise<unknown> {
   try {
     return await response.json();
   } catch {
-    throw new InitFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
 }
 
@@ -230,7 +257,7 @@ export async function prepareRecoveryKey(details: InitDetails): Promise<Delivere
     await submit(INIT_RECOVERY_KEY_PATH, initRequestBody(details, null)),
   );
   if (delivered === null) {
-    throw new InitFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
   return delivered;
 }
@@ -246,6 +273,6 @@ export async function prepareRecoveryKey(details: InitDetails): Promise<Delivere
  */
 export async function finalizeInit(details: InitDetails, proof: string): Promise<void> {
   if (!isInitCompleted(await submit(INIT_PATH, initRequestBody(details, proof)))) {
-    throw new InitFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
 }

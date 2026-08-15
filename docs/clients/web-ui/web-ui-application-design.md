@@ -187,13 +187,33 @@ renders exactly four states:
 | --- | --- | --- |
 | Idle | No submission is in flight and none has failed since the last attempt. | Both inputs are enabled, and the action is enabled once a file is chosen and a key is entered. |
 | Submitting | A Restore submission is in flight. | Both inputs and the action are disabled, so a repeated activation cannot issue a second Restore. |
-| Failed | Either request of the submission was rejected. | The inputs are enabled again and the Server's stable error code is presented in an assertive live region. |
+| Failed | Either request of the submission was rejected, or a submission that reported no outcome was found not to have committed. | The inputs are enabled again and the Server's stable error code is presented in an assertive live region. |
 | Completed | The Restore completed and the deployment now runs in normal operation. | The inputs and the action are replaced by a fixed completion message in a polite live region. |
 
 The completed state is terminal and momentary: the shell adopts the same
 completion and withdraws the whole region, so the deployment's new operational
 state is reported by the shell's status region rather than by a control the
 sealed deployment no longer offers.
+
+A submission that reports no outcome is not presented as a failure. The
+listener's `gateway_timeout`, a transport failure after the artifact upload was
+accepted, and a completion body that never arrives intact all leave whether the
+Restore committed unknown, and the commit chain any of them abandons is not
+cancelled by them. The control settles such a result exactly as the Init
+workflow settles one, against the authentication surface described in
+[Sign-In Control](#sign-in-control): an identity or an unauthenticated
+challenge proves normal operation was published, so the control reports
+completion and the shell withdraws the whole setup surface; an absent surface
+proves nothing, so the failure presentation and its retry remain exactly as
+they are. The submitting state is held across that check, so no retry is
+offered against routes a committed Restore no longer serves. No delivered key
+is at stake here, because the person supplied the key; what is at stake is a
+stale pre-operational page and retries that could never succeed.
+
+A rejection the Server itself reported is never settled that way. Its
+`restore_failed` code is also the code a transport or read failure presents as,
+so the two are distinguished by whether the response carried a stable code at
+all, never by the code that reaches the presentation layer.
 
 The failure presentation renders the Server's stable, lowercase error code and
 nothing else: no server message, HTTP status number, field path, or transport
@@ -275,15 +295,25 @@ covers both an internal failure and cases the Server cannot yet distinguish
 from one, the workflow treats it as actionable so an already-delivered key is
 never abandoned on an ambiguous rejection.
 
-A finalization answered `gateway_timeout` is neither of those. That code is
-written by the listener when it stops waiting for the route, not by the route,
-and the Server's finalization work is not cancelled by it, so the deployment
-may have gone on to become operational after this page was answered. The
-workflow therefore adds a third outcome, the indeterminate state, which states
-plainly that no outcome was reported, that whether the deployment was
-initialized is not yet known, and that the saved recovery key is still the only
-key this deployment can be restored with. It offers a recheck control and a
-retry that returns to the details step with the same delivered key.
+A finalization that established no outcome at all is neither of those. The
+listener writes `gateway_timeout` when it stops waiting for the route rather
+than the route writing it, a rejected `fetch` may still have delivered the
+request, and a completion body truncated before it arrives may still have been
+written by a deployment that was already sealed. The Server's finalization work
+is not cancelled by any of them, so the deployment may have gone on to become
+operational after this page was answered. The workflow therefore adds a third
+outcome, the indeterminate state, which states plainly that no outcome was
+reported, that whether the deployment was initialized is not yet known, and
+that the saved recovery key is still the only key this deployment can be
+restored with. It offers a recheck control and a retry that returns to the
+details step with the same delivered key.
+
+A failure the Server reported, and a failure raised before any request was
+issued such as a proof that could not be derived in the browser, are
+determinate and are never presented this way. Both can carry the same fixed
+code a transport or read failure presents as, so the workflow distinguishes
+them by whether an answer was ever read from the route, never by the presented
+code.
 
 This follows from one rule the workflow applies without exception: a delivered
 key is discarded only on an outcome that is actually known. Completion drops

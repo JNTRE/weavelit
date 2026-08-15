@@ -299,6 +299,20 @@ from a later observation before deciding anything. The
 owns the Server-side deadline observation that keeps this case rare, and its
 stated residual.
 
+That listener answer is not the only result reporting no outcome. A
+finalization request whose transport fails after it was issued, and a
+completion response whose body never reaches the client intact, tell a client
+exactly as little: the request may have been delivered, and the commit chain it
+started is not cancelled by either. The obligation above therefore applies to
+every result a client could not read an answer from, whatever its local cause,
+and applies to the delivered key most of all.
+
+A rejection this surface did report is not such a result, however unspecific
+that rejection is. A client that presents one fixed code for a failure carrying
+no code of its own must therefore distinguish the two by whether a response
+carried a code at all, not by the code it presents, so a determinate rejection
+is never mistaken for an outcome that was never established.
+
 ## Bounds And Exposure
 
 Both routes accept at most 1 KiB of request body and stay within the

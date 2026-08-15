@@ -7,6 +7,8 @@ const RECOVERY_KEY = "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLE";
 const TICKET = "0123456789abcdefghijklmnopqrstuvwxyzABC-_";
 const CORRELATION = "0123456789abcdef0123456789abcdef";
 
+const SESSION_PATH = "/api/v1/auth/session";
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -22,15 +24,45 @@ function completionResponse(): Response {
   return jsonResponse({ result: { lifecycle: "initialized" }, correlation_id: CORRELATION }, 200);
 }
 
+/** The challenge only a published normal operation serves. */
+function challengedProbe(): Promise<Response> {
+  return Promise.resolve(
+    jsonResponse({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+  );
+}
+
+/** The answer a still pre-operational Server gives: no authentication surface. */
+function absentProbe(): Promise<Response> {
+  return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+}
+
+/**
+ * Routes the two submission requests and the reconciliation request apart.
+ *
+ * A probe a test did not stage is refused rather than answered, so a test that
+ * never expected a reconciliation cannot silently read one.
+ */
 function mockRoutedFetch(routes: {
   key: () => Promise<Response>;
   upload: () => Promise<Response>;
+  probe?: () => Promise<Response>;
 }) {
-  return vi
-    .spyOn(globalThis, "fetch")
-    .mockImplementation((input: unknown) =>
-      input === "/api/v1/restore/artifact" ? routes.upload() : routes.key(),
-    );
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown) => {
+    if (input === "/api/v1/restore/artifact") {
+      return routes.upload();
+    }
+    if (input === SESSION_PATH) {
+      return routes.probe === undefined
+        ? Promise.reject(new Error("unrouted session probe"))
+        : routes.probe();
+    }
+    return routes.key();
+  });
+}
+
+/** Counts the calls a mocked fetch received for one exact request target. */
+function callsTo(mock: { mock: { calls: unknown[][] } }, path: string): number {
+  return mock.mock.calls.filter((call) => call[0] === path).length;
 }
 
 function section(): HTMLElement {
@@ -233,6 +265,7 @@ describe("RestoreSubmissionForm", () => {
     mockRoutedFetch({
       key: () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443")),
       upload: () => Promise.resolve(completionResponse()),
+      probe: absentProbe,
     });
 
     renderForm();
@@ -243,6 +276,74 @@ describe("RestoreSubmissionForm", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("restore_failed");
     expect(document.body.textContent).not.toContain("ECONNREFUSED");
+  });
+
+  it("completes when a transport failure hid a Restore that had already committed", async () => {
+    const fetchMock = mockRoutedFetch({
+      key: () => Promise.resolve(ticketResponse()),
+      upload: () => Promise.reject(new Error("ECONNRESET")),
+      probe: challengedProbe,
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    // The accepted upload may have sealed and published this deployment before
+    // its answer was lost, and only a published normal operation challenges, so
+    // the shell is advanced rather than left on a surface that is now gone.
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
+    });
+    expect(section().dataset.restoreState).toBe("completed");
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("leaves the failure and the retry when nothing can settle a Restore that reported nothing", async () => {
+    const fetchMock = mockRoutedFetch({
+      key: () => Promise.resolve(ticketResponse()),
+      upload: () => Promise.reject(new Error("ECONNRESET")),
+      probe: absentProbe,
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("restore_failed");
+    expect(section().dataset.restoreState).toBe("failed");
+    expect(completed).not.toHaveBeenCalled();
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    // The retry stays available, and only the re-entered key enables it.
+    expect(recoveryKeyInput().value).toBe("");
+    enterRecoveryKey();
+    expect(actionButton().disabled).toBe(false);
+  });
+
+  it("presents a Server-reported internal failure without reconciling it", async () => {
+    const fetchMock = mockRoutedFetch({
+      key: () => Promise.resolve(ticketResponse()),
+      upload: () => Promise.resolve(jsonResponse({ error: "restore_failed" }, 500)),
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("restore_failed");
+    // The Server reported this one itself, so it is a determinate answer even
+    // though it carries the same code a lost answer presents as.
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(0);
+    expect(completed).not.toHaveBeenCalled();
   });
 
   it("writes nothing to browser storage", async () => {

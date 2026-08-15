@@ -18,7 +18,7 @@ const CORRECTABLE_BEFORE_DELIVERY_MESSAGE =
 const CLOSED_MESSAGE =
   "Setup stopped and this Server will not resume it. No further attempt against this Server can succeed, this deployment was not initialized, and the recovery key shown earlier is not usable. Stop this Server, discard its state, and deploy a new Weavelit Server to start again.";
 const INDETERMINATE_MESSAGE =
-  "This Server stopped waiting for setup to answer before it reported one, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
+  "This attempt reported no outcome, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
 const INDETERMINATE_CHECKING_MESSAGE = "Checking whether setup completed.";
 
 const PREPARE_PATH = "/api/v1/init/recovery-key";
@@ -49,6 +49,14 @@ function completionResponse(): Response {
 /** The listener's answer when it stopped waiting before the route reported. */
 function timeoutResponse(): Response {
   return jsonResponse({ error: "gateway_timeout", correlation_id: CORRELATION }, 504);
+}
+
+/** An accepted finalization whose completion body never arrived intact. */
+function truncatedCompletionResponse(): Response {
+  return new Response('{"result":{"lifecycle":"ini', {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 }
 
 /** The challenge only a published normal operation serves. */
@@ -470,6 +478,56 @@ describe("InitWorkflow", () => {
     expect(callsTo(fetchMock, PREPARE_PATH)).toBe(1);
   });
 
+  it("completes a finalization whose transport failed once a challenge proves it committed", async () => {
+    const fetchMock = mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => Promise.reject(new Error("ECONNRESET")),
+      probe: challengedProbe,
+    });
+    const completed = vi.fn();
+
+    render(<InitWorkflow onCompleted={completed} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+
+    // The request may still have reached the Server and sealed the deployment,
+    // so the lost answer is settled against the surface rather than presented
+    // as a failure that never happened.
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
+    });
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(document.body.textContent).not.toContain(RECOVERY_KEY);
+    expect(document.body.textContent).not.toContain(PASSWORD);
+  });
+
+  it("keeps the delivered key when a finalization's completion body never arrived", async () => {
+    const fetchMock = mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => Promise.resolve(truncatedCompletionResponse()),
+      probe: absentProbe,
+    });
+    const completed = vi.fn();
+
+    render(<InitWorkflow onCompleted={completed} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+
+    await screen.findByText(INDETERMINATE_MESSAGE);
+    expect(section().dataset.initState).toBe("indeterminate");
+    expect(document.querySelector("[data-init-error]")?.getAttribute("data-init-error")).toBe(
+      "init_failed",
+    );
+    expect(completed).not.toHaveBeenCalled();
+
+    // The key survived a body that reported nothing: the retry path is the
+    // existing key's, and no second preparation was ever requested.
+    fireEvent.click(button("Try setup again"));
+    expect(button("Return to review")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Prepare recovery key" })).toBeNull();
+    expect(callsTo(fetchMock, PREPARE_PATH)).toBe(1);
+  });
+
   it("rechecks on request and completes once the deployment is found to be operational", async () => {
     let probes = 0;
     const fetchMock = mockRoutedFetch({
@@ -581,7 +639,7 @@ describe("InitWorkflow", () => {
   });
 
   it("fails closed when the proof cannot be derived from the delivered key", async () => {
-    mockRoutedFetch({
+    const fetchMock = mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(completionResponse()),
     });
@@ -595,6 +653,12 @@ describe("InitWorkflow", () => {
     expect(document.querySelector("[data-init-error]")?.getAttribute("data-init-error")).toBe(
       "init_failed",
     );
+    // This failure carries the same fixed code as one that reported no outcome,
+    // but it is determinate: no finalization was ever submitted, so nothing is
+    // reconciled and the key it could never be used with is dropped.
+    expect(callsTo(fetchMock, FINALIZE_PATH)).toBe(0);
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(0);
+    expect(document.body.textContent).not.toContain(RECOVERY_KEY);
   });
 
   it("writes neither the password nor the delivered key to browser storage or the URL", async () => {
@@ -655,13 +719,14 @@ describe("InitWorkflow", () => {
       mockRoutedFetch({
         prepare: () => Promise.resolve(deliveryResponse()),
         finalize: () => Promise.reject(new Error(`transport carrying ${RECOVERY_KEY}`)),
+        probe: absentProbe,
       });
 
       render(<InitWorkflow onCompleted={() => {}} />);
       await reachReviewStep();
       fireEvent.click(button("Complete setup"));
       await waitFor(() => {
-        expect(section().textContent).toContain(CLOSED_MESSAGE);
+        expect(section().textContent).toContain(INDETERMINATE_MESSAGE);
       });
 
       expect(written).toEqual([]);

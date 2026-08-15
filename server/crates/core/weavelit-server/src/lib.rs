@@ -781,6 +781,12 @@ impl LifecycleTransitionGate {
     /// It observes the permit without taking it, so a test can order itself
     /// against a real workflow's region without stealing the permit that
     /// workflow is about to acquire.
+    ///
+    /// It answers whether the permit is held, which becomes true when
+    /// [`Self::try_enter`] takes it and before that entry is finalized against
+    /// the stop flag. It is therefore an assertion a test makes about a
+    /// workflow already known to be inside the region, never the signal by
+    /// which a test learns that a workflow got in.
     #[cfg(test)]
     pub(crate) fn is_occupied(&self) -> bool {
         self.permit.available_permits() == 0
@@ -2719,7 +2725,7 @@ pub(crate) mod tests {
         pin::Pin,
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicUsize, Ordering},
         },
         task::{Context, Poll},
         time::Duration,
@@ -7833,30 +7839,31 @@ pub(crate) mod tests {
         let surface = RestoreSurface::new();
         let orchestrator = surface.orchestrator();
         let gate = Arc::clone(&surface.startup.composition.adapter.transition_gate);
-        let finished = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(Notify::new());
+
+        // The stop is taken from inside the region itself, after the gate
+        // admitted this Restore and before any durable state is replaced. An
+        // occupied permit is not that signal: it is taken before entry is
+        // finalized, so a stop placed there would cancel the entry it meant to
+        // land behind.
+        let stopping = Arc::clone(&gate);
+        let arrived = Arc::clone(&entered);
+        orchestrator.pause_replacement_with(Arc::new(move || {
+            stopping.begin_stopping();
+            arrived.notify_one();
+        }));
 
         let (restored, sealed_when_released) = tokio::join!(
+            surface.restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            ),
             async {
-                let restored = surface
-                    .restore(
-                        &orchestrator,
-                        restore_fixture("valid.wlitbackup"),
-                        valid_recovery_key(),
-                    )
-                    .await;
-                finished.store(true, Ordering::SeqCst);
-                restored
-            },
-            async {
-                // A shutdown can only wait for a transition that is already
-                // inside, so this wait is ordered behind the Restore's own
-                // entry rather than racing it for the permit. The second
-                // condition ends the loop if the whole region completed first,
-                // so nothing here can outlive the workflow.
-                while !gate.is_occupied() && !finished.load(Ordering::SeqCst) {
-                    tokio::task::yield_now().await;
-                }
-                gate.begin_stopping();
+                // Ordered behind the entry above, so the wait can only be
+                // satisfied by the Restore leaving the region rather than by
+                // taking the permit ahead of it.
+                entered.notified().await;
                 let quiesced = gate.quiesce(SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET).await;
                 assert!(
                     quiesced.is_some(),

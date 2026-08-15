@@ -247,6 +247,27 @@ key, a ticket, an artifact byte, or any backup content.
 those causes remain mutually indistinguishable, so a rejection cannot report
 whether a guessed key partially matched.
 
+### Results That Report No Outcome
+
+`restore_failed` is a determinate answer: the Server reports it for a deadline,
+storage, or other internal failure it observed itself, and a client may present
+it as a failed Restore. A result that carries no answer at all is different.
+The `504 Gateway Timeout`, `{"error":"gateway_timeout"}` response defined by the
+[Web UI Pre-Operational Status Surface](pre-operational-status-design.md#rejections-and-bounds)
+is written when the listener stops waiting for a route, not by the route. An
+accepted artifact upload whose transport fails before its response arrives, and
+a completion response whose body never reaches the client intact, leave a client
+with as little. The Restore commit chain is not cancelled by any of them, so
+this deployment may still be sealed and published afterwards.
+
+A client must not present such a result as a failed Restore. It must establish
+the outcome from a later observation before deciding anything, and must not
+leave a retry offered against pre-operational routes a committed Restore no
+longer serves. Because a transport or read failure carries no code of its own,
+a client that presents one fixed code for it must distinguish it from a
+`restore_failed` the Server actually sent by whether a response carried a code
+at all, never by the code it presents.
+
 ### Compiled-In Component Refusal
 
 `backup_incompatible` is an operator-visible compatibility guarantee, not an

@@ -52,11 +52,31 @@ const OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,48}$/;
 export class RestoreFailedError extends Error {
   readonly code: string;
 
-  constructor(code: string) {
+  /**
+   * Whether this failure reports no outcome for the request that produced it.
+   *
+   * Set only when this client never read the route's answer at all, which is
+   * the one condition under which the route's own work may still run to
+   * completion after the request was abandoned. A rejection the route reported
+   * is a determinate answer whatever it rejected for, and is never marked.
+   *
+   * The distinction cannot be carried in the code, because
+   * {@link UNREPORTED_FAILURE_CODE} is also a code the Server itself reports
+   * for a determinate internal failure.
+   */
+  readonly indeterminate: boolean;
+
+  constructor(code: string, indeterminate = false) {
     super("restore_failed");
     this.name = "RestoreFailedError";
     this.code = code;
+    this.indeterminate = indeterminate;
   }
+}
+
+/** Builds the failure of a request whose outcome this client never read. */
+function unreported(): RestoreFailedError {
+  return new RestoreFailedError(UNREPORTED_FAILURE_CODE, true);
 }
 
 function objectPayload(payload: unknown): Record<string, unknown> | null {
@@ -67,18 +87,22 @@ function objectPayload(payload: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Returns the stable error code a rejection body reported.
+ * Returns the stable error code a rejection body reported, or `null`.
  *
  * Any value outside the closed stable-code shape is discarded rather than
  * rendered, so a body that is not the documented rejection contract cannot
- * place arbitrary text on the page.
+ * place arbitrary text on the page. `null` distinguishes a body that reported
+ * no code at all from one that reported {@link UNREPORTED_FAILURE_CODE}, which
+ * the Server does report for a determinate internal failure of its own.
  */
-export function parseStableErrorCode(payload: unknown): string {
+function reportedStableErrorCode(payload: unknown): string | null {
   const error = objectPayload(payload)?.error;
-  if (typeof error !== "string" || !STABLE_CODE_PATTERN.test(error)) {
-    return UNREPORTED_FAILURE_CODE;
-  }
-  return error;
+  return typeof error === "string" && STABLE_CODE_PATTERN.test(error) ? error : null;
+}
+
+/** Returns the reported stable error code, or the fixed presented fallback. */
+export function parseStableErrorCode(payload: unknown): string {
+  return reportedStableErrorCode(payload) ?? UNREPORTED_FAILURE_CODE;
 }
 
 function typedResult(payload: unknown): Record<string, unknown> | null {
@@ -105,11 +129,15 @@ export function isRestoreCompleted(payload: unknown): boolean {
 }
 
 async function rejection(response: Response): Promise<RestoreFailedError> {
+  let reported: string | null;
   try {
-    return new RestoreFailedError(parseStableErrorCode(await response.json()));
+    reported = reportedStableErrorCode(await response.json());
   } catch {
-    return new RestoreFailedError(UNREPORTED_FAILURE_CODE);
+    return unreported();
   }
+  // A body outside the rejection contract reports no code of its own, so what
+  // the route did with the request was never read from it either.
+  return reported === null ? unreported() : new RestoreFailedError(reported);
 }
 
 /**
@@ -135,7 +163,7 @@ async function submitRecoveryKey(recoveryKey: string): Promise<string> {
       redirect: "error",
     });
   } catch {
-    throw new RestoreFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
 
   if (response.status !== TICKET_ISSUED_STATUS) {
@@ -146,12 +174,12 @@ async function submitRecoveryKey(recoveryKey: string): Promise<string> {
   try {
     payload = await response.json();
   } catch {
-    throw new RestoreFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
 
   const ticket = parseIssuedTicket(payload);
   if (ticket === null) {
-    throw new RestoreFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
   return ticket;
 }
@@ -185,7 +213,7 @@ async function uploadArtifact(ticket: string, artifact: File): Promise<void> {
       redirect: "error",
     });
   } catch {
-    throw new RestoreFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
 
   if (response.status !== RESTORE_COMPLETED_STATUS) {
@@ -196,11 +224,11 @@ async function uploadArtifact(ticket: string, artifact: File): Promise<void> {
   try {
     payload = await response.json();
   } catch {
-    throw new RestoreFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
 
   if (!isRestoreCompleted(payload)) {
-    throw new RestoreFailedError(UNREPORTED_FAILURE_CODE);
+    throw unreported();
   }
 }
 

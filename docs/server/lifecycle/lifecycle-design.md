@@ -946,6 +946,10 @@ that a workflow refused at a closed gate commits nothing, leaves the deployment
 record and its anchors untouched, and is indistinguishable to its submitter from
 the failure that entry point already produces, and that a Restore admitted
 through the gate has sealed its record before the waiting shutdown is released.
+That last ordering is taken from a boundary the blocking replacement chain
+announces once it is already inside the region, rather than from the gate's own
+permit, which is held from the moment an entrant acquires it and therefore
+before that entry has been finalized against the stop flag.
 Exactly-once closing is proved by a database whose close counts
 itself: duplicate shutdown requests, and requests through separate clones of
 the owner, still count one close, and a lane poisoned by a panicking operation

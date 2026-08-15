@@ -36,7 +36,7 @@ const COPIED_MESSAGE = "The recovery key was copied to the clipboard.";
 const AUTHENTICATED_MESSAGE = "You are signed in.";
 const INDETERMINATE_HEADING = "Setup did not report an outcome";
 const INDETERMINATE_MESSAGE =
-  "This Server stopped waiting for setup to answer before it reported one, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
+  "This attempt reported no outcome, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
 
 const STATUS_PATH = "/api/v1/status";
 const SELECTION_PATH = "/api/v1/application-database";

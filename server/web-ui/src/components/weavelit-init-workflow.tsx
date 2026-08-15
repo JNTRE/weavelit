@@ -69,7 +69,7 @@ const CLOSED_MESSAGE =
   "Setup stopped and this Server will not resume it. No further attempt against this Server can succeed, this deployment was not initialized, and the recovery key shown earlier is not usable. Stop this Server, discard its state, and deploy a new Weavelit Server to start again.";
 const INDETERMINATE_HEADING = "Setup did not report an outcome";
 const INDETERMINATE_MESSAGE =
-  "This Server stopped waiting for setup to answer before it reported one, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
+  "This attempt reported no outcome, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
 const INDETERMINATE_CHECKING_MESSAGE = "Checking whether setup completed.";
 const RECHECK_ACTION_LABEL = "Check again";
 const INDETERMINATE_RETRY_LABEL = "Try setup again";
@@ -121,14 +121,17 @@ const CORRECTABLE_FINALIZATION_CODES = [
 ];
 
 /**
- * Rejections of the finalization route that report no outcome at all.
+ * Codes a finalization reports when it establishes no outcome at all.
  *
  * `gateway_timeout` is written by the listener when it stops waiting for the
  * route, not by the route. Finalization work that had already reached a
  * blocking boundary is not cancelled by that, so the deployment may have gone
- * on to become operational after this page was answered. The attempt is
- * therefore neither correctable nor permanently failed: it is unresolved, and
- * the delivered key must survive it until an operational surface settles it.
+ * on to become operational after this page was answered. An attempt like this
+ * is neither correctable nor permanently failed: it is unresolved, and the
+ * delivered key must survive it until an operational surface settles it.
+ *
+ * A code is not the only way an attempt reports nothing, so this list is one
+ * input to {@link indeterminateFinalization} rather than the whole test.
  */
 const INDETERMINATE_FINALIZATION_CODES = ["gateway_timeout"];
 
@@ -149,6 +152,28 @@ function failureCode(reason: unknown): string {
 /** Reports whether a failed attempt may be corrected and submitted again. */
 function correctable(code: string, codes: readonly string[]): boolean {
   return codes.includes(code);
+}
+
+/**
+ * Reports whether a finalization failure established no outcome whatsoever.
+ *
+ * The listener's timeout is one such result, and a finalization this page never
+ * read an answer to is another: a rejected `fetch` may still have delivered the
+ * request, and a completion body that was truncated before it arrived may still
+ * have been written by a deployment that had already been sealed. The blocking
+ * commit chain is not cancelled by any of them, so none of them proves this
+ * deployment was not initialized with the delivered key.
+ *
+ * A rejection the route itself reported is excluded, however it is presented,
+ * so a determinate failure is never dressed up as an unresolved one. So is a
+ * failure raised before any request was issued, such as a proof that could not
+ * be derived, which reports the same code without ever reaching the Server.
+ */
+function indeterminateFinalization(reason: unknown, code: string): boolean {
+  return (
+    INDETERMINATE_FINALIZATION_CODES.includes(code) ||
+    (reason instanceof InitFailedError && reason.indeterminate)
+  );
 }
 
 /** Props of the Init workflow. */
@@ -283,7 +308,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
           // that attempt settled.
           setPassword("");
           const code = failureCode(reason);
-          if (correctable(code, INDETERMINATE_FINALIZATION_CODES)) {
+          if (indeterminateFinalization(reason, code)) {
             // Deliberately keeps the delivered key: this attempt may already
             // have initialized and sealed this deployment with it.
             reconcile(code);

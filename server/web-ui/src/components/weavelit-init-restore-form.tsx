@@ -1,5 +1,6 @@
 import { useCallback, useState, type ChangeEvent, type JSX } from "react";
 
+import { probeSession } from "../api/weavelit-authentication";
 import {
   RestoreFailedError,
   UNREPORTED_FAILURE_CODE,
@@ -18,6 +19,16 @@ const RESTORE_COMPLETED_MESSAGE =
 const ARTIFACT_INPUT_ID = "weavelit-restore-artifact";
 const RECOVERY_KEY_INPUT_ID = "weavelit-restore-recovery-key";
 
+/**
+ * Codes a Restore reports when it establishes no outcome at all.
+ *
+ * `gateway_timeout` is written by the listener when it stops waiting for the
+ * route, not by the route. A commit chain that had already reached a blocking
+ * boundary is not cancelled by that, so the deployment may have gone on to
+ * become operational after this page was answered.
+ */
+const INDETERMINATE_RESTORE_CODES = ["gateway_timeout"];
+
 /** Presentation state of a Restore submission. */
 type RestoreViewState =
   | { readonly kind: "idle" }
@@ -27,6 +38,26 @@ type RestoreViewState =
 
 function failureCode(reason: unknown): string {
   return reason instanceof RestoreFailedError ? reason.code : UNREPORTED_FAILURE_CODE;
+}
+
+/**
+ * Reports whether a Restore failure established no outcome whatsoever.
+ *
+ * The listener's timeout is one such result, and a Restore this page never read
+ * an answer to is another: an accepted artifact upload whose connection failed
+ * before its response arrived may still have sealed and published this
+ * deployment. None of them proves the Restore did not commit.
+ *
+ * A rejection the route itself reported is excluded, so a determinate failure
+ * is never dressed up as an unresolved one. That exclusion is why the code
+ * alone cannot decide this: the Server reports {@link UNREPORTED_FAILURE_CODE}
+ * for a determinate internal failure of its own.
+ */
+function indeterminateRestore(reason: unknown, code: string): boolean {
+  return (
+    INDETERMINATE_RESTORE_CODES.includes(code) ||
+    (reason instanceof RestoreFailedError && reason.indeterminate)
+  );
 }
 
 /** Props of the Restore submission control. */
@@ -46,6 +77,10 @@ export interface RestoreSubmissionFormProps {
  * A completed Restore is reported to the shell from the completion response
  * this component already holds, so the surface it belongs to is withdrawn
  * without a reload or a status request the sealed deployment no longer serves.
+ * An attempt that reported no outcome is settled the same way the Init workflow
+ * settles one, against the Server's own authentication surface, because a
+ * Restore that sealed this deployment while its answer was lost would otherwise
+ * leave this page offering retries against routes that no longer exist.
  */
 export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProps): JSX.Element {
   const [artifact, setArtifact] = useState<File | null>(null);
@@ -61,6 +96,27 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
     setRecoveryKey(event.target.value);
   }, []);
 
+  const reconcile = useCallback(
+    (code: string) => {
+      // The submitting state is held across the probe, so no retry is offered
+      // against a deployment that may already have stopped serving this route.
+      void probeSession().then((probe) => {
+        if (probe.kind === "absent") {
+          // No authentication surface is served, which distinguishes nothing:
+          // the Restore may still be running, or may never have committed. The
+          // failure is presented as before and the retry stays available.
+          setState({ kind: "failed", code });
+          return;
+        }
+        // An identity or an unauthenticated challenge both prove the same
+        // thing: normal operation was published, so this Restore committed.
+        setState({ kind: "completed" });
+        onCompleted();
+      });
+    },
+    [onCompleted],
+  );
+
   const submit = useCallback(() => {
     if (artifact === null || recoveryKey === "") {
       return;
@@ -74,10 +130,15 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
       },
       (reason: unknown) => {
         setRecoveryKey("");
-        setState({ kind: "failed", code: failureCode(reason) });
+        const code = failureCode(reason);
+        if (indeterminateRestore(reason, code)) {
+          reconcile(code);
+          return;
+        }
+        setState({ kind: "failed", code });
       },
     );
-  }, [artifact, onCompleted, recoveryKey]);
+  }, [artifact, onCompleted, reconcile, recoveryKey]);
 
   const submitting = state.kind === "submitting";
 
