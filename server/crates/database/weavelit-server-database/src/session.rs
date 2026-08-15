@@ -24,6 +24,16 @@ pub const SESSION_IDLE_TIMEOUT_MILLISECONDS: i64 = 30 * 60 * 1_000;
 /// Absolute maximum lifetime measured from the moment a session is issued.
 pub const SESSION_ABSOLUTE_LIFETIME_MILLISECONDS: i64 = 12 * 60 * 60 * 1_000;
 
+/// Expired sessions one session insertion may remove.
+///
+/// Expired rows are cleared by issuing a session rather than by a background
+/// sweep, and the batch is bounded so that one login can never become a delete
+/// over every row a deployment accumulated in its whole life. A bounded batch
+/// per insertion keeps up on its own: a row can only be added by issuing a
+/// session, and every issue removes up to this many, so the removal rate is at
+/// least the accumulation rate whenever anything is left to remove.
+pub const SESSION_PURGE_BATCH_LIMIT: usize = 128;
+
 /// Largest accepted session instant.
 ///
 /// Bounded so that adding [`SESSION_ABSOLUTE_LIFETIME_MILLISECONDS`] to an
@@ -284,7 +294,19 @@ pub enum SessionValidation {
 /// returns Groups, grants, or any other authorization data; authorization is
 /// evaluated live from application state by its owning boundary.
 pub trait SessionStore {
-    /// Stores one newly issued session.
+    /// Stores one newly issued session and clears expired ones.
+    ///
+    /// At most [`SESSION_PURGE_BATCH_LIMIT`] rows that are already expired at
+    /// the new session's issue instant are removed in the transaction that
+    /// writes, so abandoned sessions are cleared by ordinary use rather than
+    /// accumulating for the deployment's lifetime. A session is otherwise only
+    /// removed when its own expired token is presented, which an abandoned
+    /// session never is.
+    ///
+    /// A purge that cannot run leaves the insertion intact. The purge is
+    /// maintenance this operation's own correctness does not depend on, and the
+    /// rows it fails to remove are already unusable, so it must not turn an
+    /// otherwise valid login into a refusal.
     fn create(&mut self, session: &NewSession) -> Result<(), DatabaseError>;
 
     /// Validates a presented session pair and advances its activity when usable.
@@ -323,9 +345,6 @@ pub trait SessionStore {
 
     /// Removes every session belonging to one account and reports the count.
     fn revoke_for_account(&mut self, account: StateIdentifier) -> Result<usize, DatabaseError>;
-
-    /// Removes every session already expired at `now` and reports the count.
-    fn purge_expired(&mut self, now: SessionInstant) -> Result<usize, DatabaseError>;
 }
 
 #[cfg(test)]

@@ -378,18 +378,19 @@ replay watermark that already consumed the confirming code are written
 together in one operation, so the enrollment cannot be reopened and confirmed a
 second time and the confirming code cannot be presented again.
 
-That same operation also decides the Module's enablement. An enrollment is
-opened before it is confirmed, and the Module can be disabled in between, so
-confirmation reads the enabled state and writes the factor inside one
-transaction and refuses the confirmation when the Module is not enabled. The
-refusal writes no factor and issues no session, and is the same denial a login
-against a disabled Module receives. Deciding enablement from state loaded
-before the write would only narrow that window: the confirmation would persist a
-factor and issue a session behind a Module the deployment had already stopped
-verifying, and because disabling revokes only the sessions of accounts enrolled
-at that moment, the newly issued session would survive the very operation meant
-to end it. The continuation's own five-minute lifetime is unchanged; enablement
-is an additional condition on the write, not a shorter window.
+That same operation also decides the Module's enablement and issues the
+session. An enrollment is opened before it is confirmed, and the Module can be
+disabled in between, so confirmation reads the enabled state, writes the factor
+and its watermark, and writes the session inside one transaction, and refuses
+the confirmation when the Module is not enabled. The refusal writes no factor
+and issues no session, and is the same denial a login against a disabled Module
+receives. Deciding enablement from state loaded before the write, or issuing the
+session after the write commits, would only narrow that window: the confirmation
+would persist a factor and issue a session behind a Module the deployment had
+already stopped verifying, and because disabling revokes only the sessions that
+exist when it commits, the newly issued session would survive the very operation
+meant to end it. The continuation's own five-minute lifetime is unchanged;
+enablement is an additional condition on the write, not a shorter window.
 
 ### Provisioning URI Construction
 
@@ -443,14 +444,27 @@ strictly greater than that recorded watermark; a matched step at or below the
 watermark is a replay and is refused even though the code is arithmetically
 correct.
 
-The check and the update are one operation. The Application Database contract
-exposes a backend-neutral MFA store that performs the comparison and the write
-inside a single transaction, so no concurrent presentation of the same code can
-observe the pre-update watermark and be accepted alongside the first. The
+The check and the update are one operation, and so is everything the acceptance
+decides. The Application Database contract exposes a backend-neutral MFA store
+that reads the Module's enabled state, performs the watermark comparison and
+write, and writes the session the acceptance issues, inside a single
+transaction. No concurrent presentation of the same code can observe the
+pre-update watermark and be accepted alongside the first, and a Module disabled
+while the code was in flight cannot have a session issued behind it. The
 decision belongs to the store rather than to a caller precisely because a
-caller that read the watermark, decided, and then wrote it would reopen that
-window. The enablement condition on a confirmed enrollment belongs to the store
-for exactly the same reason.
+caller that read the watermark or the enabled state, decided, and then wrote
+would reopen those windows. The enablement condition on a confirmed enrollment
+belongs to the store for exactly the same reason.
+
+A second factor presented after the Module was disabled is therefore refused by
+the transaction that would have written the acceptance, and the refusal writes
+no watermark and issues no session. Because the enabled state is read there, the
+verification path performs no separate enablement check of its own beforehand: a
+second check against separately loaded state would be a second decision, and
+only the one inside the writing transaction can be authoritative. The refusal is
+the same denial every other rejected code receives — the same stable error code,
+the same response body shape, and the same absence of any cookie — so a Module
+disabled mid-flight is indistinguishable from an incorrect or replayed code.
 
 A watermark is live operational state, not restorable state. It records what a
 factor did in this running deployment, whereas an enrolled factor is part of

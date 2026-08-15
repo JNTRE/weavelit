@@ -12,8 +12,9 @@ pub use mfa::{
 };
 pub use session::{
     MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
-    SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SessionCsrfHash, SessionInstant,
-    SessionRejection, SessionStore, SessionTokenHash, SessionValidation, StoredSession,
+    SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
+    SessionCsrfHash, SessionInstant, SessionRejection, SessionStore, SessionTokenHash,
+    SessionValidation, StoredSession,
 };
 pub use state::{
     Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,

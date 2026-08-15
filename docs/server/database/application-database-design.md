@@ -179,7 +179,7 @@ lifetime. A session refused for a backwards clock is not destroyed, because the
 clock rather than the session is what is wrong.
 
 The contract provides atomic `create`, `validate_and_touch`, `rotate_csrf`,
-`revoke`, `revoke_for_account`, and `purge_expired` operations.
+`revoke`, and `revoke_for_account` operations.
 `validate_and_touch` and `rotate_csrf` remove a session they find expired.
 `validate_and_touch` takes the presented CSRF digest and compares it inside the
 same transaction that resolves the session, and it advances the recorded
@@ -188,6 +188,21 @@ cannot extend the idle timeout. A mismatch is reported as the same rejection an
 unknown session token produces.
 Completing a state replacement clears every stored session inside the same
 atomic replacement.
+
+Issuing a session is also what removes expired ones. Every insertion first
+removes sessions already expired at the instant the new session is issued,
+inside the transaction that inserts it, so no separate sweep, timer, or
+unreferenced maintenance operation is needed and no expired row can accumulate
+while sessions are being issued. The removal is bounded: one insertion removes
+at most a fixed batch of expired rows, so a single login can never be made to
+delete an unbounded number of rows and a large accumulation is drained across
+subsequent insertions instead. Rows accumulate only by issuing sessions, so a
+bounded batch per insertion keeps pace with the only source of growth. Removal
+failure does not fail the login: the insertion still commits, because the
+session's correctness does not depend on the removal, and rows left behind are
+already unusable and are offered to the next insertion. A failure severe enough
+to also prevent the insertion still fails the login through the insertion
+itself, so no token is ever issued for a session that was not stored.
 
 Every text field is bounded, non-empty, and free of control characters. A state
 identifier is an opaque 16-byte value that rejects the reserved all-zero
@@ -267,23 +282,29 @@ backend could not store, and which exposes its domain value and its stored
 representation separately, so the conversion at the storage boundary is total.
 
 The contract exposes reading a factor's current watermark and one combined
-accept operation. The accept operation performs the comparison and the write
-atomically and reports whether the step was accepted or refused as a replay; it
+accept operation. The accept operation names the Module's configuration
+component, the factor, the presented step, and the session to issue. It reads
+the component's enabled setting, performs the watermark comparison and write,
+and writes the session, all in one transaction, and reports whether the step was
+accepted, refused as a replay, or refused because the Module was disabled. It
 does not return the watermark for a caller to compare itself. The decision
 belongs to the store because a caller that read, decided, and then wrote would
 leave a window in which a concurrent presentation of the same code could be
-accepted twice.
+accepted twice, or in which a Module disabled while the code was in flight could
+still have a session issued behind the disablement's own session revocation.
+Nothing is written when the step is refused for either reason.
 
 The same contract owns enrolling a factor, changing a Module's enabled state,
 and counting enrolled accounts, because each of those is a decision the caller
 must not make from separately loaded state. Enrolling names the Module's
-configuration component as well as the factor: the store reads that component's
-enabled setting, refuses the enrollment when the Module is not enabled, and
-otherwise writes the factor and its confirming watermark, all in one
-transaction. It reports whether the factor was enrolled, was already present, or
-was refused because the Module was disabled. Changing enabled state is atomic
-with recounting the enrolled accounts an Administrator previewed and with
-revoking the sessions of accounts holding a factor.
+configuration component and the session to issue as well as the factor: the
+store reads that component's enabled setting, refuses the enrollment when the
+Module is not enabled, and otherwise writes the factor, its confirming
+watermark, and the session, all in one transaction. It reports whether the
+factor was enrolled, was already present, or was refused because the Module was
+disabled. Changing enabled state is atomic with recounting the enrolled accounts
+an Administrator previewed and with revoking the sessions of accounts holding a
+factor.
 
 A watermark is live operational data in the same sense as a session: it belongs
 to the running deployment rather than to the restorable aggregate. It is not a

@@ -8,7 +8,7 @@ use weavelit_server_database::{
     ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
     DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupGrant, GroupGrantRecord,
     GroupMembership, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
-    LogModuleSetting, LogType, MfaFactor, MfaStore, MfaTimeStep, Name, NewSession,
+    LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
     PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
     ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
     StateIdentifier, WorkflowCheckpoint, WorkflowKind,
@@ -584,6 +584,26 @@ fn disable_component(path: &Path, kind: ComponentKind, component: &str, value: &
         .unwrap();
 }
 
+/// The two names the TOTP Module is addressed by.
+fn totp_target() -> MfaModuleTarget {
+    MfaModuleTarget {
+        module: name("totp"),
+        component: name("mfa.totp"),
+    }
+}
+
+/// Enables the TOTP Module, which an acceptance is decided against.
+fn enable_totp_module(path: &Path) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO weavelit_configuration \
+             (component, setting_key, setting_value) VALUES ('mfa.totp', 'enabled', ?1)",
+            [COMPONENT_ENABLED_VALUE],
+        )
+        .unwrap();
+}
+
 #[test]
 fn a_restore_clears_every_live_session_inside_the_state_replacement() {
     let temporary_directory = tempfile::tempdir().unwrap();
@@ -621,11 +641,29 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
     let path = database_path(&temporary_directory);
     let deployment_identifier = deployment(13);
     let mut database = pending_database(&path, deployment_identifier);
+    // Accepting a step is one decision with the Module's enabled state and the
+    // session it issues, so the Module is enabled here and each acceptance
+    // carries its own session.
+    enable_totp_module(&path);
     let step = MfaTimeStep::from_step(41_152_263).unwrap();
-    database.accept_step(identifier(5), step).unwrap();
-    database.accept_step(identifier(7), step).unwrap();
+    database
+        .accept_step(&totp_target(), identifier(5), step, &session(0x31, 0x32))
+        .unwrap();
+    database
+        .accept_step(&totp_target(), identifier(7), step, &session(0x33, 0x34))
+        .unwrap();
     assert_eq!(watermark_count(&path), 2);
 
+    // The replacement writes the restored state's own configuration into a
+    // table it expects to be empty, so the entry that enabled the Module for
+    // this seeding is removed before it runs.
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "DELETE FROM weavelit_configuration WHERE component = 'mfa.totp'",
+            [],
+        )
+        .unwrap();
     database
         .complete_checkpoint(
             &restore_checkpoint(deployment_identifier),
@@ -635,8 +673,14 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
 
     assert_eq!(watermark_count(&path), 0);
     assert_eq!(database.accepted_step(identifier(5)).unwrap(), None);
+    // The replacement wrote the restored state's own configuration, which
+    // leaves the Module disabled, so enabling it again is what lets the same
+    // step be offered back through the contract.
+    enable_totp_module(&path);
     assert_eq!(
-        database.accept_step(identifier(5), step).unwrap(),
+        database
+            .accept_step(&totp_target(), identifier(5), step, &session(0x35, 0x36))
+            .unwrap(),
         weavelit_server_database::MfaAcceptance::Accepted
     );
 }

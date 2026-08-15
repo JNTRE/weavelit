@@ -8,7 +8,7 @@
 //! watermark that could accept or refuse a code on evidence from another
 //! deployment's history.
 
-use crate::{ContractInputError, DatabaseError, MfaFactor, Name, StateIdentifier};
+use crate::{ContractInputError, DatabaseError, MfaFactor, Name, NewSession, StateIdentifier};
 
 /// Largest accepted time step.
 ///
@@ -49,16 +49,18 @@ impl MfaTimeStep {
 /// The result of presenting a verified code's time step to the store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MfaAcceptance {
-    /// The step advanced the factor's watermark and was recorded.
+    /// The step advanced the factor's watermark and the session was issued.
     Accepted,
     /// The step did not advance the watermark, so the code is a replay.
     Replayed,
+    /// The MFA Module was disabled when the code was presented.
+    ModuleDisabled,
 }
 
 /// The result of persisting one newly confirmed enrollment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MfaEnrollment {
-    /// The factor and its opening watermark were both written.
+    /// The factor, its opening watermark, and the session were all written.
     Enrolled,
     /// The account already holds a factor for that MFA Module.
     AlreadyEnrolled,
@@ -119,17 +121,30 @@ pub trait MfaStore {
     ///
     /// The comparison and the write are one atomic operation, so two
     /// concurrent presentations of the same code cannot both be accepted.
+    ///
+    /// The module's enabled state is read, and `session` is written, inside
+    /// that same operation. All three are one decision because none of them is
+    /// safe on its own: a caller that decided enablement on state it loaded
+    /// earlier, or that issued the session in a second transaction, would sign
+    /// an account in behind a module the deployment stopped verifying while the
+    /// code was in flight, and the disablement's own session revocation cannot
+    /// reach a session that does not exist yet. Nothing is written when the
+    /// module is not enabled or the step is a replay. `target` names the
+    /// configuration component that owns the enabled setting for the module the
+    /// factor records.
     fn accept_step(
         &mut self,
+        target: &MfaModuleTarget,
         factor: StateIdentifier,
         step: MfaTimeStep,
+        session: &NewSession,
     ) -> Result<MfaAcceptance, DatabaseError>;
 
-    /// Persists one confirmed factor together with its opening watermark.
+    /// Persists one confirmed factor, its opening watermark, and its session.
     ///
-    /// Both writes are one atomic operation. A factor that existed without its
-    /// watermark would accept the very code that confirmed it a second time,
-    /// and a watermark without its factor would refuse a later code on
+    /// All three writes are one atomic operation. A factor that existed without
+    /// its watermark would accept the very code that confirmed it a second
+    /// time, and a watermark without its factor would refuse a later code on
     /// evidence of an enrollment this deployment never completed.
     ///
     /// The module's enabled state is read inside that same operation and the
@@ -144,6 +159,7 @@ pub trait MfaStore {
         target: &MfaModuleTarget,
         factor: &MfaFactor,
         accepted_step: MfaTimeStep,
+        session: &NewSession,
     ) -> Result<MfaEnrollment, DatabaseError>;
 
     /// Sets one MFA Module's enabled state against a previewed enrolled count.

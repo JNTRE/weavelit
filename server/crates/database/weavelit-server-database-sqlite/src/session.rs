@@ -1,9 +1,9 @@
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
     BoundedText, DatabaseError, MAX_NAME_LENGTH, NewSession, SESSION_DIGEST_LENGTH,
-    SESSION_IDLE_TIMEOUT_MILLISECONDS, STATE_IDENTIFIER_LENGTH, SessionCsrfHash, SessionInstant,
-    SessionRejection, SessionStore, SessionTokenHash, SessionValidation, StateIdentifier,
-    StoredSession,
+    SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT, STATE_IDENTIFIER_LENGTH,
+    SessionCsrfHash, SessionInstant, SessionRejection, SessionStore, SessionTokenHash,
+    SessionValidation, StateIdentifier, StoredSession,
 };
 
 use crate::SqliteDatabase;
@@ -22,9 +22,15 @@ const ROTATE_SESSION: &str = "UPDATE weavelit_session \
      SET csrf_hash = ?2, last_seen_at_milliseconds = ?3 WHERE token_hash = ?1";
 const DELETE_SESSION: &str = "DELETE FROM weavelit_session WHERE token_hash = ?1";
 const DELETE_SESSIONS_FOR_ACCOUNT: &str = "DELETE FROM weavelit_session WHERE account_id = ?1";
-const DELETE_EXPIRED_SESSIONS: &str = "DELETE FROM weavelit_session \
-     WHERE ?1 >= absolute_expires_at_milliseconds \
-     OR ?1 >= last_seen_at_milliseconds + ?2";
+/// Removes a bounded batch of sessions no lifetime can still make usable.
+///
+/// The bound is applied by selecting the batch first, because a `LIMIT` on the
+/// delete itself is available only in a build of SQLite compiled for it.
+const DELETE_EXPIRED_SESSIONS: &str = "DELETE FROM weavelit_session WHERE token_hash IN \
+     (SELECT token_hash FROM weavelit_session \
+      WHERE ?1 >= absolute_expires_at_milliseconds \
+      OR ?1 >= last_seen_at_milliseconds + ?2 \
+      LIMIT ?3)";
 const DELETE_EVERY_SESSION: &str = "DELETE FROM weavelit_session";
 
 type SessionRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, i64, i64, i64);
@@ -44,19 +50,7 @@ pub(super) fn clear(connection: &Connection) -> Result<(), DatabaseError> {
 impl SessionStore for SqliteDatabase {
     fn create(&mut self, session: &NewSession) -> Result<(), DatabaseError> {
         let transaction = immediate(&mut self.connection)?;
-        transaction
-            .execute(
-                INSERT_SESSION,
-                params![
-                    session.token_hash().as_bytes().as_slice(),
-                    session.csrf_hash().as_bytes().as_slice(),
-                    session.account().as_bytes().as_slice(),
-                    session.client_module().as_str(),
-                    session.issued_at().as_unix_milliseconds(),
-                    session.absolute_expires_at().as_unix_milliseconds(),
-                ],
-            )
-            .map_err(|error| map_sqlite_error(error, ErrorContext::Session))?;
+        insert(&transaction, session)?;
 
         commit(transaction)
     }
@@ -140,21 +134,55 @@ impl SessionStore for SqliteDatabase {
 
         Ok(removed)
     }
+}
 
-    fn purge_expired(&mut self, now: SessionInstant) -> Result<usize, DatabaseError> {
-        let transaction = immediate(&mut self.connection)?;
-        let removed = count(
-            &transaction,
-            DELETE_EXPIRED_SESSIONS,
-            params![
-                now.as_unix_milliseconds(),
-                SESSION_IDLE_TIMEOUT_MILLISECONDS
-            ],
-        )?;
-        commit(transaction)?;
+/// Writes one new session after clearing a bounded batch of expired ones.
+///
+/// This runs inside the caller's transaction. An MFA decision that issues a
+/// session calls it so the session commits with the decision that authorized
+/// it rather than as a separate step a concurrent change could slip between.
+pub(super) fn insert(
+    transaction: &Transaction<'_>,
+    session: &NewSession,
+) -> Result<(), DatabaseError> {
+    purge(transaction, session.issued_at());
 
-        Ok(removed)
-    }
+    execute(
+        transaction,
+        INSERT_SESSION,
+        params![
+            session.token_hash().as_bytes().as_slice(),
+            session.csrf_hash().as_bytes().as_slice(),
+            session.account().as_bytes().as_slice(),
+            session.client_module().as_str(),
+            session.issued_at().as_unix_milliseconds(),
+            session.absolute_expires_at().as_unix_milliseconds(),
+        ],
+    )
+}
+
+/// Clears up to [`SESSION_PURGE_BATCH_LIMIT`] sessions expired at `now`.
+///
+/// A failure is deliberately absorbed instead of returned. The purge shares the
+/// transaction that issues a session, so reporting it would roll that issue
+/// back and turn a maintenance failure into a refused login. Nothing the
+/// caller wrote depends on it, every row it leaves behind is already unusable
+/// and is offered again to the next insertion, and a failure severe enough to
+/// also stop the insertion still fails the insertion.
+fn purge(transaction: &Transaction<'_>, now: SessionInstant) {
+    // Nothing is removed rather than removed without a bound if the configured
+    // batch is not representable as the signed count a `LIMIT` binding takes.
+    let Ok(batch) = i64::try_from(SESSION_PURGE_BATCH_LIMIT) else {
+        return;
+    };
+    let _purged = transaction.execute(
+        DELETE_EXPIRED_SESSIONS,
+        params![
+            now.as_unix_milliseconds(),
+            SESSION_IDLE_TIMEOUT_MILLISECONDS,
+            batch
+        ],
+    );
 }
 
 /// A presented session after its stored row and lifetime have been judged.

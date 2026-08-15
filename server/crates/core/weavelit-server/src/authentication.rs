@@ -576,6 +576,24 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         account: StateIdentifier,
         client_module: &Name,
     ) -> Result<SessionEstablished, AuthenticationRejection> {
+        let (session, established) = self.new_session(account, client_module)?;
+        self.with_sessions(|sessions| sessions.create(&session))?;
+
+        Ok(established)
+    }
+
+    /// Draws one session and the bearer values it is presented by.
+    ///
+    /// Drawing is separate from writing because a session issued behind an MFA
+    /// decision is written by the transaction that makes that decision rather
+    /// than by a second one it could be separated from. Nothing here is
+    /// persisted, so a session drawn for a decision that then refuses is simply
+    /// discarded.
+    fn new_session(
+        &self,
+        account: StateIdentifier,
+        client_module: &Name,
+    ) -> Result<(NewSession, SessionEstablished), AuthenticationRejection> {
         let unavailable = AuthenticationRejection::ServiceUnavailable;
         // Generated fresh on every login, so the cross-site request forgery
         // token a session carries is rotated by logging in.
@@ -588,12 +606,14 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             client_module.clone(),
             self.now()?,
         );
-        self.with_sessions(|sessions| sessions.create(&session))?;
 
-        Ok(SessionEstablished {
-            session_token: Zeroizing::new(secrets.session().as_str().to_owned()),
-            csrf_token: Zeroizing::new(secrets.csrf().as_str().to_owned()),
-        })
+        Ok((
+            session,
+            SessionEstablished {
+                session_token: Zeroizing::new(secrets.session().as_str().to_owned()),
+                csrf_token: Zeroizing::new(secrets.csrf().as_str().to_owned()),
+            },
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -641,9 +661,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         };
 
         let state = self.initialized_state()?;
-        if !module_enabled(state.state()) {
-            return Err(self.deny(correlation_id));
-        }
+        // Enablement is not decided here. It is read inside the transaction
+        // that records the accepted step and writes the session, because a
+        // decision taken on state loaded now would let a module disabled while
+        // this attempt is in flight still end in a session: the disablement
+        // revokes the sessions that exist when it commits, and this one would
+        // not exist yet.
         let Some(factor) = enrolled_factor(state.state(), account) else {
             return Err(self.deny(correlation_id));
         };
@@ -653,12 +676,21 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         };
         let step = MfaTimeStep::from_step(step.as_u64())
             .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+        let target = totp_target()?;
+        let (session, established) = self.new_session(account, &client_module)?;
 
-        // The watermark decides replay atomically, so a code presented twice
-        // inside its own step is accepted at most once.
-        match self.with_mfa(|store| store.accept_step(factor.identifier, step))? {
-            MfaAcceptance::Accepted => self.issue_session(account, &client_module),
-            MfaAcceptance::Replayed => Err(self.deny(correlation_id)),
+        // The enablement, the watermark that decides replay, and the session
+        // are one atomic decision, so a code presented twice inside its own
+        // step is accepted at most once and neither refusal leaves a session
+        // behind. A disabled module answers the same refusal as any other
+        // denial, so nothing here reports that it was disabled.
+        match self
+            .with_mfa(|store| store.accept_step(&target, factor.identifier, step, &session))?
+        {
+            MfaAcceptance::Accepted => Ok(established),
+            MfaAcceptance::Replayed | MfaAcceptance::ModuleDisabled => {
+                Err(self.deny(correlation_id))
+            }
         }
     }
 
@@ -883,11 +915,13 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         // The factor and the watermark that already consumed the confirming
         // code are written together, so the code that enrolled the factor
         // cannot immediately be replayed against it. The module's enabled
-        // state is read inside that same transaction, so an enrollment opened
-        // while the module was enabled and confirmed after it was disabled
-        // persists no factor and reaches no session issuance.
-        match self.with_mfa(|store| store.enroll(&target, &factor, step))? {
-            MfaEnrollment::Enrolled => self.issue_session(account, &client_module),
+        // state is read, and the session is written, inside that same
+        // transaction, so an enrollment opened while the module was enabled and
+        // confirmed after it was disabled persists no factor and issues no
+        // session.
+        let (session, established) = self.new_session(account, &client_module)?;
+        match self.with_mfa(|store| store.enroll(&target, &factor, step, &session))? {
+            MfaEnrollment::Enrolled => Ok(established),
             MfaEnrollment::AlreadyEnrolled | MfaEnrollment::ModuleDisabled => {
                 Err(self.deny(correlation_id))
             }
@@ -3676,6 +3710,65 @@ pub(crate) mod tests {
         );
         assert!(replayed.cookies.is_none());
         assert!(!rendered(&replayed).await.contains("Set-Cookie"));
+    }
+
+    /// A second factor completed after the Module was disabled issues nothing.
+    ///
+    /// The enabled state is read inside the transaction that would write the
+    /// watermark and the session, so a Module disabled after the login stopped
+    /// at its second factor cannot leave a session behind. The refusal is the
+    /// same denial every other rejected code receives, and the accepted step is
+    /// still offerable afterwards because the refused attempt wrote nothing.
+    #[tokio::test]
+    async fn a_second_factor_completed_after_the_module_was_disabled_issues_no_session() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, true, true));
+        surface.set_clock(vector_milliseconds(0));
+
+        let continuation = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        assert_eq!(
+            surface.runtime.set_module_enabled(false, 1).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 0
+            }
+        );
+
+        let refused = verify_code(&surface, &continuation, ENROLLED_VECTOR_CODE).await;
+
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body_text(&refused),
+            format!(
+                "{{\"error\":\"authentication_failed\",\"correlation_id\":\"{}\"}}",
+                correlation_of(&refused)
+            )
+        );
+        assert!(refused.cookies.is_none());
+        assert!(!rendered(&refused).await.contains("Set-Cookie"));
+        // Revocation counts the live sessions of every enrolled account, so a
+        // zero here is the observable proof that the refused step issued none.
+        assert_eq!(
+            surface.runtime.set_module_enabled(false, 1).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 0
+            }
+        );
+
+        assert_eq!(
+            surface.runtime.set_module_enabled(true, 1).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 0
+            }
+        );
+        let fresh = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let accepted = verify_code(&surface, &fresh, ENROLLED_VECTOR_CODE).await;
+        assert_eq!(accepted.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+        assert_eq!(
+            surface.runtime.set_module_enabled(false, 1).unwrap(),
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 1
+            }
+        );
     }
 
     /// An invalid code consumes the continuation it was presented with.

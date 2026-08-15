@@ -1,11 +1,12 @@
-use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
     COMPONENT_ENABLED_VALUE, DatabaseError, MfaAcceptance, MfaEnablementOutcome, MfaEnrollment,
-    MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, StateIdentifier,
+    MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
 };
 
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
+use crate::session;
 
 const SELECT_WATERMARK: &str =
     "SELECT accepted_step FROM weavelit_mfa_replay_watermark WHERE factor_id = ?1";
@@ -91,26 +92,38 @@ impl MfaStore for SqliteDatabase {
 
     fn accept_step(
         &mut self,
+        target: &MfaModuleTarget,
         factor: StateIdentifier,
         step: MfaTimeStep,
+        session: &NewSession,
     ) -> Result<MfaAcceptance, DatabaseError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        // The enablement read, the watermark comparison, and the session write
+        // share this one transaction. A module disabled while the code was in
+        // flight therefore cannot have a session issued behind it, which the
+        // disablement's own revocation could not have reached: that revocation
+        // removes the sessions that exist when it commits, and this one would
+        // not have existed yet.
+        if !enabled(&transaction, target)? {
+            return Ok(MfaAcceptance::ModuleDisabled);
+        }
         let written = transaction
             .execute(
                 ADVANCE_WATERMARK,
                 params![factor.as_bytes().as_slice(), step.as_stored()],
             )
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-        transaction
-            .commit()
-            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-
+        // Rolled back rather than committed, so a replayed code issues nothing.
         if written == 0 {
             return Ok(MfaAcceptance::Replayed);
         }
+        session::insert(&transaction, session)?;
+        transaction
+            .commit()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
 
         Ok(MfaAcceptance::Accepted)
     }
@@ -120,25 +133,19 @@ impl MfaStore for SqliteDatabase {
         target: &MfaModuleTarget,
         factor: &MfaFactor,
         accepted_step: MfaTimeStep,
+        session: &NewSession,
     ) -> Result<MfaEnrollment, DatabaseError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-        // The enablement read and the two writes share this one transaction,
+        // The enablement read and the three writes share this one transaction,
         // so a module disabled between opening the enrollment and confirming
         // it cannot have a factor written against it, and no session can be
         // issued behind one.
-        let enabled: Option<String> = transaction
-            .query_row(
-                SELECT_ENABLEMENT,
-                params![target.component.as_str(), MODULE_ENABLED_KEY],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-        // Rolled back rather than committed, so a disabled module writes nothing.
-        if enabled.as_deref() != Some(COMPONENT_ENABLED_VALUE) {
+        //
+        // Every refusal below returns without committing, so it writes nothing.
+        if !enabled(&transaction, target)? {
             return Ok(MfaEnrollment::ModuleDisabled);
         }
         let written = transaction
@@ -166,6 +173,7 @@ impl MfaStore for SqliteDatabase {
                 ],
             )
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        session::insert(&transaction, session)?;
         transaction
             .commit()
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
@@ -226,4 +234,21 @@ fn step(stored: i64) -> Result<MfaTimeStep, DatabaseError> {
     let stored = u64::try_from(stored).map_err(|_| DatabaseError::IntegrityFailure)?;
 
     MfaTimeStep::from_step(stored).map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+/// Reads whether one MFA Module is enabled inside the caller's transaction.
+///
+/// Any value other than the exact enabled one, and a missing entry, leaves the
+/// module disabled.
+fn enabled(transaction: &Transaction<'_>, target: &MfaModuleTarget) -> Result<bool, DatabaseError> {
+    let stored: Option<String> = transaction
+        .query_row(
+            SELECT_ENABLEMENT,
+            params![target.component.as_str(), MODULE_ENABLED_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+
+    Ok(stored.as_deref() == Some(COMPONENT_ENABLED_VALUE))
 }

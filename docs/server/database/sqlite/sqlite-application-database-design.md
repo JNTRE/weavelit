@@ -166,6 +166,16 @@ on the storage engine's own byte comparison. A row whose stored bytes cannot be
 rebuilt into the contract's types is refused as `IntegrityFailure` rather than
 accepted.
 
+Inserting a session first deletes rows already expired at the new session's
+issue instant, in the same transaction. The delete is bounded to a named batch
+constant by selecting that many `token_hash` values in a subquery, because
+`DELETE ... LIMIT` requires a SQLite build option this deployment does not
+rely on. A delete failure is deliberately absorbed rather than propagated: the
+insertion still commits, because the login's correctness does not depend on
+removing unusable rows, and those rows are offered to the next insertion. An
+adverse condition that also prevents the insertion still fails the operation
+through the insert itself.
+
 Completing a checkpoint deletes every session row inside the same transaction
 that installs the replacement state, so a Restore's session invalidation commits
 or rolls back with the replacement itself and no interruption can land between
@@ -203,16 +213,21 @@ an enrolled factor is part of the aggregate a Restore replaces, while the
 highest time step that factor has been observed to use is live operational
 state produced by this running deployment.
 
-Accepting a time step is one statement inside one `BEGIN IMMEDIATE`
-transaction: an upsert whose update branch is guarded by
+Accepting a time step reads the Module's enabled setting, advances the
+watermark, and inserts the session the acceptance issues, inside one
+`BEGIN IMMEDIATE` transaction. A disabled Module returns before anything is
+written. The advance itself is one statement: an upsert whose update branch is
+guarded by
 `excluded.accepted_step > weavelit_mfa_replay_watermark.accepted_step`. The
 comparison and the write are therefore the same statement, and no concurrent
 presentation can observe the pre-update watermark and be accepted alongside the
 first. A changed-row count of zero means the presented step did not advance the
-watermark and the presentation is reported as a replay. A `BEFORE UPDATE`
+watermark and the presentation is reported as a replay, with the transaction
+rolled back so no session is issued. A `BEFORE UPDATE`
 trigger additionally aborts any statement, including a direct one, that reuses
 or rewinds an accepted step, so a spent code cannot be made usable again by
-writing to the table.
+writing to the table. Enrolling a factor spans the same three tables in one
+transaction for the same reason.
 
 Completing a checkpoint deletes every watermark row inside the same transaction
 that installs the replacement state, alongside the live session rows, so a
@@ -401,9 +416,11 @@ Session tests inject every instant, so no assertion depends on wall-clock timing
 or on a sleep. They cover survival across reopen, the exact idle and absolute
 boundaries in both directions, refusal without destruction or activity update
 when the clock moves backwards, CSRF rotation on a usable session and refusal on
-an expired one, scoped revocation, purging at each boundary, and schema refusal
-of a plaintext-sized digest, of the reserved all-zero digest, and of any direct
-statement that would extend or reassign a stored lifetime.
+an expired one, scoped revocation, removal of exactly the sessions past each
+boundary when a new session is issued, the bound on how many rows one issue
+removes, and schema refusal of a plaintext-sized digest, of the reserved
+all-zero digest, and of any direct statement that would extend or reassign a
+stored lifetime.
 
 The MVP scope does not defer quality obligations: every selected behavior has
 its required security, diagnostics, safe failure, and automated test evidence

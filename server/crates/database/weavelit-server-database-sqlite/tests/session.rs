@@ -9,8 +9,9 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
     Name, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS, SESSION_DIGEST_LENGTH,
-    SESSION_IDLE_TIMEOUT_MILLISECONDS, SessionCsrfHash, SessionInstant, SessionRejection,
-    SessionStore, SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
+    SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT, SessionCsrfHash, SessionInstant,
+    SessionRejection, SessionStore, SessionTokenHash, SessionValidation, StateIdentifier,
+    StoredSession,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -43,12 +44,20 @@ fn instant(value: i64) -> SessionInstant {
 }
 
 fn new_session(token_byte: u8, account_byte: u8) -> NewSession {
+    issued_at(token_byte, account_byte, ISSUED_AT)
+}
+
+/// Builds a session issued at an injected instant.
+///
+/// Issuing is what purges expired rows, so the instant a session is issued at
+/// is also the instant every other session's lifetime is judged against.
+fn issued_at(token_byte: u8, account_byte: u8, milliseconds: i64) -> NewSession {
     NewSession::new(
         token(token_byte),
         csrf(CSRF_BYTE),
         account(account_byte),
         Name::new("web-ui").unwrap(),
-        instant(ISSUED_AT),
+        instant(milliseconds),
     )
 }
 
@@ -384,8 +393,14 @@ fn revocation_removes_only_the_named_session_or_account() {
     );
 }
 
+/// Issuing a session removes exactly the sessions past a lifetime boundary.
+///
+/// Expired rows are cleared by ordinary use rather than by a sweep, so the
+/// boundary is decided by issuing another session at each instant. The session
+/// that issues the purge is itself live, so the count it leaves behind is the
+/// surviving rows plus that one.
 #[test]
-fn purging_removes_exactly_the_sessions_past_a_boundary() {
+fn issuing_a_session_removes_exactly_the_sessions_past_a_boundary() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let mut database = opened(&path);
@@ -398,18 +413,39 @@ fn purging_removes_exactly_the_sessions_past_a_boundary() {
     );
     let idle_deadline = ISSUED_AT + SESSION_IDLE_TIMEOUT_MILLISECONDS;
 
-    let before_boundary = database.purge_expired(instant(idle_deadline - 1)).unwrap();
-    let at_boundary = database.purge_expired(instant(idle_deadline)).unwrap();
-    let after_boundary = database.purge_expired(instant(idle_deadline + 1)).unwrap();
+    database
+        .create(&issued_at(0x03, 0x42, idle_deadline - 1))
+        .unwrap();
+    assert_eq!(session_count(&path), 3, "nothing has expired yet");
 
-    assert_eq!(before_boundary, 0);
-    assert_eq!(at_boundary, 1, "only the session idle since issue expires");
-    assert_eq!(after_boundary, 1);
-    assert_eq!(session_count(&path), 0);
+    database
+        .create(&issued_at(0x04, 0x42, idle_deadline))
+        .unwrap();
+    assert_eq!(
+        session_count(&path),
+        3,
+        "only the session idle since issue expires"
+    );
+    assert_eq!(
+        rejection(
+            database
+                .validate_and_touch(&token(0x01), &csrf(CSRF_BYTE), instant(idle_deadline))
+                .unwrap()
+        ),
+        SessionRejection::Unknown,
+        "the expired session was removed rather than merely refused"
+    );
+
+    // The second original session was last seen one millisecond later, so the
+    // next issue past its own deadline is what removes it.
+    database
+        .create(&issued_at(0x05, 0x42, idle_deadline + 1))
+        .unwrap();
+    assert_eq!(session_count(&path), 3);
 }
 
 #[test]
-fn purging_also_removes_a_session_past_only_its_absolute_lifetime() {
+fn issuing_a_session_also_removes_one_past_only_its_absolute_lifetime() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let mut database = opened(&path);
@@ -417,13 +453,80 @@ fn purging_also_removes_a_session_past_only_its_absolute_lifetime() {
     let absolute_deadline = ISSUED_AT + SESSION_ABSOLUTE_LIFETIME_MILLISECONDS;
     keep_active_until(&mut database, &token(TOKEN_BYTE), absolute_deadline - 1);
 
-    let before_boundary = database
-        .purge_expired(instant(absolute_deadline - 1))
+    database
+        .create(&issued_at(0x02, 0x42, absolute_deadline - 1))
         .unwrap();
-    let at_boundary = database.purge_expired(instant(absolute_deadline)).unwrap();
+    assert_eq!(
+        session_count(&path),
+        2,
+        "the session is still inside its life"
+    );
 
-    assert_eq!(before_boundary, 0);
-    assert_eq!(at_boundary, 1);
+    database
+        .create(&issued_at(0x03, 0x42, absolute_deadline))
+        .unwrap();
+
+    assert_eq!(
+        session_count(&path),
+        2,
+        "only the two later sessions remain"
+    );
+    assert_eq!(
+        rejection(
+            database
+                .validate_and_touch(
+                    &token(TOKEN_BYTE),
+                    &csrf(CSRF_BYTE),
+                    instant(absolute_deadline)
+                )
+                .unwrap()
+        ),
+        SessionRejection::Unknown
+    );
+}
+
+/// One issue never removes more than the batch bound, so a login cannot become
+/// an unbounded delete over a table that has accumulated for years.
+///
+/// A live session is issued alongside the expired ones and is asserted to
+/// survive every purge, so the bound is not being met by removing anything that
+/// is still usable.
+#[test]
+fn issuing_a_session_never_removes_more_than_the_batch_bound() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = opened(&path);
+    let expired = SESSION_PURGE_BATCH_LIMIT + 5;
+    let live_token = u8::try_from(expired + 2).expect("the fixture stays inside one byte");
+    for index in 0..expired {
+        let byte = u8::try_from(index + 1).expect("the fixture stays inside one byte");
+        database.create(&new_session(byte, 0x41)).unwrap();
+    }
+    let past_deadline = ISSUED_AT + SESSION_ABSOLUTE_LIFETIME_MILLISECONDS;
+    database
+        .create(&issued_at(live_token, 0x42, past_deadline))
+        .unwrap();
+
+    // The issue above purged one full batch and left the rest, plus itself.
+    let remaining = expired - SESSION_PURGE_BATCH_LIMIT + 1;
+    assert_eq!(
+        session_count(&path),
+        i64::try_from(remaining).unwrap(),
+        "one issue removes at most one bounded batch"
+    );
+
+    database
+        .create(&issued_at(live_token + 1, 0x42, past_deadline))
+        .unwrap();
+
+    // The next issue clears the remainder, keeping both live sessions.
+    assert_eq!(session_count(&path), 2);
+    assert!(matches!(
+        database
+            .validate_and_touch(&token(live_token), &csrf(CSRF_BYTE), instant(past_deadline))
+            .unwrap(),
+        SessionValidation::Valid(_)
+    ));
 }
 
 #[test]
