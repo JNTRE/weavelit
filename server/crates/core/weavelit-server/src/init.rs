@@ -1767,6 +1767,15 @@ mod tests {
         )
     }
 
+    /// One configuration carrying a single non-secret setting.
+    fn configured_log_module(module: &str, name: &str, key: &str, value: &str) -> String {
+        format!(
+            "{{\"module\":\"{module}\",\"name\":\"{name}\",\"enabled\":true,\
+             \"settings\":[{{\"key\":\"{key}\",\"value\":\"{value}\"}}],\
+             \"protected_settings\":[]}}"
+        )
+    }
+
     /// The two enabled configurations a well-formed submission carries.
     ///
     /// Each log type is an independent assignment, so the System Log and the
@@ -2322,6 +2331,74 @@ mod tests {
     async fn an_absent_assignment_is_refused_before_anything_is_committed() {
         assert_uncommitted_actionable_refusal(&log_modules(), "not-configured", AUDIT_ASSIGNMENT)
             .await;
+    }
+
+    /// A configuration carrying a setting its Log Module never declared is
+    /// refused as a correctable request, not as a late module failure.
+    ///
+    /// The compiled-in module declares no setting at all, so the request below
+    /// is one its factory would refuse at preflight. Refusing it at validation
+    /// is what keeps the delivered key usable: the refusal is asserted directly
+    /// against the delivery stage and the serving mode, because reaching the
+    /// factory would have destroyed the delivery and published the fail-closed
+    /// surface, leaving no retry short of redeployment.
+    #[tokio::test]
+    async fn an_undeclared_log_module_setting_is_refused_before_anything_is_committed() {
+        let modules = format!(
+            "{},{}",
+            configured_log_module("sqlite", SYSTEM_ASSIGNMENT, "retention-days", "30"),
+            log_module("sqlite", AUDIT_ASSIGNMENT, true)
+        );
+
+        let (surface, recorder) = InitSurface::recording(
+            vec![LogRecordType::System, LogRecordType::Audit],
+            Preflight::Prove,
+        );
+        let delivered = surface.deliver_key().await;
+        let anchors = surface.anchor_snapshot();
+
+        let served = surface
+            .submit(
+                INIT_ROUTE,
+                &body_with(
+                    &modules,
+                    SYSTEM_ASSIGNMENT,
+                    AUDIT_ASSIGNMENT,
+                    Some(&delivered.proof()),
+                ),
+            )
+            .await;
+
+        assert_eq!(served.status, InitRejection::InitializationFailed.status());
+        // The named module was never reached, so nothing durable exists to
+        // undo: no preflight ran, no record was delivered, and the checkpoint
+        // the delivered key belongs to is untouched.
+        assert!(recorder.preflighted().is_empty());
+        assert_eq!(recorder.delivered(), 0);
+        assert_eq!(
+            surface.record_state(),
+            LifecycleState::InitializationPending
+        );
+        assert_eq!(surface.anchor_snapshot(), anchors);
+        assert!(system_log_records(&surface.state_root).is_empty());
+        assert!(
+            !matches!(*surface.modes.borrow(), ServingMode::FailClosed(_)),
+            "a correctable request must not publish the fail-closed surface"
+        );
+        assert!(
+            matches!(
+                *surface.orchestrator().stage.held(),
+                InitStage::Delivered(_)
+            ),
+            "the pending delivery must remain claimable"
+        );
+
+        // The same key still finalizes once the setting is removed.
+        let retried = surface
+            .submit(INIT_ROUTE, &finalization_body(&delivered.proof()))
+            .await;
+        assert_eq!(retried.status, StatusCode::OK, "{}", retried.body);
+        assert_eq!(surface.record_state(), LifecycleState::Initialized);
     }
 
     /// Submits one correctable assignment failure and proves nothing durable

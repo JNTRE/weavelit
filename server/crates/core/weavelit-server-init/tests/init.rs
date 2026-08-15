@@ -21,8 +21,8 @@ use weavelit_server_init::{
     ADMINISTRATORS_GROUP_NAME, AuthorizedInit, CheckpointError, InitAuthority, InitCheckpoint,
     InitError, InitOperations, InitTarget, InitialAdministrator, InitialLogModuleConfiguration,
     InitialPassword, InitialProtectedSetting, InitialSecret, InitializeServer,
-    MAX_LOG_MODULE_CONFIGURATIONS, MAX_PASSWORD_BYTES, PreparedInitDelivery, RequestError,
-    validate_request,
+    MAX_LOG_MODULE_CONFIGURATIONS, MAX_LOG_MODULE_SETTINGS, MAX_PASSWORD_BYTES,
+    PreparedInitDelivery, RequestError, validate_request,
 };
 use weavelit_server_lifecycle::{
     CheckpointMetadata, LifecycleError, ProtectedValueKind, ProtectedValueSealer, WorkflowError,
@@ -34,6 +34,7 @@ const LOG_MODULE: &str = "sqlite";
 const WEB_UI: &str = "web-ui";
 const SYSTEM_CONFIGURATION: &str = "system-log";
 const AUDIT_CONFIGURATION: &str = "audit-log";
+const LOG_SETTING: &str = "destination-path";
 const LOG_SECRET: &[u8] = b"log-module-connection-secret";
 
 fn name(value: &str) -> Name {
@@ -55,9 +56,14 @@ fn components() -> AvailableComponents {
         )]
         .into_iter()
         .collect(),
-        log_modules: [(name(LOG_MODULE), LogSettingsFormat::default())]
-            .into_iter()
-            .collect(),
+        log_modules: [(
+            name(LOG_MODULE),
+            LogSettingsFormat {
+                accepted_keys: [LOG_SETTING.to_owned()].into_iter().collect(),
+            },
+        )]
+        .into_iter()
+        .collect(),
         ..AvailableComponents::default()
     }
 }
@@ -86,7 +92,7 @@ fn configuration(configuration_name: &str, enabled: bool) -> InitialLogModuleCon
         name: name(configuration_name),
         enabled,
         settings: vec![LogModuleSetting {
-            key: key(configuration_name),
+            key: key(LOG_SETTING),
             value: ConfigurationValue::new("/var/lib/weavelit/log.sqlite")
                 .expect("the fixture value is accepted"),
         }],
@@ -743,6 +749,131 @@ fn request_validation_rejects_state_this_build_cannot_serve() {
     // The unmodified request validates, so each rejection above is caused by
     // its mutation rather than by a fixture that never validated.
     assert!(validate_request(&request(None), &components).is_ok());
+}
+
+#[test]
+fn request_validation_rejects_a_setting_its_log_module_does_not_declare() {
+    let components = components();
+
+    let mut undeclared = request(None);
+    undeclared.log_module_configurations[0]
+        .settings
+        .push(LogModuleSetting {
+            key: key("retention-days"),
+            value: ConfigurationValue::new("30").expect("the fixture value is accepted"),
+        });
+    assert_eq!(
+        validate_request(&undeclared, &components).map(|_| ()),
+        Err(RequestError::SettingUnsupported),
+        "a setting the named Log Module never declared cannot reach finalization"
+    );
+
+    // A module that declares no setting at all accepts only a configuration
+    // that carries none, which is what the compiled-in module does.
+    let declares_nothing = AvailableComponents {
+        log_modules: [(name(LOG_MODULE), LogSettingsFormat::default())]
+            .into_iter()
+            .collect(),
+        ..components.clone()
+    };
+    assert_eq!(
+        validate_request(&request(None), &declares_nothing).map(|_| ()),
+        Err(RequestError::SettingUnsupported)
+    );
+    let mut unconfigured = request(None);
+    for configuration in &mut unconfigured.log_module_configurations {
+        configuration.settings.clear();
+    }
+    assert!(
+        validate_request(&unconfigured, &declares_nothing).is_ok(),
+        "a configuration carrying nothing the module refuses is accepted"
+    );
+
+    // The declaration governs non-secret settings only: a secret setting is
+    // never carried to the module through it, so it is not judged against it.
+    let mut protected = request(None);
+    protected.log_module_configurations[0]
+        .protected_settings
+        .push(InitialProtectedSetting {
+            key: key("connection-secret"),
+            value: InitialSecret::new(LOG_SECRET.to_vec()).expect("the fixture secret is bounded"),
+        });
+    assert!(
+        validate_request(&protected, &components).is_ok(),
+        "a protected setting is outside the declared non-secret format"
+    );
+}
+
+#[test]
+fn an_undeclared_setting_does_not_take_an_earlier_rejection_away() {
+    let components = components();
+    let undeclared = LogModuleSetting {
+        key: key("retention-days"),
+        value: ConfigurationValue::new("30").expect("the fixture value is accepted"),
+    };
+
+    let mut unavailable = request(None);
+    unavailable.log_module_configurations[0].module = name("not-compiled-in");
+    unavailable.log_module_configurations[0]
+        .settings
+        .push(undeclared.clone());
+    assert_eq!(
+        validate_request(&unavailable, &components).map(|_| ()),
+        Err(RequestError::ComponentUnavailable)
+    );
+
+    let mut duplicated = request(None);
+    duplicated.log_module_configurations[0]
+        .settings
+        .push(undeclared.clone());
+    duplicated.log_module_configurations[0]
+        .settings
+        .push(undeclared.clone());
+    assert_eq!(
+        validate_request(&duplicated, &components).map(|_| ()),
+        Err(RequestError::DuplicateEntry)
+    );
+
+    let mut overlong = request(None);
+    overlong.log_module_configurations[0].settings = (0..=MAX_LOG_MODULE_SETTINGS)
+        .map(|index| LogModuleSetting {
+            key: key(&format!("setting-{index}")),
+            value: undeclared.value.clone(),
+        })
+        .collect();
+    assert_eq!(
+        validate_request(&overlong, &components).map(|_| ()),
+        Err(RequestError::CollectionOutOfBounds)
+    );
+}
+
+#[test]
+fn a_request_whose_settings_its_log_module_declares_initializes() {
+    let operations = operations();
+    let authority = EligibleAuthority::new();
+    let prepared = operations
+        .prepare_delivery(&authority)
+        .expect("preparation succeeds");
+
+    let accepted = request(Some(valid_proof(&prepared)));
+    assert!(
+        accepted
+            .log_module_configurations
+            .iter()
+            .all(|configuration| !configuration.settings.is_empty()),
+        "the accepted request must actually carry a declared setting"
+    );
+    assert!(validate_request(&accepted, &components()).is_ok());
+
+    operations
+        .finalize(
+            &authority,
+            prepared.checkpoint(),
+            &accepted,
+            &RecordingSealer::new(),
+            obligation(),
+        )
+        .expect("a request carrying only declared settings initializes");
 }
 
 #[test]

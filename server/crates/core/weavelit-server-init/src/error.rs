@@ -126,6 +126,8 @@ pub enum RequestError {
     DuplicateEntry,
     /// A named Log Module is not compiled into this build.
     ComponentUnavailable,
+    /// A configuration carried a setting its Log Module does not declare.
+    SettingUnsupported,
     /// A log-type assignment named no submitted configuration.
     UnresolvedAssignment,
     /// A log-type assignment named a disabled configuration.

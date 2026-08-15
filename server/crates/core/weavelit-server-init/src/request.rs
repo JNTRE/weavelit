@@ -99,9 +99,9 @@ impl std::fmt::Debug for ValidatedRequest<'_> {
 /// Validates one submitted request against Server semantics and this build.
 ///
 /// Validation is complete before anything is created, so a request that names a
-/// Log Module this build does not carry, repeats a configuration name, or
-/// assigns a log type to a disabled configuration is rejected while rejecting is
-/// still free.
+/// Log Module this build does not carry, repeats a configuration name, carries a
+/// setting the named Log Module does not accept, or assigns a log type to a
+/// disabled configuration is rejected while rejecting is still free.
 ///
 /// # Errors
 ///
@@ -150,6 +150,26 @@ pub fn validate_request<'request>(
                 return Err(RequestError::DuplicateEntry);
             }
             protected_keys.push(entry);
+        }
+
+        // The module's own declaration, carried on the inventory, is the only
+        // authority for which settings it accepts, so a configuration the named
+        // module would refuse to open is caught while the pending delivery is
+        // still claimable rather than at the finalization preflight, which has
+        // no retry path short of redeployment. The comparison is pure: it reads
+        // declared keys, opens no destination, and creates nothing. Secret
+        // settings are deliberately outside the declaration and are never
+        // carried to a module through it, so they are not judged here.
+        let servable = components
+            .log_settings_format(&configuration.module)
+            .is_some_and(|format| {
+                configuration
+                    .settings
+                    .iter()
+                    .all(|setting| format.accepts(setting.key.as_str()))
+            });
+        if !servable {
+            return Err(RequestError::SettingUnsupported);
         }
     }
 

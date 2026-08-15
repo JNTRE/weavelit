@@ -135,9 +135,10 @@ refuses the settings it is handed by testing them against `accepted_settings`
 rather than by restating the rule inside its factory, so a configuration a
 caller judged as acceptable cannot be one the module then refuses to open, and a
 caller can never judge a configuration by a rule the module does not apply.
-This seam is what lets **[Restore](../glossary.md#states-and-requests)** refuse
-a backup carrying settings its named module could not serve before its
-checkpoint exists, without opening the destination; see
+This seam is what lets **[Init](../glossary.md#states-and-requests)** and
+**[Restore](../glossary.md#states-and-requests)** refuse a configuration
+carrying settings its named module could not serve before their checkpoints are
+committed, without opening the destination; see
 [Compiled-In Component Inventory](../server/lifecycle/restore/restore-design.md#compiled-in-component-inventory).
 
 ## Event Classification Taxonomy
@@ -353,9 +354,18 @@ configuration and two explicit assignments to the same Server-owned
 validation; no client defines an alternative Log Module initialization path.
 
 Init rejects an absent, disabled, unconfigured, or incompatible assignment. It
-also rejects an assignment unless its configured Log Module can complete its
-configured supported storage interface's commit path for the assigned log
-type, proven through the preflight contract described in
+also rejects any submitted configuration carrying a non-secret setting its named
+Log Module does not declare, judged against the module's own declared settings
+format on the compiled-in component inventory rather than against a rule Init
+restates. That rejection is part of request validation, so it is correctable:
+the person completing Init fixes the setting and retries the same finalization
+request. Reaching the module's factory with an undeclared setting instead would
+fail after the request was accepted, which is not a correctable outcome. Secret
+settings are outside the declaration and are never carried to a module through
+it, so they are not judged against it. Init also rejects an assignment unless
+its configured Log Module can complete its configured supported storage
+interface's commit path for the assigned log type, proven through the preflight
+contract described in
 [Destination Preflight And Configuration Validation](#destination-preflight-and-configuration-validation).
 After Init commits application state, it receives a durable acknowledgement for
 the Init completion result through the committed System Log assignment before

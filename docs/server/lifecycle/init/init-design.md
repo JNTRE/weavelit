@@ -86,6 +86,24 @@ the system-defined **[Administrators Group](../../../glossary.md#identities-and-
 and adds the first user without accepting client-defined grants. The request
 does not duplicate the selected database connection configuration.
 
+Server semantic validation runs in full before anything is created, so every
+rule it enforces is a correctable request failure rather than a late failure
+with no retry path. It rejects a request whose Log Module configuration
+collection is empty or past its bound, names a Log Module this build does not
+compile in, repeats a configuration name, repeats a setting key, claims one
+protected setting key twice for the same Log Module, exceeds the per
+configuration setting bounds, carries a non-secret setting the named Log Module
+does not declare, assigns both log types to one configuration, or names an
+absent or disabled configuration for either assignment. Declared settings are
+judged against the module's own declaration carried on the
+[compiled-in component inventory](../restore/restore-design.md#compiled-in-component-inventory),
+the same authority Restore uses, so Init never restates what a module accepts.
+Secret settings are outside that declaration and are never carried to a module
+through it, so they are not judged against it. This check exists because the
+Log Module preflight that would otherwise catch an undeclared setting runs after
+the recovery-key delivery has been claimed, where a failure ends this process's
+Init instead of inviting a correction.
+
 Client applications submit user-supplied secrets over HTTPS and must not place
 them in URLs or persistent client storage.
 **[Client Modules](../../../glossary.md#applications-and-interfaces)** pass secret
