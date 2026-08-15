@@ -17,6 +17,13 @@ const CORRECTABLE_BEFORE_DELIVERY_MESSAGE =
   "Weavelit did not accept these details and no recovery key was issued. Correct the details below and try again.";
 const CLOSED_MESSAGE =
   "Setup stopped and this Server will not resume it. No further attempt against this Server can succeed, this deployment was not initialized, and the recovery key shown earlier is not usable. Stop this Server, discard its state, and deploy a new Weavelit Server to start again.";
+const INDETERMINATE_MESSAGE =
+  "This Server stopped waiting for setup to answer before it reported one, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
+const INDETERMINATE_CHECKING_MESSAGE = "Checking whether setup completed.";
+
+const PREPARE_PATH = "/api/v1/init/recovery-key";
+const FINALIZE_PATH = "/api/v1/init";
+const SESSION_PATH = "/api/v1/auth/session";
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -39,16 +46,50 @@ function completionResponse(): Response {
   return jsonResponse({ result: { lifecycle: "initialized" }, correlation_id: CORRELATION }, 200);
 }
 
-/** Routes the preparation request and the finalization request independently. */
+/** The listener's answer when it stopped waiting before the route reported. */
+function timeoutResponse(): Response {
+  return jsonResponse({ error: "gateway_timeout", correlation_id: CORRELATION }, 504);
+}
+
+/** The challenge only a published normal operation serves. */
+function challengedProbe(): Promise<Response> {
+  return Promise.resolve(
+    jsonResponse({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+  );
+}
+
+/** The answer a still pre-operational Server gives: no authentication surface. */
+function absentProbe(): Promise<Response> {
+  return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+}
+
+/**
+ * Routes the preparation, finalization, and reconciliation requests apart.
+ *
+ * A probe a test did not stage is refused rather than answered, so a test that
+ * never expected a reconciliation cannot silently read one.
+ */
 function mockRoutedFetch(routes: {
   prepare: () => Promise<Response>;
   finalize: () => Promise<Response>;
+  probe?: () => Promise<Response>;
 }) {
-  return vi
-    .spyOn(globalThis, "fetch")
-    .mockImplementation((input: unknown) =>
-      input === "/api/v1/init/recovery-key" ? routes.prepare() : routes.finalize(),
-    );
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown) => {
+    if (input === PREPARE_PATH) {
+      return routes.prepare();
+    }
+    if (input === SESSION_PATH) {
+      return routes.probe === undefined
+        ? Promise.reject(new Error("unrouted session probe"))
+        : routes.probe();
+    }
+    return routes.finalize();
+  });
+}
+
+/** Counts the calls a mocked fetch received for one exact request target. */
+function callsTo(mock: { mock: { calls: unknown[][] } }, path: string): number {
+  return mock.mock.calls.filter((call) => call[0] === path).length;
 }
 
 function section(): HTMLElement {
@@ -373,6 +414,129 @@ describe("InitWorkflow", () => {
 
     await screen.findByText(CORRECTABLE_AFTER_DELIVERY_MESSAGE);
     expect(section().dataset.initState).toBe("details");
+  });
+
+  it("completes a finalization that reported nothing once a challenge proves it committed", async () => {
+    const fetchMock = mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => Promise.resolve(timeoutResponse()),
+      probe: challengedProbe,
+    });
+    const completed = vi.fn();
+
+    render(<InitWorkflow onCompleted={completed} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+
+    // Only a published normal operation challenges, so the deployment was
+    // sealed with the delivered key and the workflow is done with that key.
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
+    });
+    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(document.body.textContent).not.toContain(RECOVERY_KEY);
+    expect(document.body.textContent).not.toContain(PASSWORD);
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("keeps the delivered key when nothing can yet settle a finalization that reported nothing", async () => {
+    const fetchMock = mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => Promise.resolve(timeoutResponse()),
+      probe: absentProbe,
+    });
+    const completed = vi.fn();
+
+    render(<InitWorkflow onCompleted={completed} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+
+    await screen.findByText(INDETERMINATE_MESSAGE);
+    expect(section().dataset.initState).toBe("indeterminate");
+    expect(document.querySelector("[data-init-error]")?.getAttribute("data-init-error")).toBe(
+      "gateway_timeout",
+    );
+    expect(completed).not.toHaveBeenCalled();
+    expect(button("Check again")).toBeDefined();
+    expect(button("Try setup again")).toBeDefined();
+    expect(document.body.textContent).not.toContain(PASSWORD);
+
+    // The delivered key survived the outcome that reported nothing: returning
+    // to the details step offers the retry path rather than a second
+    // preparation, and no further key was ever requested.
+    fireEvent.click(button("Try setup again"));
+    expect(button("Return to review")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Prepare recovery key" })).toBeNull();
+    expect(callsTo(fetchMock, PREPARE_PATH)).toBe(1);
+  });
+
+  it("rechecks on request and completes once the deployment is found to be operational", async () => {
+    let probes = 0;
+    const fetchMock = mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => Promise.resolve(timeoutResponse()),
+      probe: () => {
+        probes += 1;
+        return probes === 1 ? absentProbe() : challengedProbe();
+      },
+    });
+    const completed = vi.fn();
+
+    render(<InitWorkflow onCompleted={completed} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+
+    await screen.findByText(INDETERMINATE_MESSAGE);
+    expect(completed).not.toHaveBeenCalled();
+
+    fireEvent.click(button("Check again"));
+    await screen.findByText(INDETERMINATE_CHECKING_MESSAGE);
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
+    });
+
+    expect(probes).toBe(2);
+    // The recheck settled it on its own: no second finalization was submitted.
+    expect(callsTo(fetchMock, FINALIZE_PATH)).toBe(1);
+    expect(document.body.textContent).not.toContain(RECOVERY_KEY);
+  });
+
+  it("retries a finalization that reported nothing with the same key and prepares no other", async () => {
+    let finalizations = 0;
+    const fetchMock = mockRoutedFetch({
+      prepare: () => Promise.resolve(deliveryResponse()),
+      finalize: () => {
+        finalizations += 1;
+        return Promise.resolve(finalizations === 1 ? timeoutResponse() : completionResponse());
+      },
+      probe: absentProbe,
+    });
+    const completed = vi.fn();
+
+    render(<InitWorkflow onCompleted={completed} />);
+    await reachReviewStep();
+    fireEvent.click(button("Complete setup"));
+
+    await screen.findByText(INDETERMINATE_MESSAGE);
+    fireEvent.click(button("Try setup again"));
+
+    // The password did not outlive the attempt it drove, so it is entered again.
+    expect(screen.getByLabelText<HTMLInputElement>("Password").value).toBe("");
+    expect(button("Return to review").disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: PASSWORD } });
+    fireEvent.click(button("Return to review"));
+    fireEvent.click(button("Complete setup"));
+
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
+    });
+    expect(callsTo(fetchMock, PREPARE_PATH)).toBe(1);
+    // The retry proved possession of the very key delivered before the timeout.
+    const body = JSON.parse(bodyText(fetchMock, fetchMock.mock.calls.length - 1)) as Record<
+      string,
+      unknown
+    >;
+    expect(body.recovery_key_proof).toBe(EXPECTED_PROOF);
   });
 
   it("lets a rejected preparation be corrected and retried", async () => {

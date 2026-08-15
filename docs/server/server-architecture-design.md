@@ -390,6 +390,33 @@ Server Observability inside this composition and retains the authority
 privately, so no other caller can mint a trusted record issuer or a trusted Log
 Module context.
 
+Because that chain is uncancellable, the request's processing deadline is
+carried into it rather than left with the listener. Cancelling the route future
+is all the processing timeout can do, and that stops nothing the chain has
+already handed to the blocking pool, so a chain with no view of the deadline
+would answer `504` on the connection and go on to commit anyway. The listener
+therefore attaches the absolute instant it stops waiting — already capped by
+the connection's inherited deadline through the
+[Admission Ordering](#admission-ordering) above — to the request before router
+dispatch. It is an instant rather than a duration, only the listener
+constructs one, and it is never recomputed, restarted, or lengthened
+downstream, so nothing a route hands to a blocking pool can extend the budget
+it expresses. Init's finalization reads that attached deadline and observes it
+at the last point before its own point of no return, so a cancelled listener
+does not leave an unbounded commit running behind it. Restore bounds its own
+blocking chain the same way, against the approved total request deadline it
+already caps at what remains of the submission budget.
+
+Observing a deadline narrows the exposure without closing it: one that expires
+immediately after the observation still commits, so an answered `504` can
+accompany a workflow that succeeded. That check-then-commit residual is
+accepted, and each workflow document owns where its observation sits, how an
+overrun is reported, and what makes the residual safe. The
+[Server Init Design](lifecycle/init/init-design.md#recovery-key-delivery-and-finalization)
+and the
+[Server Restore Design](lifecycle/restore/restore-design.md#backup-validation-and-restored-state)
+own that detail.
+
 A sealed startup uses that same arbiter to load the deployment's application
 state. The load runs under the exclusive mutation permit and independently
 re-reads the deployment record and re-inspects the database exactly as sealing

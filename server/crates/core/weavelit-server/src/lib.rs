@@ -73,7 +73,7 @@ pub use weavelit_module_client::typed_json;
 use operational::{
     ActiveDatabase, OperationalComposer, OperationalDatabase, OperationalMount, OperationalRuntime,
 };
-use transport::{HeadRead, MountedSurface, TransportCapability};
+use transport::{HeadRead, MountedSurface, ProcessingDeadline, TransportCapability};
 use typed_json::TypedJsonEnvelope;
 
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
@@ -1536,10 +1536,15 @@ where
     };
 
     let is_head = *request.method() == Method::HEAD;
-    let processing_deadline = capped_deadline(
+    let processing_deadline = ProcessingDeadline::new(capped_deadline(
         profile.processing_deadline(started, timeouts.processing, body_deadline),
         inherited_deadline,
-    );
+    ));
+    // Attached before dispatch and never recomputed: work a route hands to a
+    // blocking pool outlives the future this timeout cancels, so it must be
+    // able to observe the very instant the listener stops waiting.
+    let mut request = request;
+    request.extensions_mut().insert(processing_deadline);
     let router = surface.into_router();
     let mut bounded = processing_response(processing_deadline, async move {
         let response = router
@@ -2073,11 +2078,14 @@ async fn write_response_and_acknowledge<S>(
     }
 }
 
-async fn processing_response<F>(processing_deadline: Deadline, processing: F) -> BoundedResponse
+async fn processing_response<F>(
+    processing_deadline: ProcessingDeadline,
+    processing: F,
+) -> BoundedResponse
 where
     F: Future<Output = BoundedResponse>,
 {
-    match timeout_at(processing_deadline, processing).await {
+    match timeout_at(processing_deadline.instant(), processing).await {
         Ok(response) => response,
         Err(_) => gateway_timeout_response(),
     }
@@ -2762,7 +2770,7 @@ pub(crate) mod tests {
 
     use super::{
         APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse,
-        ConnectionSlots, ConnectionTimeouts, DatabaseError, LifecycleTransitionGate,
+        ConnectionSlots, ConnectionTimeouts, DatabaseError, Deadline, LifecycleTransitionGate,
         MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
         RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
         RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
@@ -2781,8 +2789,8 @@ pub(crate) mod tests {
         serve_normal_connection_with_timeouts, serve_rejection_connection_with_timeouts,
         server_components, sqlite_catalog, startup_outcome,
         transport::{
-            BodyAdmission, MountedSurface, TransportCapability, TransportProfile,
-            TransportRegistration,
+            BodyAdmission, MountedSurface, ProcessingDeadline, TransportCapability,
+            TransportProfile, TransportRegistration,
         },
         typed_json::{
             RecoveryKeyLine, ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult,
@@ -6666,8 +6674,11 @@ pub(crate) mod tests {
             super::RequestHeadRead::Incomplete(super::RequestReadError::TimedOut)
         ));
 
-        let response =
-            processing_response(super::Deadline::now(), pending::<BoundedResponse>()).await;
+        let response = processing_response(
+            ProcessingDeadline::new(super::Deadline::now()),
+            pending::<BoundedResponse>(),
+        )
+        .await;
         assert_eq!(response.status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(response.body, gateway_timeout_response().body);
         assert_eq!(
@@ -8404,6 +8415,83 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(unregistered.status, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// Test-only target that reports the processing deadline it was dispatched
+    /// with, so the value the router receives can be compared with the one the
+    /// listener bounds the request at.
+    const DEADLINE_TARGET: &str = "/api/v1/observed-deadline";
+
+    /// The absolute processing deadline one dispatched request carried.
+    ///
+    /// The router is dispatched with exactly the value
+    /// [`processing_response`] is given, so this is that value, not a
+    /// reconstruction of it.
+    async fn dispatched_deadline(processing: Duration) -> (Deadline, Deadline, Deadline) {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<ProcessingDeadline>::new()));
+        let router = fallback_router().route(
+            DEADLINE_TARGET,
+            any({
+                let observed = Arc::clone(&observed);
+                move |request: Request<Body>| {
+                    let observed = Arc::clone(&observed);
+                    async move {
+                        let carried = *request
+                            .extensions()
+                            .get::<ProcessingDeadline>()
+                            .expect("the listener attaches the request's processing deadline");
+                        observed.lock().unwrap().push(carried);
+                        typed_json_response(StatusCode::ACCEPTED, admitted_envelope())
+                    }
+                }
+            }),
+        );
+
+        let head = format!("GET {DEADLINE_TARGET} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let before = Deadline::now();
+        let response = process_over_duplex(
+            MountedSurface::without_registrations(router),
+            ConnectionTimeouts {
+                handshake: TLS_HANDSHAKE_TIMEOUT,
+                request_read: REQUEST_READ_TIMEOUT,
+                processing,
+            },
+            |stream| {
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    stream.write_all(head.as_bytes()).await.unwrap();
+                    pending::<()>().await;
+                })
+            },
+        )
+        .await;
+        let after = Deadline::now();
+        assert_eq!(response.status, StatusCode::ACCEPTED);
+
+        let carried = observed.lock().unwrap();
+        assert_eq!(carried.len(), 1, "the route was dispatched exactly once");
+        (carried[0].instant(), before, after)
+    }
+
+    /// The router is dispatched with the same absolute deadline
+    /// [`processing_response`] bounds the same request at.
+    ///
+    /// Work a route hands to a blocking pool outlives the future that timeout
+    /// cancels, so the instant the listener stops waiting at has to be
+    /// observable from inside the router rather than inferred from a duration.
+    /// The observed value is bracketed by the two instants the request was
+    /// started between, and it moves with the connection's processing budget
+    /// rather than being a constant, so a deadline computed from anything else
+    /// fails this.
+    #[tokio::test]
+    async fn the_router_is_dispatched_with_the_listener_s_own_processing_deadline() {
+        for processing in [Duration::from_secs(3), REQUEST_PROCESSING_TIMEOUT] {
+            let (carried, before, after) = dispatched_deadline(processing).await;
+            assert!(
+                carried >= before + processing && carried <= after + processing,
+                "the dispatched deadline must be the request's own start plus {processing:?}"
+            );
+        }
     }
 
     /// A registration never lengthens the head's own absolute deadline, so a

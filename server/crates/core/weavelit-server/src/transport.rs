@@ -126,6 +126,70 @@ impl TransportProfile {
 }
 
 // ---------------------------------------------------------------------------
+// Processing deadline
+// ---------------------------------------------------------------------------
+
+/// Reports that a request's processing deadline has already passed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeadlineExpired;
+
+/// The processing-deadline check one request's irreversible work is bounded by.
+///
+/// Work that continues behind a blocking boundary the listener cannot cancel
+/// observes its remaining time only through this, so a test places an overrun
+/// at an exact step of a chain instead of waiting for real time to pass.
+pub trait ProcessingBudget: Send + Sync {
+    /// Rejects the request once its processing deadline has passed.
+    fn check(&self) -> Result<(), DeadlineExpired>;
+}
+
+/// The absolute instant the listener stops waiting for one request's handling.
+///
+/// The listener attaches the deadline it already computed and capped, so work
+/// that outlives a dropped route future observes exactly the instant the
+/// listener's own processing timeout fires at. The value is an instant rather
+/// than a duration and only the listener constructs one, so nothing downstream
+/// can start, reset, or lengthen the budget it expresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessingDeadline(Deadline);
+
+impl ProcessingDeadline {
+    /// Wraps the absolute deadline the listener bounded this request at.
+    pub(crate) const fn new(deadline: Deadline) -> Self {
+        Self(deadline)
+    }
+
+    /// Returns the absolute instant this request's handling is bounded at.
+    pub(crate) const fn instant(self) -> Deadline {
+        self.0
+    }
+
+    /// Creates a deadline that has already passed.
+    ///
+    /// Test-only seam: an expiry is otherwise reachable only by waiting out a
+    /// route's whole processing budget in real time. Only an already-expired
+    /// deadline can be built here, so nothing can extend a request through it.
+    #[cfg(test)]
+    pub(crate) fn already_expired() -> Self {
+        Self(
+            Deadline::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("the monotonic clock represents an origin one second in the past"),
+        )
+    }
+}
+
+impl ProcessingBudget for ProcessingDeadline {
+    fn check(&self) -> Result<(), DeadlineExpired> {
+        if Deadline::now() < self.0 {
+            Ok(())
+        } else {
+            Err(DeadlineExpired)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Pre-body validation seam
 // ---------------------------------------------------------------------------
 

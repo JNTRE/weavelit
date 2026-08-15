@@ -1,5 +1,6 @@
 import { useCallback, useState, type ChangeEvent, type JSX } from "react";
 
+import { probeSession } from "../api/weavelit-authentication";
 import { deriveRecoveryKeyProof } from "../api/weavelit-init-recovery-proof";
 import {
   InitFailedError,
@@ -66,6 +67,12 @@ const CORRECTABLE_AFTER_DELIVERY_MESSAGE =
 const CLOSED_HEADING = "This Server can no longer set up this deployment";
 const CLOSED_MESSAGE =
   "Setup stopped and this Server will not resume it. No further attempt against this Server can succeed, this deployment was not initialized, and the recovery key shown earlier is not usable. Stop this Server, discard its state, and deploy a new Weavelit Server to start again.";
+const INDETERMINATE_HEADING = "Setup did not report an outcome";
+const INDETERMINATE_MESSAGE =
+  "This Server stopped waiting for setup to answer before it reported one, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
+const INDETERMINATE_CHECKING_MESSAGE = "Checking whether setup completed.";
+const RECHECK_ACTION_LABEL = "Check again";
+const INDETERMINATE_RETRY_LABEL = "Try setup again";
 const FAILURE_CODE_LABEL = "Reported code";
 
 const SYSTEM_LOG_SELECT_ID = "weavelit-init-system-log";
@@ -113,6 +120,18 @@ const CORRECTABLE_FINALIZATION_CODES = [
   "initialization_failed",
 ];
 
+/**
+ * Rejections of the finalization route that report no outcome at all.
+ *
+ * `gateway_timeout` is written by the listener when it stops waiting for the
+ * route, not by the route. Finalization work that had already reached a
+ * blocking boundary is not cancelled by that, so the deployment may have gone
+ * on to become operational after this page was answered. The attempt is
+ * therefore neither correctable nor permanently failed: it is unresolved, and
+ * the delivered key must survive it until an operational surface settles it.
+ */
+const INDETERMINATE_FINALIZATION_CODES = ["gateway_timeout"];
+
 /** Presentation state of the Init workflow. */
 type InitViewState =
   | { readonly kind: "details"; readonly code: string | null }
@@ -120,6 +139,7 @@ type InitViewState =
   | { readonly kind: "key" }
   | { readonly kind: "review" }
   | { readonly kind: "finalizing" }
+  | { readonly kind: "indeterminate"; readonly code: string; readonly checking: boolean }
   | { readonly kind: "closed"; readonly code: string };
 
 function failureCode(reason: unknown): string {
@@ -144,7 +164,10 @@ export interface InitWorkflowProps {
  * Neither is written to a URL, a cookie, `localStorage`, `sessionStorage`, a
  * log, or any rendered failure message, and neither survives the submission it
  * drives: the password is cleared as soon as a finalization attempt settles, and
- * the key is dropped on completion and on any permanent failure.
+ * the key is dropped on completion and on any permanent failure. An attempt
+ * that reported no outcome keeps the key in that same component memory until an
+ * operational surface settles it, because dropping a key a deployment may still
+ * be sealed with would destroy the only copy of it.
  *
  * Between key delivery and finalization the Server serves the finalization
  * route alone, so this component never reloads, re-requests status, or fetches
@@ -214,6 +237,27 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
     );
   }, [complete, username, displayName, password, systemLogModule, auditLogModule]);
 
+  const reconcile = useCallback(
+    (code: string) => {
+      setState({ kind: "indeterminate", code, checking: true });
+      void probeSession().then((probe) => {
+        if (probe.kind === "absent") {
+          // No authentication surface is served, which distinguishes nothing:
+          // finalization may still be running, or may never have committed.
+          // The key is kept and the operator decides when to look again.
+          setState({ kind: "indeterminate", code, checking: false });
+          return;
+        }
+        // An identity or an unauthenticated challenge both prove the same
+        // thing: normal operation was published, so this deployment was
+        // initialized and sealed with the key that was delivered here.
+        setDelivered(null);
+        onCompleted();
+      });
+    },
+    [onCompleted],
+  );
+
   const finalize = useCallback(() => {
     if (delivered === null || !complete) {
       return;
@@ -239,6 +283,12 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
           // that attempt settled.
           setPassword("");
           const code = failureCode(reason);
+          if (correctable(code, INDETERMINATE_FINALIZATION_CODES)) {
+            // Deliberately keeps the delivered key: this attempt may already
+            // have initialized and sealed this deployment with it.
+            reconcile(code);
+            return;
+          }
           if (correctable(code, CORRECTABLE_FINALIZATION_CODES)) {
             // The Server released the attempt and still expects the same key,
             // so the delivered key is deliberately retained for the retry.
@@ -253,6 +303,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
     complete,
     delivered,
     onCompleted,
+    reconcile,
     username,
     displayName,
     password,
@@ -288,9 +339,43 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
   const edit = useCallback(() => {
     setState({ kind: "details", code: null });
   }, []);
+  const recheck = useCallback(() => {
+    if (state.kind === "indeterminate") {
+      reconcile(state.code);
+    }
+  }, [reconcile, state]);
 
   const busy = state.kind === "preparing" || state.kind === "finalizing";
   const editing = state.kind === "details" || state.kind === "preparing";
+
+  if (state.kind === "indeterminate") {
+    return (
+      <section className="shell__init" data-init-state={state.kind}>
+        <h2 className="shell__init-title">{INIT_HEADING}</h2>
+        <div className="shell__init-indeterminate" role="alert" data-init-error={state.code}>
+          <h3 className="shell__init-failure-title">{INDETERMINATE_HEADING}</h3>
+          <p className="shell__init-failure-message">{INDETERMINATE_MESSAGE}</p>
+          <p className="shell__init-failure-code">
+            {FAILURE_CODE_LABEL}: {state.code}
+          </p>
+          {state.checking ? (
+            <p className="shell__init-progress" role="status">
+              {INDETERMINATE_CHECKING_MESSAGE}
+            </p>
+          ) : (
+            <>
+              <button type="button" className="shell__init-action" onClick={recheck}>
+                {RECHECK_ACTION_LABEL}
+              </button>
+              <button type="button" className="shell__init-secondary" onClick={edit}>
+                {INDETERMINATE_RETRY_LABEL}
+              </button>
+            </>
+          )}
+        </div>
+      </section>
+    );
+  }
 
   if (state.kind === "closed") {
     return (

@@ -94,7 +94,7 @@ use crate::{
     operational::{OperationalComposer, OperationalDatabase, OperationalRuntime},
     transport::{
         AdmittedCheck, BodyAdmission, PreBodyCheck, PreBodyGrant, PreBodyRejection,
-        TransportProfile, TransportRegistration,
+        ProcessingBudget, ProcessingDeadline, TransportProfile, TransportRegistration,
     },
 };
 
@@ -647,13 +647,21 @@ impl InitOrchestrator {
             .get::<BodyAdmission>()
             .cloned()
             .ok_or(InitRejection::InitializationFailed)?;
+        // The listener's own deadline, taken rather than started: this chain
+        // runs past the point at which the route future can still be cancelled,
+        // so it must be able to see when the caller stopped waiting.
+        let deadline = submission
+            .context
+            .get::<ProcessingDeadline>()
+            .copied()
+            .ok_or(InitRejection::InitializationFailed)?;
         let request = submission.request;
         let proof = submission.recovery_key_proof;
 
         let orchestrator = Arc::clone(self);
         let outcome = task::spawn_blocking(move || {
             let _admission = admission;
-            orchestrator.run(request, &proof)
+            orchestrator.run(request, &proof, &deadline)
         })
         .await
         .map_err(|_| InitRejection::InitializationFailed)?;
@@ -682,12 +690,13 @@ impl InitOrchestrator {
         &self,
         request: InitRequestSubmission,
         proof: &str,
+        budget: &dyn ProcessingBudget,
     ) -> Result<InitCompleted, InitFailure> {
         let Some(pending) = self.stage.claim() else {
             return Err(InitFailure::Refused(InitRejection::AlreadyInitialized));
         };
 
-        match self.complete(&pending, request, proof) {
+        match self.complete(&pending, request, proof, budget) {
             Ok(completed) => {
                 self.stage.end();
                 Ok(completed)
@@ -709,12 +718,29 @@ impl InitOrchestrator {
         }
     }
 
+    /// Drives the blocking finalization chain against a supplied deadline.
+    ///
+    /// The route entry point takes the listener's own [`ProcessingDeadline`],
+    /// which no caller can lengthen. This exists only so a test can place an
+    /// expiry at an exact step of the chain, and count the steps that observed
+    /// it, instead of waiting out a whole processing budget in real time.
+    #[cfg(test)]
+    fn run_against_deadline(
+        &self,
+        request: InitRequestSubmission,
+        proof: &str,
+        budget: &dyn ProcessingBudget,
+    ) -> Result<InitCompleted, InitFailure> {
+        self.run(request, proof, budget)
+    }
+
     /// Runs one finalization against the claimed pending delivery.
     fn complete(
         &self,
         pending: &PendingInit,
         request: InitRequestSubmission,
         proof: &str,
+        budget: &dyn ProcessingBudget,
     ) -> Result<InitCompleted, InitFailure> {
         // Reopens and re-verifies the exact deployment-bound Init checkpoint
         // under a fresh exclusive permit, before the submitted proof is parsed
@@ -743,7 +769,7 @@ impl InitOrchestrator {
         validate_request(&request, &self.components)
             .map_err(|_| InitFailure::Actionable(InitRejection::InitializationFailed))?;
 
-        self.commit(workflow, pending, &request)
+        self.commit(workflow, pending, &request, budget)
     }
 
     /// Commits, logs, seals, and activates one validated Init.
@@ -755,6 +781,7 @@ impl InitOrchestrator {
         workflow: PendingWorkflow<'_>,
         pending: &PendingInit,
         request: &InitializeServer,
+        budget: &dyn ProcessingBudget,
     ) -> Result<InitCompleted, InitFailure> {
         let deployment_identifier = workflow.deployment_identifier();
         let record_identifier =
@@ -790,6 +817,19 @@ impl InitOrchestrator {
         // fails while failing is still free.
         let system_log = self.preflight(request, LogType::System, deployment_identifier)?;
         self.preflight(request, LogType::Audit, deployment_identifier)?;
+
+        // Both preflights, the password verifier, and the state build are
+        // substantial work, and this is the last moment at which abandoning
+        // this finalization is still free. The listener may already have
+        // answered `gateway_timeout` and left a client that will never learn
+        // this Server went on to publish normal operation, so an expired
+        // deadline stops here instead. It is reported as the same actionable
+        // `initialization_failed` a correctable request reports, which returns
+        // the claimed delivery to the stage: the same checkpoint and the same
+        // delivered key remain finalizable.
+        budget
+            .check()
+            .map_err(|_| InitFailure::Actionable(InitRejection::InitializationFailed))?;
 
         // Entered before the point of no return and held through sealing, so a
         // stop signalled from here on waits for the commit chain instead of
@@ -1267,7 +1307,10 @@ mod tests {
         operational::test_support::ActivationBarrier,
         server_components, sqlite_catalog,
         tests::assert_no_write_ahead_log,
-        transport::{BodyAdmission, MountedSurface, PreBodyRejection, TransportProfile},
+        transport::{
+            BodyAdmission, MountedSurface, PreBodyRejection, ProcessingBudget, ProcessingDeadline,
+            TransportProfile,
+        },
     };
 
     /// The authority every Init request in these tests targets.
@@ -1393,6 +1436,18 @@ mod tests {
                 .init
                 .as_ref()
                 .expect("this build compiles in its administration Client Module")
+        }
+
+        /// Acquires the same admission permit the listener holds for the whole
+        /// finalization, so a chain driven directly still runs under the
+        /// route's single-permit concurrency bound.
+        async fn admission(&self) -> BodyAdmission {
+            BodyAdmission::from_permit(
+                Arc::clone(&self.orchestrator().mutation_lane)
+                    .acquire_owned()
+                    .await
+                    .expect("the mutation lane is open"),
+            )
         }
 
         /// Snapshots the surface the next accepted connection would serve.
@@ -1728,6 +1783,27 @@ mod tests {
         request: Request,
         body: &str,
     ) -> Result<Request, PreBodyRejection> {
+        admit_head_within(
+            surface,
+            request,
+            body,
+            ProcessingDeadline::new(live_deadline()),
+        )
+        .await
+    }
+
+    /// The absolute deadline the listener's default profile bounds a request
+    /// at, computed exactly as `process_restricted_request` computes it.
+    fn live_deadline() -> tokio::time::Instant {
+        tokio::time::Instant::now() + crate::REQUEST_PROCESSING_TIMEOUT
+    }
+
+    async fn admit_head_within(
+        surface: &MountedSurface,
+        request: Request,
+        body: &str,
+        deadline: ProcessingDeadline,
+    ) -> Result<Request, PreBodyRejection> {
         let admitted = crate::transport::HeadRead::new(request)
             .admit_rate(
                 &RateLimiter::new(),
@@ -1745,10 +1821,14 @@ mod tests {
         let (mut client, mut server) = tokio::io::duplex(body.len().max(1));
         client.write_all(body.as_bytes()).await.unwrap();
         client.shutdown().await.unwrap();
-        admitted
+        let mut request = admitted
             .read_body(&mut server)
             .await
-            .map_err(|_| PreBodyRejection::BadRequest)
+            .map_err(|_| PreBodyRejection::BadRequest)?;
+        // Attached exactly where the listener attaches it: after the body has
+        // been read and before the router is dispatched.
+        request.extensions_mut().insert(deadline);
+        Ok(request)
     }
 
     /// Serves one admitted request and renders it the way the listener does.
@@ -1756,8 +1836,33 @@ mod tests {
         serve_head(surface, init_head(target, body.len()), body).await
     }
 
+    /// Serves one request whose processing deadline the caller chooses.
+    async fn serve_within(
+        surface: &MountedSurface,
+        target: &str,
+        body: &str,
+        deadline: ProcessingDeadline,
+    ) -> Served {
+        serve_head_within(surface, init_head(target, body.len()), body, deadline).await
+    }
+
     async fn serve_head(surface: &MountedSurface, request: Request, body: &str) -> Served {
-        let request = match admit_head(surface, request, body).await {
+        serve_head_within(
+            surface,
+            request,
+            body,
+            ProcessingDeadline::new(live_deadline()),
+        )
+        .await
+    }
+
+    async fn serve_head_within(
+        surface: &MountedSurface,
+        request: Request,
+        body: &str,
+        deadline: ProcessingDeadline,
+    ) -> Served {
+        let request = match admit_head_within(surface, request, body, deadline).await {
             Ok(request) => request,
             Err(rejection) => {
                 // Renders through the listener's own fixed-response path, so
@@ -2704,6 +2809,233 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Processing deadline
+    // -----------------------------------------------------------------------
+
+    /// A processing deadline that expires after a chosen number of reads.
+    ///
+    /// Both answers come from real [`ProcessingDeadline`] values, so an expiry
+    /// is the outcome the listener's own deadline produces rather than one this
+    /// test invented, and it is placed at an exact step of the chain without
+    /// waiting for a whole processing budget to pass.
+    struct ExpiringAfter {
+        reads: AtomicUsize,
+        live_reads: usize,
+        live: ProcessingDeadline,
+        expired: ProcessingDeadline,
+    }
+
+    impl ExpiringAfter {
+        fn reads(live_reads: usize) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                live_reads,
+                live: ProcessingDeadline::new(live_deadline()),
+                expired: ProcessingDeadline::already_expired(),
+            }
+        }
+
+        /// Returns how many times the chain observed the deadline.
+        fn observed(&self) -> usize {
+            self.reads.load(AtomicOrdering::SeqCst)
+        }
+    }
+
+    impl ProcessingBudget for ExpiringAfter {
+        fn check(&self) -> Result<(), crate::transport::DeadlineExpired> {
+            if self.reads.fetch_add(1, AtomicOrdering::SeqCst) < self.live_reads {
+                return self.live.check();
+            }
+            self.expired.check()
+        }
+    }
+
+    /// The complete submission the well-formed finalization body carries.
+    ///
+    /// It is the same request `finalization_body` renders, expressed as the
+    /// value the transport hands the orchestrator, so a chain driven directly
+    /// runs against exactly what an admitted request would have produced.
+    fn finalization_submission() -> InitRequestSubmission {
+        InitRequestSubmission {
+            backend: SubmittedBackend::Sqlite,
+            administrator: InitAdministratorSubmission {
+                username: String::from(ADMINISTRATOR),
+                display_name: Some(String::from("First Administrator")),
+                password: Zeroizing::new(String::from(ADMINISTRATOR_PASSWORD)),
+            },
+            log_modules: vec![
+                submitted_log_module(SYSTEM_ASSIGNMENT),
+                submitted_log_module(AUDIT_ASSIGNMENT),
+            ],
+            system_log: String::from(SYSTEM_ASSIGNMENT),
+            audit_log: String::from(AUDIT_ASSIGNMENT),
+        }
+    }
+
+    fn submitted_log_module(name: &str) -> weavelit_module_client::InitLogModuleSubmission {
+        weavelit_module_client::InitLogModuleSubmission {
+            module: String::from("sqlite"),
+            name: String::from(name),
+            enabled: true,
+            settings: Vec::new(),
+            protected_settings: Vec::new(),
+        }
+    }
+
+    /// A finalization inside its deadline observes it exactly once, after both
+    /// preflights, and goes on to commit.
+    ///
+    /// This is the control for the expiry below: the same chain, the same
+    /// single observation, and the opposite answer at that one observation.
+    #[tokio::test]
+    async fn a_finalization_inside_its_deadline_observes_it_once_and_commits() {
+        let (surface, recorder) = InitSurface::recording(
+            vec![LogRecordType::System, LogRecordType::Audit],
+            Preflight::Prove,
+        );
+        let delivered = surface.deliver_key().await;
+        // Never expires, so every observation the chain makes is a live one.
+        let deadline = ExpiringAfter::reads(usize::MAX);
+
+        {
+            let _admission = surface.admission().await;
+            assert!(
+                surface
+                    .orchestrator()
+                    .run_against_deadline(finalization_submission(), &delivered.proof(), &deadline)
+                    .is_ok(),
+                "a finalization inside its deadline completes"
+            );
+        }
+
+        assert_eq!(deadline.observed(), 1);
+        let mut proven = recorder.preflighted();
+        proven.sort_unstable();
+        assert_eq!(proven, vec![LogRecordType::System, LogRecordType::Audit]);
+        assert_eq!(recorder.delivered(), 1);
+        assert_eq!(surface.record_state(), LifecycleState::Initialized);
+    }
+
+    /// A finalization whose deadline expired is abandoned at the last moment at
+    /// which abandoning it is still free, and the same key still finalizes.
+    ///
+    /// The listener may already have answered `gateway_timeout` for this
+    /// request, so committing after that point would publish normal operation
+    /// behind a client that was told the attempt failed and would discard the
+    /// only key this deployment can ever be restored with.
+    #[tokio::test]
+    async fn a_finalization_past_its_deadline_commits_nothing_and_keeps_the_key_usable() {
+        let (surface, recorder) = InitSurface::recording(
+            vec![LogRecordType::System, LogRecordType::Audit],
+            Preflight::Prove,
+        );
+        let delivered = surface.deliver_key().await;
+        let anchors = surface.anchor_snapshot();
+        assert!(!anchors.is_empty(), "the deployment record must exist");
+        // Expired at the first observation, which the chain makes only after
+        // both preflights have already run.
+        let deadline = ExpiringAfter::reads(0);
+
+        let failure = {
+            let _admission = surface.admission().await;
+            let outcome = surface.orchestrator().run_against_deadline(
+                finalization_submission(),
+                &delivered.proof(),
+                &deadline,
+            );
+            let Err(failure) = outcome else {
+                panic!("an expired deadline must abandon the finalization");
+            };
+            failure
+        };
+
+        // Non-vacuity: the chain reached and passed both preflights, and it
+        // reached the deadline observation, before anything below is asserted
+        // to be unchanged. Without these, an early refusal would satisfy every
+        // "nothing changed" assertion without proving anything.
+        let mut proven = recorder.preflighted();
+        proven.sort_unstable();
+        assert_eq!(proven, vec![LogRecordType::System, LogRecordType::Audit]);
+        assert_eq!(deadline.observed(), 1);
+
+        // The delivery is returned to the stage rather than destroyed, which is
+        // exactly what a correctable request failure leaves behind.
+        assert!(matches!(failure, InitFailure::Actionable(_)));
+        let InitFailure::Actionable(rejection) = failure else {
+            unreachable!("the classification was just asserted");
+        };
+        assert_eq!(rejection, InitRejection::InitializationFailed);
+        assert!(
+            matches!(
+                *surface.orchestrator().stage.held(),
+                InitStage::Delivered(_)
+            ),
+            "the pending delivery must remain claimable"
+        );
+
+        // Nothing past the deadline observation ran: no record advancement, no
+        // System Log delivery, no seal, and no publication.
+        assert_eq!(
+            surface.record_state(),
+            LifecycleState::InitializationPending
+        );
+        assert_eq!(surface.anchor_snapshot(), anchors);
+        assert_eq!(recorder.delivered(), 0);
+        assert!(system_log_records(&surface.state_root).is_empty());
+        assert!(
+            !matches!(*surface.modes.borrow(), ServingMode::FailClosed(_)),
+            "an abandoned finalization must not publish the fail-closed surface"
+        );
+        assert!(
+            serves(&surface.served(), INIT_ROUTE).await,
+            "finalization must remain reachable"
+        );
+        assert!(!serves(&surface.served(), INIT_RECOVERY_KEY_ROUTE).await);
+
+        // The same delivered key finalizes, so nothing had to be reissued.
+        let retried = surface
+            .submit(INIT_ROUTE, &finalization_body(&delivered.proof()))
+            .await;
+        assert_eq!(retried.status, StatusCode::OK, "{}", retried.body);
+        assert_eq!(surface.record_state(), LifecycleState::Initialized);
+        assert_eq!(recorder.delivered(), 1);
+    }
+
+    /// The route reads the deadline the listener attached, so an admitted
+    /// request whose budget is already spent renders the same actionable
+    /// rejection a correctable request renders, with no new code of its own.
+    #[tokio::test]
+    async fn an_admitted_finalization_past_its_attached_deadline_renders_the_actionable_rejection()
+    {
+        let surface = InitSurface::new();
+        let delivered = surface.deliver_key().await;
+        let anchors = surface.anchor_snapshot();
+
+        let served = serve_within(
+            &surface.served(),
+            INIT_ROUTE,
+            &finalization_body(&delivered.proof()),
+            ProcessingDeadline::already_expired(),
+        )
+        .await;
+
+        assert_eq!(served.status, InitRejection::InitializationFailed.status());
+        assert_eq!(served.body, "{\"error\":\"initialization_failed\"}");
+        assert_eq!(
+            surface.record_state(),
+            LifecycleState::InitializationPending
+        );
+        assert_eq!(surface.anchor_snapshot(), anchors);
+
+        // The same key still finalizes through a request within its deadline.
+        let retried = surface
+            .submit(INIT_ROUTE, &finalization_body(&delivered.proof()))
+            .await;
+        assert_eq!(retried.status, StatusCode::OK, "{}", retried.body);
+        assert_eq!(surface.record_state(), LifecycleState::Initialized);
+    }
+
+    // -----------------------------------------------------------------------
     // Asymmetric failure
     // -----------------------------------------------------------------------
 
@@ -2975,6 +3307,7 @@ mod tests {
             .expect("the mutation lane is open");
         let mut context = axum::http::Extensions::new();
         context.insert(BodyAdmission::from_permit(permit));
+        context.insert(ProcessingDeadline::new(live_deadline()));
         let rejection = orchestrator
             .finalize(InitFinalizeSubmission {
                 request: direct_request(),

@@ -241,19 +241,51 @@ Finalization publishes its own outcome from inside its blocking chain for the
 same reason: a closed failure ends the delivery stage and publishes the
 fail-closed surface there, so an abandoned route future cannot leave this
 Server serving a healthier surface than its retained state deserves.
-Finalization carries no liveness lease, because its response carries no
-irreplaceable secret, success publishes normal operation from inside the same
-chain, and an actionable failure restores the delivery for a retry. It enters
-the lifecycle transition gate after its last preflight and before it publishes
-the fail-closed surface, and releases it once the deployment record is sealed
-and the database it committed through has been registered and normal operation
-published, so the same stop that refuses a preparation refuses a finalization
-that has not yet committed and waits for one that has. Releasing at the seal
-would not be enough, because closing an unregistered database is a silent
-success and the activation could then outlive the process. A finalization
-refused at a closed gate answers the same closed `initialization_failed`
-outcome, leaves the pending checkpoint and its anchors untouched, and writes no
-System Log record.
+Finalization carries no liveness lease of its own, because its response creates
+no irreplaceable secret, success publishes normal operation from inside the
+same chain, and an actionable failure restores the delivery for a retry. It
+enters the lifecycle transition gate after its last preflight and before it
+publishes the fail-closed surface, and releases it once the deployment record
+is sealed and the database it committed through has been registered and normal
+operation published, so the same stop that refuses a preparation refuses a
+finalization that has not yet committed and waits for one that has. Releasing
+at the seal would not be enough, because closing an unregistered database is a
+silent success and the activation could then outlive the process. A
+finalization refused at a closed gate answers the same closed
+`initialization_failed` outcome, leaves the pending checkpoint and its anchors
+untouched, and writes no System Log record.
+
+What finalization does observe is the listener's own processing deadline: the
+absolute instant at which the listener stops waiting for this request and
+answers `gateway_timeout`. The listener attaches that already-capped instant to
+the request before dispatch, and the blocking chain reads it rather than
+starting a budget of its own, so nothing downstream can reset or lengthen it.
+The chain checks it exactly once, after both Log Module preflights and
+immediately before it enters the lifecycle transition gate. That position is
+deliberate: everything before it — reauthorization, proof comparison, request
+validation, the password verifier, the replacement state build, and both
+preflights — is reversible work, and the gate entry is the first step of the
+publication and commit chain that a dropped route future cannot stop. It is
+the last moment at which abandoning the finalization is still free.
+
+An expired deadline is reported as the same actionable `initialization_failed`
+outcome a correctable request already reports, which returns the claimed
+delivery to the stage: the same Init checkpoint and the same delivered key stay
+finalizable, so the person retries the request that timed out with the key they
+already saved. No new rejection category, status, or reason value exists for
+this case, and the step the deadline passed at is not reported.
+
+The check narrows the window rather than closing it. A deadline can still
+expire immediately after the observation, so a `gateway_timeout` written by the
+listener can accompany a finalization that went on to commit, seal, and publish
+normal operation. This is the same accepted check-then-commit residual the
+[Server Restore Design](../restore/restore-design.md#backup-validation-and-restored-state)
+records for its own deadline recheck. What makes it safe here is the client
+rather than the Server: the
+[Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md#init-workflow)
+treats a `gateway_timeout` on finalization as an outcome that reported nothing
+instead of a failure, keeps the delivered key, and reconciles against the
+authentication surface before it decides anything.
 
 The delivered key remains a canonical age key, unchanged; only the proof
 mechanism above is Init-specific, and it does not alter Restore's accepted key
@@ -368,11 +400,20 @@ task never resumed. Two further tests close the lifecycle transition gate and
 prove that a preparation refused there commits nothing, delivers no recovery
 key, and leaves the deployment uninitialized and preparable, and that a
 finalization refused there leaves its pending checkpoint, its anchors, and its
-System Log untouched. The
+System Log untouched. Three further tests pin the finalization deadline
+observation against a supplied deadline rather than elapsed time: a
+finalization inside its deadline observes it exactly once and commits, a
+finalization whose deadline has already passed commits nothing, publishes no
+serving mode, and leaves the same delivered key finalizable, and an admitted
+request carrying an already-expired deadline renders the actionable
+`initialization_failed` while a later request within its deadline still
+finalizes with that same key. A listener test proves the router is dispatched
+with the very deadline the listener bounds the same request at. The
 [Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md)
 first-launch Init workflow drives Init through the browser, and
 `server/web-ui/browser-tests/init-first-launch.spec.ts` exercises it end to
-end against the release Server binary.
+end against the release Server binary, including a finalization answered as
+`gateway_timeout` that keeps the delivered key and completes on retry.
 
 ## Related Documents
 

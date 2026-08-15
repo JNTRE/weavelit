@@ -22,6 +22,9 @@ const PREPARE_ACTION_NAME = "Prepare recovery key";
 const COPY_ACTION_NAME = "Copy recovery key";
 const KEY_CONTINUE_NAME = "Continue to review";
 const FINALIZE_ACTION_NAME = "Complete setup";
+const RETURN_ACTION_NAME = "Return to review";
+const RECHECK_ACTION_NAME = "Check again";
+const INDETERMINATE_RETRY_NAME = "Try setup again";
 const LOGIN_ACTION_NAME = "Sign in";
 
 const UNSELECTED_MESSAGE = "No Application Database is selected for this deployment.";
@@ -31,6 +34,9 @@ const KEY_ONCE_WARNING =
   "This is the only time this recovery key is ever shown. Weavelit cannot display it again, cannot recover it, and cannot issue a replacement. Save it outside Weavelit now, before you continue.";
 const COPIED_MESSAGE = "The recovery key was copied to the clipboard.";
 const AUTHENTICATED_MESSAGE = "You are signed in.";
+const INDETERMINATE_HEADING = "Setup did not report an outcome";
+const INDETERMINATE_MESSAGE =
+  "This Server stopped waiting for setup to answer before it reported one, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
 
 const STATUS_PATH = "/api/v1/status";
 const SELECTION_PATH = "/api/v1/application-database";
@@ -342,6 +348,187 @@ test("a first launch initializes the deployment and signs the new Administrator 
     for (const secret of secrets) {
       expect(rendered, "the page renders no setup material").not.toContain(secret);
       expect(serverOutput, "the Server logs no setup material").not.toContain(secret);
+    }
+  } finally {
+    if (server !== null) {
+      await terminateServer(server).catch(() => undefined);
+    }
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("a finalization that reports no outcome keeps the delivered key and completes on retry", async ({
+  page,
+}) => {
+  // The scenario runs a complete Init, including an Argon2id verifier creation,
+  // after an intercepted attempt, so it needs well beyond the default budget.
+  test.setTimeout(180_000);
+
+  const fixtureRoot = createFixtureRoot("weavelit-browser-init-timeout-");
+  let server: RunningServer | null = null;
+
+  try {
+    const { certificatePath, privateKeyPath } = generateTlsMaterial(fixtureRoot);
+    const stateRoot = createStateRoot(fixtureRoot);
+    const port = await reserveLoopbackPort();
+    const configuration: ServerSpawnConfiguration = {
+      binary: releaseBinaryPath(),
+      listenerAddress: `127.0.0.1:${port}`,
+      certificatePath,
+      privateKeyPath,
+      stateRoot,
+      stdoutPath: join(fixtureRoot, "server-stdout.log"),
+      stderrPath: join(fixtureRoot, "server-stderr.log"),
+    };
+    const baseUrl = `https://${configuration.listenerAddress}`;
+    const requests = observeRequests(page);
+
+    server = spawnServer(configuration);
+    await waitForServerReady(server, configuration);
+    const servingPid = server.pid;
+
+    // Exactly one finalization is answered as the listener's own timeout,
+    // without reaching the Server, so the attempt this page never learned the
+    // outcome of is also an attempt that genuinely committed nothing. Every
+    // later finalization is passed through untouched.
+    let intercepted = 0;
+    await page.route(
+      (url) => url.pathname === INIT_PATH,
+      async (route) => {
+        if (intercepted === 0) {
+          intercepted += 1;
+          await route.fulfill({
+            status: 504,
+            contentType: "application/json; charset=utf-8",
+            body: JSON.stringify({ error: "gateway_timeout" }),
+          });
+          return;
+        }
+        await route.continue();
+      },
+    );
+
+    const status = page.locator("p.shell__status");
+    const init = page.locator("section.shell__init");
+
+    // 1. Reach the review step of a first launch exactly as an operator would.
+    const document = await page.goto(baseUrl, { waitUntil: "load" });
+    expect(document?.status()).toBe(200);
+    await expect(status).toHaveText(UNSELECTED_MESSAGE);
+    await page.getByRole("button", { name: INIT_CHOICE_NAME }).click();
+
+    const selectionResponse = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === SELECTION_PATH,
+    );
+    await page.getByRole("button", { name: SELECTION_ACTION_NAME }).click();
+    expect((await selectionResponse).status()).toBe(200);
+    await expect(status).toHaveText(SELECTED_MESSAGE);
+
+    await page.locator(SYSTEM_LOG_SELECT).selectOption("sqlite");
+    await page.locator(AUDIT_LOG_SELECT).selectOption("sqlite");
+    await page.locator(USERNAME_INPUT).fill(ADMINISTRATOR_USERNAME);
+    await page.locator(DISPLAY_NAME_INPUT).fill(ADMINISTRATOR_DISPLAY_NAME);
+    await page.locator(PASSWORD_INPUT).fill(ADMINISTRATOR_PASSWORD);
+
+    const delivery = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === RECOVERY_KEY_PATH,
+    );
+    await page.getByRole("button", { name: PREPARE_ACTION_NAME }).click();
+    const deliveryResponse = await delivery;
+    expect(deliveryResponse.status(), `rendered Init state: ${await init.innerText()}`).toBe(200);
+    const delivered = (await deliveryResponse.json()) as {
+      result: { recovery_key: string; delivery_nonce: string };
+    };
+    const recoveryKey = delivered.result.recovery_key;
+    expect(recoveryKey).toMatch(RECOVERY_KEY_SHAPE);
+
+    await expect(init).toHaveAttribute("data-init-state", "key");
+    await expect(page.locator(RECOVERY_KEY_OUTPUT)).toHaveValue(recoveryKey);
+    await page.locator(ACKNOWLEDGEMENT_INPUT).check();
+    await page.getByRole("button", { name: KEY_CONTINUE_NAME }).click();
+    await expect(init).toHaveAttribute("data-init-state", "review");
+
+    // 2. The intercepted attempt reports no outcome at all. The page says so
+    // rather than claiming a failure, and reconciles against the authentication
+    // surface, which this still pre-operational Server does not serve.
+    await page.getByRole("button", { name: FINALIZE_ACTION_NAME }).click();
+    await expect(init).toHaveAttribute("data-init-state", "indeterminate");
+    await expect(page.locator("h3.shell__init-failure-title")).toHaveText(INDETERMINATE_HEADING);
+    await expect(page.locator("p.shell__init-failure-message")).toHaveText(INDETERMINATE_MESSAGE);
+    await expect(page.locator("div.shell__init-indeterminate")).toHaveAttribute(
+      "data-init-error",
+      "gateway_timeout",
+    );
+    // The recheck control is offered only once the reconciliation has answered.
+    await expect(page.getByRole("button", { name: RECHECK_ACTION_NAME })).toBeEnabled();
+    expect(intercepted, "exactly one finalization was intercepted").toBe(1);
+
+    // 3. The retry reuses the key already delivered: the workflow offers the
+    // return-to-review path rather than a second preparation.
+    await page.getByRole("button", { name: INDETERMINATE_RETRY_NAME }).click();
+    await expect(init).toHaveAttribute("data-init-state", "details");
+    await expect(page.getByRole("button", { name: PREPARE_ACTION_NAME })).toHaveCount(0);
+    // The password did not outlive the attempt it drove, so it is entered again.
+    await expect(page.locator(PASSWORD_INPUT)).toHaveValue("");
+    await page.locator(PASSWORD_INPUT).fill(ADMINISTRATOR_PASSWORD);
+    await page.getByRole("button", { name: RETURN_ACTION_NAME }).click();
+    await expect(init).toHaveAttribute("data-init-state", "review");
+
+    // 4. The second finalization reaches the Server and seals the deployment.
+    const finalization = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === INIT_PATH,
+    );
+    await page.getByRole("button", { name: FINALIZE_ACTION_NAME }).click();
+    const finalizationResponse = await finalization;
+    if (finalizationResponse.status() !== 200) {
+      throw new Error(
+        `finalization returned ${finalizationResponse.status()}, rendered Init state: ${await init.innerText()}`,
+      );
+    }
+    expect(await finalizationResponse.json()).toEqual({
+      result: { lifecycle: "initialized" },
+      correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),
+    });
+    const submitted = finalizationResponse.request().postData() ?? "";
+    const finalized = JSON.parse(submitted) as { recovery_key_proof: string };
+    expect(finalized.recovery_key_proof, "a proof of the key delivered before the timeout").toMatch(
+      PROOF_SHAPE,
+    );
+    expect(submitted, "the finalization body carries no private key").not.toContain(recoveryKey);
+
+    await expect(status).toHaveAttribute("data-status-state", "initialized");
+    await expect(status).toHaveText(INITIALIZED_MESSAGE);
+    await expect(init).toHaveCount(0);
+    expect(server.observedExit(), "the Server did not exit during Init").toBeNull();
+    expect(server.pid, "Init ran in the process that served the page").toBe(servingPid);
+
+    // 5. One key was delivered for the whole workflow: an outcome that reported
+    // nothing never caused another to be issued.
+    const preparations = requests.filter(
+      (request) => new URL(request.url()).pathname === RECOVERY_KEY_PATH,
+    );
+    expect(preparations, "exactly one recovery key was ever prepared").toHaveLength(1);
+
+    // 6. Neither the key nor the password reached a URL, storage, or the page.
+    const browserState = await page.evaluate(() => ({
+      cookie: globalThis.document.cookie,
+      localStorage: JSON.stringify(globalThis.localStorage),
+      sessionStorage: JSON.stringify(globalThis.sessionStorage),
+    }));
+    expect(browserState.localStorage, "the workflow writes no local storage").toBe("{}");
+    expect(browserState.sessionStorage, "the workflow writes no session storage").toBe("{}");
+    const rendered = await page.content();
+    const serverOutput =
+      capturedOutput(configuration.stdoutPath) + capturedOutput(configuration.stderrPath);
+    for (const secret of [recoveryKey, ADMINISTRATOR_PASSWORD]) {
+      expect(browserState.cookie, "no readable cookie carries setup material").not.toContain(
+        secret,
+      );
+      expect(rendered, "the page renders no setup material").not.toContain(secret);
+      expect(serverOutput, "the Server logs no setup material").not.toContain(secret);
+      for (const request of requests) {
+        expect(request.url(), "no request URL carries setup material").not.toContain(secret);
+      }
     }
   } finally {
     if (server !== null) {

@@ -210,9 +210,14 @@ finalization request.
 Only the derived proof is ever sent back to the Server: the finalization
 request body never contains the `recovery_key` value itself. The delivered
 private recovery key is held in browser memory only for the interval between
-the two requests, is never written to a URL, a cookie, `localStorage`, or
-`sessionStorage`, and is dropped once finalization settles, whether it
-succeeds or a permanent failure closes the workflow.
+the two requests, and is never written to a URL, a cookie, `localStorage`, or
+`sessionStorage`. It is dropped only on an outcome that is actually known: a
+finalization the Server confirmed, or a rejection that permanently closes the
+workflow. An attempt whose outcome was never reported keeps the key in that
+same transient memory, because it may be the key this deployment was sealed
+with. The
+[Web UI Application Design](../../clients/web-ui/web-ui-application-design.md#init-workflow)
+owns how that case is presented and settled.
 
 ### Success
 
@@ -280,6 +285,20 @@ proof that does not match the checkpoint alike; those causes remain mutually
 indistinguishable, so a rejection cannot report whether a guessed proof
 partially matched.
 
+One listener-wide answer means something different on the finalization route
+than a rejection in the table above. The `504 Gateway Timeout`,
+`{"error":"gateway_timeout"}` response defined by the
+[Web UI Pre-Operational Status Surface](pre-operational-status-design.md#rejections-and-bounds)
+is written when the listener stops waiting for the route, not by the route, and
+the Server's finalization work continues past it. It therefore reports no
+outcome at all rather than a failure: the deployment may still have been
+initialized and sealed with the delivered key. A client must not treat it as a
+rejection, must not discard the key it holds, and must establish the outcome
+from a later observation before deciding anything. The
+[Server Init Design](../../server/lifecycle/init/init-design.md#recovery-key-delivery-and-finalization)
+owns the Server-side deadline observation that keeps this case rare, and its
+stated residual.
+
 ## Bounds And Exposure
 
 Both routes accept at most 1 KiB of request body and stay within the
@@ -336,7 +355,10 @@ request time rather than by route absence.
 through the real release Server binary end to end, covering the mutually
 exclusive first-launch choice, the shared Application Database selection, the
 delivered key's copy and acknowledgement gate, the browser-derived proof of
-possession, and the resulting sign-in.
+possession, and the resulting sign-in. A second scenario in that file
+intercepts exactly one finalization response as `504` and proves that the
+delivered key survives an outcome that reported nothing and that the retry
+completes Init with that same key, without a second key ever being prepared.
 The Server quality gate remains `make -C server check`.
 
 ## Related Documents

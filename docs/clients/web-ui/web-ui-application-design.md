@@ -226,10 +226,11 @@ from the [First-Launch Choice](#first-launch-choice) and the status projection
 reports a selected Application Database, the same condition that makes Restore
 eligible. The workflow is presented in a titled region carrying a
 `data-init-state` attribute reporting its current state — details, preparing,
-key, review, finalizing, or closed — for testability, and renders one of
-three step regions, each carrying its own `data-init-step` value: details
-(covering both the details and preparing states), key, and review (covering
-both the review and finalizing states).
+key, review, finalizing, indeterminate, or closed — for testability, and
+renders one of three step regions, each carrying its own `data-init-step`
+value: details (covering both the details and preparing states), key, and
+review (covering both the review and finalizing states). The indeterminate and
+closed states render their own region instead of a step.
 
 The details step collects the System Log and the Audit Log assignments and
 the first **[Administrator](../../glossary.md#identities-and-access)**
@@ -273,6 +274,39 @@ from memory. Because the finalization route's `initialization_failed` code
 covers both an internal failure and cases the Server cannot yet distinguish
 from one, the workflow treats it as actionable so an already-delivered key is
 never abandoned on an ambiguous rejection.
+
+A finalization answered `gateway_timeout` is neither of those. That code is
+written by the listener when it stops waiting for the route, not by the route,
+and the Server's finalization work is not cancelled by it, so the deployment
+may have gone on to become operational after this page was answered. The
+workflow therefore adds a third outcome, the indeterminate state, which states
+plainly that no outcome was reported, that whether the deployment was
+initialized is not yet known, and that the saved recovery key is still the only
+key this deployment can be restored with. It offers a recheck control and a
+retry that returns to the details step with the same delivered key.
+
+This follows from one rule the workflow applies without exception: a delivered
+key is discarded only on an outcome that is actually known. Completion drops
+it because it has done its work, and a permanent failure drops it because no
+attempt against this Server can ever use it again. An outcome that reported
+nothing establishes neither, so the key is retained in the same transient
+component memory that held it before, and is never written to a URL, a cookie,
+`localStorage`, or `sessionStorage` to survive there. The password is dropped
+in every case, including this one, because it is re-enterable and the key is
+not.
+
+The workflow settles an indeterminate outcome by asking the shared session
+route described in [Sign-In Control](#sign-in-control) below whether an
+authentication surface is served, on first entering the state and again on
+each recheck. It deliberately does not re-request the pre-operational status
+projection or the Application Database selection, which are withdrawn once the
+deployment is sealed and would therefore report the same absence for a sealed
+deployment and a Server that never finished. An identity and an unauthenticated
+challenge both prove that normal operation was published, so the workflow
+releases the key and reports completion exactly as a confirmed finalization
+does. An absent authentication surface proves nothing — finalization may still
+be running, or may never have committed — so the key is kept and the person
+decides whether to recheck or retry.
 
 Once finalization is confirmed, the shell adopts that confirmation directly
 rather than issuing a further status request, because the pre-operational
