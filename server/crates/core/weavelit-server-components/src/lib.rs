@@ -33,6 +33,27 @@ impl MfaFactorFormat {
     }
 }
 
+/// The non-secret settings one Log Module accepts in a configuration.
+///
+/// The keys are declared by the module crate that supplies the module, exactly
+/// as its name is, so a workflow judging a committed configuration against the
+/// inventory judges it against what the compiled-in module actually accepts
+/// rather than against a rule the workflow restated. A module that defines no
+/// setting declares an empty set.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LogSettingsFormat {
+    /// Setting keys the module defines, in canonical order.
+    pub accepted_keys: BTreeSet<String>,
+}
+
+impl LogSettingsFormat {
+    /// Returns whether `key` is a setting the module accepts.
+    #[must_use]
+    pub fn accepts(&self, key: &str) -> bool {
+        self.accepted_keys.contains(key)
+    }
+}
+
 /// Compiled-in components a pre-operational workflow may reference.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AvailableComponents {
@@ -42,8 +63,8 @@ pub struct AvailableComponents {
     pub mfa_modules: BTreeMap<Name, MfaFactorFormat>,
     /// Compiled-in Service Modules.
     pub service_modules: BTreeSet<Name>,
-    /// Compiled-in Log Modules.
-    pub log_modules: BTreeSet<Name>,
+    /// Compiled-in Log Modules, each with the settings it declares it accepts.
+    pub log_modules: BTreeMap<Name, LogSettingsFormat>,
     /// Named Operations exposed by compiled-in modules.
     pub operations: BTreeSet<Name>,
 }
@@ -76,7 +97,13 @@ impl AvailableComponents {
     /// Returns whether the named Log Module is compiled in.
     #[must_use]
     pub fn has_log_module(&self, module: &Name) -> bool {
-        self.log_modules.contains(module)
+        self.log_modules.contains_key(module)
+    }
+
+    /// Returns the settings the named Log Module declares it accepts.
+    #[must_use]
+    pub fn log_settings_format(&self, module: &Name) -> Option<&LogSettingsFormat> {
+        self.log_modules.get(module)
     }
 
     /// Returns whether the named Operation is exposed by a compiled-in module.
@@ -88,7 +115,7 @@ impl AvailableComponents {
 
 #[cfg(test)]
 mod tests {
-    use super::{AvailableComponents, MfaFactorFormat};
+    use super::{AvailableComponents, LogSettingsFormat, MfaFactorFormat};
     use weavelit_server_database::Name;
 
     fn name(value: &str) -> Name {
@@ -101,6 +128,12 @@ mod tests {
         }
     }
 
+    fn settings(keys: &[&str]) -> LogSettingsFormat {
+        LogSettingsFormat {
+            accepted_keys: keys.iter().map(|key| (*key).to_owned()).collect(),
+        }
+    }
+
     #[test]
     fn an_empty_inventory_reports_no_component_as_available() {
         let components = AvailableComponents::default();
@@ -109,6 +142,7 @@ mod tests {
         assert!(components.mfa_factor_format(&name("totp")).is_none());
         assert!(!components.has_service_module(&name("zendesk")));
         assert!(!components.has_log_module(&name("sqlite")));
+        assert!(components.log_settings_format(&name("sqlite")).is_none());
         assert!(!components.has_operation(&name("ticket-search")));
     }
 
@@ -117,7 +151,7 @@ mod tests {
         let components = AvailableComponents {
             client_modules: [name("web-ui")].into_iter().collect(),
             mfa_modules: [(name("totp"), format(20))].into_iter().collect(),
-            log_modules: [name("sqlite")].into_iter().collect(),
+            log_modules: [(name("sqlite"), settings(&[]))].into_iter().collect(),
             ..AvailableComponents::default()
         };
 
@@ -127,6 +161,34 @@ mod tests {
         assert!(!components.has_service_module(&name("zendesk")));
         assert!(!components.has_operation(&name("ticket-search")));
         assert!(!components.has_client_module(&name("cli")));
+    }
+
+    #[test]
+    fn an_inventory_reports_the_settings_its_log_module_accepts() {
+        let components = AvailableComponents {
+            log_modules: [
+                (name("sqlite"), settings(&[])),
+                (name("syslog"), settings(&["host", "port"])),
+            ]
+            .into_iter()
+            .collect(),
+            ..AvailableComponents::default()
+        };
+
+        let declared = components
+            .log_settings_format(&name("sqlite"))
+            .expect("a compiled-in Log Module declares its accepted settings");
+        assert!(declared.accepted_keys.is_empty());
+        assert!(!declared.accepts("retention-days"));
+
+        let declared = components
+            .log_settings_format(&name("syslog"))
+            .expect("a compiled-in Log Module declares its accepted settings");
+        assert!(declared.accepts("host"));
+        assert!(declared.accepts("port"));
+        assert!(!declared.accepts("retention-days"));
+
+        assert!(components.log_settings_format(&name("journald")).is_none());
     }
 
     #[test]

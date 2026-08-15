@@ -1,7 +1,7 @@
 use weavelit_server_log::{
     CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
     LogDestinationError, LogDestinationFactory, LogModuleFactoryContext, LogModuleRegistration,
-    LogRecordType,
+    LogRecordType, LogSettingsContract,
 };
 
 struct ExternalDestination;
@@ -25,6 +25,11 @@ impl LogDestination for ExternalDestination {
 struct ExternalFactory;
 
 impl LogDestinationFactory for ExternalFactory {
+    fn accepted_settings(&self) -> LogSettingsContract {
+        LogSettingsContract::new(vec!["retention-days".to_owned()])
+            .expect("external module settings declaration must be valid")
+    }
+
     fn create(
         &self,
         context: &LogModuleFactoryContext<'_>,

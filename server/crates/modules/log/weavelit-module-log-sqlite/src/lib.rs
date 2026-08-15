@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use weavelit_server_log::{
     CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
     LogDestinationError, LogDestinationFactory, LogModuleFactoryContext, LogModuleRegistration,
-    LogRecordPersistenceView, LogRecordType, TrustedLogModuleContext,
+    LogRecordPersistenceView, LogRecordType, LogSettingsContract, TrustedLogModuleContext,
 };
 
 /// The canonical identifier this Log Module is compiled in and registered under.
@@ -123,7 +123,21 @@ const MIGRATIONS: &[Migration] = &[
 /// Factory for the compiled-in SQLite Log Module destination.
 pub struct SqliteLogDestinationFactory;
 
+/// The non-secret settings this Log Module defines: none.
+///
+/// The destination is derived entirely from the trusted local root and the
+/// deployment identity, so there is nothing to configure. This is the module's
+/// single statement of that rule: the catalog publishes it, and the factory
+/// refuses a configuration against it.
+fn accepted_settings() -> LogSettingsContract {
+    LogSettingsContract::none()
+}
+
 impl LogDestinationFactory for SqliteLogDestinationFactory {
+    fn accepted_settings(&self) -> LogSettingsContract {
+        accepted_settings()
+    }
+
     fn create(
         &self,
         context: &LogModuleFactoryContext<'_>,
@@ -159,11 +173,11 @@ impl SqliteLogDestination {
     fn open_from_factory_context(
         context: &LogModuleFactoryContext<'_>,
     ) -> Result<Self, LogDestinationError> {
-        // This module derives its entire destination from the trusted local
-        // root and the deployment identity, so it defines no setting. A
-        // configuration that supplies one is misconfigured for this module and
-        // is refused rather than silently ignored.
-        if !context.settings().is_empty() {
+        // Judged against the same declaration the catalog publishes, so a
+        // configuration this module could never serve is refused rather than
+        // silently ignored, and a caller can reach that rule without opening
+        // anything.
+        if !accepted_settings().accepts(context.settings()) {
             return Err(LogDestinationError::ConfigurationInvalid);
         }
         Self::open_with_inputs(context.local_root(), context.deployment_identity())
@@ -866,11 +880,14 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     use rusqlite::Connection;
-    use weavelit_server_log::{LogDestination, LogDestinationError, LogRecordType, LogResult};
+    use weavelit_server_log::{
+        DestinationSettings, LogDestination, LogDestinationError, LogDestinationFactory,
+        LogRecordType, LogResult,
+    };
 
     use super::{
-        MIGRATIONS, PersistedLogRecord, SqliteLogDestination as ProductionDestination, checksum,
-        trusted_open_flags,
+        MIGRATIONS, PersistedLogRecord, SqliteLogDestination as ProductionDestination,
+        SqliteLogDestinationFactory, checksum, trusted_open_flags,
     };
 
     struct TestDestinationInputs {
@@ -916,6 +933,26 @@ mod tests {
 
     fn open(context: &TestDestinationInputs) -> Result<ProductionDestination, LogDestinationError> {
         SqliteLogDestination::open(context)
+    }
+
+    /// The declaration the catalog publishes is the rule `create` enforces.
+    ///
+    /// Both read `super::accepted_settings`, so a configuration can be judged
+    /// before any destination exists and cannot be judged by a rule this module
+    /// does not apply when it opens.
+    #[test]
+    fn the_module_declares_that_it_accepts_no_setting() {
+        let declared = SqliteLogDestinationFactory.accepted_settings();
+
+        assert_eq!(declared.keys().len(), 0);
+        assert!(!declared.defines("retention-days"));
+        assert!(declared.accepts(&DestinationSettings::default()));
+        assert!(
+            !declared.accepts(
+                &DestinationSettings::new(vec![("retention-days".to_owned(), "30".to_owned())])
+                    .expect("bounded settings")
+            )
+        );
     }
 
     fn database_path(temporary_directory: &tempfile::TempDir) -> std::path::PathBuf {

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use weavelit_server_authentication::{
     PasswordAuthenticator, PasswordPolicy, PasswordVerdict, RustCryptoArgon2, StoredCredential,
 };
-use weavelit_server_components::{AvailableComponents, MfaFactorFormat};
+use weavelit_server_components::{AvailableComponents, LogSettingsFormat, MfaFactorFormat};
 use weavelit_server_database::{
     CompletionObligation, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
     DeploymentIdentifier, GroupGrant, LogClassification, LogDetail, LogModuleSetting, LogType,
@@ -55,7 +55,9 @@ fn components() -> AvailableComponents {
         )]
         .into_iter()
         .collect(),
-        log_modules: [name(LOG_MODULE)].into_iter().collect(),
+        log_modules: [(name(LOG_MODULE), LogSettingsFormat::default())]
+            .into_iter()
+            .collect(),
         ..AvailableComponents::default()
     }
 }

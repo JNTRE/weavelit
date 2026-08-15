@@ -147,6 +147,8 @@ pub enum ContentError {
     AssignmentInvalid,
     /// A factor named a known MFA Module but carried data that module cannot open.
     FactorDataInvalid,
+    /// A configuration named a known Log Module but carried a setting it does not accept.
+    SettingUnsupported,
 }
 
 impl fmt::Display for ContentError {

@@ -1498,7 +1498,7 @@ pub(crate) mod tests {
     use weavelit_server_log::{
         CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
         LogDestinationError, LogDestinationFactory, LogModuleFactoryContext, LogModuleRegistration,
-        LogRecordPersistenceView, LogRecordType,
+        LogRecordPersistenceView, LogRecordType, LogSettingsContract,
     };
 
     use super::*;
@@ -1776,6 +1776,10 @@ pub(crate) mod tests {
     }
 
     impl LogDestinationFactory for RecordingFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
         fn create(
             &self,
             _context: &LogModuleFactoryContext<'_>,

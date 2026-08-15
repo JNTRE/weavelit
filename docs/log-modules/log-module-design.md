@@ -111,6 +111,35 @@ factory must reject any setting it does not define as
 propagates that rejection as `LogConfigurationError::Destination`, so an
 unconfigured or misconfigured setting is refused rather than silently ignored.
 
+### Declaring The Settings A Module Accepts
+
+A module states which settings it defines exactly once, through
+`LogDestinationFactory::accepted_settings`. Like `preflight`, the method is
+required rather than defaulted, so a Log Module cannot be implemented without
+deciding which settings it accepts. It returns a `LogSettingsContract`: a
+validated, ordered set of the setting keys the module defines, bounded by the
+same `MAX_DESTINATION_SETTINGS` count and `MAX_DESTINATION_SETTING_KEY_BYTES`
+key length that bound a committed configuration. A module that derives its whole
+destination from the trusted context, as the compiled-in `sqlite` module does,
+declares `LogSettingsContract::none()`.
+
+`LogModuleCatalog::new` reads that declaration from each registered factory and
+carries it on the module's validated `LogModuleDeclaration`, alongside its
+identifier and capabilities. `LogSettingsContract::accepts` then judges a
+configuration's settings against the module's own declaration. That comparison
+is pure: it inspects declared keys, opens no destination, and creates no local
+storage, so a caller may judge a configuration before anything durable exists.
+
+The declaration and the factory's own refusal are the same statement. A module
+refuses the settings it is handed by testing them against `accepted_settings`
+rather than by restating the rule inside its factory, so a configuration a
+caller judged as acceptable cannot be one the module then refuses to open, and a
+caller can never judge a configuration by a rule the module does not apply.
+This seam is what lets **[Restore](../glossary.md#states-and-requests)** refuse
+a backup carrying settings its named module could not serve before its
+checkpoint exists, without opening the destination; see
+[Compiled-In Component Inventory](../server/lifecycle/restore/restore-design.md#compiled-in-component-inventory).
+
 ## Event Classification Taxonomy
 
 Every classification is a lowercase dotted identifier that a producer selects

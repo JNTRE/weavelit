@@ -99,6 +99,14 @@ format the module really enforces at sign-in. A second MFA Module is covered by
 declaring its format on the inventory alongside its name; the validation itself
 does not name any module.
 
+A Log Module carries the same kind of declaration: the set of non-secret setting
+keys it defines. The runtime reads that set from the compiled-in Log Module
+catalog, where each validated module declaration carries the
+`LogSettingsContract` its own factory declared, described in
+[Declaring The Settings A Module Accepts](../../../log-modules/log-module-design.md#declaring-the-settings-a-module-accepts).
+The compiled-in `sqlite` module derives its whole destination from the trusted
+local root and the deployment identity, so it declares no setting at all.
+
 Content validation resolves every component a backup references against that
 inventory: each Log Module configuration's module, each enrolled MFA factor's
 module, each Service Connection's Service Module, and each Group grant naming a
@@ -115,6 +123,28 @@ for a deployment whose only required Administrator holds that factor there would
 be no remaining way in. The refusal reuses the existing invalid-backup outcome
 and adds no operator-visible detail about the factor, so it discloses nothing
 about the artifact's contents.
+
+Every Log Module configuration is checked on the same terms: each of its
+non-secret setting keys must be one the named module declared it accepts, and a
+configuration carrying any other key is refused as `backup_invalid` before any
+checkpoint exists. Sealing such a configuration would activate a deployment
+whose Log Module either silently ignores a setting the operator committed or
+refuses to open at all, and the module is opened only after the point of no
+return, so the refusal would arrive too late to be free.
+
+This check is deliberately a comparison of declared keys and not an open. It
+reads the module's declaration off the catalog and never calls the module's
+factory, so it creates no Log Module local storage and leaves nothing behind
+that a pre-checkpoint failure promised not to leave; the destination is still
+opened for the first time at step 10 of
+[Runtime Orchestration Order](#runtime-orchestration-order). It is also not a
+preflight: it proves nothing about the destination's commit path, only that the
+configuration is one the named module would accept. The refusal reuses the
+existing invalid-backup outcome and never echoes a setting key or value, so it
+discloses nothing about the artifact's contents. A configuration naming a Log
+Module this build does not compile in is still the earlier `backup_incompatible`
+refusal, unchanged. A second Log Module is covered by declaring its accepted
+settings on its factory; the validation itself does not name any module.
 
 This is an operator-visible constraint, not an internal detail. A backup taken
 from a deployment that configured a Service Connection, or that enrolled an MFA
@@ -391,9 +421,10 @@ replaced state is exactly what an operator asked to discard.
 
 No step above preflights the System Log or Audit Log destination; step 6 only
 resolves the assigned System Log module's identifier, and component-availability
-validation confirms each referenced Log Module is compiled into this Server
-rather than proving it can commit. Restore therefore never proves the Audit Log
-assignment's operability, a documented limitation described in
+validation confirms each referenced Log Module is compiled into this Server and
+accepts the settings its configuration carries, rather than proving it can
+commit. Restore therefore never proves the Audit Log assignment's operability, a
+documented limitation described in
 [Destination Preflight And Configuration Validation](../../../log-modules/log-module-design.md#destination-preflight-and-configuration-validation).
 
 The runtime is the authority for which components a backup may reference. It
@@ -519,6 +550,12 @@ length on its own inventory while the Server declares it from the TOTP Module's
 registration, and `weavelit-server` restores the same fixture against that real
 inventory, so a fixture secret that stopped matching the module's real format
 fails there.
+
+On the same terms, the `sqlite` Log Module configuration those fixtures carry
+declares no setting, because content validation now requires settings the named
+module would accept and the compiled-in module accepts none. A fixture that
+reintroduced one would describe a configuration no deployment could serve and
+would be refused as an invalid backup.
 
 Application Database integration tests verify the Restore checkpoint and atomic
 one-time state replacement. Restore-capable Client Module contract tests verify

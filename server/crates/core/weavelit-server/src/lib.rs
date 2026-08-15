@@ -46,7 +46,7 @@ use weavelit_module_client::{
     CookieEffect, CookieLines, DatabaseSelectionRejection, ExpectedOrigin, ProjectionSource,
     SelectedBackend, SelectionCommit,
 };
-use weavelit_server_components::{AvailableComponents, MfaFactorFormat};
+use weavelit_server_components::{AvailableComponents, LogSettingsFormat, MfaFactorFormat};
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
@@ -2043,9 +2043,10 @@ fn fallback_router() -> Router {
 /// serve. The names come from the module crates themselves rather than from
 /// string literals restated here, so a compiled-in module and the inventory it
 /// is judged by cannot drift apart. An MFA Module carries the factor-data
-/// format it declares alongside its name, on the same terms. This build
-/// compiles in one Client Module, one Log Module, and one MFA Module, and no
-/// Service Module or named operation.
+/// format it declares alongside its name, and a Log Module carries the settings
+/// its factory declares it accepts, both read through the same registrations the
+/// runtime serves from. This build compiles in one Client Module, one Log
+/// Module, and one MFA Module, and no Service Module or named operation.
 fn server_components() -> AvailableComponents {
     fn named(identifier: &str) -> BTreeSet<Name> {
         Name::new(identifier).into_iter().collect()
@@ -2055,7 +2056,18 @@ fn server_components() -> AvailableComponents {
 
     AvailableComponents {
         client_modules: named(weavelit_module_client_webui::MODULE_IDENTIFIER),
-        log_modules: named(weavelit_module_log_sqlite::MODULE_IDENTIFIER),
+        log_modules: sqlite_log_catalog()
+            .declarations()
+            .filter_map(|declaration| {
+                let module = Name::new(declaration.identifier().as_str()).ok()?;
+                let accepted_keys = declaration
+                    .accepted_settings()
+                    .keys()
+                    .map(str::to_owned)
+                    .collect();
+                Some((module, LogSettingsFormat { accepted_keys }))
+            })
+            .collect(),
         mfa_modules: named(totp.identifier())
             .into_iter()
             .map(|module| {
@@ -6648,7 +6660,12 @@ pub(crate) mod tests {
             .into_iter()
             .collect(),
             service_modules: names(&["zendesk"]),
-            log_modules: names(&["sqlite"]),
+            log_modules: [(
+                Name::new("sqlite").unwrap(),
+                super::LogSettingsFormat::default(),
+            )]
+            .into_iter()
+            .collect(),
             operations: names(&["ticket-search"]),
         }
     }

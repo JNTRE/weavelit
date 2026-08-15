@@ -1216,7 +1216,7 @@ mod tests {
     use weavelit_server_log::{
         CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
         LogDestinationError, LogDestinationFactory, LogModuleCatalog, LogModuleFactoryContext,
-        LogModuleRegistration, LogRecordType,
+        LogModuleRegistration, LogRecordType, LogSettingsContract,
     };
     use weavelit_server_recovery_key::{
         DeliveryNonce, RECOVERY_PROOF_BYTES, RecoveryKey, RecoveryProof,
@@ -1489,6 +1489,10 @@ mod tests {
     }
 
     impl LogDestinationFactory for RecordingFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            weavelit_module_log_sqlite::SqliteLogDestinationFactory.accepted_settings()
+        }
+
         fn create(
             &self,
             context: &LogModuleFactoryContext<'_>,
@@ -2768,8 +2772,8 @@ mod tests {
         let components = server_components();
         let compiled_in = Name::new(weavelit_module_log_sqlite::MODULE_IDENTIFIER).unwrap();
         let absent = Name::new("postgres").unwrap();
-        assert!(components.log_modules.contains(&compiled_in));
-        assert!(!components.log_modules.contains(&absent));
+        assert!(components.log_modules.contains_key(&compiled_in));
+        assert!(!components.log_modules.contains_key(&absent));
 
         let surface = InitSurface::new();
         let delivered = surface.deliver_key().await;

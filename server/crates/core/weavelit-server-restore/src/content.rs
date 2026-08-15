@@ -823,18 +823,25 @@ fn reject_unavailable_components(
     Ok(())
 }
 
-/// Rejects state a compiled-in module could not read once it was restored.
+/// Rejects state a compiled-in module could not read or be served with.
 ///
-/// A factor naming a module this build does not compile in was already refused
-/// as unavailable, so every factor reaching here names a module whose declared
-/// format the inventory carries. Checking the format here means a factor the
-/// named module could never open is refused as an invalid backup rather than
-/// sealed, activated, and then discovered at the account's next sign-in, which
-/// for the only required Administrator would leave the deployment unreachable.
+/// A factor or configuration naming a module this build does not compile in was
+/// already refused as unavailable, so everything reaching here names a module
+/// whose own declarations the inventory carries.
 ///
-/// The format is the module crate's own declaration carried on the inventory,
-/// so a second MFA Module is covered by supplying its format there rather than
-/// by extending this check.
+/// Checking an MFA factor's format here means a factor the named module could
+/// never open is refused as an invalid backup rather than sealed, activated, and
+/// then discovered at the account's next sign-in, which for the only required
+/// Administrator would leave the deployment unreachable. Checking a Log Module
+/// configuration's settings here means a configuration the named module would
+/// refuse to open is caught before any checkpoint exists, rather than sealed and
+/// then silently served without the settings it declared. That check compares
+/// declared keys only: it opens no destination and creates no local Log Module
+/// storage, which a pre-checkpoint failure has promised not to leave behind.
+///
+/// Both declarations are the module crates' own, carried on the inventory, so a
+/// second MFA or Log Module is covered by supplying its declaration there rather
+/// than by extending this check.
 fn reject_unreadable_module_data(
     backup: &NormalizedBackup,
     components: &AvailableComponents,
@@ -845,6 +852,19 @@ fn reject_unreadable_module_data(
             .is_some_and(|format| format.accepts(factor.factor_data.expose()));
         if !readable {
             return Err(ContentError::FactorDataInvalid);
+        }
+    }
+    for configuration in &backup.log_module_configurations {
+        let servable = components
+            .log_settings_format(&configuration.module)
+            .is_some_and(|format| {
+                configuration
+                    .settings
+                    .iter()
+                    .all(|setting| format.accepts(setting.key.as_str()))
+            });
+        if !servable {
+            return Err(ContentError::SettingUnsupported);
         }
     }
 

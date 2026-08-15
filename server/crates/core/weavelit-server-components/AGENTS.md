@@ -9,7 +9,7 @@ build actually compiles in.
 
 - This crate owns the `AvailableComponents` representation and its membership
   queries, including the `MfaFactorFormat` an MFA Module declares alongside its
-  name.
+  name and the `LogSettingsFormat` a Log Module declares alongside its own.
 - It exists so Init and Restore share one inventory value without depending on
   each other, and so neither owns a type the other must reach through.
 - It reuses `weavelit-server-database`'s bounded `Name` and takes no other
@@ -27,8 +27,8 @@ build actually compiles in.
 - `AGENTS.md`: Local component-inventory contract and boundary rules.
 - `Cargo.toml`: Package metadata and its single Application Database contract
   dependency.
-- `src/lib.rs`: The `AvailableComponents` value, the `MfaFactorFormat` it
-  carries, its membership queries, and their unit tests.
+- `src/lib.rs`: The `AvailableComponents` value, the `MfaFactorFormat` and
+  `LogSettingsFormat` it carries, its membership queries, and their unit tests.
 
 ## Usage Guidance
 

@@ -28,8 +28,9 @@ use weavelit_server_authentication::{
     Argon2Engine as _, CURRENT_ARGON2_PROFILE, PasswordPolicy, RustCryptoArgon2,
 };
 use weavelit_server_restore::{
-    AvailableComponents, BackendIdentifier, DeploymentIdentifier, MfaFactorFormat, Name,
-    RequestBudget, RestoreAuthority, RestoreError, RestoreRequest, RestoreTarget, RestoreValidator,
+    AvailableComponents, BackendIdentifier, DeploymentIdentifier, LogSettingsFormat,
+    MfaFactorFormat, Name, RequestBudget, RestoreAuthority, RestoreError, RestoreRequest,
+    RestoreTarget, RestoreValidator,
 };
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -425,7 +426,7 @@ fn padded_backup_plaintext(
             "\"mfa_factors\":[{mfa_factors}],",
             "\"service_connections\":[{service_connections}],",
             "\"log_module_configurations\":[{{\"identifier\":\"{log_configuration}\",\"module\":\"sqlite\",\"name\":\"Local\",\"enabled\":true,",
-            "\"settings\":[{{\"key\":\"retention-days\",\"value\":\"30\"}}]}}],",
+            "\"settings\":[]}}],",
             "\"log_assignments\":[{{\"log_type\":\"system\",\"configuration\":\"{log_configuration}\"}},",
             "{{\"log_type\":\"audit\",\"configuration\":\"{log_configuration}\"}}]}}"
         ),
@@ -752,6 +753,9 @@ pub fn deployment() -> DeploymentIdentifier {
 }
 
 /// Components the fixture backup references.
+///
+/// The `sqlite` Log Module declares no setting, exactly as the compiled-in
+/// module does, so the fixture's configuration is one this inventory can serve.
 pub fn components() -> AvailableComponents {
     fn names(values: &[&str]) -> std::collections::BTreeSet<Name> {
         values
@@ -771,7 +775,12 @@ pub fn components() -> AvailableComponents {
         .into_iter()
         .collect(),
         service_modules: names(&["zendesk"]),
-        log_modules: names(&["sqlite"]),
+        log_modules: [(
+            Name::new("sqlite").expect("the component name is valid"),
+            LogSettingsFormat::default(),
+        )]
+        .into_iter()
+        .collect(),
         operations: names(&["ticket-search"]),
     }
 }

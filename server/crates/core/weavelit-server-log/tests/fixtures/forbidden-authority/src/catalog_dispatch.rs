@@ -1,7 +1,7 @@
 use weavelit_server_log::{
     CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
     LogDestinationError, LogDestinationFactory, LogModuleCatalog, LogModuleFactoryContext,
-    LogModuleIdentifier, LogModuleRegistration, LogRecordType,
+    LogModuleIdentifier, LogModuleRegistration, LogRecordType, LogSettingsContract,
 };
 
 struct NestedDestination;
@@ -23,6 +23,10 @@ impl LogDestination for NestedDestination {
 struct NestedFactory;
 
 impl LogDestinationFactory for NestedFactory {
+    fn accepted_settings(&self) -> LogSettingsContract {
+        LogSettingsContract::none()
+    }
+
     fn create(
         &self,
         context: &LogModuleFactoryContext<'_>,

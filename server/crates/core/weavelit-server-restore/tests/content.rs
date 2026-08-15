@@ -7,8 +7,8 @@ use support::{FIXTURE_TOTP_SECRET, committed, committed_text, components};
 use weavelit_server_database::MAX_NAME_LENGTH;
 use weavelit_server_restore::{
     AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
-    MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS, MAX_SENSITIVE_VALUE_BYTES, Name, RestoreError,
-    SensitiveBytes, normalize,
+    LogSettingsFormat, MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS, MAX_SENSITIVE_VALUE_BYTES,
+    Name, RestoreError, SensitiveBytes, normalize,
 };
 
 fn sqlite() -> BackendIdentifier {
@@ -366,7 +366,7 @@ fn a_log_module_settings_collection_past_its_limit_is_rejected_without_parsing_t
     const ENTRY: &str = r#"{"key":"retention-days","value":"30"}"#;
 
     let document = replaced(
-        &format!("\"settings\":[{ENTRY}]"),
+        "\"settings\":[]",
         &format!(
             "\"settings\":[{}]",
             overflowing(ENTRY, MAX_LOG_MODULE_SETTINGS, r#"{"key":1,"value":2}"#)
@@ -378,6 +378,45 @@ fn a_log_module_settings_collection_past_its_limit_is_rejected_without_parsing_t
         RestoreError::from(reject(&document)).category_reason(),
         ("backup_invalid", "backup_invalid")
     );
+}
+
+/// A setting the named Log Module does not accept is an invalid backup.
+///
+/// The module is compiled in, so this is not a compatibility refusal: the
+/// deployment can serve the named module and the backup carries a configuration
+/// that module refuses to open. Sealing it would activate a deployment whose
+/// System Log destination silently ignores a setting the operator committed, or
+/// fails to open at all after the point of no return. The check compares
+/// declared keys only, so it reaches this verdict without opening a destination.
+#[test]
+fn log_module_settings_a_known_module_does_not_accept_are_rejected_as_an_invalid_backup() {
+    let document = replaced(
+        "\"settings\":[]",
+        r#""settings":[{"key":"retention-days","value":"30"}]"#,
+    );
+
+    assert_eq!(reject(&document), ContentError::SettingUnsupported);
+    assert_eq!(
+        RestoreError::from(reject(&document)).category_reason(),
+        ("backup_invalid", "backup_invalid")
+    );
+
+    // The same document is valid content for a deployment whose `sqlite` Log
+    // Module declares that key, so the refusal is the declaration rather than
+    // the rewritten document.
+    let accepting = AvailableComponents {
+        log_modules: [(
+            Name::new("sqlite").expect("the name is valid"),
+            LogSettingsFormat {
+                accepted_keys: ["retention-days".to_owned()].into_iter().collect(),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..components()
+    };
+    normalize(document.as_bytes(), &sqlite(), &accepting)
+        .expect("a declared setting is valid content");
 }
 
 #[test]
@@ -435,6 +474,7 @@ fn content_failures_render_uniformly() {
         ContentError::UnresolvedReference,
         ContentError::AssignmentInvalid,
         ContentError::FactorDataInvalid,
+        ContentError::SettingUnsupported,
     ]
     .iter()
     .map(|error| error.to_string())
@@ -449,9 +489,12 @@ fn content_failures_render_uniformly() {
 #[test]
 fn component_names_are_matched_exactly() {
     let alternative = AvailableComponents {
-        log_modules: [Name::new("SQLite").expect("the name is valid")]
-            .into_iter()
-            .collect(),
+        log_modules: [(
+            Name::new("SQLite").expect("the name is valid"),
+            LogSettingsFormat::default(),
+        )]
+        .into_iter()
+        .collect(),
         ..components()
     };
     assert_eq!(

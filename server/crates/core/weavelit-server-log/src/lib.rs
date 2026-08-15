@@ -626,6 +626,79 @@ impl fmt::Debug for DestinationSettings {
     }
 }
 
+/// The non-secret setting keys one Log Module defines.
+///
+/// A module declares this once, on its factory. The catalog carries that one
+/// declaration on the module's validated declaration, so a committed
+/// configuration can be judged against what the module accepts without opening
+/// a destination, and the module's own factory refuses the settings it is
+/// handed against the same declaration rather than a rule restated elsewhere.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct LogSettingsContract(Box<[Box<str>]>);
+
+impl LogSettingsContract {
+    /// Declares a module that defines no setting at all.
+    #[must_use]
+    pub fn none() -> Self {
+        Self(Box::default())
+    }
+
+    /// Validates and orders the setting keys a module defines.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogCatalogError::InvalidSettingsDeclaration`] when the
+    /// declaration exceeds [`MAX_DESTINATION_SETTINGS`], a key is empty or past
+    /// [`MAX_DESTINATION_SETTING_KEY_BYTES`], or a key is declared twice.
+    pub fn new(keys: Vec<String>) -> Result<Self, LogCatalogError> {
+        if keys.len() > MAX_DESTINATION_SETTINGS {
+            return Err(LogCatalogError::InvalidSettingsDeclaration);
+        }
+        let mut declared: Vec<Box<str>> = Vec::with_capacity(keys.len());
+        for key in keys {
+            if !is_nonempty_within_bytes(&key, MAX_DESTINATION_SETTING_KEY_BYTES)
+                || declared.iter().any(|held| held.as_ref() == key)
+            {
+                return Err(LogCatalogError::InvalidSettingsDeclaration);
+            }
+            declared.push(key.into_boxed_str());
+        }
+        declared.sort();
+        Ok(Self(declared.into_boxed_slice()))
+    }
+
+    /// Returns whether `key` is a setting this module defines.
+    #[must_use]
+    pub fn defines(&self, key: &str) -> bool {
+        self.0
+            .binary_search_by(|held| held.as_ref().cmp(key))
+            .is_ok()
+    }
+
+    /// Returns whether every setting in `settings` is one this module defines.
+    ///
+    /// The comparison is pure: it opens no destination and creates no local
+    /// state, so a configuration can be judged before anything durable exists.
+    #[must_use]
+    pub fn accepts(&self, settings: &DestinationSettings) -> bool {
+        settings.keys().all(|key| self.defines(key))
+    }
+
+    /// Returns every declared key in canonical order.
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.0.iter().map(|key| key.as_ref())
+    }
+}
+
+impl fmt::Debug for LogSettingsContract {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LogSettingsContract")
+            .field("declared_key_count", &self.0.len())
+            .finish()
+    }
+}
+
 /// Trusted context supplied by Server runtime composition to a module factory.
 pub struct TrustedLogModuleContext {
     local_root: PathBuf,
@@ -782,6 +855,16 @@ pub trait LogDestination: Send + Sync {
 
 /// Factory for one runtime-supplied compiled-in Log Module destination.
 pub trait LogDestinationFactory: Send + Sync {
+    /// Declares the non-secret settings this module's destinations accept.
+    ///
+    /// The declaration is required rather than defaulted, so a Log Module
+    /// cannot be implemented without deciding which settings it defines. The
+    /// catalog publishes this one declaration, and [`Self::create`] refuses the
+    /// settings it is handed against the same declaration, so a configuration
+    /// can be judged without opening anything and cannot be judged by a rule
+    /// the module does not enforce.
+    fn accepted_settings(&self) -> LogSettingsContract;
+
     /// Creates a destination using read-only Server-owned factory inputs.
     fn create(
         &self,
@@ -824,6 +907,7 @@ impl fmt::Debug for LogModuleRegistration {
 pub struct LogModuleDeclaration {
     identifier: LogModuleIdentifier,
     capabilities: LogCapabilities,
+    accepted_settings: LogSettingsContract,
 }
 
 impl LogModuleDeclaration {
@@ -836,6 +920,14 @@ impl LogModuleDeclaration {
     pub const fn capabilities(&self) -> &LogCapabilities {
         &self.capabilities
     }
+
+    /// Returns the settings the module's factory declared it accepts.
+    ///
+    /// This is the module's own declaration, carried here so a caller can judge
+    /// a configuration against it without creating a destination.
+    pub const fn accepted_settings(&self) -> &LogSettingsContract {
+        &self.accepted_settings
+    }
 }
 
 impl fmt::Debug for LogModuleDeclaration {
@@ -843,6 +935,7 @@ impl fmt::Debug for LogModuleDeclaration {
         formatter
             .debug_struct("LogModuleDeclaration")
             .field("capabilities", &self.capabilities)
+            .field("accepted_settings", &self.accepted_settings)
             .finish_non_exhaustive()
     }
 }
@@ -874,10 +967,12 @@ impl LogModuleCatalog {
             {
                 return Err(LogCatalogError::DuplicateModuleIdentifier);
             }
+            let accepted_settings = registration.factory.accepted_settings();
             entries.push(LogModuleEntry {
                 declaration: LogModuleDeclaration {
                     identifier,
                     capabilities: registration.capabilities,
+                    accepted_settings,
                 },
                 factory: registration.factory,
             });
@@ -1028,6 +1123,8 @@ pub enum LogCatalogError {
     EmptyCapabilities,
     /// A module declared one record type more than once.
     DuplicateCapability,
+    /// A module's accepted-settings declaration was unbounded or ambiguous.
+    InvalidSettingsDeclaration,
 }
 
 impl fmt::Display for LogCatalogError {
@@ -1246,6 +1343,10 @@ mod tests {
     }
 
     impl LogDestinationFactory for ReplayFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
         fn create(
             &self,
             _context: &LogModuleFactoryContext<'_>,
@@ -1261,6 +1362,10 @@ mod tests {
     }
 
     impl LogDestinationFactory for ContextForwardingFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
         fn create(
             &self,
             context: &LogModuleFactoryContext<'_>,
@@ -1304,6 +1409,10 @@ mod tests {
     struct MismatchedAcknowledgementFactory;
 
     impl LogDestinationFactory for MismatchedAcknowledgementFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
         fn create(
             &self,
             _context: &LogModuleFactoryContext<'_>,
@@ -1333,13 +1442,25 @@ mod tests {
         observed: Arc<Mutex<Vec<(String, String)>>>,
     }
 
+    impl SettingsBoundFactory {
+        /// The one declaration the catalog publishes and `create` refuses against.
+        fn accepted_settings() -> LogSettingsContract {
+            LogSettingsContract::new(vec!["retention_days".to_owned()])
+                .expect("the test settings declaration is valid")
+        }
+    }
+
     impl LogDestinationFactory for SettingsBoundFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            Self::accepted_settings()
+        }
+
         fn create(
             &self,
             context: &LogModuleFactoryContext<'_>,
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             let settings = context.settings();
-            if settings.keys().any(|key| key != "retention_days") {
+            if !Self::accepted_settings().accepts(settings) {
                 return Err(LogDestinationError::ConfigurationInvalid);
             }
             *self.observed.lock().expect("test lock must not poison") = settings
@@ -1904,6 +2025,97 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_declaration_rejects_an_unbounded_or_ambiguous_key_set() {
+        assert_eq!(
+            LogSettingsContract::new(
+                (0..=MAX_DESTINATION_SETTINGS)
+                    .map(|index| format!("key-{index}"))
+                    .collect()
+            ),
+            Err(LogCatalogError::InvalidSettingsDeclaration)
+        );
+        assert_eq!(
+            LogSettingsContract::new(vec![String::new()]),
+            Err(LogCatalogError::InvalidSettingsDeclaration)
+        );
+        assert_eq!(
+            LogSettingsContract::new(vec!["k".repeat(MAX_DESTINATION_SETTING_KEY_BYTES + 1)]),
+            Err(LogCatalogError::InvalidSettingsDeclaration)
+        );
+        assert_eq!(
+            LogSettingsContract::new(vec!["key".to_owned(), "key".to_owned()]),
+            Err(LogCatalogError::InvalidSettingsDeclaration)
+        );
+
+        let declared =
+            LogSettingsContract::new(vec!["retention_days".to_owned(), "host".to_owned()])
+                .expect("a bounded declaration is accepted");
+        assert_eq!(
+            declared.keys().collect::<Vec<_>>(),
+            ["host", "retention_days"]
+        );
+        assert!(declared.defines("host"));
+        assert!(!declared.defines("absent"));
+
+        let none = LogSettingsContract::none();
+        assert_eq!(none.keys().len(), 0);
+        assert!(none.accepts(&DestinationSettings::default()));
+        assert!(
+            !none.accepts(
+                &DestinationSettings::new(vec![("retention_days".to_owned(), "30".to_owned())])
+                    .expect("bounded settings")
+            )
+        );
+    }
+
+    /// The catalog carries the module's own declaration, so a configuration can
+    /// be judged against it without creating a destination.
+    #[test]
+    fn the_catalog_publishes_the_settings_declaration_its_factory_makes() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Box::new(SettingsBoundFactory {
+                observed: Arc::clone(&observed),
+            }),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let undeclared = DestinationSettings::new(vec![("unknown".to_owned(), "1".to_owned())])
+            .expect("bounded settings");
+
+        let published = catalog
+            .declaration(&identifier)
+            .expect("a registered module publishes its declaration")
+            .accepted_settings();
+        assert_eq!(published.keys().collect::<Vec<_>>(), ["retention_days"]);
+        assert!(
+            published.accepts(
+                &DestinationSettings::new(vec![("retention_days".to_owned(), "30".to_owned())])
+                    .expect("bounded settings")
+            )
+        );
+        assert!(!published.accepts(&undeclared));
+
+        // Judging the configuration created nothing, and the module refuses the
+        // same configuration against the same declaration when it is opened.
+        assert!(
+            observed
+                .lock()
+                .expect("test lock must not poison")
+                .is_empty()
+        );
+        assert_eq!(
+            catalog
+                .create_destination(&identifier, &trusted_context().with_settings(undeclared))
+                .expect_err("an undeclared setting is refused"),
+            LogConfigurationError::Destination(LogDestinationError::ConfigurationInvalid)
+        );
+    }
+
+    #[test]
     fn preflight_refuses_an_undeclared_record_type_without_reaching_the_module() {
         let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
         let catalog = catalog(
@@ -1935,6 +2147,10 @@ mod tests {
         struct UnprovableFactory;
 
         impl LogDestinationFactory for UnprovableFactory {
+            fn accepted_settings(&self) -> LogSettingsContract {
+                LogSettingsContract::none()
+            }
+
             fn create(
                 &self,
                 _context: &LogModuleFactoryContext<'_>,
