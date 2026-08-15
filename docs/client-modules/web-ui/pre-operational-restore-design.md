@@ -123,6 +123,25 @@ over 1 KiB are all request errors. The value is passed to the Server-owned
 Restore contract without interpretation; whether it is one canonical age
 identity line is decided there.
 
+### Recovery-Key Body Handling
+
+The recovery-key body is plaintext private-key material, so the collected
+request buffer is taken into sole ownership before it is read and is cleared
+when that ownership ends. The clear runs on release rather than at one exit
+point, so the accepted path, every rejection path, and any path added later
+clear the same buffer. The parsed key itself is held only in a clearing wrapper
+for the rest of the request.
+
+If sole ownership of the collected buffer cannot be taken, the surface clears
+the copy it does own and leaves the shared original to its owner. This handling
+is defense in depth: the transport layer's own read buffers are outside this
+surface, so what is guaranteed is that this surface retains no uncleared copy,
+not that no copy exists anywhere in the process.
+
+The artifact body is deliberately excluded. It is encrypted ciphertext that
+discloses nothing on its own, and it is bounded by the artifact transport
+profile rather than this 1 KiB bound.
+
 ### Media Types And Negotiation
 
 The request must carry exactly one `Content-Type: application/json` header. A
@@ -298,6 +317,12 @@ is rejected at request time by the lifecycle re-check rather than by route
 absence, that neither route is mounted before an Application Database is
 selected or after the deployment is sealed, and that no rejection body discloses
 a ticket, a recovery key, or backup content.
+
+Implementation must further prove that the collected recovery-key buffer is
+cleared when its ownership ends, on the accepted path and on a parse rejection
+alike, and that both route outcomes run through that same clearing owner. The
+proof must observe the buffer while it is still owned; reading released memory
+is not a permitted test.
 
 Web UI end-to-end tests drive both requests through the real release Server
 binary over its direct-TLS listener. The Server quality gate remains

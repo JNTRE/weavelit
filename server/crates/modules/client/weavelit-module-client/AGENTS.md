@@ -24,8 +24,9 @@ Use this section as the source of truth for what assets belong in this directory
 - `src/lib.rs`: Canonical route paths, the pre-operational and operational capability declarations and their mounting, pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the shared fixed-profile response helpers, and contract tests.
 - `src/restore.rs`: The two-step Restore submission contract: both canonical
   route paths, the ticket header, every header precondition, the recovery-key
-  request schema, the payload-free rejection contract, the two typed success
-  envelopes, and the Server-core hooks the declaration is composed over.
+  request schema and the release-time clearing of its collected body, the
+  payload-free rejection contract, the two typed success envelopes, and the
+  Server-core hooks the declaration is composed over.
 - `src/init.rs`: The two-request Init submission contract: both canonical
   route paths, the bounded request schema, every header precondition, the
   proof-of-possession shape check, the payload-free rejection contract, the
@@ -81,4 +82,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
     listener.
 - Emit only compile-time response bodies from the fixed pre-operational profile;
     never emit a cookie, CORS, or diagnostic header from it.
+- Take sole ownership of a request buffer that carries plaintext secret material
+    and clear it through a release-time owner, never through a manual call at
+    one exit point, so an added early return cannot leave it uncleared.
 - Derive caller identity from Server-validated credentials or sessions and pass every accepted request to the shared Server authorization policy.
