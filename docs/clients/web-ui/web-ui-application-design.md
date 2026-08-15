@@ -302,9 +302,10 @@ deployment is sealed, and an unreachable Server produces the identical
 absence. The control does not render on that signal alone. It first probes the
 Server's own session route and renders nothing while that probe is in flight or
 if the probed surface is also absent, so an unreachable Server never presents a
-form that could never succeed. Because **[Restore](../../glossary.md#states-and-requests)**
-is currently the only way a deployment acquires an account, a real sign-in is
-reachable only once a Restore has completed.
+form that could never succeed. A deployment acquires its first account through
+either **[Init](../../glossary.md#states-and-requests)** or
+**[Restore](../../glossary.md#states-and-requests)**, so a real sign-in is
+reachable only once one of them has completed.
 
 The control is presented in a titled region carrying a
 `data-authentication-state` attribute for testability. Its initial probe and an
