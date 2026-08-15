@@ -2583,7 +2583,9 @@ pub(crate) mod tests {
         DeploymentIdentifier, InitializedState, LifecycleClassification, LifecycleProjection,
         LifecycleState, LifecycleStore, StateIdentifier, TrustedBackendContext, WorkflowKind,
     };
-    use weavelit_server_restore::{AvailableComponents, RequestBudget, RestoreError};
+    use weavelit_server_restore::{
+        AvailableComponents, RequestBudget, RequestDeadline, RestoreError,
+    };
     use zeroize::Zeroizing;
 
     use super::{
@@ -6810,6 +6812,27 @@ pub(crate) mod tests {
                 .await
         }
 
+        /// Runs one Restore against a supplied deadline.
+        ///
+        /// The admission permit is held for the whole chain exactly as the
+        /// listener holds it, and the chain itself is the blocking one the
+        /// public entry point spawns, so only the budget's origin differs.
+        async fn restore_against_deadline(
+            &self,
+            orchestrator: &Arc<RestoreOrchestrator>,
+            deadline: &dyn RequestDeadline,
+            artifact: Vec<u8>,
+            recovery_key: String,
+        ) -> Result<InitializedState, RestoreError> {
+            let _admission = self.admission().await;
+            orchestrator.run_against_deadline(
+                deadline,
+                RESTORE_CORRELATION,
+                Zeroizing::new(artifact),
+                Zeroizing::new(recovery_key),
+            )
+        }
+
         /// Snapshots the router the next accepted connection would serve.
         fn served_router(&self) -> Router {
             self.modes.borrow().router().clone()
@@ -7373,6 +7396,98 @@ pub(crate) mod tests {
             classify_restricted_startup(&state_root).unwrap_err(),
             StartupError::LifecycleInterruptedRedeployRequired
         );
+    }
+
+    /// A request budget that is exhausted after a chosen number of reads.
+    ///
+    /// Both answers come from real [`RequestBudget`] values, so an overrun is
+    /// the rejection the approved total deadline produces rather than one this
+    /// test invented, and it is placed at an exact step of the chain without
+    /// waiting for real time to pass.
+    struct ExhaustedAfter {
+        reads: AtomicUsize,
+        live_reads: usize,
+        live: RequestBudget,
+        exhausted: RequestBudget,
+    }
+
+    impl ExhaustedAfter {
+        fn reads(live_reads: usize) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                live_reads,
+                live: RequestBudget::start(),
+                exhausted: RequestBudget::already_exhausted(),
+            }
+        }
+
+        /// Returns how many times the chain observed the budget.
+        fn observed(&self) -> usize {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    impl RequestDeadline for ExhaustedAfter {
+        fn check(&self) -> Result<(), RestoreError> {
+            if self.reads.fetch_add(1, Ordering::SeqCst) < self.live_reads {
+                return self.live.check();
+            }
+            self.exhausted.check()
+        }
+    }
+
+    /// The reads validation makes before it returns a normalized backup.
+    const READS_THROUGH_VALIDATION: usize = 4;
+
+    /// A deadline crossed while state is rebuilt stops before any mutation.
+    ///
+    /// Rebuilding the replacement state reseals every protected value a backup
+    /// carries, which for one at the collection limits is substantial work
+    /// running after validation's last read and inside the same uncancellable
+    /// chain that replaces the deployment. Without a read between that work and
+    /// the point of no return, a request the listener already answered as timed
+    /// out would go on to publish the fail-closed surface and replace durable
+    /// state.
+    #[tokio::test]
+    async fn a_deadline_crossed_while_rebuilding_state_stops_before_the_point_of_no_return() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let anchors = surface.anchor_snapshot();
+        let deadline = ExhaustedAfter::reads(READS_THROUGH_VALIDATION);
+
+        let error = surface
+            .restore_against_deadline(
+                &orchestrator,
+                &deadline,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            )
+            .await
+            .expect_err("a Restore that overran its deadline must not be committed");
+
+        // Validation itself succeeded, so the refusal is the read taken after
+        // the replacement state was rebuilt rather than one validation makes.
+        assert_eq!(
+            deadline.observed(),
+            READS_THROUGH_VALIDATION + 1,
+            "the budget must be observed once more after state rebuilding"
+        );
+        // The overrun answers exactly what an expired budget already answered
+        // at every earlier step, so no step is distinguishable to an operator.
+        assert_eq!(error, RestoreError::RestoreFailed);
+        assert_eq!(
+            error.category_reason(),
+            ("restore_failed", "restore_failed")
+        );
+
+        // The deployment is untouched: the fail-closed surface was never
+        // published, no checkpoint was created, and no durable state changed.
+        assert_preoperational(surface.served_router()).await;
+        assert_eq!(
+            surface.startup.composition.adapter.arbiter.record_state(),
+            LifecycleState::Uninitialized
+        );
+        assert_eq!(surface.anchor_snapshot(), anchors);
     }
 
     #[tokio::test]

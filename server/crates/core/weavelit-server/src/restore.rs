@@ -53,7 +53,7 @@ use weavelit_server_observability::ServerObservability;
 use weavelit_server_restore::{
     AvailableComponents, LogAssignment, LogModuleConfiguration, LogType,
     MAX_CONCURRENT_RESTORE_OPERATIONS, MAX_ENCRYPTED_ARTIFACT_BYTES, RequestBudget,
-    RestoreAuthority, RestoreError, RestoreRequest, RestoreTarget, RestoreTicket,
+    RequestDeadline, RestoreAuthority, RestoreError, RestoreRequest, RestoreTarget, RestoreTicket,
     RestoreTicketDigest, RestoreValidator, TOTAL_REQUEST_DEADLINE, UPLOAD_DEADLINE,
     ValidatedBackup, build_application_state,
 };
@@ -363,10 +363,26 @@ impl RestoreOrchestrator {
         .map_err(|_| RestoreError::RestoreFailed)?
     }
 
+    /// Drives the blocking Restore chain against a supplied deadline.
+    ///
+    /// The public entry point takes a [`RequestBudget`] no caller can lengthen.
+    /// This exists only so a test can place an overrun at an exact step of the
+    /// chain instead of waiting out the approved total deadline in real time.
+    #[cfg(test)]
+    pub(crate) fn run_against_deadline(
+        &self,
+        deadline: &dyn RequestDeadline,
+        correlation_identifier: &str,
+        artifact: Zeroizing<Vec<u8>>,
+        recovery_key: Zeroizing<String>,
+    ) -> Result<InitializedState, RestoreError> {
+        self.run(deadline, correlation_identifier, artifact, recovery_key)
+    }
+
     /// Runs the blocking Restore chain.
     fn run(
         &self,
-        budget: &RequestBudget,
+        budget: &dyn RequestDeadline,
         correlation_identifier: &str,
         artifact: Zeroizing<Vec<u8>>,
         recovery_key: Zeroizing<String>,
@@ -419,6 +435,11 @@ impl RestoreOrchestrator {
         // Module this Server cannot serve fails while failing is still free.
         let log_module = system_log_module(&validated)?;
         drop(validated);
+
+        // Resealing a backup at the collection limits is itself substantial
+        // work, so the deadline is observed once more before it stops being
+        // free to abandon.
+        budget.check().map_err(|_| RestoreError::RestoreFailed)?;
 
         // Point of no return begins here. Every later connection observes the
         // fail-closed surface before any durable state changes, and keeps

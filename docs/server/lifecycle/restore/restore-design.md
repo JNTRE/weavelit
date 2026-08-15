@@ -136,7 +136,7 @@ This check is deliberately a comparison of declared keys and not an open. It
 reads the module's declaration off the catalog and never calls the module's
 factory, so it creates no Log Module local storage and leaves nothing behind
 that a pre-checkpoint failure promised not to leave; the destination is still
-opened for the first time at step 10 of
+opened for the first time at step 11 of
 [Runtime Orchestration Order](#runtime-orchestration-order). It is also not a
 preflight: it proves nothing about the destination's commit path, only that the
 configuration is one the named module would accept. The refusal reuses the
@@ -281,6 +281,15 @@ reported a timeout replaced no state. The overrun answers the same stable
 failure wherever it is discovered, so the step the deadline passed at is not
 reported.
 
+The same deadline is observed once more after the replacement application state
+is rebuilt and before the point of no return. Rebuilding that state reseals
+every protected value the backup carries, which for a backup at the collection
+limits is substantial work running after validation's last observation and
+inside the same uncancellable chain. Without that observation, a request already
+answered as timed out would still go on to publish the fail-closed serving mode
+and replace retained state. It is the last point at which abandoning the request
+is free, and it answers the same stable failure every earlier overrun answers.
+
 Step 9's recipient binding is what makes the retained recovery public key
 trustworthy. The backup declares that key in its authenticated plaintext, so a
 backup encrypted to one recovery key could otherwise declare an unrelated one,
@@ -406,26 +415,30 @@ step that can fail without leaving retained state runs before the checkpoint.
 6. Resolve the Log Module the restored backup assigns the System Log to. A
    backup naming a module this Server cannot serve fails here, while failing is
    still free.
-7. Publish the fail-closed serving mode. Every connection accepted from this
+7. Observe the request budget once more. Rebuilding the replacement state is
+   substantial work that ran after validation's last observation, so this is the
+   last point at which a request that crossed the total request deadline can be
+   abandoned without mutating the deployment.
+8. Publish the fail-closed serving mode. Every connection accepted from this
    point forward serves no functional route.
-8. Create the Restore checkpoint. This is the point of no return.
-9. Replace the application state atomically.
-10. Open the assigned System Log destination and deliver the completion record.
+9. Create the Restore checkpoint. This is the point of no return.
+10. Replace the application state atomically.
+11. Open the assigned System Log destination and deliver the completion record.
     The destination is opened only now, because creating a Log Module's local
     storage earlier would leave durable state a pre-checkpoint failure promised
     not to leave behind.
-11. Acknowledge completion, then seal the deployment record `Initialized`.
+12. Acknowledge completion, then seal the deployment record `Initialized`.
     Sealing hands back the loaded state and the database the workflow held open,
     which the runtime retains as the operational deployment's one database
     handle rather than reopening the target it just replaced.
-12. Compose the operational serving mode through the same operational composer a
+13. Compose the operational serving mode through the same operational composer a
     sealed startup uses, then publish it. Only a connection accepted after this
     point serves normal operation, so an in-flight fail-closed connection is
     never upgraded mid-request.
 
-A failure before step 8 leaves the Server exactly as it was: the serving mode is
+A failure before step 9 leaves the Server exactly as it was: the serving mode is
 never changed, the anchor set is unmodified, and the deployment remains eligible
-for either workflow. A failure at or after step 8 leaves the Server fail-closed
+for either workflow. A failure at or after step 9 leaves the Server fail-closed
 with its retained partial state intact. No rollback is attempted, because the
 replaced state is exactly what an operator asked to discard.
 

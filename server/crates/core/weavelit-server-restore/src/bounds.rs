@@ -90,6 +90,22 @@ impl RequestBudget {
         }
     }
 
+    /// Creates a budget whose origin is already past the approved deadline.
+    ///
+    /// Test-only seam: an overrun is otherwise reachable only by waiting out
+    /// [`TOTAL_REQUEST_DEADLINE`] in real time. Only an already-exhausted
+    /// budget can be built here and the origin is not a caller's to choose, so
+    /// nothing can extend, restart, or lengthen a request through it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn already_exhausted() -> Self {
+        Self {
+            started: Instant::now()
+                .checked_sub(TOTAL_REQUEST_DEADLINE + Duration::from_secs(1))
+                .expect("the monotonic clock represents an origin one deadline in the past"),
+        }
+    }
+
     /// Returns the elapsed request time.
     pub fn elapsed(&self) -> Duration {
         self.started.elapsed()

@@ -407,3 +407,32 @@ fn an_overrun_reports_the_same_rejection_wherever_it_is_discovered() {
         )
         .expect("a request inside its deadline still validates");
 }
+
+/// A budget whose origin already passed the deadline validates nothing.
+///
+/// The test-only origin seam must produce the rejection the approved total
+/// deadline produces, because a caller that drives an orchestration with it is
+/// proving where an overrun stops rather than proving a stand-in refuses.
+#[test]
+fn a_budget_whose_origin_passed_the_deadline_refuses_the_request() {
+    let budget = RequestBudget::already_exhausted();
+    assert_eq!(budget.remaining(), None);
+
+    let validator = RestoreValidator::new(components());
+    let error = validator
+        .validate(
+            &support::TestAuthority::eligible("sqlite"),
+            &budget,
+            RestoreRequest {
+                artifact: &committed("valid.wlitbackup"),
+                recovery_key: &identity(),
+            },
+        )
+        .expect_err("an exhausted budget must validate nothing");
+
+    assert_eq!(error, RestoreError::RestoreFailed);
+    assert_eq!(
+        support::category(error),
+        ("restore_failed", "restore_failed")
+    );
+}
