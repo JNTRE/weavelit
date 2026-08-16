@@ -183,7 +183,10 @@ fn seal_deployment(state_root: &Path) -> DeploymentIdentifier {
             CheckpointMetadata::from_bytes(b"restore-checkpoint-metadata".as_slice()).unwrap(),
         )
         .unwrap()
-        .complete_checkpoint(&sealed_application_state())
+        .complete_checkpoint(
+            &sealed_application_state(),
+            &weavelit_server_database::ReconciliationDigest::from_bytes([0xA0; 32]),
+        )
         .unwrap()
         .acknowledge_completion(completion_record_identifier())
         .unwrap()

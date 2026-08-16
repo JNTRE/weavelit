@@ -19,6 +19,7 @@ import {
 
 const RECOVERY_KEY = "AGE-SECRET-KEY-1QQQSYQCYQ5RQWZQFPG9SCRGWPUGPZYSNZS23V9CCRYDPK8QARC0SWRYDWG";
 const DELIVERY_NONCE = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
+const RECONCILIATION_CAPABILITY = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
 const PROOF = "YiFd573c6n4sQEf_a7lPjRgmL8iz82SBNLt9RBWP-E0";
 const CORRELATION = "0123456789abcdef0123456789abcdef";
 const PASSWORD = "correct horse battery staple";
@@ -41,7 +42,11 @@ function jsonResponse(body: unknown, status: number): Response {
 function deliveryResponse(): Response {
   return jsonResponse(
     {
-      result: { recovery_key: RECOVERY_KEY, delivery_nonce: DELIVERY_NONCE },
+      result: {
+        recovery_key: RECOVERY_KEY,
+        delivery_nonce: DELIVERY_NONCE,
+        reconciliation_capability: RECONCILIATION_CAPABILITY,
+      },
       correlation_id: CORRELATION,
     },
     200,
@@ -99,20 +104,37 @@ describe("parseDeliveredRecoveryKey", () => {
   it("accepts the documented delivery envelope", () => {
     expect(
       parseDeliveredRecoveryKey({
-        result: { recovery_key: RECOVERY_KEY, delivery_nonce: DELIVERY_NONCE },
+        result: {
+          recovery_key: RECOVERY_KEY,
+          delivery_nonce: DELIVERY_NONCE,
+          reconciliation_capability: RECONCILIATION_CAPABILITY,
+        },
         correlation_id: CORRELATION,
       }),
-    ).toStrictEqual({ recoveryKey: RECOVERY_KEY, deliveryNonce: DELIVERY_NONCE });
+    ).toStrictEqual({
+      recoveryKey: RECOVERY_KEY,
+      deliveryNonce: DELIVERY_NONCE,
+      reconciliationCapability: RECONCILIATION_CAPABILITY,
+    });
   });
 
   it("ignores additive fields permitted by the versioned contract", () => {
     expect(
       parseDeliveredRecoveryKey({
-        result: { recovery_key: RECOVERY_KEY, delivery_nonce: DELIVERY_NONCE, future_field: 1 },
+        result: {
+          recovery_key: RECOVERY_KEY,
+          delivery_nonce: DELIVERY_NONCE,
+          reconciliation_capability: RECONCILIATION_CAPABILITY,
+          future_field: 1,
+        },
         correlation_id: CORRELATION,
         future_field: "ignored",
       }),
-    ).toStrictEqual({ recoveryKey: RECOVERY_KEY, deliveryNonce: DELIVERY_NONCE });
+    ).toStrictEqual({
+      recoveryKey: RECOVERY_KEY,
+      deliveryNonce: DELIVERY_NONCE,
+      reconciliationCapability: RECONCILIATION_CAPABILITY,
+    });
   });
 
   it.each([
@@ -122,6 +144,10 @@ describe("parseDeliveredRecoveryKey", () => {
     ["a bare delivery", { recovery_key: RECOVERY_KEY, delivery_nonce: DELIVERY_NONCE }],
     ["a missing nonce", { result: { recovery_key: RECOVERY_KEY } }],
     ["a missing key", { result: { delivery_nonce: DELIVERY_NONCE } }],
+    [
+      "a missing reconciliation capability",
+      { result: { recovery_key: RECOVERY_KEY, delivery_nonce: DELIVERY_NONCE } },
+    ],
     ["a non-string key", { result: { recovery_key: 1, delivery_nonce: DELIVERY_NONCE } }],
     [
       "a key outside the identity shape",
@@ -140,6 +166,26 @@ describe("parseDeliveredRecoveryKey", () => {
       { result: { recovery_key: RECOVERY_KEY, delivery_nonce: "a".repeat(49) } },
     ],
     ["an empty nonce", { result: { recovery_key: RECOVERY_KEY, delivery_nonce: "" } }],
+    [
+      "a reconciliation capability outside the token character set",
+      {
+        result: {
+          recovery_key: RECOVERY_KEY,
+          delivery_nonce: DELIVERY_NONCE,
+          reconciliation_capability: "abc def",
+        },
+      },
+    ],
+    [
+      "an over-long reconciliation capability",
+      {
+        result: {
+          recovery_key: RECOVERY_KEY,
+          delivery_nonce: DELIVERY_NONCE,
+          reconciliation_capability: "a".repeat(49),
+        },
+      },
+    ],
   ])("rejects %s", (_label, payload) => {
     expect(parseDeliveredRecoveryKey(payload)).toBeNull();
   });
@@ -257,6 +303,7 @@ describe("prepareRecoveryKey", () => {
     await expect(prepareRecoveryKey(DETAILS)).resolves.toStrictEqual({
       recoveryKey: RECOVERY_KEY,
       deliveryNonce: DELIVERY_NONCE,
+      reconciliationCapability: RECONCILIATION_CAPABILITY,
     });
   });
 

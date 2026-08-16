@@ -6,8 +6,9 @@ import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
 const RECOVERY_KEY = "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLE";
 const TICKET = "0123456789abcdefghijklmnopqrstuvwxyzABC-_";
 const CORRELATION = "0123456789abcdef0123456789abcdef";
+const RECONCILIATION_CAPABILITY = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
 
-const SESSION_PATH = "/api/v1/auth/session";
+const RECONCILIATION_PATH = "/api/v1/lifecycle/reconciliation";
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -16,45 +17,49 @@ function jsonResponse(body: unknown, status: number): Response {
   });
 }
 
-function ticketResponse(): Response {
-  return jsonResponse({ result: { restore_ticket: TICKET }, correlation_id: CORRELATION }, 202);
+function ticketResponse(reconciliationCapability = RECONCILIATION_CAPABILITY): Response {
+  return jsonResponse(
+    {
+      result: { restore_ticket: TICKET, reconciliation_capability: reconciliationCapability },
+      correlation_id: CORRELATION,
+    },
+    202,
+  );
 }
 
 function completionResponse(): Response {
   return jsonResponse({ result: { lifecycle: "initialized" }, correlation_id: CORRELATION }, 200);
 }
 
-/** The challenge only a published normal operation serves. */
-function challengedProbe(): Promise<Response> {
-  return Promise.resolve(
-    jsonResponse({ error: "session_invalid", correlation_id: CORRELATION }, 401),
-  );
+/** The exact confirmation a matching submitted capability receives. */
+function confirmedReconciliation(): Promise<Response> {
+  return Promise.resolve(jsonResponse({ result: "reconciliation_confirmed" }, 200));
 }
 
-/** The answer a still pre-operational Server gives: no authentication surface. */
-function absentProbe(): Promise<Response> {
+/** The fixed answer a non-matching submitted capability receives. */
+function notFoundReconciliation(): Promise<Response> {
   return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
 }
 
 /**
  * Routes the two submission requests and the reconciliation request apart.
  *
- * A probe a test did not stage is refused rather than answered, so a test that
- * never expected a reconciliation cannot silently read one.
+ * A reconciliation a test did not stage is refused rather than answered, so a
+ * test that never expected one cannot silently read one.
  */
 function mockRoutedFetch(routes: {
   key: () => Promise<Response>;
   upload: () => Promise<Response>;
-  probe?: () => Promise<Response>;
+  reconciliation?: () => Promise<Response>;
 }) {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown) => {
     if (input === "/api/v1/restore/artifact") {
       return routes.upload();
     }
-    if (input === SESSION_PATH) {
-      return routes.probe === undefined
-        ? Promise.reject(new Error("unrouted session probe"))
-        : routes.probe();
+    if (input === RECONCILIATION_PATH) {
+      return routes.reconciliation === undefined
+        ? Promise.reject(new Error("unrouted reconciliation"))
+        : routes.reconciliation();
     }
     return routes.key();
   });
@@ -218,6 +223,7 @@ describe("RestoreSubmissionForm", () => {
     });
     expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
     expect(document.body.innerHTML).not.toContain(TICKET);
+    expect(document.body.innerHTML).not.toContain(RECONCILIATION_CAPABILITY);
   });
 
   it("clears the recovery key after a failed attempt", async () => {
@@ -270,7 +276,6 @@ describe("RestoreSubmissionForm", () => {
     mockRoutedFetch({
       key: () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443")),
       upload: () => Promise.resolve(completionResponse()),
-      probe: absentProbe,
     });
 
     renderForm();
@@ -280,15 +285,15 @@ describe("RestoreSubmissionForm", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.dataset.restoreError).toBe("restore_failed");
-    expect(alert.textContent).toContain("Reported code: restore_failed");
+    expect(alert.textContent).toBe("restore_failed");
     expect(document.body.textContent).not.toContain("ECONNREFUSED");
   });
 
-  it("completes when a transport failure hid a Restore that had already committed", async () => {
+  it("completes when reconciliation confirms a Restore whose transport failed", async () => {
     const fetchMock = mockRoutedFetch({
       key: () => Promise.resolve(ticketResponse()),
       upload: () => Promise.reject(new Error("ECONNRESET")),
-      probe: challengedProbe,
+      reconciliation: confirmedReconciliation,
     });
     const completed = vi.fn();
 
@@ -297,22 +302,21 @@ describe("RestoreSubmissionForm", () => {
     enterRecoveryKey();
     fireEvent.click(actionButton());
 
-    // The accepted upload may have sealed and published this deployment before
-    // its answer was lost, and only a published normal operation challenges, so
-    // the shell is advanced rather than left on a surface that is now gone.
+    // The accepted upload may have sealed this deployment before its answer was
+    // lost, and only its matching submitted capability confirms that outcome.
     await waitFor(() => {
       expect(completed).toHaveBeenCalledTimes(1);
     });
     expect(section().dataset.restoreState).toBe("completed");
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(1);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("keeps an unsettled Restore unsettled, with its original payload, when nothing can settle it", async () => {
+  it("keeps an unsettled Restore indeterminate when reconciliation mismatches", async () => {
     const fetchMock = mockRoutedFetch({
       key: () => Promise.resolve(ticketResponse()),
       upload: () => Promise.reject(new Error("ECONNRESET")),
-      probe: absentProbe,
+      reconciliation: notFoundReconciliation,
     });
     const completed = vi.fn();
 
@@ -322,12 +326,12 @@ describe("RestoreSubmissionForm", () => {
     fireEvent.click(actionButton());
 
     const alert = await screen.findByRole("alert");
-    // An absent surface proves nothing, so this is never presented as the
-    // determinate failure it is not.
+    // A mismatch proves a different deployment, never that this submission
+    // settled, so it is never presented as the determinate failure it is not.
     expect(alert.textContent).toContain("The Restore did not report an outcome");
     expect(section().dataset.restoreState).toBe("indeterminate");
     expect(completed).not.toHaveBeenCalled();
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(1);
     // The key stays with the attempt it drove, because that attempt has not
     // settled and this is the only copy of it.
     expect(recoveryKeyInput().value).toBe(RECOVERY_KEY);
@@ -337,15 +341,15 @@ describe("RestoreSubmissionForm", () => {
     expect(recheckButton()).not.toBeNull();
   });
 
-  it("completes an unsettled Restore when a recheck finds an operational surface", async () => {
-    const probe = vi
+  it("completes an unsettled Restore only when a recheck confirms its capability", async () => {
+    const reconciliation = vi
       .fn<() => Promise<Response>>()
-      .mockImplementationOnce(absentProbe)
-      .mockImplementationOnce(challengedProbe);
+      .mockImplementationOnce(notFoundReconciliation)
+      .mockImplementationOnce(confirmedReconciliation);
     const fetchMock = mockRoutedFetch({
       key: () => Promise.resolve(ticketResponse()),
       upload: () => Promise.reject(new Error("ECONNRESET")),
-      probe,
+      reconciliation,
     });
     const completed = vi.fn();
 
@@ -361,8 +365,49 @@ describe("RestoreSubmissionForm", () => {
       expect(completed).toHaveBeenCalledTimes(1);
     });
     expect(section().dataset.restoreState).toBe("completed");
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(2);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(2);
+    for (const call of fetchMock.mock.calls.filter((call) => call[0] === RECONCILIATION_PATH)) {
+      expect(call[1]?.body).toBe(
+        JSON.stringify({ reconciliation_capability: RECONCILIATION_CAPABILITY }),
+      );
+    }
     expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
+  });
+
+  it("uses a new capability only after a retry receives a new ticket", async () => {
+    const replacementCapability = "Zyxwvutsrqponmlkjihgfedcba0123456789ABCDE-_";
+    const fetchMock = mockRoutedFetch({
+      key: vi
+        .fn<() => Promise<Response>>()
+        .mockImplementationOnce(() => Promise.resolve(ticketResponse(RECONCILIATION_CAPABILITY)))
+        .mockImplementationOnce(() => Promise.resolve(ticketResponse(replacementCapability))),
+      upload: () => Promise.reject(new Error("ECONNRESET")),
+      reconciliation: notFoundReconciliation,
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    await screen.findByRole("alert");
+    fireEvent.click(actionButton());
+
+    await waitFor(() => {
+      expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(2);
+    });
+    const reconciliationCalls = fetchMock.mock.calls.filter(
+      (call) => call[0] === RECONCILIATION_PATH,
+    );
+    expect(reconciliationCalls[0]?.[1]?.body).toBe(
+      JSON.stringify({ reconciliation_capability: RECONCILIATION_CAPABILITY }),
+    );
+    expect(reconciliationCalls[1]?.[1]?.body).toBe(
+      JSON.stringify({ reconciliation_capability: replacementCapability }),
+    );
+    expect(section().dataset.restoreState).toBe("indeterminate");
+    expect(completed).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -371,17 +416,17 @@ describe("RestoreSubmissionForm", () => {
   ])(
     "completes when a retry is answered %i by the Restore its unsettled attempt committed",
     async (status, code) => {
-      const probe = vi
+      const reconciliation = vi
         .fn<() => Promise<Response>>()
-        .mockImplementationOnce(absentProbe)
-        .mockImplementationOnce(challengedProbe);
+        .mockImplementationOnce(notFoundReconciliation)
+        .mockImplementationOnce(confirmedReconciliation);
       const fetchMock = mockRoutedFetch({
         key: vi
           .fn<() => Promise<Response>>()
           .mockImplementationOnce(() => Promise.resolve(ticketResponse()))
           .mockImplementationOnce(() => Promise.resolve(jsonResponse({ error: code }, status))),
         upload: () => Promise.reject(new Error("ECONNRESET")),
-        probe,
+        reconciliation,
       });
       const completed = vi.fn();
 
@@ -399,7 +444,7 @@ describe("RestoreSubmissionForm", () => {
         expect(completed).toHaveBeenCalledTimes(1);
       });
       expect(section().dataset.restoreState).toBe("completed");
-      expect(callsTo(fetchMock, SESSION_PATH)).toBe(2);
+      expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(2);
       expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
     },
   );
@@ -413,7 +458,7 @@ describe("RestoreSubmissionForm", () => {
           Promise.resolve(jsonResponse({ error: "restore_not_allowed" }, 409)),
         ),
       upload: () => Promise.reject(new Error("ECONNRESET")),
-      probe: absentProbe,
+      reconciliation: notFoundReconciliation,
     });
     const completed = vi.fn();
 
@@ -447,7 +492,7 @@ describe("RestoreSubmissionForm", () => {
         .mockImplementationOnce(() =>
           Promise.resolve(jsonResponse({ error: "recovery_key_invalid" }, 400)),
         ),
-      probe: absentProbe,
+      reconciliation: notFoundReconciliation,
     });
     const completed = vi.fn();
 
@@ -467,7 +512,7 @@ describe("RestoreSubmissionForm", () => {
     expect(completed).not.toHaveBeenCalled();
     expect(recoveryKeyInput().value).toBe("");
     expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(1);
   });
 
   it("presents a Server-reported internal failure without reconciling it", async () => {
@@ -486,7 +531,7 @@ describe("RestoreSubmissionForm", () => {
     expect(alert.textContent).toBe("restore_failed");
     // The Server reported this one itself, so it is a determinate answer even
     // though it carries the same code a lost answer presents as.
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(0);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(0);
     expect(completed).not.toHaveBeenCalled();
   });
 

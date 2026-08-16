@@ -1,7 +1,7 @@
 import { useCallback, useState, type ChangeEvent, type JSX } from "react";
 
-import { probeSession } from "../api/weavelit-authentication";
 import { deriveRecoveryKeyProof } from "../api/weavelit-init-recovery-proof";
+import { reconcileLifecycle } from "../api/weavelit-lifecycle-reconciliation";
 import {
   InitFailedError,
   SQLITE_LOG_MODULE,
@@ -148,10 +148,10 @@ const INDETERMINATE_FINALIZATION_CODES = ["gateway_timeout"];
  * causes. `already_initialized` is also reported when no pending attempt is
  * held any more, which is what a finalization that failed this Server closed
  * leaves behind, and `not_found` is what a Server serving nothing at all
- * answers on every route. They are therefore reconciled through the
- * authentication surface rather than believed, and they are only read this way
- * once an attempt has already reported no outcome. A first attempt answered by
- * either of them was answered about itself.
+ * answers on every route. They are therefore reconciled against the submitted
+ * capability rather than believed, and they are only read this way once an
+ * attempt has already reported no outcome. A first attempt answered by either
+ * of them was answered about itself.
  */
 const RECONCILED_RETRY_CODES = ["already_initialized", "not_found"];
 
@@ -225,21 +225,18 @@ export interface InitWorkflowProps {
  * log, or any rendered failure message. A settled preparation or finalization
  * clears the password, and completion or a permanent failure drops the key.
  * An attempt that reported no outcome keeps its entire original payload in
- * component memory until an operational surface settles it, so a retry cannot
- * alter the deployment that the original request may still initialize.
+ * component memory until its submitted capability settles it, so a retry
+ * cannot alter the deployment that the original request may still initialize.
  *
  * Between key delivery and finalization the Server serves the finalization
  * route alone, so this component never reloads, re-requests status, or fetches
  * any further asset across that boundary. The already-loaded page is the only
  * thing that can complete the workflow.
  *
- * An outcome is settled only by evidence. An absent authentication surface is
- * not evidence, because a finalization still running and a finalization that
- * never committed look identical from here, so such an attempt stays
- * indeterminate however many times it is rechecked. A response that proves the
- * original workflow committed settles it as success instead, and the only
- * responses admitted as that proof are the ones the authentication surface
- * itself gives.
+ * An outcome is settled only by evidence. A matching reconciliation
+ * confirmation is that evidence. A capability mismatch, unavailable response,
+ * or invalid response proves nothing, so such an attempt stays indeterminate
+ * however many times it is rechecked.
  */
 export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
   const [systemLogModule, setSystemLogModule] = useState("");
@@ -311,19 +308,18 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
   }, [complete, username, displayName, password, systemLogModule, auditLogModule]);
 
   const reconcile = useCallback(
-    (code: string) => {
+    (code: string, reconciliationCapability: string) => {
       setUnsettled(true);
       setState({ kind: "indeterminate", code, checking: true });
-      void probeSession().then((probe) => {
-        if (probe.kind === "absent") {
-          // No authentication surface is served, which distinguishes nothing:
+      void reconcileLifecycle(reconciliationCapability).then((outcome) => {
+        if (outcome !== "confirmed") {
+          // A mismatch or unavailable result distinguishes nothing: the
           // finalization may still be running, or may never have committed.
           // The key is kept and the operator decides when to look again.
           setState({ kind: "indeterminate", code, checking: false });
           return;
         }
-        // An identity or an unauthenticated challenge both prove the same
-        // thing: normal operation was published, so this deployment was
+        // A matching submission capability proves this deployment was
         // initialized and sealed with the key that was delivered here.
         setPassword("");
         setDelivered(null);
@@ -362,7 +358,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
             // Deliberately keeps the delivered key: this attempt, or the
             // unsettled one it retried, may already have initialized and
             // sealed this deployment with it.
-            reconcile(code);
+            reconcile(code, delivered.reconciliationCapability);
             return;
           }
           // A known result settles the attempt, so its password need not stay
@@ -420,10 +416,10 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
     setState({ kind: "details", code: null });
   }, []);
   const recheck = useCallback(() => {
-    if (state.kind === "indeterminate") {
-      reconcile(state.code);
+    if (state.kind === "indeterminate" && delivered !== null) {
+      reconcile(state.code, delivered.reconciliationCapability);
     }
-  }, [reconcile, state]);
+  }, [delivered, reconcile, state]);
 
   const busy = state.kind === "preparing" || state.kind === "finalizing";
   const editing = state.kind === "details" || state.kind === "preparing";

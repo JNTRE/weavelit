@@ -82,6 +82,11 @@ Route groups:
   [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md).
 - Pre-operational lifecycle contracts are mounted only while their declaring
   capability is eligible.
+- `/api/v1/lifecycle/reconciliation` is an operational route, mounted once
+  normal operation begins rather than while a pre-operational capability is
+  eligible. It confirms a submission-bound Init or Restore capability and is
+  defined in full in [Lifecycle Reconciliation](#lifecycle-reconciliation)
+  below.
 - `/api/v1/auth/` carries authentication bootstrap. These routes are neither
   User Plane nor Administration Plane, because a principal does not yet exist
   when they are invoked. Seven routes are defined, all `PUT`:
@@ -161,6 +166,58 @@ naming any other value is denied.
 This preserves per-Client-Module Group grants. Grants apply only to
 authenticated requests, and pre-operational contracts run before any Human User
 exists, so no grant applies to them.
+
+### Lifecycle Reconciliation
+
+`PUT /api/v1/lifecycle/reconciliation` lets a browser that held a completed
+**[Init](../../glossary.md#states-and-requests)** or
+**[Restore](../../glossary.md#states-and-requests)** submission confirm,
+after the fact, whether that exact submission is the one this deployment
+completed. It is mounted once normal operation begins and is neither a
+pre-operational contract nor part of `/api/v1/auth/`: it requires no
+authenticated session of its own, and it neither reads nor changes the session
+`/api/v1/auth/session` validates. A caller may reconcile before ever signing
+in, and calling it changes no session state.
+
+The request body must be exactly one JSON object:
+
+```json
+{"reconciliation_capability":"<opaque token>"}
+```
+
+`reconciliation_capability` is the high-entropy opaque value the completing
+Init recovery-key response or Restore ticket response delivered; it carries no
+other meaning and is never derived from a session, a correlation identifier,
+or any other value. Validation is strict: an unknown field, a duplicate key, a
+missing member, a malformed token, trailing content, and an oversized body are
+all request errors, using the same bounded opaque-token shape as every other
+issued token in this contract. The request enforces the same same-origin,
+`Host`, and `X-Weavelit-CSRF` precondition every other browser-reachable route
+in this contract enforces, evaluated before body parsing.
+
+A submitted capability's domain-separated digest is compared, in constant
+time, only against the single digest the completing Init or Restore committed.
+Every response is fixed and reflects none of the submitted capability, a
+deployment identifier, or any other value that could distinguish the cause of
+a non-match:
+
+| Condition | Response |
+| --- | --- |
+| Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `{"error":"method_not_allowed"}` |
+| Failed `Origin`, `Host`, or `X-Weavelit-CSRF` precondition | `403 Forbidden`, `{"error":"request_origin_denied"}` |
+| Malformed, oversized, or schema-invalid body; wrong, missing, or duplicate `Content-Type`; unsupported or duplicate `Accept` | `400 Bad Request`, `{"error":"bad_request"}` |
+| Submitted capability does not match the one live reconciliation digest | `404 Not Found`, `{"error":"not_found"}` |
+| Reconciliation store unavailable | `503 Service Unavailable`, `{"error":"service_unavailable"}` |
+
+A `404` is not evidence of failure: a wrong capability, a capability for a
+deployment that never completed, and a capability superseded by a later
+Restore's own digest all answer identically, so a caller cannot distinguish
+the cause from this response alone. The
+[Server Init Design](../lifecycle/init/init-design.md#recovery-key-delivery-and-finalization)
+and the
+[Server Restore Design](../lifecycle/restore/restore-design.md#two-request-submission-protocol)
+own where each capability originates and how its digest is persisted and, for
+Restore, atomically replaced.
 
 ## Result And Error Representation
 

@@ -9,9 +9,9 @@ use weavelit_server_database::{
     DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupGrant, GroupGrantRecord,
     GroupMembership, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
     LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
-    PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
-    ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
-    StateIdentifier, WorkflowCheckpoint, WorkflowKind,
+    PasswordVerifier, ProtectedSecret, ProtectedValue, ReconciliationDigest, ReconciliationStore,
+    RecoveryPublicKey, SESSION_DIGEST_LENGTH, ServiceConnection, SessionCsrfHash, SessionInstant,
+    SessionStore, SessionTokenHash, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -25,7 +25,7 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 18] = [
+const EXPECTED_TABLES: [&str; 19] = [
     "weavelit_account",
     "weavelit_completion_obligation",
     "weavelit_configuration",
@@ -33,6 +33,7 @@ const EXPECTED_TABLES: [&str; 18] = [
     "weavelit_group_grant",
     "weavelit_group_membership",
     "weavelit_lifecycle_state",
+    "weavelit_lifecycle_reconciliation",
     "weavelit_log_assignment",
     "weavelit_log_module_configuration",
     "weavelit_log_module_setting",
@@ -72,6 +73,10 @@ fn deployment(byte: u8) -> DeploymentIdentifier {
 
 fn identifier(byte: u8) -> StateIdentifier {
     StateIdentifier::from_bytes([byte; 16]).unwrap()
+}
+
+fn reconciliation_digest(byte: u8) -> ReconciliationDigest {
+    ReconciliationDigest::from_bytes([byte; 32])
 }
 
 fn name(value: &str) -> Name {
@@ -270,7 +275,11 @@ fn restored_database(path: &Path, deployment_identifier: DeploymentIdentifier) -
     let checkpoint = restore_checkpoint(deployment_identifier);
     database.create_checkpoint(&checkpoint).unwrap();
     database
-        .complete_checkpoint(&checkpoint, &application_state(WorkflowKind::Restore))
+        .complete_checkpoint(
+            &checkpoint,
+            &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
+        )
         .unwrap();
     database
 }
@@ -618,6 +627,7 @@ fn a_restore_clears_every_live_session_inside_the_state_replacement() {
         .complete_checkpoint(
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
         )
         .unwrap();
 
@@ -668,6 +678,7 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
         .complete_checkpoint(
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
         )
         .unwrap();
 
@@ -701,6 +712,7 @@ fn a_rejected_state_replacement_leaves_live_sessions_untouched() {
                 CheckpointMetadata::from_bytes(b"other-metadata".as_slice()).unwrap(),
             ),
             &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
         )
         .unwrap_err();
 
@@ -801,12 +813,32 @@ fn completion_is_accepted_exactly_once() {
         .complete_checkpoint(
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
         )
         .unwrap_err();
 
     assert_eq!(error, DatabaseError::AlreadyInitialized);
     assert_eq!(state_row_counts(&path), before);
     assert_redacted(error);
+}
+
+#[test]
+fn completion_retains_only_its_reconciliation_digest() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(2);
+    let mut database = restored_database(&path, deployment_identifier);
+
+    assert!(
+        database
+            .matches_reconciliation(&reconciliation_digest(0xA0))
+            .unwrap()
+    );
+    assert!(
+        !database
+            .matches_reconciliation(&reconciliation_digest(0xA1))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -831,7 +863,11 @@ fn mismatched_checkpoint_is_rejected_without_writing_state() {
         (different_workflow, WorkflowKind::Init),
     ] {
         let error = database
-            .complete_checkpoint(&checkpoint, &application_state(workflow))
+            .complete_checkpoint(
+                &checkpoint,
+                &application_state(workflow),
+                &reconciliation_digest(0xA0),
+            )
             .unwrap_err();
 
         assert_eq!(error, DatabaseError::InvalidState);
@@ -856,6 +892,7 @@ fn deployment_mismatch_is_rejected_for_completion_load_and_acknowledgement() {
         .complete_checkpoint(
             &restore_checkpoint(other),
             &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
         )
         .unwrap_err();
     let load_error = database.load_initialized_state(other).unwrap_err();
@@ -881,6 +918,7 @@ fn completion_requires_a_pending_checkpoint_and_matching_obligation_workflow() {
         .complete_checkpoint(
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
         )
         .unwrap_err();
     database
@@ -890,6 +928,7 @@ fn completion_requires_a_pending_checkpoint_and_matching_obligation_workflow() {
         .complete_checkpoint(
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Init),
+            &reconciliation_digest(0xA0),
         )
         .unwrap_err();
 
@@ -918,6 +957,7 @@ fn transaction_failure_rolls_back_every_persisted_state_row() {
         .complete_checkpoint(
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
         )
         .unwrap_err();
     drop(database);

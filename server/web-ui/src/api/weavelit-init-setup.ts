@@ -49,6 +49,9 @@ const RECOVERY_KEY_PATTERN = /^AGE-SECRET-KEY-1[0-9A-Z]{6,110}$/;
 /** The closed shape of the delivery nonce: unpadded URL-safe Base64, bounded. */
 const DELIVERY_NONCE_PATTERN = /^[A-Za-z0-9_-]{1,48}$/;
 
+/** The closed shape of a submission-bound reconciliation capability. */
+const RECONCILIATION_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{1,48}$/;
+
 /** Everything a person supplies before a recovery key can be prepared. */
 export interface InitDetails {
   readonly username: string;
@@ -63,6 +66,8 @@ export interface InitDetails {
 export interface DeliveredRecoveryKey {
   readonly recoveryKey: string;
   readonly deliveryNonce: string;
+  /** Held only until a finalization outcome is known. */
+  readonly reconciliationCapability: string;
 }
 
 /**
@@ -143,13 +148,20 @@ export function parseDeliveredRecoveryKey(payload: unknown): DeliveredRecoveryKe
   const result = typedResult(payload);
   const recoveryKey = result?.recovery_key;
   const deliveryNonce = result?.delivery_nonce;
+  const reconciliationCapability = result?.reconciliation_capability;
   if (typeof recoveryKey !== "string" || !RECOVERY_KEY_PATTERN.test(recoveryKey)) {
     return null;
   }
   if (typeof deliveryNonce !== "string" || !DELIVERY_NONCE_PATTERN.test(deliveryNonce)) {
     return null;
   }
-  return { recoveryKey, deliveryNonce };
+  if (
+    typeof reconciliationCapability !== "string" ||
+    !RECONCILIATION_CAPABILITY_PATTERN.test(reconciliationCapability)
+  ) {
+    return null;
+  }
+  return { recoveryKey, deliveryNonce, reconciliationCapability };
 }
 
 /** Reports whether a `200` envelope is the documented completion envelope. */

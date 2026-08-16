@@ -9,6 +9,7 @@ mod error;
 mod inspection;
 mod mfa;
 mod migrations;
+mod reconciliation;
 mod session;
 mod state;
 
@@ -16,8 +17,8 @@ pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, ComponentEnablement, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, HumanAuthorizationSnapshot, InitializedState, MfaStore, SessionStore,
-    StateIdentifier, WorkflowCheckpoint,
+    DeploymentIdentifier, HumanAuthorizationSnapshot, InitializedState, MfaStore,
+    ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -36,8 +37,9 @@ impl ApplicationDatabase for SqliteDatabase {
         &mut self,
         checkpoint: &WorkflowCheckpoint,
         state: &ApplicationState,
+        reconciliation: &ReconciliationDigest,
     ) -> Result<(), DatabaseError> {
-        self.complete_checkpoint_atomic(checkpoint, state)
+        self.complete_checkpoint_atomic(checkpoint, state, reconciliation)
     }
 
     fn load_initialized_state(
@@ -71,6 +73,10 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn mfa(&mut self) -> Option<&mut dyn MfaStore> {
+        Some(self)
+    }
+
+    fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore> {
         Some(self)
     }
 

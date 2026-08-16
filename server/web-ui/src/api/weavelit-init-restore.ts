@@ -66,17 +66,26 @@ export class RestoreFailedError extends Error {
    */
   readonly indeterminate: boolean;
 
-  constructor(code: string, indeterminate = false) {
+  /**
+   * The issued capability for an artifact outcome the client could not read.
+   *
+   * It is absent for every determinate rejection and for failures before the
+   * recovery-key route returned a valid issuance envelope.
+   */
+  readonly reconciliationCapability: string | undefined;
+
+  constructor(code: string, indeterminate = false, reconciliationCapability?: string) {
     super("restore_failed");
     this.name = "RestoreFailedError";
     this.code = code;
     this.indeterminate = indeterminate;
+    this.reconciliationCapability = reconciliationCapability;
   }
 }
 
 /** Builds the failure of a request whose outcome this client never read. */
-function unreported(): RestoreFailedError {
-  return new RestoreFailedError(UNREPORTED_FAILURE_CODE, true);
+function unreported(reconciliationCapability?: string): RestoreFailedError {
+  return new RestoreFailedError(UNREPORTED_FAILURE_CODE, true, reconciliationCapability);
 }
 
 function objectPayload(payload: unknown): Record<string, unknown> | null {
@@ -109,18 +118,30 @@ function typedResult(payload: unknown): Record<string, unknown> | null {
   return objectPayload(objectPayload(payload)?.result);
 }
 
+/** The two opaque values a valid recovery-key issuance returns. */
+export interface IssuedRestoreTicket {
+  readonly ticket: string;
+  readonly reconciliationCapability: string;
+}
+
 /**
- * Returns the ticket a `202` envelope carries, or `null` for any other shape.
+ * Returns the ticket and reconciliation capability a `202` envelope carries.
  *
  * Unknown additional fields are ignored, as the versioned contract permits
  * additive changes in `/api/v1/`.
  */
-export function parseIssuedTicket(payload: unknown): string | null {
+export function parseIssuedTicket(payload: unknown): IssuedRestoreTicket | null {
   const ticket = typedResult(payload)?.restore_ticket;
-  if (typeof ticket !== "string" || !OPAQUE_TOKEN_PATTERN.test(ticket)) {
+  const reconciliationCapability = typedResult(payload)?.reconciliation_capability;
+  if (
+    typeof ticket !== "string" ||
+    !OPAQUE_TOKEN_PATTERN.test(ticket) ||
+    typeof reconciliationCapability !== "string" ||
+    !OPAQUE_TOKEN_PATTERN.test(reconciliationCapability)
+  ) {
     return null;
   }
-  return ticket;
+  return { ticket, reconciliationCapability };
 }
 
 /** Reports whether a `200` envelope is the documented completion envelope. */
@@ -128,16 +149,24 @@ export function isRestoreCompleted(payload: unknown): boolean {
   return typedResult(payload)?.lifecycle === LIFECYCLE_INITIALIZED;
 }
 
-async function rejection(response: Response): Promise<RestoreFailedError> {
+async function rejection(
+  response: Response,
+  reconciliationCapability?: string,
+): Promise<RestoreFailedError> {
   let reported: string | null;
   try {
     reported = reportedStableErrorCode(await response.json());
   } catch {
-    return unreported();
+    return unreported(reconciliationCapability);
   }
   // A body outside the rejection contract reports no code of its own, so what
   // the route did with the request was never read from it either.
-  return reported === null ? unreported() : new RestoreFailedError(reported);
+  if (reported === null) {
+    return unreported(reconciliationCapability);
+  }
+  return reported === "gateway_timeout" && reconciliationCapability !== undefined
+    ? new RestoreFailedError(reported, true, reconciliationCapability)
+    : new RestoreFailedError(reported);
 }
 
 /**
@@ -147,7 +176,7 @@ async function rejection(response: Response): Promise<RestoreFailedError> {
  * in the URL, a query string, a header, or a cookie, and it never travels with
  * the artifact.
  */
-async function submitRecoveryKey(recoveryKey: string): Promise<string> {
+async function submitRecoveryKey(recoveryKey: string): Promise<IssuedRestoreTicket> {
   let response: Response;
   try {
     response = await fetch(RESTORE_KEY_PATH, {
@@ -177,11 +206,11 @@ async function submitRecoveryKey(recoveryKey: string): Promise<string> {
     throw unreported();
   }
 
-  const ticket = parseIssuedTicket(payload);
-  if (ticket === null) {
+  const issued = parseIssuedTicket(payload);
+  if (issued === null) {
     throw unreported();
   }
-  return ticket;
+  return issued;
 }
 
 /**
@@ -196,7 +225,11 @@ async function submitRecoveryKey(recoveryKey: string): Promise<string> {
  * the route accepts exactly one unparameterized `application/octet-stream` and
  * a browser derives a file's type from its name.
  */
-async function uploadArtifact(ticket: string, artifact: File): Promise<void> {
+async function uploadArtifact(
+  ticket: string,
+  artifact: File,
+  reconciliationCapability: string,
+): Promise<void> {
   let response: Response;
   try {
     response = await fetch(RESTORE_ARTIFACT_PATH, {
@@ -213,22 +246,22 @@ async function uploadArtifact(ticket: string, artifact: File): Promise<void> {
       redirect: "error",
     });
   } catch {
-    throw unreported();
+    throw unreported(reconciliationCapability);
   }
 
   if (response.status !== RESTORE_COMPLETED_STATUS) {
-    throw await rejection(response);
+    throw await rejection(response, reconciliationCapability);
   }
 
   let payload: unknown;
   try {
     payload = await response.json();
   } catch {
-    throw unreported();
+    throw unreported(reconciliationCapability);
   }
 
   if (!isRestoreCompleted(payload)) {
-    throw unreported();
+    throw unreported(reconciliationCapability);
   }
 }
 
@@ -242,6 +275,6 @@ async function uploadArtifact(ticket: string, artifact: File): Promise<void> {
  * request failed.
  */
 export async function submitRestore(recoveryKey: string, artifact: File): Promise<void> {
-  const ticket = await submitRecoveryKey(recoveryKey);
-  await uploadArtifact(ticket, artifact);
+  const issued = await submitRecoveryKey(recoveryKey);
+  await uploadArtifact(issued.ticket, artifact, issued.reconciliationCapability);
 }

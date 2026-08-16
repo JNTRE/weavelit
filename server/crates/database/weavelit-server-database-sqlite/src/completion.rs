@@ -1,13 +1,14 @@
 use rusqlite::{TransactionBehavior, params};
 use weavelit_server_database::{
     ApplicationState, DatabaseError, DatabaseInspection, DeploymentIdentifier, InitializedState,
-    StateIdentifier, WorkflowCheckpoint,
+    ReconciliationDigest, StateIdentifier, WorkflowCheckpoint,
 };
 
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::inspection::inspect_connection;
 use crate::mfa;
+use crate::reconciliation;
 use crate::session;
 use crate::state;
 
@@ -16,6 +17,7 @@ impl SqliteDatabase {
         &mut self,
         checkpoint: &WorkflowCheckpoint,
         application_state: &ApplicationState,
+        reconciliation_digest: &ReconciliationDigest,
     ) -> Result<(), DatabaseError> {
         if application_state.completion_obligation().workflow() != checkpoint.workflow() {
             return Err(DatabaseError::InvalidState);
@@ -41,6 +43,7 @@ impl SqliteDatabase {
         // watermarks are live in the same sense and are cleared with them.
         session::clear(&transaction)?;
         mfa::clear(&transaction)?;
+        reconciliation::replace(&transaction, reconciliation_digest)?;
         state::write(&transaction, application_state)?;
         let replaced = transaction
             .execute(

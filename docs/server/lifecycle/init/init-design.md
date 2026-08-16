@@ -138,7 +138,13 @@ initialized before the requesting client proves possession of the private key:
    complete their configured valid-run commit paths, and discards its copy of
    the private key immediately after the response is written. The private key
    exists only transiently in Server memory and response handling and is never
-   persisted in any form.
+   persisted in any form. Alongside the key pair, the Init crate mints an
+   independent high-entropy lifecycle reconciliation capability from
+   operating-system entropy and computes its domain-separated digest. The
+   capability itself is returned once, in the same response as the private
+   key, and is held only by the requesting browser; the crate retains only
+   the digest, in memory with the pending delivery, until finalization
+   persists it.
 2. The client saves the private key outside Weavelit and computes the same
    HMAC-SHA-256 over the delivery nonce, keyed by the private key's raw bytes
    it retained. It submits that proof, but not the private key, with the
@@ -153,7 +159,14 @@ initialized before the requesting client proves possession of the private key:
    each assigned log type, and atomically replaces the checkpoint with complete
    initialized application state bound to the deployment identifier. The
    committed state includes the non-secret Init completion-event fields as a
-   pending obligation.
+   pending obligation. That same atomic replacement also writes the
+   reconciliation digest minted during preparation into the Application
+   Database's dedicated live reconciliation record, outside
+   `ApplicationState` and therefore outside every backup. The digest is the
+   only value the submission-bound lifecycle reconciliation route the
+   [API Contract Design](../../../server/api/api-contract-design.md#lifecycle-reconciliation)
+   defines ever compares a submitted capability against; the capability
+   itself is never persisted.
 4. The Init crate loads the committed
    **[System Log](../../../glossary.md#applications-and-interfaces)** assignment,
    receives the required durable acknowledgement for the successful Init result,
@@ -286,8 +299,9 @@ records for its own deadline recheck. What makes it safe here is the client
 rather than the Server: the
 [Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md#init-workflow)
 treats a `gateway_timeout` on finalization as an outcome that reported nothing
-instead of a failure, keeps the delivered key, and reconciles against the
-authentication surface before it decides anything.
+instead of a failure, keeps the delivered key and its reconciliation
+capability, and reconciles through the submission-bound lifecycle
+reconciliation route before it decides anything.
 
 The delivered key remains a canonical age key, unchanged; only the proof
 mechanism above is Init-specific, and it does not alter Restore's accepted key
@@ -425,6 +439,7 @@ end against the release Server binary, including a finalization answered as
 - [Security Model](../../../security-model.md)
 - [Server Architecture Design](../../server-architecture-design.md)
 - [Server Lifecycle Design](../lifecycle-design.md)
+- [Server API Contract](../../api/api-contract-design.md)
 - [Application Database Design](../../database/application-database-design.md)
 - [Log Module Design](../../../log-modules/log-module-design.md)
 - [Development Container Design](../../../containers/dev/development-container-design.md)

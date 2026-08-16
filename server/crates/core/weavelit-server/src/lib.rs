@@ -66,6 +66,7 @@ pub mod authentication;
 pub mod authorization;
 pub mod init;
 pub mod operational;
+pub mod reconciliation;
 pub mod restore;
 pub mod transport;
 
@@ -2174,6 +2175,9 @@ fn fixed_json_body(body: &[u8]) -> Option<&'static str> {
             Some("{\"error\":\"request_header_fields_too_large\"}")
         }
         b"{\"error\":\"request_origin_denied\"}" => Some("{\"error\":\"request_origin_denied\"}"),
+        b"{\"result\":\"reconciliation_confirmed\"}" => {
+            Some("{\"result\":\"reconciliation_confirmed\"}")
+        }
         b"{\"error\":\"restore_failed\"}" => Some("{\"error\":\"restore_failed\"}"),
         b"{\"error\":\"restore_not_allowed\"}" => Some("{\"error\":\"restore_not_allowed\"}"),
         b"{\"error\":\"restore_pending\"}" => Some("{\"error\":\"restore_pending\"}"),
@@ -2968,12 +2972,14 @@ pub(crate) mod tests {
         AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
         AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_SESSION_ROUTE, CookieEffect,
         CookieValue, DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE,
-        INIT_ROUTE, InitRejection, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
-        RESTORE_TICKET_HEADER_NAME, RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
+        INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, RESTORE_ARTIFACT_ROUTE,
+        RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
+        RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
     };
     use weavelit_server_database::{
         ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
-        LogClassification, LogDetail, LogModuleConfiguration, LogType, Name, RecoveryPublicKey,
+        LogClassification, LogDetail, LogModuleConfiguration, LogType, Name, ReconciliationDigest,
+        RecoveryPublicKey,
     };
     use weavelit_server_lifecycle::{
         ApplicationState, BackendIdentifier, CheckpointMetadata, DatabaseInspection,
@@ -3057,6 +3063,7 @@ pub(crate) mod tests {
     /// and each of its three routes is registered for `PUT` alone.
     fn operational_registrations() -> Vec<(Method, &'static str)> {
         vec![
+            (Method::PUT, LIFECYCLE_RECONCILIATION_ROUTE),
             (Method::PUT, AUTH_LOGIN_ROUTE),
             (Method::PUT, AUTH_SESSION_ROUTE),
             (Method::PUT, AUTH_LOGOUT_ROUTE),
@@ -3736,7 +3743,7 @@ pub(crate) mod tests {
                 CheckpointMetadata::from_bytes(b"restore-checkpoint-metadata".as_slice()).unwrap(),
             )
             .unwrap()
-            .complete_checkpoint(&state)
+            .complete_checkpoint(&state, &ReconciliationDigest::from_bytes([1; 32]))
             .unwrap()
             .acknowledge_completion(completion_record_identifier())
             .unwrap()
@@ -6416,6 +6423,46 @@ pub(crate) mod tests {
         }
     }
 
+    /// Every lifecycle reconciliation body is admitted by the fixed-JSON
+    /// allowlist rather than being replaced with the redacted gateway body.
+    #[tokio::test]
+    async fn reconciliation_bodies_survive_the_fixed_json_allowlist() {
+        for rejection in ReconciliationRejection::ALL {
+            let rejection = *rejection;
+            let expected = rejection.body();
+            let bounded = bounded_response_from_axum(rejection.response()).await;
+            assert_eq!(bounded.status, rejection.status(), "{rejection:?}");
+            assert_eq!(bounded.profile, ResponseProfile::Json, "{rejection:?}");
+            assert_eq!(bounded.body.as_ref(), expected.as_bytes(), "{rejection:?}");
+        }
+
+        for (outcome, status, expected) in [
+            (
+                ReconciliationOutcome::Confirmed,
+                StatusCode::OK,
+                "{\"result\":\"reconciliation_confirmed\"}",
+            ),
+            (
+                ReconciliationOutcome::NotFound,
+                StatusCode::NOT_FOUND,
+                "{\"error\":\"not_found\"}",
+            ),
+            (
+                ReconciliationOutcome::Unavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{\"error\":\"service_unavailable\"}",
+            ),
+        ] {
+            let bounded = bounded_response_from_axum(
+                weavelit_module_client::reconciliation_outcome_response(outcome),
+            )
+            .await;
+            assert_eq!(bounded.status, status, "{outcome:?}");
+            assert_eq!(bounded.profile, ResponseProfile::Json, "{outcome:?}");
+            assert_eq!(bounded.body.as_ref(), expected.as_bytes(), "{outcome:?}");
+        }
+    }
+
     /// Every Init body a route handler can emit must be in the fixed-JSON
     /// allowlist too.
     ///
@@ -7558,6 +7605,7 @@ pub(crate) mod tests {
                     self.admission().await,
                     RequestBudget::start(),
                     RESTORE_CORRELATION.to_owned(),
+                    ReconciliationDigest::from_bytes([1; 32]),
                     artifact,
                     Zeroizing::new(recovery_key),
                 )
@@ -8664,8 +8712,8 @@ pub(crate) mod tests {
             .await
             .expect("the committed valid backup must restore");
 
-        // The operational surface registers only its authentication routes, so
-        // no Restore registration survives the transition either.
+        // The operational surface registers reconciliation and authentication,
+        // so no Restore registration survives the transition either.
         assert_eq!(
             surface
                 .modes
@@ -9004,9 +9052,9 @@ pub(crate) mod tests {
     /// Each serving mode carries exactly the registrations its own routes need.
     ///
     /// The fail-closed mode mounts nothing and therefore registers nothing. The
-    /// operational mode registers only its authentication routes, and the
-    /// pre-operational mode registers Init preparation and Restore only where a
-    /// selected Application Database makes them eligible.
+    /// operational mode registers reconciliation and authentication routes,
+    /// and the pre-operational mode registers Init preparation and Restore
+    /// only where a selected Application Database makes them eligible.
     #[test]
     fn each_serving_mode_carries_exactly_the_registrations_its_routes_need() {
         let (modes, _receiver) = watch::channel(ServingMode::FailClosed(
@@ -9067,6 +9115,54 @@ pub(crate) mod tests {
             !registered.iter().any(|(_, route)| *route == INIT_ROUTE),
             "finalization must not be registered before a key is delivered"
         );
+    }
+
+    #[tokio::test]
+    async fn operational_reconciliation_is_mounted_without_authentication() {
+        const CAPABILITY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
+
+        let surface = Surface::new(StartupOutcome::Initialized);
+        let mount = operational_composer(&surface.startup, UNBOUND_LISTENER.parse().unwrap())
+            .without_authentication()
+            .mount();
+        assert_eq!(
+            mount.surface().registry().registered_routes(),
+            vec![(Method::PUT, LIFECYCLE_RECONCILIATION_ROUTE)]
+        );
+
+        let response = mount
+            .surface()
+            .router()
+            .clone()
+            .oneshot(
+                Request::put(LIFECYCLE_RECONCILIATION_ROUTE)
+                    .header("host", UNBOUND_LISTENER)
+                    .header("origin", format!("https://{UNBOUND_LISTENER}"))
+                    .header("x-weavelit-csrf", "1")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json")
+                    .body(Body::from(format!(
+                        "{{\"reconciliation_capability\":\"{CAPABILITY}\"}}"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_body(response).await, "{\"error\":\"not_found\"}");
+
+        let response = mount
+            .surface()
+            .router()
+            .clone()
+            .oneshot(
+                Request::put(AUTH_SESSION_ROUTE)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     // -----------------------------------------------------------------------

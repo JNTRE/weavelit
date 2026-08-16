@@ -3,6 +3,7 @@
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
 mod mfa;
+mod reconciliation;
 mod session;
 mod state;
 
@@ -10,6 +11,7 @@ pub use mfa::{
     MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment,
     MfaModuleTarget, MfaStore, MfaTimeStep,
 };
+pub use reconciliation::{RECONCILIATION_DIGEST_LENGTH, ReconciliationDigest, ReconciliationStore};
 pub use session::{
     MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
     SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
@@ -181,6 +183,7 @@ pub trait ApplicationDatabase: Send {
         &mut self,
         checkpoint: &WorkflowCheckpoint,
         state: &ApplicationState,
+        reconciliation: &ReconciliationDigest,
     ) -> Result<(), DatabaseError>;
 
     /// Loads complete initialized state bound to the expected deployment.
@@ -233,6 +236,14 @@ pub trait ApplicationDatabase: Send {
     /// rather than defaulted: a caller that receives `None` refuses the
     /// verification instead of accepting a code it cannot prove is unused.
     fn mfa(&mut self) -> Option<&mut dyn MfaStore>;
+
+    /// Returns this database's live lifecycle reconciliation store, when it
+    /// owns one.
+    ///
+    /// Completion records its digest atomically with the application-state
+    /// replacement. The retained value is separate from restorable state, so
+    /// a Restore proves only its own submission and a backup carries none.
+    fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore>;
 
     /// Closes the database and releases its storage cleanly.
     ///

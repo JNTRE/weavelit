@@ -174,26 +174,32 @@ and applied by each control at its own step boundaries.
 
 An outcome is settled only by evidence. A result that reports nothing — a lost
 connection, an unreadable body, or the listener's timeout — is never presented
-as a failure. It is reconciled against the authentication surface described in
-[Sign-In Control](#sign-in-control) below, which is the one surface a sealed
-deployment still serves. An identity and an unauthenticated challenge both
-prove that normal operation was published, so a result reconciled to either
-settles the attempt as a success. An absent authentication surface is not
-evidence: it is what a workflow still running and a workflow that never
-committed look like alike, so the attempt stays unsettled, with a recheck
-offered, until something proves what happened.
+as a failure. Each control reconciles it by submitting the opaque
+`reconciliation_capability` its own submission delivered to the submission-bound
+lifecycle reconciliation route documented in the
+[API Contract Design](../../server/api/api-contract-design.md#lifecycle-reconciliation),
+which is served whether or not this deployment is sealed and does not depend
+on or change the generic session route described in
+[Sign-In Control](#sign-in-control) below. A confirmed result proves that this
+exact submission is the one this deployment completed, so it settles the
+attempt as a success. A non-matching or unavailable result is not evidence
+either way: it is what a workflow still running, a workflow that never
+committed, and an unrelated deployment all look like alike, so the attempt
+stays unsettled, with a recheck offered, until a confirmed result proves what
+happened.
 
 Once an attempt has gone unsettled, a later attempt's rejection is read the
 same way whenever the unsettled original could itself have caused it. A Server
 that has left `Uninitialized` refuses the workflow that would take it there,
 and a Server running normal operation no longer mounts the pre-operational
 route at all; each answer is exactly what the unsettled original committing
-would produce. Neither proves it, because both also have determinate causes, so
-a response that could report the original workflow committed is reconciled
-rather than believed. A probe that proves an operational surface settles the
-attempt as a success; a probe that proves nothing leaves it unsettled rather
-than failed. A rejection answering a first attempt is never read this way,
-because it was answered about that attempt itself.
+would produce. Neither proves it, because both also have determinate causes,
+so a response that could report the original workflow committed is reconciled
+against the lifecycle reconciliation route rather than believed. A confirmed
+reconciliation settles the attempt as a success; a non-matching or unavailable
+reconciliation leaves it unsettled rather than failed. A rejection answering a
+first attempt is never read this way, because it was answered about that
+attempt itself.
 
 A rejection the Server did report is determinate and is never reconciled. A
 determinate rejection can carry the same fixed code a transport or read failure
@@ -202,13 +208,14 @@ carried a stable code at all, never by the code that reaches the presentation
 layer. This keeps a determinate failure from being dressed up as an unsettled
 one, and an unsettled attempt from being presented as a failure.
 
-A delivered recovery key is never discarded while an attempt is unsettled. It
-is dropped only on an outcome that is actually known: a completion, because the
-key has done its work, or a determinate permanent failure, because no attempt
-against this Server can ever use it again. While an attempt is unsettled the
-key stays in the same transient component memory that held it before, and is
-never written to a URL, a cookie, `localStorage`, or `sessionStorage` to
-survive there.
+A delivered recovery key, and the reconciliation capability its own submission
+delivered alongside it, are never discarded while an attempt is unsettled.
+Both are dropped only on an outcome that is actually known: a completion,
+because they have done their work, or a determinate permanent failure, because
+no attempt against this Server can ever use either again. While an attempt is
+unsettled both stay in the same transient component memory that held them
+before, and are never written to a URL, a cookie, `localStorage`, or
+`sessionStorage` to survive there.
 
 Neither control re-requests the pre-operational status projection or the
 Application Database selection to settle anything. Both are withdrawn once the
@@ -252,30 +259,32 @@ accepted, and a completion body that never arrives intact all leave whether the
 Restore committed unknown, and the commit chain any of them abandons is not
 cancelled by them. The control settles such a result under
 [Settling Pre-Operational Outcomes](#settling-pre-operational-outcomes) above:
-an identity or an unauthenticated challenge proves normal operation was
-published, so the control reports completion and the shell withdraws the whole
-setup surface; an absent surface proves nothing, so the control holds the
-indeterminate state, which names the reported code, states that whether the
-backup was restored is not yet known, and tells the person to keep the
-submitted key because it is still the key this backup is encrypted with. It
-offers a recheck control and leaves the retry available only with the original
+it submits the `reconciliation_capability` the recovery-key submission
+delivered to the lifecycle reconciliation route, and a confirmed result
+reports completion and withdraws the whole setup surface; a non-matching or
+unavailable result proves nothing, so the control holds the indeterminate
+state, which names the reported code, states that whether the backup was
+restored is not yet known, and tells the person to keep the submitted key
+because it is still the key this backup is encrypted with. It offers a
+recheck control and leaves the retry available only with the original
 artifact and key. Those payload controls remain disabled throughout the
 indeterminate state, so a retry cannot be mistaken for a different Restore;
-the retry action is held disabled while a probe is in flight, so no retry is
-issued against routes a committed Restore no longer serves.
+the retry action is held disabled while a reconciliation request is in flight,
+so no retry is issued against routes a committed Restore no longer serves.
 
 Once a submission has gone unsettled, a retry answered `restore_not_allowed` or
 `not_found` is reconciled the same way rather than believed. A Restore that
 committed is exactly what leaves this deployment past `Uninitialized` and stops
 it mounting the Restore routes, but a lifecycle pending some other workflow and
 a Server serving nothing at all answer identically, so neither response settles
-anything by itself. A probe that finds an operational surface settles the
-attempt as a completed Restore; a probe that finds nothing returns the control
-to the indeterminate state, still holding the submitted key. A first submission
-answered by either code was answered about itself and fails determinately as
+anything by itself. A confirmed reconciliation settles the attempt as a
+completed Restore; a non-matching or unavailable reconciliation returns the
+control to the indeterminate state, still holding the submitted key and its
+reconciliation capability. A first submission answered by either code was
+answered about itself and fails determinately as
 the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md#rejections)
 defines. A determinate rejection after an unsettled attempt still fails
-determinately and still drops the key.
+determinately and still drops the key and its reconciliation capability.
 
 A rejection the Server itself reported is never settled that way. Its
 `restore_failed` code is also the code a transport or read failure presents as,
@@ -390,36 +399,40 @@ full in [Settling Pre-Operational Outcomes](#settling-pre-operational-outcomes)
 above: a delivered key is discarded only on an outcome that is actually known.
 Completion drops it because it has done its work, and a permanent failure drops
 it because no attempt against this Server can ever use it again. An outcome
-that reported nothing establishes neither, so the key and original password are
-retained in the same transient component memory that held them before, and are
-never written to a URL, a cookie, `localStorage`, or `sessionStorage` to survive
-there. Every detail control stays locked while the outcome is indeterminate, so
-the retry submits exactly the request that may already be completing. The
-password is cleared as soon as the outcome becomes known.
+that reported nothing establishes neither, so the key, its reconciliation
+capability, and original password are retained in the same transient
+component memory that held them before, and are never written to a URL, a
+cookie, `localStorage`, or `sessionStorage` to survive there. Every detail
+control stays locked while the outcome is indeterminate, so the retry submits
+exactly the request that may already be completing. The password is cleared
+as soon as the outcome becomes known.
 
-The workflow settles an indeterminate outcome by asking the shared session
-route described in [Sign-In Control](#sign-in-control) below whether an
-authentication surface is served, on first entering the state and again on
-each recheck. It deliberately does not re-request the pre-operational status
-projection or the Application Database selection, which are withdrawn once the
-deployment is sealed and would therefore report the same absence for a sealed
-deployment and a Server that never finished. An identity and an unauthenticated
-challenge both prove that normal operation was published, so the workflow
-releases the key and reports completion exactly as a confirmed finalization
-does. An absent authentication surface proves nothing — finalization may still
-be running, or may never have committed — so the key is kept and the person
-decides whether to recheck or retry.
+The workflow settles an indeterminate outcome by submitting the
+`reconciliation_capability` the recovery-key response delivered to the
+lifecycle reconciliation route documented in the
+[API Contract Design](../../server/api/api-contract-design.md#lifecycle-reconciliation),
+on first entering the state and again on each recheck. It deliberately does not
+re-request the pre-operational status projection or the Application Database
+selection, which are withdrawn once the deployment is sealed and would
+therefore report the same absence for a sealed deployment and a Server that
+never finished. A confirmed result proves that normal operation was published
+for this exact finalization, so the workflow releases the key and reports
+completion exactly as a confirmed finalization does. A non-matching or
+unavailable result proves nothing — finalization may still be running, or may
+never have committed, or may have committed for a different attempt — so the
+key is kept and the person decides whether to recheck or retry.
 
 Once the workflow has gone unsettled, a retried finalization answered
-`already_initialized` or `not_found` is reconciled through that same route
-rather than believed. A finalization that committed is exactly what leaves this
-deployment initialized and withdraws the pre-operational routes, but a
-lifecycle pending some other workflow and a Server serving nothing at all
-answer identically. A probe that finds an operational surface settles the
-attempt as a completed Init; a probe that finds nothing returns the workflow to
-the indeterminate state, still holding the delivered key and original locked
-payload. A first finalization answered by either code was answered about itself
-and is presented as the rejection it is.
+`already_initialized` or `not_found` is reconciled through that same
+reconciliation route rather than believed. A finalization that committed is
+exactly what leaves this deployment initialized and withdraws the
+pre-operational routes, but a lifecycle pending some other workflow and a
+Server serving nothing at all answer identically. A confirmed reconciliation
+settles the attempt as a completed Init; a non-matching or unavailable
+reconciliation returns the workflow to the indeterminate state, still holding
+the delivered key, its reconciliation capability, and original locked payload.
+A first finalization answered by either code was answered about itself and is
+presented as the rejection it is.
 
 Once finalization is confirmed, the shell adopts that confirmation directly
 rather than issuing a further status request, because the pre-operational

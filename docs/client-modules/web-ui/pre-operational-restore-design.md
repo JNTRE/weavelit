@@ -81,7 +81,9 @@ Server itself issued. `PUT` expresses each request's idempotent intent.
 The ticket is an independent cryptographically random bearer value carrying 32
 bytes of operating-system entropy, rendered as exactly 43 characters of
 unpadded URL-safe Base64. It is never a correlation identifier, a session
-identifier, or anything derived from either.
+identifier, or anything derived from either. From the moment it is minted, the
+ticket value is held in a zeroizing owner through the Server's response
+handoff, so no plaintext copy outlives the response that carries it.
 
 The Server retains only a domain-separated SHA-256 digest of the ticket and
 compares a submitted ticket against that digest in constant time. Its
@@ -158,11 +160,20 @@ An accepted submission responds `202 Accepted` with
 `Content-Type: application/json; charset=utf-8` and this typed envelope:
 
 ```json
-{"result":{"restore_ticket":"<43-character token>"},"correlation_id":"<identifier>"}
+{"result":{"restore_ticket":"<43-character token>",
+           "reconciliation_capability":"<opaque-value>"},
+ "correlation_id":"<identifier>"}
 ```
 
 `202` is the accurate status: the recovery key has been retained and a ticket
-issued, but no Restore has run and no state has changed.
+issued, but no Restore has run and no state has changed. `reconciliation_capability`
+is a separate high-entropy opaque value, unrelated to the ticket, that lets the
+browser later confirm whether this exact Restore is the one that completed,
+through the lifecycle reconciliation route the
+[API Contract Design](../../server/api/api-contract-design.md#lifecycle-reconciliation)
+defines. It is returned in this one response only and is held only in the
+requesting page's transient memory; it is never written to a URL, a cookie,
+`localStorage`, or `sessionStorage`.
 
 ## Artifact Route Contract
 
@@ -270,14 +281,23 @@ at all, never by the code it presents.
 
 An outcome is settled only by evidence, and this surface is not the evidence: a
 sealed deployment stops serving it entirely. The observation that settles such
-a result is the authentication surface owned by the
-[Server Authentication Design](../../server/authentication/authentication-design.md),
-which is what a published normal operation serves in its place. An absent
-authentication surface is not evidence either — a Restore still committing and
-a Restore that never committed present the same absence — so the attempt stays
-unsettled and its recovery key stays with it until something proves what
-happened. A client must not discard a recovery key an unsettled attempt still
-needs, and must not write it anywhere to keep it.
+a result is the submission-bound lifecycle reconciliation route,
+`PUT /api/v1/lifecycle/reconciliation`, defined by the
+[API Contract Design](../../server/api/api-contract-design.md#lifecycle-reconciliation),
+which a client calls with the `reconciliation_capability` the recovery-key
+response delivered, held only in this page's transient memory. A `200`
+`reconciliation_confirmed` result is the only outcome that proves this exact
+Restore completed. A `404 Not Found` is not evidence of failure: a capability
+that does not match the deployment's currently retained digest, a capability
+for a deployment that never completed, and a capability this client never
+actually held all answer identically, so a client cannot distinguish the cause
+from this response alone. A `503 Service Unavailable`, a transport failure, or
+an unreadable body are equally inconclusive. The reconciliation route neither
+reads nor changes the generic session route, `/api/v1/auth/session`; it
+answers from the live reconciliation digest alone, so an attempt can be
+reconciled before, during, or without ever exercising sign-in. A client must
+not discard a recovery key an unsettled attempt still needs, and must not
+write it anywhere to keep it.
 
 Once an attempt has gone unsettled, two answers stop being determinate for that
 client. `restore_not_allowed`, defined in the table above, is answered whenever
@@ -288,13 +308,13 @@ operation answers here, because it no longer mounts these routes at all.
 Neither proves the unsettled attempt committed, because a lifecycle pending
 some other workflow answers the first and a Server serving nothing at all
 answers the second, so a client must reconcile a retry answered by either
-against the authentication surface rather than believe it. Proof of an
-operational surface settles the attempt as a completed Restore; no such proof
-leaves it unsettled, never failed. This applies only after an attempt has
-reported no outcome: a first submission answered by either code was answered
-about itself, and a client presents it as the rejection this surface defines.
-The Server's responses are unchanged by any of this; the reconciliation is
-entirely a client obligation.
+against the lifecycle reconciliation route rather than believe it. A
+`reconciliation_confirmed` result settles the attempt as a completed Restore;
+no such result leaves it unsettled, never failed. This applies only after an
+attempt has reported no outcome: a first submission answered by either code was
+answered about itself, and a client presents it as the rejection this surface
+defines. The Server's responses are unchanged by any of this; the
+reconciliation is entirely a client obligation.
 
 ### Compiled-In Component Refusal
 
@@ -389,6 +409,7 @@ binary over its direct-TLS listener. The Server quality gate remains
 - [Server Restore Design](../../server/lifecycle/restore/restore-design.md)
 - [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md)
 - [Server Authentication Design](../../server/authentication/authentication-design.md)
+- [Server API Contract](../../server/api/api-contract-design.md)
 - [Technical Specification](../../spec.md)
 - [Security Model](../../security-model.md)
 - [Testing and Validation Policy](../../testing.md)

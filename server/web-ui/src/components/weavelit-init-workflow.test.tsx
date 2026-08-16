@@ -8,6 +8,7 @@ const DELIVERY_NONCE = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
 const EXPECTED_PROOF = "YiFd573c6n4sQEf_a7lPjRgmL8iz82SBNLt9RBWP-E0";
 const CORRELATION = "0123456789abcdef0123456789abcdef";
 const PASSWORD = "correct horse battery staple";
+const RECONCILIATION_CAPABILITY = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
 
 const KEY_ONCE_WARNING =
   "This is the only time this recovery key is ever shown. Weavelit cannot display it again, cannot recover it, and cannot issue a replacement. Save it outside Weavelit now, before you continue.";
@@ -23,7 +24,7 @@ const INDETERMINATE_CHECKING_MESSAGE = "Checking whether setup completed.";
 
 const PREPARE_PATH = "/api/v1/init/recovery-key";
 const FINALIZE_PATH = "/api/v1/init";
-const SESSION_PATH = "/api/v1/auth/session";
+const RECONCILIATION_PATH = "/api/v1/lifecycle/reconciliation";
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -35,7 +36,11 @@ function jsonResponse(body: unknown, status: number): Response {
 function deliveryResponse(): Response {
   return jsonResponse(
     {
-      result: { recovery_key: RECOVERY_KEY, delivery_nonce: DELIVERY_NONCE },
+      result: {
+        recovery_key: RECOVERY_KEY,
+        delivery_nonce: DELIVERY_NONCE,
+        reconciliation_capability: RECONCILIATION_CAPABILITY,
+      },
       correlation_id: CORRELATION,
     },
     200,
@@ -59,37 +64,35 @@ function truncatedCompletionResponse(): Response {
   });
 }
 
-/** The challenge only a published normal operation serves. */
-function challengedProbe(): Promise<Response> {
-  return Promise.resolve(
-    jsonResponse({ error: "session_invalid", correlation_id: CORRELATION }, 401),
-  );
+/** The exact confirmation a matching submitted capability receives. */
+function confirmedReconciliation(): Promise<Response> {
+  return Promise.resolve(jsonResponse({ result: "reconciliation_confirmed" }, 200));
 }
 
-/** The answer a still pre-operational Server gives: no authentication surface. */
-function absentProbe(): Promise<Response> {
+/** The fixed answer a non-matching submitted capability receives. */
+function notFoundReconciliation(): Promise<Response> {
   return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
 }
 
 /**
  * Routes the preparation, finalization, and reconciliation requests apart.
  *
- * A probe a test did not stage is refused rather than answered, so a test that
- * never expected a reconciliation cannot silently read one.
+ * A reconciliation a test did not stage is refused rather than answered, so a
+ * test that never expected one cannot silently read one.
  */
 function mockRoutedFetch(routes: {
   prepare: () => Promise<Response>;
   finalize: () => Promise<Response>;
-  probe?: () => Promise<Response>;
+  reconciliation?: () => Promise<Response>;
 }) {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown) => {
     if (input === PREPARE_PATH) {
       return routes.prepare();
     }
-    if (input === SESSION_PATH) {
-      return routes.probe === undefined
-        ? Promise.reject(new Error("unrouted session probe"))
-        : routes.probe();
+    if (input === RECONCILIATION_PATH) {
+      return routes.reconciliation === undefined
+        ? Promise.reject(new Error("unrouted reconciliation"))
+        : routes.reconciliation();
     }
     return routes.finalize();
   });
@@ -424,11 +427,11 @@ describe("InitWorkflow", () => {
     expect(section().dataset.initState).toBe("details");
   });
 
-  it("completes a finalization that reported nothing once a challenge proves it committed", async () => {
+  it("completes a finalization that reported nothing once reconciliation confirms it", async () => {
     const fetchMock = mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(timeoutResponse()),
-      probe: challengedProbe,
+      reconciliation: confirmedReconciliation,
     });
     const completed = vi.fn();
 
@@ -436,12 +439,12 @@ describe("InitWorkflow", () => {
     await reachReviewStep();
     fireEvent.click(button("Complete setup"));
 
-    // Only a published normal operation challenges, so the deployment was
+    // Only the matching submitted capability confirms this deployment was
     // sealed with the delivered key and the workflow is done with that key.
     await waitFor(() => {
       expect(completed).toHaveBeenCalledTimes(1);
     });
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(1);
     expect(document.body.textContent).not.toContain(RECOVERY_KEY);
     expect(document.body.textContent).not.toContain(PASSWORD);
     expect(screen.queryAllByRole("button")).toHaveLength(0);
@@ -451,7 +454,7 @@ describe("InitWorkflow", () => {
     const fetchMock = mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(timeoutResponse()),
-      probe: absentProbe,
+      reconciliation: notFoundReconciliation,
     });
     const completed = vi.fn();
 
@@ -478,11 +481,11 @@ describe("InitWorkflow", () => {
     expect(callsTo(fetchMock, PREPARE_PATH)).toBe(1);
   });
 
-  it("completes a finalization whose transport failed once a challenge proves it committed", async () => {
+  it("completes a finalization whose transport failed once reconciliation confirms it", async () => {
     const fetchMock = mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.reject(new Error("ECONNRESET")),
-      probe: challengedProbe,
+      reconciliation: confirmedReconciliation,
     });
     const completed = vi.fn();
 
@@ -491,12 +494,12 @@ describe("InitWorkflow", () => {
     fireEvent.click(button("Complete setup"));
 
     // The request may still have reached the Server and sealed the deployment,
-    // so the lost answer is settled against the surface rather than presented
-    // as a failure that never happened.
+    // so the lost answer is settled against its submitted capability rather
+    // than presented as a failure that never happened.
     await waitFor(() => {
       expect(completed).toHaveBeenCalledTimes(1);
     });
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(1);
     expect(document.body.textContent).not.toContain(RECOVERY_KEY);
     expect(document.body.textContent).not.toContain(PASSWORD);
   });
@@ -505,7 +508,7 @@ describe("InitWorkflow", () => {
     const fetchMock = mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(truncatedCompletionResponse()),
-      probe: absentProbe,
+      reconciliation: notFoundReconciliation,
     });
     const completed = vi.fn();
 
@@ -528,14 +531,14 @@ describe("InitWorkflow", () => {
     expect(callsTo(fetchMock, PREPARE_PATH)).toBe(1);
   });
 
-  it("rechecks on request and completes once the deployment is found to be operational", async () => {
-    let probes = 0;
+  it("rechecks on request and completes only once reconciliation confirms it", async () => {
+    let reconciliations = 0;
     const fetchMock = mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(timeoutResponse()),
-      probe: () => {
-        probes += 1;
-        return probes === 1 ? absentProbe() : challengedProbe();
+      reconciliation: () => {
+        reconciliations += 1;
+        return reconciliations === 1 ? notFoundReconciliation() : confirmedReconciliation();
       },
     });
     const completed = vi.fn();
@@ -553,7 +556,7 @@ describe("InitWorkflow", () => {
       expect(completed).toHaveBeenCalledTimes(1);
     });
 
-    expect(probes).toBe(2);
+    expect(reconciliations).toBe(2);
     // The recheck settled it on its own: no second finalization was submitted.
     expect(callsTo(fetchMock, FINALIZE_PATH)).toBe(1);
     expect(document.body.textContent).not.toContain(RECOVERY_KEY);
@@ -567,7 +570,7 @@ describe("InitWorkflow", () => {
         finalizations += 1;
         return Promise.resolve(finalizations === 1 ? timeoutResponse() : completionResponse());
       },
-      probe: absentProbe,
+      reconciliation: notFoundReconciliation,
     });
     const completed = vi.fn();
 
@@ -616,9 +619,9 @@ describe("InitWorkflow", () => {
             finalizations === 1 ? timeoutResponse() : jsonResponse({ error: code }, status),
           );
         },
-        probe: () => {
+        reconciliation: () => {
           probes += 1;
-          return probes === 1 ? absentProbe() : challengedProbe();
+          return probes === 1 ? notFoundReconciliation() : confirmedReconciliation();
         },
       });
       const completed = vi.fn();
@@ -658,7 +661,7 @@ describe("InitWorkflow", () => {
             : jsonResponse({ error: "already_initialized" }, 409),
         );
       },
-      probe: absentProbe,
+      reconciliation: notFoundReconciliation,
     });
     const completed = vi.fn();
 
@@ -697,7 +700,7 @@ describe("InitWorkflow", () => {
           finalizations === 1 ? timeoutResponse() : jsonResponse({ error: "init_refused" }, 409),
         );
       },
-      probe: absentProbe,
+      reconciliation: notFoundReconciliation,
     });
     const completed = vi.fn();
 
@@ -719,7 +722,7 @@ describe("InitWorkflow", () => {
     expect(screen.queryAllByRole("button")).toHaveLength(0);
     expect(document.body.textContent).not.toContain(RECOVERY_KEY);
     // Nothing was reconciled: only the first attempt ever reached the surface.
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(1);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(1);
   });
 
   it("lets a rejected preparation be corrected and retried", async () => {
@@ -788,7 +791,7 @@ describe("InitWorkflow", () => {
     // but it is determinate: no finalization was ever submitted, so nothing is
     // reconciled and the key it could never be used with is dropped.
     expect(callsTo(fetchMock, FINALIZE_PATH)).toBe(0);
-    expect(callsTo(fetchMock, SESSION_PATH)).toBe(0);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(0);
     expect(document.body.textContent).not.toContain(RECOVERY_KEY);
   });
 
@@ -827,7 +830,13 @@ describe("InitWorkflow", () => {
 
     // The proof is derived material for the key, so it is held to the same rule
     // as the key itself, as is the delivery nonce it is bound to.
-    for (const secret of [EXPECTED_PROOF, DELIVERY_NONCE, RECOVERY_KEY, PASSWORD]) {
+    for (const secret of [
+      EXPECTED_PROOF,
+      DELIVERY_NONCE,
+      RECONCILIATION_CAPABILITY,
+      RECOVERY_KEY,
+      PASSWORD,
+    ]) {
       // A needle that never appears anywhere would make every check below pass
       // without proving anything, so its presence is established first.
       expect(secret.length).toBeGreaterThan(0);
@@ -850,7 +859,7 @@ describe("InitWorkflow", () => {
       mockRoutedFetch({
         prepare: () => Promise.resolve(deliveryResponse()),
         finalize: () => Promise.reject(new Error(`transport carrying ${RECOVERY_KEY}`)),
-        probe: absentProbe,
+        reconciliation: notFoundReconciliation,
       });
 
       render(<InitWorkflow onCompleted={() => {}} />);

@@ -400,7 +400,11 @@ A backup includes the application configuration and state needed to restore
 operational status, including local accounts, password verifiers, Groups and
 their grants, enabled-module state, protected MFA factor data, Service
 Connection credentials, and other application configuration. It excludes active
-sessions, which are invalidated on restore. For Log Modules, it includes only
+sessions, which are invalidated on restore, and the live lifecycle
+reconciliation digest, which is not application state: each completed Init or
+Restore atomically writes its own digest outside `ApplicationState`, so a
+Restore's replacement digest always reflects that exact Restore rather than
+backup content. For Log Modules, it includes only
 non-secret configuration and assignments. System Logs and Audit Logs, other Log
 Module destination data, and Log Module authentication or connection credentials
 are outside this Application Database backup contract.

@@ -5,8 +5,8 @@ use std::{
 
 use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, InitializedState, ProtectedValue, StateIdentifier, WorkflowCheckpoint,
-    WorkflowKind,
+    DeploymentIdentifier, InitializedState, ProtectedValue, ReconciliationDigest, StateIdentifier,
+    WorkflowCheckpoint, WorkflowKind,
 };
 use zeroize::Zeroizing;
 
@@ -471,9 +471,10 @@ impl<'arbiter> PendingWorkflow<'arbiter> {
     pub fn complete_checkpoint(
         mut self,
         state: &ApplicationState,
+        reconciliation: &ReconciliationDigest,
     ) -> Result<CommittedWorkflow<'arbiter>, WorkflowError> {
         self.database
-            .complete_checkpoint(&self.checkpoint, state)
+            .complete_checkpoint(&self.checkpoint, state, reconciliation)
             .map_err(map_database_completion_error)?;
 
         Ok(CommittedWorkflow {

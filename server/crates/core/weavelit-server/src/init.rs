@@ -69,7 +69,8 @@ use weavelit_module_client::{
 };
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    ConfigurationKey, ConfigurationValue, LogModuleSetting, LogType, Name, StateIdentifier,
+    ConfigurationKey, ConfigurationValue, LogModuleSetting, LogType, Name, ReconciliationDigest,
+    StateIdentifier,
 };
 use weavelit_server_init::{
     InitAuthority, InitCheckpoint, InitError, InitOperations, InitTarget, InitialAdministrator,
@@ -92,6 +93,7 @@ use zeroize::Zeroizing;
 use crate::{
     LifecycleTransitionGate, ResponseWriteAcknowledgement, RestrictedStartup, ServingModeSwitch,
     operational::{OperationalComposer, OperationalDatabase, OperationalRuntime},
+    reconciliation::{RECONCILIATION_CAPABILITY_ENTROPY_BYTES, ReconciliationCapability},
     transport::{
         AdmittedCheck, BodyAdmission, PreBodyCheck, PreBodyGrant, PreBodyRejection,
         ProcessingBudget, ProcessingDeadline, TransportProfile, TransportRegistration,
@@ -145,6 +147,7 @@ struct PendingInit {
     checkpoint: InitCheckpoint,
     backend: BackendIdentifier,
     correlation_identifier: String,
+    reconciliation_digest: ReconciliationDigest,
 }
 
 /// How far this process's single Init has progressed.
@@ -532,6 +535,11 @@ impl InitOrchestrator {
         let metadata = checkpoint.encode().map_err(init_rejection)?;
         let correlation_identifier = crate::authentication::correlation_identifier()
             .ok_or(InitRejection::ServiceUnavailable)?;
+        let reconciliation = ReconciliationCapability::from_entropy(
+            crate::authentication::random_bytes::<RECONCILIATION_CAPABILITY_ENTROPY_BYTES>()
+                .ok_or(InitRejection::ServiceUnavailable)?,
+        );
+        let reconciliation_digest = reconciliation.digest();
 
         #[cfg(test)]
         self.pause(PreparationPhase::BeforeLivenessCheck);
@@ -584,6 +592,7 @@ impl InitOrchestrator {
             checkpoint,
             backend: selected,
             correlation_identifier: correlation_identifier.clone(),
+            reconciliation_digest,
         }) {
             return Err(self.abandon(InitRejection::AlreadyInitialized));
         }
@@ -595,6 +604,7 @@ impl InitOrchestrator {
             recovery_key,
             delivery_nonce,
             correlation_id: correlation_identifier,
+            reconciliation_capability: Zeroizing::new(reconciliation.as_str().to_owned()),
         })
     }
 
@@ -842,7 +852,9 @@ impl InitOrchestrator {
         // observing it if the replacement does not complete.
         self.serving_modes.publish_fail_closed();
 
-        let committed = workflow.complete_checkpoint(&state).map_err(|_| closed())?;
+        let committed = workflow
+            .complete_checkpoint(&state, &pending.reconciliation_digest)
+            .map_err(|_| closed())?;
         // Delivered through the destination the committed System Log assignment
         // named and preflighted, not through one resolved again afterwards.
         system_log.deliver(&record).map_err(|_| closed())?;
@@ -3146,6 +3158,7 @@ mod tests {
             checkpoint,
             backend,
             correlation_identifier,
+            reconciliation_digest: _,
         } = &*pending;
         assert_eq!(backend.as_str(), SubmittedBackend::Sqlite.identifier());
         assert_eq!(correlation_identifier, &correlation);

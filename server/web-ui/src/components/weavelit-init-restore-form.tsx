@@ -1,6 +1,6 @@
 import { useCallback, useState, type ChangeEvent, type JSX } from "react";
 
-import { probeSession } from "../api/weavelit-authentication";
+import { reconcileLifecycle } from "../api/weavelit-lifecycle-reconciliation";
 import {
   RestoreFailedError,
   UNREPORTED_FAILURE_CODE,
@@ -47,9 +47,10 @@ const INDETERMINATE_RESTORE_CODES = ["gateway_timeout"];
  * Neither proves the original committed, because both also have determinate
  * causes: a lifecycle that is pending some other workflow answers the first,
  * and a Server serving nothing at all answers the second. They are therefore
- * reconciled through the authentication surface rather than believed, and they
- * are only read this way once an attempt has already reported no outcome. A
- * first attempt answered by either of them was answered about itself.
+ * reconciled against the original submitted capability rather than believed,
+ * and they are only read this way once an attempt has already reported no
+ * outcome. A first attempt answered by either of them was answered about
+ * itself.
  */
 const RECONCILED_RETRY_CODES = ["restore_not_allowed", "not_found"];
 
@@ -57,7 +58,12 @@ const RECONCILED_RETRY_CODES = ["restore_not_allowed", "not_found"];
 type RestoreViewState =
   | { readonly kind: "idle" }
   | { readonly kind: "submitting" }
-  | { readonly kind: "indeterminate"; readonly code: string; readonly checking: boolean }
+  | {
+      readonly kind: "indeterminate";
+      readonly code: string;
+      readonly checking: boolean;
+      readonly reconciliationCapability: string;
+    }
   | { readonly kind: "failed"; readonly code: string }
   | { readonly kind: "completed" };
 
@@ -80,8 +86,9 @@ function failureCode(reason: unknown): string {
  */
 function indeterminateRestore(reason: unknown, code: string): boolean {
   return (
-    INDETERMINATE_RESTORE_CODES.includes(code) ||
-    (reason instanceof RestoreFailedError && reason.indeterminate)
+    reason instanceof RestoreFailedError &&
+    reason.reconciliationCapability !== undefined &&
+    (INDETERMINATE_RESTORE_CODES.includes(code) || reason.indeterminate)
   );
 }
 
@@ -103,15 +110,11 @@ export interface RestoreSubmissionFormProps {
  * the shell from the completion response this component already holds, so the
  * surface it belongs to is withdrawn without a reload or a status request the
  * sealed deployment no longer serves. An attempt that reported no outcome is
- * settled the same way the Init workflow settles one, against the Server's own
- * authentication surface, because a Restore that sealed this deployment while
- * its answer was lost would otherwise leave this page offering retries against
- * routes that no longer exist.
- *
- * An absent authentication surface is not that evidence: it is what a Restore
- * still running and a Restore that never committed both look like. Such an
- * attempt stays unsettled, and its key stays with it, until something proves
- * what happened.
+ * settled against the submitted reconciliation capability, because a Restore
+ * that sealed this deployment while its answer was lost would otherwise leave
+ * this page offering retries against routes that no longer exist. A mismatch
+ * or unavailable result is not that evidence, so such an attempt stays
+ * unsettled and its key stays with it until a matching confirmation arrives.
  */
 export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProps): JSX.Element {
   const [artifact, setArtifact] = useState<File | null>(null);
@@ -136,20 +139,19 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
   }, []);
 
   const reconcile = useCallback(
-    (code: string) => {
+    (code: string, reconciliationCapability: string) => {
       setUnsettled(true);
-      setState({ kind: "indeterminate", code, checking: true });
-      void probeSession().then((probe) => {
-        if (probe.kind === "absent") {
-          // No authentication surface is served, which distinguishes nothing:
-          // the Restore may still be running, or may never have committed. The
+      setState({ kind: "indeterminate", code, checking: true, reconciliationCapability });
+      void reconcileLifecycle(reconciliationCapability).then((outcome) => {
+        if (outcome !== "confirmed") {
+          // A mismatch or unavailable result distinguishes nothing: the
+          // Restore may still be running, or may never have committed. The
           // attempt stays unsettled, the key is kept, and the operator decides
           // when to look again.
-          setState({ kind: "indeterminate", code, checking: false });
+          setState({ kind: "indeterminate", code, checking: false, reconciliationCapability });
           return;
         }
-        // An identity or an unauthenticated challenge both prove the same
-        // thing: normal operation was published, so this Restore committed.
+        // A matching submission capability proves this Restore committed.
         setRecoveryKey("");
         setState({ kind: "completed" });
         onCompleted();
@@ -171,37 +173,45 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
       },
       (reason: unknown) => {
         const code = failureCode(reason);
+        const priorCapability =
+          state.kind === "indeterminate" ? state.reconciliationCapability : undefined;
+        const reconciliationCapability =
+          reason instanceof RestoreFailedError
+            ? (reason.reconciliationCapability ?? priorCapability)
+            : priorCapability;
         // An attempt that reported nothing, and a retry answered by a code an
-        // already unsettled original could itself have caused, are both taken
-        // to the authentication surface rather than presented. Neither has
-        // settled, so neither releases the key.
+        // already unsettled original could itself have caused, are both
+        // reconciled against that submission capability rather than presented.
+        // Neither has settled, so neither releases the key.
         if (
-          indeterminateRestore(reason, code) ||
-          (unsettled && RECONCILED_RETRY_CODES.includes(code))
+          (indeterminateRestore(reason, code) ||
+            (unsettled && RECONCILED_RETRY_CODES.includes(code))) &&
+          reconciliationCapability !== undefined
         ) {
           // Deliberately keeps the recovery key: this attempt, or the
           // unsettled one it retried, may already have restored and sealed
           // this deployment with it.
-          reconcile(code);
+          reconcile(code, reconciliationCapability);
           return;
         }
         setRecoveryKey("");
         setState({ kind: "failed", code });
       },
     );
-  }, [artifact, onCompleted, reconcile, recoveryKey, unsettled]);
+  }, [artifact, onCompleted, reconcile, recoveryKey, state, unsettled]);
 
   const recheck = useCallback(() => {
     if (state.kind === "indeterminate") {
-      reconcile(state.code);
+      reconcile(state.code, state.reconciliationCapability);
     }
   }, [reconcile, state]);
 
   // An unresolved attempt may still commit with this exact artifact and key,
   // so a retry cannot replace either payload while reconciliation is pending.
   const payloadLocked = state.kind === "indeterminate";
-  // A probe in flight holds the controls too, so no retry is submitted against
-  // a deployment that may already have stopped serving this route.
+  // A reconciliation request in flight holds the controls too, so no retry is
+  // submitted against a deployment that may already have stopped serving this
+  // route.
   const busy = state.kind === "submitting" || (state.kind === "indeterminate" && state.checking);
 
   return (

@@ -20,18 +20,28 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-use weavelit_module_client::ExpectedOrigin;
+use axum::http::Method;
+use tokio::task;
+use weavelit_module_client::{
+    ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
+    ReconciliationCapability as ClientReconciliationCapability, ReconciliationOutcome,
+    ReconciliationRejection, validate_reconciliation_request,
+};
 use weavelit_server_authentication::RustCryptoArgon2;
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
 };
 use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::Name;
+use zeroize::Zeroizing;
 
 use crate::{
     authentication::AuthenticationRuntime,
     fallback_router,
-    transport::{MountedSurface, TransportCapability},
+    transport::{
+        MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection, TransportCapability,
+        TransportProfile, TransportRegistration,
+    },
 };
 
 /// The Server-wide values every operational composition is built against.
@@ -210,6 +220,23 @@ impl OperationalDatabase {
             Ok(())
         })
     }
+
+    /// Compares one submitted reconciliation capability against the live
+    /// reconciliation store without reading sessions or application state.
+    fn reconcile(&self, submitted: Zeroizing<String>) -> ReconciliationOutcome {
+        let digest =
+            crate::reconciliation::ReconciliationCapability::from_submitted(submitted).digest();
+        match self.with(|database| {
+            database
+                .reconciliation()
+                .ok_or(DatabaseError::Unavailable)
+                .and_then(|store| store.matches_reconciliation(&digest))
+        }) {
+            Ok(Ok(true)) => ReconciliationOutcome::Confirmed,
+            Ok(Ok(false)) => ReconciliationOutcome::NotFound,
+            Ok(Err(_)) | Err(_) => ReconciliationOutcome::Unavailable,
+        }
+    }
 }
 
 impl fmt::Debug for OperationalDatabase {
@@ -237,6 +264,30 @@ impl OperationalMount {
 impl fmt::Debug for OperationalMount {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("OperationalMount")
+    }
+}
+
+/// Reconciliation request checks that run before the listener allocates a body.
+struct ReconciliationPreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+impl PreBodyCheck for ReconciliationPreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &axum::http::Uri,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_reconciliation_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(ReconciliationRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(
+                ReconciliationRejection::BadRequest | ReconciliationRejection::MethodNotAllowed,
+            ) => Err(PreBodyRejection::BadRequest),
+        }
     }
 }
 
@@ -283,6 +334,13 @@ impl OperationalComposer {
         }
     }
 
+    /// Removes authentication only for a composition test.
+    #[cfg(test)]
+    pub(crate) fn without_authentication(mut self) -> Self {
+        self.authentication = None;
+        self
+    }
+
     /// Returns the single open database every operational route shares.
     pub(crate) const fn database(&self) -> &OperationalDatabase {
         &self.database
@@ -308,15 +366,39 @@ impl OperationalComposer {
     /// Returns every Server-owned operational route, each paired with the
     /// transport registration that admits it.
     ///
-    /// Authentication is the only family this build serves. Each of its three
-    /// routes arrives as a [`TransportCapability`], so login's single-permit
-    /// admission lane travels with the route it bounds.
+    /// Reconciliation is composed directly from the operational database, so
+    /// it remains reachable when optional authentication cannot compose. Each
+    /// authentication route arrives as a [`TransportCapability`], so login's
+    /// single-permit admission lane travels with the route it bounds.
     fn capabilities(&self) -> Vec<TransportCapability> {
-        self.authentication
-            .as_ref()
-            .map_or_else(Vec::new, |runtime| {
-                runtime.capabilities(ExpectedOrigin::from_listener(self.runtime.listener))
-            })
+        let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
+        let database = self.database.clone();
+        let route = ClientReconciliationCapability {
+            expected_origin,
+            reconcile: Arc::new(move |submission| {
+                let database = database.clone();
+                Box::pin(async move {
+                    task::spawn_blocking(move || database.reconcile(submission.capability))
+                        .await
+                        .unwrap_or(ReconciliationOutcome::Unavailable)
+                })
+            }),
+        }
+        .route();
+        let reconciliation = TransportCapability::new(
+            TransportRegistration::new(
+                Method::PUT,
+                LIFECYCLE_RECONCILIATION_ROUTE,
+                TransportProfile::DEFAULT,
+            )
+            .with_pre_body_check(Arc::new(ReconciliationPreconditions { expected_origin })),
+            move |router| router.route(LIFECYCLE_RECONCILIATION_ROUTE, route),
+        );
+        let mut capabilities = vec![reconciliation];
+        if let Some(runtime) = &self.authentication {
+            capabilities.extend(runtime.capabilities(expected_origin));
+        }
+        capabilities
     }
 }
 
@@ -340,7 +422,7 @@ pub(crate) mod test_support {
     };
 
     use tokio::sync::oneshot;
-    use weavelit_server_database::SessionStore;
+    use weavelit_server_database::{ReconciliationStore, SessionStore};
     use weavelit_server_lifecycle::{
         ApplicationDatabase, ApplicationState, DatabaseError, DatabaseInspection,
         DeploymentIdentifier, InitializedState, StateIdentifier, WorkflowCheckpoint,
@@ -384,6 +466,7 @@ pub(crate) mod test_support {
             &mut self,
             _checkpoint: &WorkflowCheckpoint,
             _state: &ApplicationState,
+            _reconciliation: &weavelit_server_database::ReconciliationDigest,
         ) -> Result<(), DatabaseError> {
             Err(DatabaseError::Unavailable)
         }
@@ -422,6 +505,10 @@ pub(crate) mod test_support {
         }
 
         fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+            None
+        }
+
+        fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore> {
             None
         }
 

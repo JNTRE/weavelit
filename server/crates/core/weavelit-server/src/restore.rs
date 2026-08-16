@@ -39,6 +39,7 @@ use weavelit_module_client::{
     RestoreTicketIssued, submitted_restore_ticket, validate_restore_artifact_request,
     validate_restore_key_request,
 };
+use weavelit_server_database::ReconciliationDigest;
 use weavelit_server_lifecycle::{
     ApplicationState, BackendCatalog, CheckpointMetadata, DeploymentIdentifier, InitializedState,
     LifecycleError, LifecycleState, SealedDeployment, StateIdentifier, TrustedBackendContext,
@@ -62,6 +63,7 @@ use zeroize::Zeroizing;
 use crate::{
     LifecycleTransitionGate, RestrictedStartup, ServingModeSwitch,
     operational::{OperationalComposer, OperationalDatabase, OperationalRuntime},
+    reconciliation::{RECONCILIATION_CAPABILITY_ENTROPY_BYTES, ReconciliationCapability},
     transport::{
         AdmittedCheck, BodyAdmission, PreBodyCheck, PreBodyGrant, PreBodyGrantValue,
         PreBodyRejection, TransportProfile, TransportRegistration,
@@ -134,6 +136,15 @@ pub struct RestoreOrchestrator {
     /// The pause a test drives the blocking replacement chain through.
     #[cfg(test)]
     replacement_hook: Mutex<Option<ReplacementHook>>,
+}
+
+struct ReplaceStateInput<'a> {
+    state: &'a ApplicationState,
+    reconciliation_digest: &'a ReconciliationDigest,
+    log_module: &'a LogModuleIdentifier,
+    deployment_identifier: DeploymentIdentifier,
+    record_identifier: StateIdentifier,
+    record: &'a CompleteLogRecord,
 }
 
 impl RestoreOrchestrator {
@@ -279,12 +290,17 @@ impl RestoreOrchestrator {
 
         let ticket = RestoreTicket::from_entropy(random_bytes().map_err(restore_rejection)?);
         let digest = ticket.digest();
+        let reconciliation = ReconciliationCapability::from_entropy(
+            random_bytes::<RECONCILIATION_CAPABILITY_ENTROPY_BYTES>().map_err(restore_rejection)?,
+        );
+        let reconciliation_digest = reconciliation.digest();
         let correlation_identifier = correlation_identifier().map_err(restore_rejection)?;
         let expires_at = Deadline::now() + UPLOAD_DEADLINE.min(remaining);
 
         self.pending
             .issue(PendingRestore {
                 digest,
+                reconciliation_digest,
                 recovery_key,
                 correlation_identifier: correlation_identifier.clone(),
                 budget,
@@ -302,8 +318,9 @@ impl RestoreOrchestrator {
         });
 
         Ok(RestoreTicketIssued {
-            ticket: ticket.as_str().to_owned(),
+            ticket: Zeroizing::new(ticket.as_str().to_owned()),
             correlation_id: correlation_identifier,
+            reconciliation_capability: Zeroizing::new(reconciliation.as_str().to_owned()),
         })
     }
 
@@ -337,6 +354,7 @@ impl RestoreOrchestrator {
             admission,
             claimed.budget,
             correlation_identifier,
+            claimed.reconciliation_digest,
             owned_bytes(submission.artifact),
             claimed.recovery_key,
         )
@@ -363,6 +381,7 @@ impl RestoreOrchestrator {
         admission: BodyAdmission,
         budget: RequestBudget,
         correlation_identifier: String,
+        reconciliation_digest: ReconciliationDigest,
         artifact: Vec<u8>,
         recovery_key: Zeroizing<String>,
     ) -> Result<InitializedState, RestoreError> {
@@ -375,7 +394,13 @@ impl RestoreOrchestrator {
         // caller timeout can abandon the deployment mid-replacement.
         task::spawn_blocking(move || {
             let _admission = admission;
-            orchestrator.run(&budget, &correlation_identifier, artifact, recovery_key)
+            orchestrator.run(
+                &budget,
+                &correlation_identifier,
+                &reconciliation_digest,
+                artifact,
+                recovery_key,
+            )
         })
         .await
         .map_err(|_| RestoreError::RestoreFailed)?
@@ -394,7 +419,13 @@ impl RestoreOrchestrator {
         artifact: Zeroizing<Vec<u8>>,
         recovery_key: Zeroizing<String>,
     ) -> Result<InitializedState, RestoreError> {
-        self.run(deadline, correlation_identifier, artifact, recovery_key)
+        self.run(
+            deadline,
+            correlation_identifier,
+            &ReconciliationDigest::from_bytes([1; 32]),
+            artifact,
+            recovery_key,
+        )
     }
 
     /// Runs the blocking Restore chain.
@@ -402,6 +433,7 @@ impl RestoreOrchestrator {
         &self,
         budget: &dyn RequestDeadline,
         correlation_identifier: &str,
+        reconciliation_digest: &ReconciliationDigest,
         artifact: Zeroizing<Vec<u8>>,
         recovery_key: Zeroizing<String>,
     ) -> Result<InitializedState, RestoreError> {
@@ -479,11 +511,14 @@ impl RestoreOrchestrator {
 
         let sealed = self.replace_state(
             permit,
-            &state,
-            &log_module,
-            deployment_identifier,
-            record_identifier,
-            &record,
+            ReplaceStateInput {
+                state: &state,
+                reconciliation_digest,
+                log_module: &log_module,
+                deployment_identifier,
+                record_identifier,
+                record: &record,
+            },
         )?;
 
         // The database sealing handed back is retained here and composed into
@@ -555,11 +590,7 @@ impl RestoreOrchestrator {
     fn replace_state(
         &self,
         permit: WorkflowPermit<'_>,
-        state: &ApplicationState,
-        log_module: &LogModuleIdentifier,
-        deployment_identifier: DeploymentIdentifier,
-        record_identifier: StateIdentifier,
-        record: &CompleteLogRecord,
+        input: ReplaceStateInput<'_>,
     ) -> Result<SealedDeployment, RestoreError> {
         let metadata = CheckpointMetadata::from_bytes(RESTORE_CHECKPOINT_METADATA)
             .map_err(|_| RestoreError::RestoreFailed)?;
@@ -567,18 +598,18 @@ impl RestoreOrchestrator {
         let committed = permit
             .create_checkpoint(WorkflowKind::Restore, metadata)
             .map_err(map_workflow_error)?
-            .complete_checkpoint(state)
+            .complete_checkpoint(input.state, input.reconciliation_digest)
             .map_err(map_workflow_error)?;
 
         // Opened only now: creating the Log Module's local storage before the
         // checkpoint would write durable state a pre-checkpoint failure had
         // promised not to leave behind.
-        self.open_system_log(log_module, deployment_identifier)?
-            .deliver(record)
+        self.open_system_log(input.log_module, input.deployment_identifier)?
+            .deliver(input.record)
             .map_err(|_| RestoreError::RestoreFailed)?;
 
         committed
-            .acknowledge_completion(record_identifier)
+            .acknowledge_completion(input.record_identifier)
             .map_err(map_workflow_error)?
             .seal()
             .map_err(map_workflow_error)
@@ -622,6 +653,7 @@ impl RestoreAuthority for AuthorizedTarget {
 /// destroying path below relies on.
 struct PendingRestore {
     digest: RestoreTicketDigest,
+    reconciliation_digest: ReconciliationDigest,
     recovery_key: Zeroizing<String>,
     correlation_identifier: String,
     budget: RequestBudget,
@@ -961,6 +993,9 @@ mod tests {
     ) -> PendingRestore {
         PendingRestore {
             digest: ticket.digest(),
+            reconciliation_digest: weavelit_server_database::ReconciliationDigest::from_bytes(
+                [1; 32],
+            ),
             recovery_key: Zeroizing::new(RECOVERY_KEY.to_owned()),
             correlation_identifier: CORRELATION.to_owned(),
             budget,

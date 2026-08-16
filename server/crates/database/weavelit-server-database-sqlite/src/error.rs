@@ -11,6 +11,7 @@ pub(super) enum ErrorContext {
     Inspect,
     Migration,
     Mfa,
+    Reconciliation,
     Session,
     State,
 }
@@ -31,6 +32,7 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
             | ErrorContext::Inspect
             | ErrorContext::Migration
             | ErrorContext::Mfa
+            | ErrorContext::Reconciliation
             | ErrorContext::Session
             | ErrorContext::State => DatabaseError::IntegrityFailure,
         },

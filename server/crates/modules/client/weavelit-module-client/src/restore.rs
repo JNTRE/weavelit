@@ -50,6 +50,9 @@ pub const RESTORE_TICKET_HEADER_NAME: &str = "x-weavelit-restore-ticket";
 /// The result field name that carries an issued ticket.
 const RESTORE_TICKET_FIELD: &str = "restore_ticket";
 
+/// The result field carrying an opaque submission-bound reconciliation capability.
+const RECONCILIATION_CAPABILITY_FIELD: &str = "reconciliation_capability";
+
 /// The result field name that reports the activated lifecycle state.
 const LIFECYCLE_FIELD: &str = "lifecycle";
 
@@ -90,7 +93,9 @@ pub struct RestoreArtifactSubmission {
 /// What the Server core returns after retaining a submitted recovery key.
 pub struct RestoreTicketIssued {
     /// The one-time ticket the artifact upload must present.
-    pub ticket: String,
+    pub ticket: Zeroizing<String>,
+    /// The opaque browser-held capability for reconciling this exact Restore.
+    pub reconciliation_capability: Zeroizing<String>,
     /// The Server-generated correlation identifier for this Restore.
     pub correlation_id: String,
 }
@@ -462,10 +467,20 @@ async fn restore_artifact_response(
 /// header, a redirect target, or a cookie, so it cannot be logged by an
 /// intermediary or replayed from a browser history entry.
 fn restore_ticket_response(issued: &RestoreTicketIssued) -> Response {
-    let Some(ticket) = OpaqueToken::new(&issued.ticket) else {
+    let Some(ticket) = OpaqueToken::new(issued.ticket.as_str()) else {
+        return RestoreRejection::RestoreFailed.response();
+    };
+    let Some(reconciliation) = OpaqueToken::new(&issued.reconciliation_capability) else {
         return RestoreRejection::RestoreFailed.response();
     };
     let Some(result) = typed_field(RESTORE_TICKET_FIELD, TypedValue::Token(ticket)) else {
+        return RestoreRejection::RestoreFailed.response();
+    };
+    let Some(reconciliation_field) = StableCode::new(RECONCILIATION_CAPABILITY_FIELD) else {
+        return RestoreRejection::RestoreFailed.response();
+    };
+    let Some(result) = result.with_field(reconciliation_field, TypedValue::Token(reconciliation))
+    else {
         return RestoreRejection::RestoreFailed.response();
     };
     match ResponseCorrelation::new(&issued.correlation_id) {
@@ -516,6 +531,7 @@ mod tests {
         routing::MethodRouter,
     };
     use tower::ServiceExt;
+    use zeroize::Zeroizing;
 
     use super::{
         MAX_RESTORE_KEY_BODY_BYTES, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, RestoreCapability,
@@ -530,6 +546,7 @@ mod tests {
     };
 
     const TICKET: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+    const RECONCILIATION_CAPABILITY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
     const CORRELATION: &str = "0123456789abcdef0123456789abcdef";
 
     fn expected_origin() -> ExpectedOrigin {
@@ -560,6 +577,8 @@ mod tests {
             .to_string()
     }
 
+    fn assert_clearing_string(_: &Zeroizing<String>) {}
+
     /// Parses a recovery-key body through a buffer that observes its own wipe.
     fn parse_recovery_key_and_observe(body: &str) -> (Result<String, RestoreRejection>, Vec<u8>) {
         let (parsed, released) = parse_and_observe(body, parse_recovery_key_wiped);
@@ -578,7 +597,10 @@ mod tests {
                         .expect("the recorder must not be poisoned")
                         .push(submission.recovery_key.as_str().to_owned());
                     Ok(RestoreTicketIssued {
-                        ticket: TICKET.to_owned(),
+                        ticket: Zeroizing::new(TICKET.to_owned()),
+                        reconciliation_capability: Zeroizing::new(
+                            RECONCILIATION_CAPABILITY.to_owned(),
+                        ),
                         correlation_id: CORRELATION.to_owned(),
                     })
                 })
@@ -770,14 +792,15 @@ mod tests {
     #[test]
     fn both_successes_render_their_typed_envelopes() {
         let issued = restore_ticket_response(&RestoreTicketIssued {
-            ticket: TICKET.to_owned(),
+            ticket: Zeroizing::new(TICKET.to_owned()),
+            reconciliation_capability: Zeroizing::new(RECONCILIATION_CAPABILITY.to_owned()),
             correlation_id: CORRELATION.to_owned(),
         });
         assert_eq!(issued.status(), StatusCode::ACCEPTED);
         assert_eq!(
             envelope(&issued),
             format!(
-                "{{\"result\":{{\"restore_ticket\":\"{TICKET}\"}},\"correlation_id\":\"{CORRELATION}\"}}"
+                "{{\"result\":{{\"restore_ticket\":\"{TICKET}\",\"reconciliation_capability\":\"{RECONCILIATION_CAPABILITY}\"}},\"correlation_id\":\"{CORRELATION}\"}}"
             )
         );
 
@@ -796,7 +819,8 @@ mod tests {
     #[test]
     fn an_unrenderable_success_falls_back_to_a_payload_free_failure() {
         let response = restore_ticket_response(&RestoreTicketIssued {
-            ticket: "not a token".to_owned(),
+            ticket: Zeroizing::new("not a token".to_owned()),
+            reconciliation_capability: Zeroizing::new(RECONCILIATION_CAPABILITY.to_owned()),
             correlation_id: CORRELATION.to_owned(),
         });
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -806,6 +830,22 @@ mod tests {
             correlation_id: "NOT VALID".to_owned(),
         });
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn an_issued_ticket_is_clearing_owned_and_an_unrenderable_peer_does_not_disclose_it() {
+        let ticket = Zeroizing::new(TICKET.to_owned());
+        assert_clearing_string(&ticket);
+
+        let response = restore_ticket_response(&RestoreTicketIssued {
+            ticket,
+            reconciliation_capability: Zeroizing::new("not a token".to_owned()),
+            correlation_id: CORRELATION.to_owned(),
+        });
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(response.extensions().get::<TypedJsonEnvelope>().is_none());
+        assert!(!RestoreRejection::RestoreFailed.body().contains(TICKET));
     }
 
     #[test]

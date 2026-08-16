@@ -185,6 +185,10 @@ fn identifier(byte: u8) -> StateIdentifier {
     StateIdentifier::from_bytes([byte; 16]).unwrap()
 }
 
+fn reconciliation_digest() -> weavelit_server_database::ReconciliationDigest {
+    weavelit_server_database::ReconciliationDigest::from_bytes([0xA0; 32])
+}
+
 /// Builds the smallest state the Application Database contract accepts.
 fn application_state() -> ApplicationState {
     workflow_application_state(WorkflowKind::Restore)
@@ -284,6 +288,7 @@ impl ApplicationDatabase for LyingDatabase {
         &mut self,
         _checkpoint: &WorkflowCheckpoint,
         state: &ApplicationState,
+        _reconciliation: &weavelit_server_database::ReconciliationDigest,
     ) -> Result<(), weavelit_server_database::DatabaseError> {
         self.state = Some(state.clone());
         Ok(())
@@ -337,6 +342,10 @@ impl ApplicationDatabase for LyingDatabase {
     }
 
     fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+        None
+    }
+
+    fn reconciliation(&mut self) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
         None
     }
 
@@ -1037,7 +1046,7 @@ fn a_workflow_seals_the_deployment_only_after_the_full_ordered_path() {
     let mut sealed = permit
         .create_checkpoint(WorkflowKind::Restore, restore_metadata())
         .expect("the checkpoint must be created")
-        .complete_checkpoint(&state)
+        .complete_checkpoint(&state, &reconciliation_digest())
         .expect("the checkpoint must be replaced by complete state")
         .acknowledge_completion(identifier(RECORD_BYTE))
         .expect("the completion obligation must be acknowledged")
@@ -1074,7 +1083,7 @@ fn a_sealed_record_classifies_initialized_without_any_retained_inspection() {
         .unwrap()
         .create_checkpoint(WorkflowKind::Restore, restore_metadata())
         .unwrap()
-        .complete_checkpoint(&application_state())
+        .complete_checkpoint(&application_state(), &reconciliation_digest())
         .unwrap()
         .acknowledge_completion(identifier(RECORD_BYTE))
         .unwrap()
@@ -1114,7 +1123,7 @@ fn a_sealed_deployment_reloads_its_state_and_open_database_on_a_later_startup() 
     permit
         .create_checkpoint(WorkflowKind::Restore, restore_metadata())
         .unwrap()
-        .complete_checkpoint(&state)
+        .complete_checkpoint(&state, &reconciliation_digest())
         .unwrap()
         .acknowledge_completion(identifier(RECORD_BYTE))
         .unwrap()
@@ -1190,7 +1199,7 @@ fn a_sealed_deployment_admits_no_further_workflow() {
     permit
         .create_checkpoint(WorkflowKind::Restore, restore_metadata())
         .unwrap()
-        .complete_checkpoint(&state)
+        .complete_checkpoint(&state, &reconciliation_digest())
         .unwrap()
         .acknowledge_completion(identifier(RECORD_BYTE))
         .unwrap()
@@ -1260,7 +1269,7 @@ fn sealing_is_refused_when_the_database_reports_the_obligation_unacknowledged() 
     let error = permit
         .create_checkpoint(WorkflowKind::Restore, restore_metadata())
         .unwrap()
-        .complete_checkpoint(&state)
+        .complete_checkpoint(&state, &reconciliation_digest())
         .unwrap()
         .acknowledge_completion(identifier(RECORD_BYTE))
         .unwrap()
@@ -1284,7 +1293,7 @@ fn sealing_is_refused_when_the_database_is_not_initialized() {
     let error = permit
         .create_checkpoint(WorkflowKind::Restore, restore_metadata())
         .unwrap()
-        .complete_checkpoint(&state)
+        .complete_checkpoint(&state, &reconciliation_digest())
         .unwrap()
         .acknowledge_completion(identifier(RECORD_BYTE))
         .unwrap()
@@ -1410,6 +1419,7 @@ impl ApplicationDatabase for DriftingDatabase {
         &mut self,
         _checkpoint: &WorkflowCheckpoint,
         _state: &ApplicationState,
+        _reconciliation: &weavelit_server_database::ReconciliationDigest,
     ) -> Result<(), weavelit_server_database::DatabaseError> {
         Err(weavelit_server_database::DatabaseError::InvalidState)
     }
@@ -1453,6 +1463,10 @@ impl ApplicationDatabase for DriftingDatabase {
     }
 
     fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+        None
+    }
+
+    fn reconciliation(&mut self) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
         None
     }
 
@@ -1547,7 +1561,7 @@ fn a_released_init_checkpoint_reauthorizes_and_seals_the_same_checkpoint() {
     let sealed = arbiter
         .reauthorize_pending_init(&catalog, &context, &released)
         .expect("the exact pending Init checkpoint must reauthorize")
-        .complete_checkpoint(&init_application_state())
+        .complete_checkpoint(&init_application_state(), &reconciliation_digest())
         .expect("the reauthorized checkpoint must complete")
         .acknowledge_completion(identifier(RECORD_BYTE))
         .expect("the completion obligation must acknowledge")
@@ -1673,7 +1687,7 @@ fn reauthorization_is_refused_once_the_released_checkpoint_has_been_completed() 
     arbiter
         .reauthorize_pending_init(&catalog, &context, &released)
         .expect("the first reauthorization must succeed")
-        .complete_checkpoint(&init_application_state())
+        .complete_checkpoint(&init_application_state(), &reconciliation_digest())
         .expect("the reauthorized checkpoint must complete");
 
     // The durable one-time guard, not the released value, is what makes the

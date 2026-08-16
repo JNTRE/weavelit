@@ -416,7 +416,12 @@ describe("ApplicationShell Restore form gating", () => {
         // The recovery-key route answers `202` with the one-time ticket.
         return Promise.resolve(
           jsonResponse(
-            { result: { restore_ticket: "0123456789abcdefghijklmnopqrstuvwxyzABC-_" } },
+            {
+              result: {
+                restore_ticket: "0123456789abcdefghijklmnopqrstuvwxyzABC-_",
+                reconciliation_capability: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi",
+              },
+            },
             202,
           ),
         );
@@ -526,6 +531,7 @@ describe("ApplicationShell Init workflow gating", () => {
               recovery_key:
                 "AGE-SECRET-KEY-1QQQSYQCYQ5RQWZQFPG9SCRGWPUGPZYSNZS23V9CCRYDPK8QARC0SWRYDWG",
               delivery_nonce: "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+              reconciliation_capability: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi",
             },
           }),
         );

@@ -36,6 +36,7 @@ pub mod authorization;
 pub mod cookie;
 pub mod init;
 pub mod mfa;
+pub mod reconciliation;
 pub mod restore;
 pub mod typed_json;
 
@@ -67,6 +68,11 @@ pub use mfa::{
     MFA_REQUIRED_CODE, MfaCapability, MfaCodeCommit, MfaCodeSubmission, MfaDeclaration,
     MfaEnrollmentCommit, MfaEnrollmentConfirmCommit, MfaEnrollmentOpened, MfaEnrollmentSubmission,
     MfaSelfEnrollmentCommit, MfaSelfEnrollmentSubmission,
+};
+pub use reconciliation::{
+    LIFECYCLE_RECONCILIATION_ROUTE, MAX_RECONCILIATION_BODY_BYTES, ReconciliationCapability,
+    ReconciliationCommit, ReconciliationOutcome, ReconciliationRejection, ReconciliationSubmission,
+    reconciliation_outcome_response, validate_reconciliation_request,
 };
 pub use restore::{
     MAX_RESTORE_KEY_BODY_BYTES, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME,

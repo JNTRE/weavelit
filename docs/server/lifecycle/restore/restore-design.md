@@ -512,6 +512,21 @@ The second presents that ticket and uploads the encrypted artifact. The recovery
 key therefore never travels with the artifact, and no artifact is admitted
 without a ticket this Server issued.
 
+Alongside the ticket, the runtime mints an independent high-entropy lifecycle
+reconciliation capability from operating-system entropy and computes its
+domain-separated digest. The capability is returned once, in the same response
+as the ticket, and is held only by the requesting browser; the runtime retains
+only the digest, in memory with the pending submission, until the artifact
+request completes the atomic checkpoint replacement, which writes the digest
+into the Application Database's dedicated live reconciliation record. That
+record is outside `ApplicationState` and therefore outside every backup, and
+the write atomically replaces whatever digest a prior completed workflow left
+in that same singleton record. It is the only value the submission-bound
+lifecycle reconciliation route the
+[API Contract Design](../../../server/api/api-contract-design.md#lifecycle-reconciliation)
+defines ever compares a submitted capability against; the capability itself is
+never persisted.
+
 The runtime owns the ticket store and nothing about the wire format. It retains
 only a domain-separated digest of the ticket and compares a submitted ticket
 against it in constant time. At most one submission may be outstanding. Every
@@ -671,6 +686,7 @@ tests that exercise other behavior with the canonical fixture.
 - [Server Init Design](../init/init-design.md)
 - [Web UI Pre-Operational Restore Surface](../../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Application Database Design](../../database/application-database-design.md)
+- [Server API Contract](../../api/api-contract-design.md)
 - [Authentication Design](../../authentication/authentication-design.md)
 - [Testing and Validation Policy](../../../testing.md)
 - [Log Module Design](../../../log-modules/log-module-design.md)

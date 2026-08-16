@@ -53,6 +53,9 @@ const RECOVERY_KEY_FIELD: &str = "recovery_key";
 /// The result field name that carries the delivery nonce.
 const DELIVERY_NONCE_FIELD: &str = "delivery_nonce";
 
+/// The result field carrying an opaque submission-bound reconciliation capability.
+const RECONCILIATION_CAPABILITY_FIELD: &str = "reconciliation_capability";
+
 /// The result field name that reports the activated lifecycle state.
 const LIFECYCLE_FIELD: &str = "lifecycle";
 
@@ -208,6 +211,8 @@ pub struct InitRecoveryKeyPrepared {
     pub recovery_key: Zeroizing<String>,
     /// The delivery nonce the proof of possession is computed over.
     pub delivery_nonce: String,
+    /// The opaque browser-held capability for reconciling this exact Init.
+    pub reconciliation_capability: Zeroizing<String>,
     /// The Server-generated correlation identifier for this Init.
     pub correlation_id: String,
 }
@@ -966,13 +971,24 @@ fn init_recovery_key_prepared_response(prepared: &InitRecoveryKeyPrepared) -> Re
     let Some(nonce) = OpaqueToken::new(&prepared.delivery_nonce) else {
         return InitRejection::InitializationFailed.response();
     };
+    let Some(reconciliation) = OpaqueToken::new(&prepared.reconciliation_capability) else {
+        return InitRejection::InitializationFailed.response();
+    };
     let Some(result) = typed_field(RECOVERY_KEY_FIELD, TypedValue::RecoveryKey(line)) else {
         return InitRejection::InitializationFailed.response();
     };
     let Some(nonce_field) = StableCode::new(DELIVERY_NONCE_FIELD) else {
         return InitRejection::InitializationFailed.response();
     };
-    let Some(result) = result.with_field(nonce_field, TypedValue::Token(nonce)) else {
+    let Some(reconciliation_field) = StableCode::new(RECONCILIATION_CAPABILITY_FIELD) else {
+        return InitRejection::InitializationFailed.response();
+    };
+    let Some(result) = result
+        .with_field(nonce_field, TypedValue::Token(nonce))
+        .and_then(|result| {
+            result.with_field(reconciliation_field, TypedValue::Token(reconciliation))
+        })
+    else {
         return InitRejection::InitializationFailed.response();
     };
     match ResponseCorrelation::new(&prepared.correlation_id) {
@@ -1035,6 +1051,7 @@ mod tests {
     const SECRET_SETTING: &str = "provider-token";
     const PROOF: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
     const NONCE: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    const RECONCILIATION_CAPABILITY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
     const RECOVERY_KEY: &str = "AGE-SECRET-KEY-1QQPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L";
     const CORRELATION: &str = "0123456789abcdef";
 
@@ -1436,6 +1453,7 @@ mod tests {
         let prepared = init_recovery_key_prepared_response(&InitRecoveryKeyPrepared {
             recovery_key: Zeroizing::new(RECOVERY_KEY.to_owned()),
             delivery_nonce: NONCE.to_owned(),
+            reconciliation_capability: Zeroizing::new(RECONCILIATION_CAPABILITY.to_owned()),
             correlation_id: CORRELATION.to_owned(),
         });
         assert_eq!(prepared.status(), StatusCode::OK);
@@ -1443,7 +1461,7 @@ mod tests {
             envelope(&prepared),
             format!(
                 "{{\"result\":{{\"recovery_key\":\"{RECOVERY_KEY}\",\
-                 \"delivery_nonce\":\"{NONCE}\"}},\"correlation_id\":\"{CORRELATION}\"}}"
+                 \"delivery_nonce\":\"{NONCE}\",\"reconciliation_capability\":\"{RECONCILIATION_CAPABILITY}\"}},\"correlation_id\":\"{CORRELATION}\"}}"
             )
         );
 
@@ -1465,16 +1483,19 @@ mod tests {
             InitRecoveryKeyPrepared {
                 recovery_key: Zeroizing::new("age1lowercase".to_owned()),
                 delivery_nonce: NONCE.to_owned(),
+                reconciliation_capability: Zeroizing::new(RECONCILIATION_CAPABILITY.to_owned()),
                 correlation_id: CORRELATION.to_owned(),
             },
             InitRecoveryKeyPrepared {
                 recovery_key: Zeroizing::new(RECOVERY_KEY.to_owned()),
                 delivery_nonce: "not a token".to_owned(),
+                reconciliation_capability: Zeroizing::new(RECONCILIATION_CAPABILITY.to_owned()),
                 correlation_id: CORRELATION.to_owned(),
             },
             InitRecoveryKeyPrepared {
                 recovery_key: Zeroizing::new(RECOVERY_KEY.to_owned()),
                 delivery_nonce: NONCE.to_owned(),
+                reconciliation_capability: Zeroizing::new(RECONCILIATION_CAPABILITY.to_owned()),
                 correlation_id: "NOT VALID".to_owned(),
             },
         ] {
@@ -1538,6 +1559,7 @@ mod tests {
         let prepared = InitRecoveryKeyPrepared {
             recovery_key: Zeroizing::new(RECOVERY_KEY.to_owned()),
             delivery_nonce: NONCE.to_owned(),
+            reconciliation_capability: Zeroizing::new(RECONCILIATION_CAPABILITY.to_owned()),
             correlation_id: CORRELATION.to_owned(),
         };
         assert_eq!(prepared.recovery_key.as_str(), RECOVERY_KEY);

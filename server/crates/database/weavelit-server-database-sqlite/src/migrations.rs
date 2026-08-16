@@ -40,6 +40,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0005_add_mfa_policy_and_replay_watermark",
         sql: include_str!("../migrations/0005_add_mfa_policy_and_replay_watermark.sql"),
     },
+    Migration {
+        sequence: 6,
+        identifier: "0006_add_lifecycle_reconciliation",
+        sql: include_str!("../migrations/0006_add_lifecycle_reconciliation.sql"),
+    },
 ];
 
 struct AppliedMigration {

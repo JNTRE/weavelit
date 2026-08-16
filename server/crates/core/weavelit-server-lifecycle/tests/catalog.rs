@@ -37,6 +37,7 @@ impl ApplicationDatabase for FakeDatabase {
         &mut self,
         _checkpoint: &WorkflowCheckpoint,
         _state: &ApplicationState,
+        _reconciliation: &weavelit_server_database::ReconciliationDigest,
     ) -> Result<(), DatabaseError> {
         Err(DatabaseError::InvalidState)
     }
@@ -74,6 +75,10 @@ impl ApplicationDatabase for FakeDatabase {
     }
 
     fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+        None
+    }
+
+    fn reconciliation(&mut self) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
         None
     }
 

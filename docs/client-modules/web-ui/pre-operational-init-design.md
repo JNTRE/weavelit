@@ -149,13 +149,22 @@ An accepted submission responds `200 OK` with
 `Content-Type: application/json; charset=utf-8` and this typed envelope:
 
 ```json
-{"result":{"recovery_key":"AGE-SECRET-KEY-1...","delivery_nonce":"<opaque-value>"},
+{"result":{"recovery_key":"AGE-SECRET-KEY-1...","delivery_nonce":"<opaque-value>",
+           "reconciliation_capability":"<opaque-value>"},
  "correlation_id":"<identifier>"}
 ```
 
 `recovery_key` is delivered as one canonical age identity line and is returned
 in this one response only; the Server never redisplays it. `delivery_nonce` is
 the opaque value the client's proof of possession must be computed against.
+`reconciliation_capability` is a separate high-entropy opaque value, unrelated
+to the recovery key or the proof, that lets the browser later confirm whether
+this exact submission is the one that completed, through the lifecycle
+reconciliation route the
+[API Contract Design](../../server/api/api-contract-design.md#lifecycle-reconciliation)
+defines. It is likewise returned in this one response only and is held only in
+the requesting page's transient memory; it is never written to a URL, a
+cookie, `localStorage`, or `sessionStorage`.
 
 ## Finalization Route Contract
 
@@ -319,15 +328,23 @@ carried a code at all, not by the code it presents, so a determinate rejection
 is never mistaken for an outcome that was never established.
 
 The later observation is not this surface, which a sealed deployment stops
-serving entirely. It is the authentication surface owned by the
-[Server Authentication Design](../../server/authentication/authentication-design.md),
-which a published normal operation serves in its place, and an outcome is
-settled only by what that surface proves. An absent authentication surface
-proves nothing — finalization still running and finalization that never
-committed present the same absence — so the attempt stays unsettled and the
-delivered key stays with it until something proves what happened. A client must
-not discard a delivered key while an attempt is unsettled, and must not write it
-anywhere to keep it.
+serving entirely. It is the submission-bound lifecycle reconciliation route,
+`PUT /api/v1/lifecycle/reconciliation`, defined by the
+[API Contract Design](../../server/api/api-contract-design.md#lifecycle-reconciliation),
+which a client calls with the `reconciliation_capability` this recovery-key
+response delivered, held only in this page's transient memory. A `200`
+`reconciliation_confirmed` result is the only outcome that proves this exact
+finalization completed. A `404 Not Found` is not evidence of failure: a
+capability that does not match the deployment's currently retained digest, a
+capability for a deployment that never completed, and a capability this
+client never actually held all answer identically, so a client cannot
+distinguish the cause from this response alone. A `503 Service Unavailable`, a
+transport failure, or an unreadable body are equally inconclusive. The
+reconciliation route neither reads nor changes the generic session route,
+`/api/v1/auth/session`; it answers from the live reconciliation digest alone,
+so an attempt can be reconciled before, during, or without ever exercising
+sign-in. A client must not discard a delivered key while an attempt is
+unsettled, and must not write it anywhere to keep it.
 
 Once an attempt has gone unsettled, two answers stop being determinate for
 that client. `already_initialized`, defined in the table above, is answered
@@ -338,13 +355,13 @@ route it does not mount is what a sealed deployment answers here. Neither
 proves the unsettled attempt committed,
 because a lifecycle pending some other workflow answers the first and a Server
 serving nothing at all answers the second, so a client must reconcile a retry
-answered by either against the authentication surface rather than believe it.
-Proof of an operational surface settles the attempt as a completed Init; no
-such proof leaves it unsettled, never failed. This applies only after an
-attempt has reported no outcome: a first submission answered by either code was
-answered about itself and is presented as the rejection it is. The Server's
-responses are unchanged by any of this; the reconciliation is entirely a client
-obligation.
+answered by either against the lifecycle reconciliation route rather than
+believe it. A `reconciliation_confirmed` result settles the attempt as a
+completed Init; no such result leaves it unsettled, never failed. This applies
+only after an attempt has reported no outcome: a first submission answered by
+either code was answered about itself and is presented as the rejection it is.
+The Server's responses are unchanged by any of this; the reconciliation is
+entirely a client obligation.
 
 ## Bounds And Exposure
 
@@ -417,6 +434,7 @@ The Server quality gate remains `make -C server check`.
 - [Server Init Design](../../server/lifecycle/init/init-design.md)
 - [Server Lifecycle Design](../../server/lifecycle/lifecycle-design.md)
 - [Server Authentication Design](../../server/authentication/authentication-design.md)
+- [Server API Contract](../../server/api/api-contract-design.md)
 - [Technical Specification](../../spec.md)
 - [Security Model](../../security-model.md)
 - [Testing and Validation Policy](../../testing.md)

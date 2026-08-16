@@ -14,6 +14,7 @@ import {
 } from "./weavelit-init-restore";
 
 const TICKET = "0123456789abcdefghijklmnopqrstuvwxyzABC-_";
+const RECONCILIATION_CAPABILITY = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
 const CORRELATION = "0123456789abcdef0123456789abcdef";
 const RECOVERY_KEY = "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLE";
 
@@ -25,7 +26,16 @@ function jsonResponse(body: unknown, status: number): Response {
 }
 
 function ticketResponse(ticket = TICKET): Response {
-  return jsonResponse({ result: { restore_ticket: ticket }, correlation_id: CORRELATION }, 202);
+  return jsonResponse(
+    {
+      result: {
+        restore_ticket: ticket,
+        reconciliation_capability: RECONCILIATION_CAPABILITY,
+      },
+      correlation_id: CORRELATION,
+    },
+    202,
+  );
 }
 
 function completionResponse(): Response {
@@ -71,18 +81,28 @@ describe("parseStableErrorCode", () => {
 describe("parseIssuedTicket", () => {
   it("accepts the documented ticket envelope", () => {
     expect(
-      parseIssuedTicket({ result: { restore_ticket: TICKET }, correlation_id: CORRELATION }),
-    ).toBe(TICKET);
+      parseIssuedTicket({
+        result: {
+          restore_ticket: TICKET,
+          reconciliation_capability: RECONCILIATION_CAPABILITY,
+        },
+        correlation_id: CORRELATION,
+      }),
+    ).toStrictEqual({ ticket: TICKET, reconciliationCapability: RECONCILIATION_CAPABILITY });
   });
 
   it("ignores additive fields permitted by the versioned contract", () => {
     expect(
       parseIssuedTicket({
-        result: { restore_ticket: TICKET, future_field: 1 },
+        result: {
+          restore_ticket: TICKET,
+          reconciliation_capability: RECONCILIATION_CAPABILITY,
+          future_field: 1,
+        },
         correlation_id: CORRELATION,
         future_field: "ignored",
       }),
-    ).toBe(TICKET);
+    ).toStrictEqual({ ticket: TICKET, reconciliationCapability: RECONCILIATION_CAPABILITY });
   });
 
   it.each([
@@ -92,9 +112,16 @@ describe("parseIssuedTicket", () => {
     ["a missing result", { correlation_id: CORRELATION }],
     ["an array result", { result: [TICKET] }],
     ["a non-string ticket", { result: { restore_ticket: 1 } }],
+    ["a missing reconciliation capability", { result: { restore_ticket: TICKET } }],
     ["an empty ticket", { result: { restore_ticket: "" } }],
     ["an over-long ticket", { result: { restore_ticket: "a".repeat(49) } }],
     ["a ticket outside the token character set", { result: { restore_ticket: "abc def" } }],
+    [
+      "a reconciliation capability outside the token character set",
+      {
+        result: { restore_ticket: TICKET, reconciliation_capability: "abc def" },
+      },
+    ],
   ])("rejects %s", (_label, payload) => {
     expect(parseIssuedTicket(payload)).toBeNull();
   });
@@ -188,6 +215,7 @@ describe("submitRestore", () => {
       const url = target as string;
       expect(url).not.toContain(RECOVERY_KEY);
       expect(url).not.toContain(TICKET);
+      expect(url).not.toContain(RECONCILIATION_CAPABILITY);
     }
   });
 
@@ -205,6 +233,7 @@ describe("submitRestore", () => {
       expect(names).not.toContain("host");
       expect(names).not.toContain("origin");
       expect(headers["Content-Type"]).not.toContain("charset");
+      expect(JSON.stringify(headers)).not.toContain(RECONCILIATION_CAPABILITY);
     }
   });
 
@@ -244,6 +273,7 @@ describe("submitRestore", () => {
     expect(reason).toBeInstanceOf(RestoreFailedError);
     expect((reason as RestoreFailedError).code).toBe(code);
     expect((reason as RestoreFailedError).message).toBe("restore_failed");
+    expect((reason as RestoreFailedError).reconciliationCapability).toBeUndefined();
   });
 
   it.each([
@@ -264,6 +294,7 @@ describe("submitRestore", () => {
 
     expect(reason).toBeInstanceOf(RestoreFailedError);
     expect((reason as RestoreFailedError).code).toBe(UNREPORTED_FAILURE_CODE);
+    expect((reason as RestoreFailedError).reconciliationCapability).toBe(RECONCILIATION_CAPABILITY);
   });
 
   it("rejects a ticket response that is not the documented envelope", async () => {
@@ -277,6 +308,7 @@ describe("submitRestore", () => {
     );
 
     expect((reason as RestoreFailedError).code).toBe(UNREPORTED_FAILURE_CODE);
+    expect((reason as RestoreFailedError).reconciliationCapability).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
