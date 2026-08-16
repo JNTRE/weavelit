@@ -480,6 +480,49 @@ impl Drop for WipedResponseBytes {
     }
 }
 
+/// Owns a request-head allocation until the final parsed header value drops.
+struct WipedRequestHead {
+    bytes: Vec<u8>,
+    #[cfg(test)]
+    drop_observer: Option<WipedRequestHeadDropObserver>,
+}
+
+#[cfg(test)]
+type WipedRequestHeadDropObserver = Box<dyn FnOnce(&[u8]) + Send>;
+
+impl WipedRequestHead {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(capacity),
+            #[cfg(test)]
+            drop_observer: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_drop_observer(mut self, observer: WipedRequestHeadDropObserver) -> Self {
+        self.drop_observer = Some(observer);
+        self
+    }
+}
+
+impl AsRef<[u8]> for WipedRequestHead {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Drop for WipedRequestHead {
+    fn drop(&mut self) {
+        self.bytes.as_mut_slice().zeroize();
+        #[cfg(test)]
+        if let Some(observer) = self.drop_observer.take() {
+            observer(&self.bytes);
+        }
+        self.bytes.zeroize();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Trusted HTTPS listener configuration
 // ---------------------------------------------------------------------------
@@ -1791,7 +1834,22 @@ async fn read_request_head_outcome<S>(stream: &mut S) -> RequestHeadRead
 where
     S: AsyncRead + Unpin,
 {
-    let mut bytes = Vec::with_capacity(MAX_REQUEST_HEAD_BYTES);
+    // The one-byte overflow sentinel is pushed before the bound rejects it.
+    // Keeping capacity for it ensures this allocation remains the one wiped.
+    read_request_head_outcome_with_owner(
+        stream,
+        WipedRequestHead::with_capacity(MAX_REQUEST_HEAD_BYTES + 1),
+    )
+    .await
+}
+
+async fn read_request_head_outcome_with_owner<S>(
+    stream: &mut S,
+    mut bytes: WipedRequestHead,
+) -> RequestHeadRead
+where
+    S: AsyncRead + Unpin,
+{
     let mut request_line = RequestLineState::Method;
     let mut target_too_long = false;
     loop {
@@ -1802,19 +1860,19 @@ where
             }
             Err(_) => return RequestHeadRead::Incomplete(RequestReadError::Invalid),
         };
-        if byte == b'\n' && bytes.last().is_none_or(|previous| *previous != b'\r') {
+        if byte == b'\n' && bytes.bytes.last().is_none_or(|previous| *previous != b'\r') {
             return RequestHeadRead::Incomplete(RequestReadError::Invalid);
         }
-        bytes.push(byte);
-        target_too_long |= request_line.observe(byte, &bytes);
-        if bytes.len() > MAX_REQUEST_HEAD_BYTES {
-            return RequestHeadRead::Incomplete(request_line.limit_error(&bytes));
+        bytes.bytes.push(byte);
+        target_too_long |= request_line.observe(byte, bytes.as_ref());
+        if bytes.bytes.len() > MAX_REQUEST_HEAD_BYTES {
+            return RequestHeadRead::Incomplete(request_line.limit_error(bytes.as_ref()));
         }
-        if bytes.ends_with(b"\r\n\r\n") {
+        if bytes.bytes.ends_with(b"\r\n\r\n") {
             let request = if target_too_long {
                 Err(RequestReadError::TargetTooLong)
             } else {
-                parse_http_request(&bytes, request_line.completed_classification())
+                parse_http_request(bytes, request_line.completed_classification())
                     .map(HeadRead::new)
             };
             return RequestHeadRead::Completed(Box::new(request));
@@ -1915,17 +1973,19 @@ fn response_for_request_read_error(error: RequestReadError) -> BoundedResponse {
 }
 
 fn parse_http_request(
-    bytes: &[u8],
+    bytes: WipedRequestHead,
     request_line: RequestLineClassification,
 ) -> Result<Request, RequestReadError> {
-    let raw_header_bytes = raw_header_section_bytes(bytes)?;
+    let head_bytes = Bytes::from_owner(bytes);
+    let raw_header_bytes = raw_header_section_bytes(head_bytes.as_ref())?;
     if raw_header_bytes > MAX_REQUEST_HEADER_BYTES {
         return Err(RequestReadError::HeadersTooLarge);
     }
     let mut parsed_headers = vec![httparse::EMPTY_HEADER; raw_header_bytes / b"a:\r\n".len()];
     let mut parsed = httparse::Request::new(&mut parsed_headers);
-    let httparse::Status::Complete(_) =
-        parsed.parse(bytes).map_err(|_| RequestReadError::Invalid)?
+    let httparse::Status::Complete(_) = parsed
+        .parse(head_bytes.as_ref())
+        .map_err(|_| RequestReadError::Invalid)?
     else {
         return Err(RequestReadError::Invalid);
     };
@@ -1940,7 +2000,9 @@ fn parse_http_request(
     for header in parsed.headers {
         let name = HeaderName::from_bytes(header.name.as_bytes())
             .map_err(|_| RequestReadError::Invalid)?;
-        let value = HeaderValue::from_bytes(header.value).map_err(|_| RequestReadError::Invalid)?;
+        let range = header_value_range(&head_bytes, header.value)?;
+        let value = HeaderValue::from_maybe_shared(head_bytes.slice(range))
+            .map_err(|_| RequestReadError::Invalid)?;
         headers.append(name, value);
     }
     match request_line {
@@ -1954,6 +2016,35 @@ fn parse_http_request(
     *request.uri_mut() = uri;
     *request.headers_mut() = headers;
     Ok(request)
+}
+
+/// Returns a parsed header-value range within the request-head owner.
+fn header_value_range(
+    head_bytes: &Bytes,
+    value: &[u8],
+) -> Result<std::ops::Range<usize>, RequestReadError> {
+    let head = head_bytes.as_ref();
+    let head_start = head.as_ptr() as usize;
+    let head_end = head_start
+        .checked_add(head.len())
+        .ok_or(RequestReadError::Invalid)?;
+    let value_start = value.as_ptr() as usize;
+    let value_end = value_start
+        .checked_add(value.len())
+        .ok_or(RequestReadError::Invalid)?;
+    if value_start < head_start || value_end > head_end {
+        return Err(RequestReadError::Invalid);
+    }
+    let start = value_start
+        .checked_sub(head_start)
+        .ok_or(RequestReadError::Invalid)?;
+    let end = value_end
+        .checked_sub(head_start)
+        .ok_or(RequestReadError::Invalid)?;
+    if start > head.len() || end > head.len() || start > end {
+        return Err(RequestReadError::Invalid);
+    }
+    Ok(start..end)
 }
 
 async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
@@ -2820,6 +2911,7 @@ pub(crate) mod tests {
         os::unix::fs::{MetadataExt, PermissionsExt},
         path::{Path, PathBuf},
         pin::Pin,
+        rc::Rc,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -2879,10 +2971,10 @@ pub(crate) mod tests {
         RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
         RestrictedStartup, SHUTDOWN_DATABASE_BUDGET, SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD,
         ServingMode, ServingModeSwitch, ShutdownBudget, ShutdownSignal, StartupError,
-        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedResponseBytes, WipedResponseBytesDropObserver,
-        WorkflowArbiter, accept_and_drain_connections, bounded_response_from_axum,
-        classify_restricted_startup, close_active_database, fallback_router,
-        gateway_timeout_response,
+        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedRequestHead, WipedRequestHeadDropObserver,
+        WipedResponseBytes, WipedResponseBytesDropObserver, WorkflowArbiter,
+        accept_and_drain_connections, bounded_response_from_axum, classify_restricted_startup,
+        close_active_database, fallback_router, gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
@@ -3140,6 +3232,36 @@ pub(crate) mod tests {
             Ok(_) => RequestHeadResult::Accepted,
             Err(error) => head_result(error),
         }
+    }
+
+    fn request_head_owner(
+        bytes: &[u8],
+        observer: WipedRequestHeadDropObserver,
+    ) -> WipedRequestHead {
+        let mut owner = WipedRequestHead::with_capacity(super::MAX_REQUEST_HEAD_BYTES + 1);
+        owner.bytes.extend_from_slice(bytes);
+        owner.with_drop_observer(observer)
+    }
+
+    fn request_head_wipe_observer(
+        observer: std::sync::mpsc::Sender<bool>,
+    ) -> WipedRequestHeadDropObserver {
+        Box::new(move |head| {
+            observer
+                .send(!head.is_empty() && head.iter().all(|byte| *byte == 0))
+                .expect("the test owns the wipe observer receiver");
+        })
+    }
+
+    async fn read_request_head_with_wipe_observer(
+        bytes: &[u8],
+        observer: WipedRequestHeadDropObserver,
+    ) -> super::RequestHeadRead {
+        let (mut client, mut server) = tokio::io::duplex(bytes.len().max(1));
+        client.write_all(bytes).await.unwrap();
+        client.shutdown().await.unwrap();
+        super::read_request_head_outcome_with_owner(&mut server, request_head_owner(&[], observer))
+            .await
     }
 
     /// Reads a complete request and returns the body bytes it accepted.
@@ -3768,9 +3890,116 @@ pub(crate) mod tests {
         );
         assert!(raw_header_section_bytes(bytes.as_bytes()).unwrap() > 8 * 1024);
         assert!(matches!(
-            parse_http_request(bytes.as_bytes(), super::RequestLineClassification::Get),
+            parse_http_request(
+                request_head_owner(bytes.as_bytes(), Box::new(|_| {})),
+                super::RequestLineClassification::Get,
+            ),
             Err(super::RequestReadError::HeadersTooLarge)
         ));
+    }
+
+    #[test]
+    fn request_head_owner_keeps_cookie_bytes_until_the_final_header_clone_drops() {
+        let bytes = b"GET /api/v1/status HTTP/1.1\r\nCookie: session=secret-cookie\r\nX-Weavelit-CSRF: secret-csrf\r\n\r\n";
+        let (observer, observed) = std::sync::mpsc::channel();
+        let owner = request_head_owner(bytes, request_head_wipe_observer(observer));
+        let head_start = owner.bytes.as_ptr() as usize;
+        let head_end = head_start.checked_add(owner.bytes.len()).unwrap();
+        let request = Rc::new(
+            parse_http_request(owner, super::RequestLineClassification::Get)
+                .expect("the request head is valid"),
+        );
+        let request_clone = Rc::clone(&request);
+        let headers = request.headers().clone();
+        let cookie = headers.get("cookie").unwrap().clone();
+        let cookie_start = cookie.as_bytes().as_ptr() as usize;
+        let cookie_end = cookie_start.checked_add(cookie.as_bytes().len()).unwrap();
+
+        assert_eq!(cookie.as_bytes(), b"session=secret-cookie");
+        assert!(cookie_start >= head_start && cookie_end <= head_end);
+
+        drop(request);
+        assert!(matches!(
+            observed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(request_clone);
+        assert!(matches!(
+            observed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(headers);
+        assert!(matches!(
+            observed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(cookie);
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[test]
+    fn request_head_owner_reserves_the_overflow_sentinel_without_reallocation() {
+        let mut owner = WipedRequestHead::with_capacity(super::MAX_REQUEST_HEAD_BYTES + 1);
+        owner
+            .bytes
+            .extend_from_slice(b"Cookie: session=secret-cookie\r\n");
+        owner.bytes.extend(std::iter::repeat_n(
+            b'x',
+            super::MAX_REQUEST_HEAD_BYTES - owner.bytes.len(),
+        ));
+        let pointer = owner.bytes.as_ptr();
+        let capacity = owner.bytes.capacity();
+
+        owner.bytes.push(b'x');
+
+        assert_eq!(owner.bytes.as_ptr(), pointer);
+        assert_eq!(owner.bytes.capacity(), capacity);
+        assert_eq!(owner.bytes.len(), super::MAX_REQUEST_HEAD_BYTES + 1);
+    }
+
+    #[tokio::test]
+    async fn request_head_reader_wipes_completed_and_rejected_heads() {
+        let oversized_header = format!(
+            "GET /api/v1/status HTTP/1.1\r\nX-Pad: {}\r\n\r\n",
+            "a".repeat(super::MAX_REQUEST_HEADER_BYTES - "X-Pad: \r\n".len() + 1)
+        );
+        let aggregate_overflow = format!(
+            "GET /api/v1/status HTTP/1.1\r\nX-Pad: {}",
+            "a".repeat(super::MAX_REQUEST_HEAD_BYTES)
+        );
+        let target_overflow = format!(
+            "GET /{} HTTP/1.1\r\nCookie: session=secret-cookie\r\n\r\n",
+            "a".repeat(super::MAX_REQUEST_TARGET_BYTES)
+        );
+
+        for (name, request) in [
+            (
+                "completed malformed head",
+                b"GET /api/v1/status HTTP/1.1\r\nnot-a-header\r\n\r\n".as_slice(),
+            ),
+            ("oversized header", oversized_header.as_bytes()),
+            ("aggregate overflow", aggregate_overflow.as_bytes()),
+            ("target overflow", target_overflow.as_bytes()),
+            (
+                "incomplete EOF",
+                b"GET /api/v1/status HTTP/1.1\r\nCookie: session=secret-cookie\r\n".as_slice(),
+            ),
+            (
+                "LF framing",
+                b"GET /api/v1/status HTTP/1.1\nCookie: session=secret-cookie\n\n".as_slice(),
+            ),
+            (
+                "URI conversion failure",
+                b"GET http://[::1 HTTP/1.1\r\nCookie: session=secret-cookie\r\n\r\n".as_slice(),
+            ),
+        ] {
+            let (observer, observed) = std::sync::mpsc::channel();
+            drop(
+                read_request_head_with_wipe_observer(request, request_head_wipe_observer(observer))
+                    .await,
+            );
+            assert!(observed.try_recv().unwrap(), "{name}");
+        }
     }
 
     #[tokio::test]
@@ -9081,6 +9310,38 @@ pub(crate) mod tests {
         fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Pending
         }
+    }
+
+    /// Never yields a byte, so the head reader remains pending until cancelled.
+    struct StalledReader;
+
+    impl tokio::io::AsyncRead for StalledReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_request_head_reader_wipes_its_owner() {
+        let (observer, observed) = std::sync::mpsc::channel();
+        let cancelled = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::read_request_head_outcome_with_owner(
+                &mut StalledReader,
+                request_head_owner(
+                    b"GET /api/v1/status HTTP/1.1\r\nCookie: session=secret-cookie\r\n",
+                    request_head_wipe_observer(observer),
+                ),
+            ),
+        )
+        .await;
+
+        assert!(cancelled.is_err());
+        assert!(observed.try_recv().unwrap());
     }
 
     /// An acknowledgement that counts its runs, and the counter to read.

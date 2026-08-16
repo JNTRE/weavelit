@@ -108,6 +108,22 @@ explicit source networks, origin controls, restricted cross-origin resource
 sharing (CORS), and cross-site request forgery (CSRF) protection appropriate to
 its request model. These controls must not depend on client-side enforcement.
 
+### Request-Head Buffer Clearing
+
+The listener holds every raw request head in one controlled owner. Its capacity
+includes the byte used to detect an aggregate-limit overflow, so a rejection
+does not replace a Cookie-, session-, CSRF-, or other header-bearing allocation
+before that owner can clear it. Parsed header values retain validated shared
+ranges of that owner. The owner clears on malformed, oversized, incomplete,
+framing, parser, timeout, and cancellation exits, or after the final non-empty
+header-value, HeaderMap, or Request clone releases it on an accepted request.
+
+This controls only the listener's raw request-head allocation. TLS, kernel or
+network transport, allocator, URI, and consumer-created copies remain outside
+application control. It does not change the deliberate exclusion of the
+encrypted **[Restore](glossary.md#states-and-requests)** artifact, which
+discloses nothing on its own.
+
 ## Protected Assets
 
 The security model protects:

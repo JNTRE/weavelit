@@ -252,6 +252,22 @@ guarantee only for those controlled application buffers. Copies held by TLS,
 the kernel or network transport, and the allocator are outside application
 control.
 
+#### Request-Head Buffer Clearing
+
+The **[Weavelit Server](../../glossary.md#applications-and-interfaces)**
+listener owns each raw request head in a controlled allocation, including the
+single overflow-sentinel byte that detects an aggregate-limit rejection. On a
+completed parse, each HeaderValue keeps a validated shared range of that owner,
+so the allocation remains until the final non-empty HeaderValue, HeaderMap, or
+Request clone releases it. Malformed, oversized, incomplete, framing, parser,
+timeout, and cancellation paths release and clear the same owner without
+changing request classification, limits, or rejection ordering.
+
+The guarantee excludes copies held by TLS, the kernel or network transport,
+the allocator, URI parsing, or a consumer after it copies a value. It also does
+not extend to bodies and leaves the encrypted Restore-artifact exclusion in
+[Secret Request-Body Handling](#secret-request-body-handling) unchanged.
+
 #### Producer Obligations
 
 Failing closed is the envelope's last defence, not a route's error-handling
