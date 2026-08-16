@@ -106,8 +106,9 @@ const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(25);
 /// a transition may legitimately still be running for before shutdown reports
 /// that it overran.
 const SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD: Duration = Duration::from_secs(300);
-/// How long a signalled shutdown may spend closing the Application Database.
-const SHUTDOWN_DATABASE_BUDGET: Duration = Duration::from_secs(5);
+/// How long a signalled shutdown observes an Application Database close before
+/// reporting an overrun.
+const SHUTDOWN_DATABASE_CLOSE_THRESHOLD: Duration = Duration::from_secs(5);
 
 const _: () = assert!(
     SHUTDOWN_DRAIN_BUDGET.as_secs()
@@ -200,15 +201,16 @@ struct ShutdownBudget {
     /// Threshold after which a transition that still holds its gate reports an
     /// overrun while shutdown continues waiting for it.
     transition_threshold: Duration,
-    /// Time allowed, after both, to close the Application Database.
-    database: Duration,
+    /// Threshold after which a database close still in progress reports an
+    /// overrun while shutdown continues waiting for it.
+    database_close_threshold: Duration,
 }
 
 impl ShutdownBudget {
     const DEFAULT: Self = Self {
         drain: SHUTDOWN_DRAIN_BUDGET,
         transition_threshold: SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD,
-        database: SHUTDOWN_DATABASE_BUDGET,
+        database_close_threshold: SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
     };
 }
 
@@ -1450,26 +1452,46 @@ async fn accept_and_drain_connections(
     // Whatever the drain did not finish is terminated, because the database
     // close must not wait behind a request that will not end.
     connections.shutdown().await;
-    let closed = close_active_database(active_database, budget.database).await;
+    let closed = close_active_database(active_database, budget.database_close_threshold).await;
 
     match accepting {
         Err(error) => Err(error),
-        Ok(()) if drained && !transition.overrun && closed => Ok(()),
+        Ok(()) if drained && !transition.overrun && !closed.overrun && closed.clean => Ok(()),
         Ok(()) => Err(StartupError::ShutdownIncomplete),
     }
 }
 
-/// Closes the serving Application Database inside its own budget.
+/// The outcome of closing the serving Application Database during shutdown.
+struct DatabaseClose {
+    clean: bool,
+    overrun: bool,
+}
+
+/// Closes the serving Application Database after observing its threshold.
 ///
 /// The close checkpoints and closes a real connection, which is blocking work,
-/// so it runs on a blocking thread. A close that outlives its budget is left
-/// there rather than delaying the process further, and is reported as an
-/// unclean stop instead of a clean one.
-async fn close_active_database(database: ActiveDatabase, budget: Duration) -> bool {
-    matches!(
-        timeout(budget, task::spawn_blocking(move || database.close())).await,
-        Ok(Ok(Ok(())))
-    )
+/// so it runs on a blocking thread. A close that outlasts the threshold must
+/// still finish before the runtime can tear down; the eventual shutdown is
+/// reported as incomplete even when that close succeeds.
+async fn close_active_database(database: ActiveDatabase, threshold: Duration) -> DatabaseClose {
+    let mut close = task::spawn_blocking(move || database.close());
+    if threshold.is_zero() {
+        return DatabaseClose {
+            clean: matches!(close.await, Ok(Ok(()))),
+            overrun: true,
+        };
+    }
+    let threshold_elapsed = tokio::time::sleep(threshold);
+    tokio::pin!(threshold_elapsed);
+    let (overrun, closed) = tokio::select! {
+        biased;
+        _ = &mut threshold_elapsed => (true, close.await),
+        closed = &mut close => (false, closed),
+    };
+    DatabaseClose {
+        clean: matches!(closed, Ok(Ok(()))),
+        overrun,
+    }
 }
 
 fn is_trusted_loopback_peer(peer: IpAddr) -> bool {
@@ -2969,12 +2991,13 @@ pub(crate) mod tests {
         MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
         RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
         RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
-        RestrictedStartup, SHUTDOWN_DATABASE_BUDGET, SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD,
-        ServingMode, ServingModeSwitch, ShutdownBudget, ShutdownSignal, StartupError,
-        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedRequestHead, WipedRequestHeadDropObserver,
-        WipedResponseBytes, WipedResponseBytesDropObserver, WorkflowArbiter,
-        accept_and_drain_connections, bounded_response_from_axum, classify_restricted_startup,
-        close_active_database, fallback_router, gateway_timeout_response,
+        RestrictedStartup, SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
+        SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode, ServingModeSwitch, ShutdownBudget,
+        ShutdownSignal, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedRequestHead,
+        WipedRequestHeadDropObserver, WipedResponseBytes, WipedResponseBytesDropObserver,
+        WorkflowArbiter, accept_and_drain_connections, bounded_response_from_axum,
+        classify_restricted_startup, close_active_database, fallback_router,
+        gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
@@ -4913,6 +4936,40 @@ pub(crate) mod tests {
         assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn a_database_close_overrun_waits_for_the_close_to_finish_and_reports_an_incomplete_shutdown()
+     {
+        let (active_database, _database, closes, mut close) =
+            test_support::activated_blocking_close();
+        let DrainingListener {
+            shutdown, serving, ..
+        } = draining_listener(
+            fallback_router(),
+            ShutdownBudget {
+                database_close_threshold: Duration::ZERO,
+                ..ShutdownBudget::DEFAULT
+            },
+            active_database,
+        )
+        .await;
+
+        shutdown.send(()).unwrap();
+        close.reached().await;
+
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        assert!(
+            !serving.is_finished(),
+            "a database close overrun must not let shutdown return early"
+        );
+
+        close.release();
+        assert_eq!(
+            serving.await.unwrap(),
+            Err(StartupError::ShutdownIncomplete)
+        );
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
     /// The gate refuses entry from the moment a stop is observed and keeps
     /// refusing it, so nothing begins an irreversible transition a shutdown
     /// would then have to wait out.
@@ -5076,8 +5133,12 @@ pub(crate) mod tests {
         assert!(state_root.join("application.sqlite3-wal").exists());
 
         assert!(
-            close_active_database(startup.active_database().clone(), SHUTDOWN_DATABASE_BUDGET)
-                .await
+            close_active_database(
+                startup.active_database().clone(),
+                SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
+            )
+            .await
+            .clean
         );
 
         assert_no_write_ahead_log(&state_root);
@@ -5107,9 +5168,10 @@ pub(crate) mod tests {
         assert!(
             close_active_database(
                 surface.startup.active_database().clone(),
-                SHUTDOWN_DATABASE_BUDGET,
+                SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
             )
             .await
+            .clean
         );
 
         assert_no_write_ahead_log(&surface.state_root);

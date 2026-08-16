@@ -48,10 +48,9 @@ fn run() -> Result<(), StartupError> {
         ShutdownSignal::new(signalled),
     ));
     // The listener does not return while a lifecycle transition admitted before
-    // the stop still holds its gate: it waits through activation or release
-    // before attempting the database close. Nothing lifecycle-owned is left
-    // behind here; only blocking work that already exceeded its own close
-    // budget can remain after the listener reported an incomplete shutdown.
+    // the stop still holds its gate, or while the Application Database is
+    // closing. Nothing lifecycle-owned remains before zero-time runtime
+    // teardown, even when shutdown reports an overrun.
     runtime.shutdown_timeout(Duration::ZERO);
 
     result

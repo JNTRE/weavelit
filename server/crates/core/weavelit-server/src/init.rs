@@ -1300,7 +1300,7 @@ mod tests {
     };
     use crate::{
         APPLICATION_DATABASE_FILE, PreoperationalComposer, RateLimiter,
-        ResponseWriteAcknowledgement, RestrictedStartup, SHUTDOWN_DATABASE_BUDGET,
+        ResponseWriteAcknowledgement, RestrictedStartup, SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
         SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode, ServingModeSwitch, StartupError,
         StartupOutcome, bounded_response_from_axum, classify_restricted_startup,
         close_active_database, fallback_router,
@@ -2477,9 +2477,10 @@ mod tests {
         assert!(
             close_active_database(
                 surface.startup.active_database().clone(),
-                SHUTDOWN_DATABASE_BUDGET,
+                SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
             )
-            .await,
+            .await
+            .clean,
             "the shutdown must close the sealed database"
         );
 

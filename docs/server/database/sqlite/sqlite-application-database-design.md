@@ -372,7 +372,9 @@ letting it drop. SQLite removes the `application.sqlite3-wal` and
 cleanly stopped Server leaves only the main database file and the next start
 classifies from it directly. A checkpoint that is blocked or leaves frames, or a
 close the driver refuses, reports `Unavailable` instead of a clean close, which
-the Server reports as an incomplete shutdown.
+the Server reports as an incomplete shutdown. The Server retains the blocking
+close through its reporting threshold and waits for it to return, so an overdue
+checkpoint is not discarded while the runtime tears down.
 
 ## Errors And Test Evidence
 

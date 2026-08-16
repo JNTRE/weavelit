@@ -59,7 +59,9 @@ and closes it through a single process-wide owner during shutdown; that owner
 takes the handle out of every clone at once, so the backend's close runs exactly
 once however many times shutdown is requested, and every later operation is
 refused as unavailable. A backend that cannot leave its storage free of pending
-recovery work reports an unclean close rather than a clean one.
+recovery work reports an unclean close rather than a clean one. The Server
+retains and awaits every close it starts; its five-second reporting threshold
+marks the shutdown incomplete but never permits the close to be abandoned.
 
 The Rust contract is synchronous and object-safe. `ApplicationDatabase`
 requires a movable backend and takes exclusive mutable access for every call;

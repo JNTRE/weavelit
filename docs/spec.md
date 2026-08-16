@@ -492,6 +492,14 @@ recovered, fails integrity or schema validation, is bound to a different
 deployment, or holds incomplete or unacknowledged initialized state. The Server
 MUST NOT report any of those failures as `operator_redeploy_required`.
 
+On a signalled shutdown, the Server MUST wait for every admitted irreversible
+lifecycle transition and every Application Database close it begins to finish
+before its runtime tears down. The 300-second lifecycle-transition and
+five-second database-close thresholds report an incomplete shutdown when
+exceeded, but MUST NOT authorize abandoning the transition or close. A
+supervisor that requires this graceful-stop guarantee MUST use `SIGTERM` and
+MUST NOT impose a finite force-kill timeout.
+
 The operator MAY preserve the failed state root for diagnosis or evidence, or
 discard it and rebuild or redeploy the host. A failed fresh Init requires a new
 deployment and a new Init. A failed Restore requires a replacement deployment

@@ -356,6 +356,13 @@ pub(crate) mod test_support {
         closes: Arc<AtomicUsize>,
         /// What this database's own close reports once it has been counted.
         outcome: Result<(), DatabaseError>,
+        /// Test-only rendezvous for a close that must remain in progress.
+        close_block: Option<CloseBlock>,
+    }
+
+    struct CloseBlock {
+        arrival: oneshot::Sender<()>,
+        release: mpsc::Receiver<()>,
     }
 
     impl ApplicationDatabase for CountingDatabase {
@@ -420,6 +427,10 @@ pub(crate) mod test_support {
 
         fn close(self: Box<Self>) -> Result<(), DatabaseError> {
             self.closes.fetch_add(1, Ordering::SeqCst);
+            if let Some(close_block) = self.close_block {
+                let _ = close_block.arrival.send(());
+                let _ = close_block.release.recv();
+            }
             self.outcome
         }
     }
@@ -442,6 +453,25 @@ pub(crate) mod test_support {
     pub(crate) struct ActivationBarrier {
         arrived: oneshot::Receiver<()>,
         release: mpsc::Sender<()>,
+    }
+
+    /// A close parked after it starts, so shutdown tests can prove that an
+    /// overdue close retains the listener without timing-based synchronization.
+    pub(crate) struct CloseBarrier {
+        arrived: oneshot::Receiver<()>,
+        release: mpsc::Sender<()>,
+    }
+
+    impl CloseBarrier {
+        pub(crate) async fn reached(&mut self) {
+            (&mut self.arrived)
+                .await
+                .expect("the database close must begin");
+        }
+
+        pub(crate) fn release(self) {
+            let _ = self.release.send(());
+        }
     }
 
     impl ActivationBarrier {
@@ -494,10 +524,35 @@ pub(crate) mod test_support {
         let database = OperationalDatabase::from_open(Box::new(CountingDatabase {
             closes: Arc::clone(&closes),
             outcome,
+            close_block: None,
         }));
         let active = ActiveDatabase::default();
         active.activate(database.clone());
         (active, database, closes)
+    }
+
+    /// Registers a database whose close has started but cannot finish until
+    /// the returned barrier is released.
+    pub(crate) fn activated_blocking_close() -> (
+        ActiveDatabase,
+        OperationalDatabase,
+        Arc<AtomicUsize>,
+        CloseBarrier,
+    ) {
+        let closes = Arc::new(AtomicUsize::new(0));
+        let (arrival, arrived) = oneshot::channel();
+        let (release, blocked) = mpsc::channel();
+        let database = OperationalDatabase::from_open(Box::new(CountingDatabase {
+            closes: Arc::clone(&closes),
+            outcome: Ok(()),
+            close_block: Some(CloseBlock {
+                arrival,
+                release: blocked,
+            }),
+        }));
+        let active = ActiveDatabase::default();
+        active.activate(database.clone());
+        (active, database, closes, CloseBarrier { arrived, release })
     }
 }
 

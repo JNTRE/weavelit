@@ -773,10 +773,11 @@ a start. A signalled shutdown that drains its accepted requests, waits until an
 irreversible lifecycle transition already under way releases its gate, and
 closes the Application Database cleanly exits with status `0` and no
 terminating signal. A drain-budget overrun, a 300-second lifecycle-transition
-overrun threshold, or an unclean close writes this pair and exits with status
-`1`, but the threshold never permits the transition to be interrupted. It
-reports that the process stopped without completing its own shutdown, not that
-a deployment needs an operator action, and it never accompanies a clean stop. The
+overrun threshold, a five-second database-close overrun threshold, or an
+unclean close writes this pair and exits with status `1`, but neither threshold
+permits the admitted work to be interrupted. It reports that the process
+stopped without completing its own shutdown, not that a deployment needs an
+operator action, and it never accompanies a clean stop. The
 [Server Architecture Design](../server-architecture-design.md) owns the
 shutdown sequence, its lifecycle transition gate, and its budgets.
 
@@ -943,6 +944,9 @@ subsequent entry without retaining its permit, that a signalled shutdown waits
 for an irreversible lifecycle transition to leave the gate before the database
 is closed, and that a transition crossing its 300-second overrun threshold
 keeps shutdown pending until it releases, then reports `shutdown_incomplete`.
+Database-close tests use a deterministic blocking backend to prove that a close
+crossing its five-second reporting threshold also keeps shutdown pending until
+it finishes, closes exactly once, and then reports `shutdown_incomplete`.
 Init and Restore tests prove
 that a workflow refused at a closed gate commits nothing, leaves the deployment
 record and its anchors untouched, and is indistinguishable to its submitter from

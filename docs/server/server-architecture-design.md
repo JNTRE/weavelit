@@ -473,12 +473,13 @@ A signalled shutdown runs in a fixed order:
 Each stage has a separate failure policy, because a request that will not
 finish must not consume the allowance the database close needs, and a
 transition that must not be interrupted must not be cut short by whatever a
-client is doing to a connection. Draining is allowed 25 seconds and the close
-is allowed 5 seconds. A lifecycle transition still holding its gate at 300
-seconds crosses an overrun reporting threshold; shutdown records that result
-but continues waiting for the transition to release. Draining and threshold
-observation run concurrently, but an admitted lifecycle transition makes the
-graceful-stop duration unbounded.
+client is doing to a connection. Draining is allowed 25 seconds. A lifecycle
+transition still holding its gate at 300 seconds and a database close still
+running at five seconds each cross an overrun reporting threshold; shutdown
+records that result but continues waiting for the same transition or close to
+finish. Draining and threshold observation run concurrently, but an admitted
+lifecycle transition or database close makes the graceful-stop duration
+unbounded.
 
 The drain budget deliberately exceeds the longest an ordinary connection may
 occupy the listener, which is the TLS handshake, request-read, and processing
@@ -488,6 +489,13 @@ restated as a convention. It says nothing about a lifecycle transition, which
 the gate allows to finish even after its reporting threshold. Whatever the drain
 does not finish is terminated before the close begins, so a request that will
 not end cannot delay the database close behind it.
+
+The database close runs on a blocking thread because checkpointing and close
+are synchronous backend work. Shutdown retains that task through the
+five-second threshold and awaits its actual completion before returning. A
+threshold overrun is therefore an incomplete shutdown even when the close
+eventually succeeds; it is not permission to abandon a checkpoint or let the
+runtime terminate the close task.
 
 #### The Lifecycle Transition Gate
 
@@ -555,20 +563,20 @@ however cleanly the backend closed, because the operation that poisoned the lane
 has an untrusted outcome.
 
 A shutdown that completes the drain and database-close stages cleanly without a
-lifecycle-transition threshold overrun exits with status `0` and no terminating
-signal. A drain that does not finish, a lifecycle-transition threshold overrun,
-or a database that does not close cleanly, is reported as `shutdown_incomplete`
-and exits with status `1`; it is an unclean stop rather than a startup failure,
-and it is never reported as a clean one. The exit status is returned rather than
-set by an immediate process exit, so an orderly shutdown still unwinds normally
-and every retained value, including the process-lifetime state-root lock, is
-released by its own destructor.
+lifecycle-transition or database-close threshold overrun exits with status `0`
+and no terminating signal. A drain that does not finish, either threshold
+overrun, or a database that does not close cleanly, is reported as
+`shutdown_incomplete` and exits with status `1`; it is an unclean stop rather
+than a startup failure, and it is never reported as a clean one. The exit
+status is returned rather than set by an immediate process exit, so an orderly
+shutdown still unwinds normally and every retained value, including the
+process-lifetime state-root lock, is released by its own destructor.
 
 No finite host-supervisor kill timeout preserves the guarantee for an admitted
-lifecycle transition: it may still be completing after the 300-second overrun
-threshold. A packaged service unit must stop the Server with `SIGTERM` and use
-`TimeoutStopSec=infinity`; any finite force-kill timeout weakens the
-no-interruption guarantee.
+lifecycle transition or an Application Database close: either may still be
+completing after its reporting threshold. A packaged service unit must stop the
+Server with `SIGTERM` and use `TimeoutStopSec=infinity`; any finite force-kill
+timeout weakens the no-interruption guarantee.
 
 ### Bounded Request Reading
 
