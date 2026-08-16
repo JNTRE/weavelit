@@ -222,12 +222,11 @@ export interface InitWorkflowProps {
  *
  * The password and the delivered recovery key are held in component state only.
  * Neither is written to a URL, a cookie, `localStorage`, `sessionStorage`, a
- * log, or any rendered failure message, and neither survives the submission it
- * drives: the password is cleared as soon as a preparation or finalization
- * attempt settles, and the key is dropped on completion and on any permanent
- * failure. An attempt that reported no outcome keeps the key in that same
- * component memory until an operational surface settles it, because dropping a
- * key a deployment may still be sealed with would destroy the only copy of it.
+ * log, or any rendered failure message. A settled preparation or finalization
+ * clears the password, and completion or a permanent failure drops the key.
+ * An attempt that reported no outcome keeps its entire original payload in
+ * component memory until an operational surface settles it, so a retry cannot
+ * alter the deployment that the original request may still initialize.
  *
  * Between key delivery and finalization the Server serves the finalization
  * route alone, so this component never reloads, re-requests status, or fetches
@@ -326,6 +325,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
         // An identity or an unauthenticated challenge both prove the same
         // thing: normal operation was published, so this deployment was
         // initialized and sealed with the key that was delivered here.
+        setPassword("");
         setDelivered(null);
         onCompleted();
       });
@@ -354,9 +354,6 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
           onCompleted();
         },
         (reason: unknown) => {
-          // The password does not outlive the attempt it drove, whichever way
-          // that attempt settled.
-          setPassword("");
           const code = failureCode(reason);
           if (
             indeterminateFinalization(reason, code) ||
@@ -368,6 +365,9 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
             reconcile(code);
             return;
           }
+          // A known result settles the attempt, so its password need not stay
+          // in component memory for a possible exact retry.
+          setPassword("");
           if (correctable(code, CORRECTABLE_FINALIZATION_CODES)) {
             // The Server released the attempt and still expects the same key,
             // so the delivered key is deliberately retained for the retry.
@@ -427,6 +427,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
 
   const busy = state.kind === "preparing" || state.kind === "finalizing";
   const editing = state.kind === "details" || state.kind === "preparing";
+  const payloadLocked = unsettled && state.kind === "details";
 
   if (state.kind === "indeterminate") {
     return (
@@ -503,7 +504,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
             className="shell__init-select"
             value={systemLogModule}
             onChange={changeSystemLog}
-            disabled={busy}
+            disabled={busy || payloadLocked}
           >
             <option value="">{UNASSIGNED_OPTION_LABEL}</option>
             <option value={SQLITE_LOG_MODULE}>{SQLITE_OPTION_LABEL}</option>
@@ -516,7 +517,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
             className="shell__init-select"
             value={auditLogModule}
             onChange={changeAuditLog}
-            disabled={busy}
+            disabled={busy || payloadLocked}
           >
             <option value="">{UNASSIGNED_OPTION_LABEL}</option>
             <option value={SQLITE_LOG_MODULE}>{SQLITE_OPTION_LABEL}</option>
@@ -536,7 +537,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
             maxLength={USERNAME_MAX_LENGTH}
             value={username}
             onChange={changeUsername}
-            disabled={busy}
+            disabled={busy || payloadLocked}
           />
           <label className="shell__init-label" htmlFor={DISPLAY_NAME_INPUT_ID}>
             {DISPLAY_NAME_LABEL}
@@ -550,7 +551,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
             maxLength={DISPLAY_NAME_MAX_LENGTH}
             value={displayName}
             onChange={changeDisplayName}
-            disabled={busy}
+            disabled={busy || payloadLocked}
           />
           <label className="shell__init-label" htmlFor={PASSWORD_INPUT_ID}>
             {PASSWORD_LABEL}
@@ -564,7 +565,7 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
             maxLength={PASSWORD_MAX_LENGTH}
             value={password}
             onChange={changePassword}
-            disabled={busy}
+            disabled={busy || payloadLocked}
           />
 
           {delivered === null ? (

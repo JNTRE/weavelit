@@ -559,7 +559,7 @@ describe("InitWorkflow", () => {
     expect(document.body.textContent).not.toContain(RECOVERY_KEY);
   });
 
-  it("retries a finalization that reported nothing with the same key and prepares no other", async () => {
+  it("retries a finalization that reported nothing with its original locked payload", async () => {
     let finalizations = 0;
     const fetchMock = mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
@@ -578,10 +578,13 @@ describe("InitWorkflow", () => {
     await screen.findByText(INDETERMINATE_MESSAGE);
     fireEvent.click(button("Try setup again"));
 
-    // The password did not outlive the attempt it drove, so it is entered again.
-    expect(screen.getByLabelText<HTMLInputElement>("Password").value).toBe("");
-    expect(button("Return to review").disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("Password"), { target: { value: PASSWORD } });
+    expect(screen.getByLabelText<HTMLInputElement>("System Log module").disabled).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>("Audit Log module").disabled).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>("Username").disabled).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>("Display name (optional)").disabled).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>("Password").disabled).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>("Password").value).toBe(PASSWORD);
+    expect(button("Return to review").disabled).toBe(false);
     fireEvent.click(button("Return to review"));
     fireEvent.click(button("Complete setup"));
 

@@ -375,7 +375,8 @@ outcome, the indeterminate state, which states plainly that no outcome was
 reported, that whether the deployment was initialized is not yet known, and
 that the saved recovery key is still the only key this deployment can be
 restored with. It offers a recheck control and a retry that returns to the
-details step with the same delivered key.
+details step with the same delivered key and its original locked detail
+payload.
 
 A failure the Server reported, and a failure raised before any request was
 issued such as a proof that could not be derived in the browser, are
@@ -389,11 +390,12 @@ full in [Settling Pre-Operational Outcomes](#settling-pre-operational-outcomes)
 above: a delivered key is discarded only on an outcome that is actually known.
 Completion drops it because it has done its work, and a permanent failure drops
 it because no attempt against this Server can ever use it again. An outcome
-that reported nothing establishes neither, so the key is retained in the same
-transient component memory that held it before, and is never written to a URL,
-a cookie, `localStorage`, or `sessionStorage` to survive there. The password is
-dropped in every case, including this one, because it is re-enterable and the
-key is not.
+that reported nothing establishes neither, so the key and original password are
+retained in the same transient component memory that held them before, and are
+never written to a URL, a cookie, `localStorage`, or `sessionStorage` to survive
+there. Every detail control stays locked while the outcome is indeterminate, so
+the retry submits exactly the request that may already be completing. The
+password is cleared as soon as the outcome becomes known.
 
 The workflow settles an indeterminate outcome by asking the shared session
 route described in [Sign-In Control](#sign-in-control) below whether an
@@ -415,9 +417,9 @@ deployment initialized and withdraws the pre-operational routes, but a
 lifecycle pending some other workflow and a Server serving nothing at all
 answer identically. A probe that finds an operational surface settles the
 attempt as a completed Init; a probe that finds nothing returns the workflow to
-the indeterminate state, still holding the delivered key. A first finalization
-answered by either code was answered about itself and is presented as the
-rejection it is.
+the indeterminate state, still holding the delivered key and original locked
+payload. A first finalization answered by either code was answered about itself
+and is presented as the rejection it is.
 
 Once finalization is confirmed, the shell adopts that confirmation directly
 rather than issuing a further status request, because the pre-operational

@@ -357,7 +357,7 @@ test("a first launch initializes the deployment and signs the new Administrator 
   }
 });
 
-test("a finalization that reports no outcome keeps the delivered key and completes on retry", async ({
+test("a finalization that reports no outcome keeps its original payload and completes on retry", async ({
   page,
 }) => {
   // The scenario runs a complete Init, including an Argon2id verifier creation,
@@ -463,14 +463,18 @@ test("a finalization that reports no outcome keeps the delivered key and complet
     await expect(page.getByRole("button", { name: RECHECK_ACTION_NAME })).toBeEnabled();
     expect(intercepted, "exactly one finalization was intercepted").toBe(1);
 
-    // 3. The retry reuses the key already delivered: the workflow offers the
-    // return-to-review path rather than a second preparation.
+    // 3. The retry reuses the original payload: the workflow offers the
+    // return-to-review path rather than a second preparation and leaves every
+    // original detail locked until the outcome settles.
     await page.getByRole("button", { name: INDETERMINATE_RETRY_NAME }).click();
     await expect(init).toHaveAttribute("data-init-state", "details");
     await expect(page.getByRole("button", { name: PREPARE_ACTION_NAME })).toHaveCount(0);
-    // The password did not outlive the attempt it drove, so it is entered again.
-    await expect(page.locator(PASSWORD_INPUT)).toHaveValue("");
-    await page.locator(PASSWORD_INPUT).fill(ADMINISTRATOR_PASSWORD);
+    await expect(page.locator(SYSTEM_LOG_SELECT)).toBeDisabled();
+    await expect(page.locator(AUDIT_LOG_SELECT)).toBeDisabled();
+    await expect(page.locator(USERNAME_INPUT)).toBeDisabled();
+    await expect(page.locator(DISPLAY_NAME_INPUT)).toBeDisabled();
+    await expect(page.locator(PASSWORD_INPUT)).toBeDisabled();
+    await expect(page.locator(PASSWORD_INPUT)).toHaveValue(ADMINISTRATOR_PASSWORD);
     await page.getByRole("button", { name: RETURN_ACTION_NAME }).click();
     await expect(init).toHaveAttribute("data-init-state", "review");
 
