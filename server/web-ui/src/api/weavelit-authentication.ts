@@ -59,6 +59,15 @@ const UNAUTHORIZED_STATUS = 401;
 /** The status a login that verified a password but issued no session answers with. */
 const CONTINUATION_STATUS = 202;
 
+/** The status the listener returns when a request handler outlives its deadline. */
+const GATEWAY_TIMEOUT_STATUS = 504;
+
+/** The stable error code the listener returns with a gateway timeout. */
+const GATEWAY_TIMEOUT_CODE = "gateway_timeout";
+
+/** The closed shape of a stable, dependency-neutral Server error code. */
+const STABLE_ERROR_CODE_PATTERN = /^[a-z0-9_]{1,48}$/;
+
 /** The stage naming a login that must present an already enrolled factor. */
 export const MFA_REQUIRED_STAGE = "mfa_required";
 
@@ -87,16 +96,16 @@ export class LoginFailedError extends Error {
 }
 
 /**
- * A continuation request whose Server-side outcome cannot be known locally.
+ * A session-establishing authentication request whose outcome is not known.
  *
  * This holds no response or transport detail. The presentation layer may only
  * reconcile it through the ordinary session route, because a session cookie
  * could have been committed before the browser could read the response.
  */
-export class IndeterminateContinuationError extends Error {
+export class IndeterminateAuthenticationError extends Error {
   constructor() {
-    super("continuation_indeterminate");
-    this.name = "IndeterminateContinuationError";
+    super("authentication_indeterminate");
+    this.name = "IndeterminateAuthenticationError";
   }
 }
 
@@ -152,6 +161,24 @@ function objectPayload(payload: unknown): Record<string, unknown> | null {
 
 function typedResult(payload: unknown): Record<string, unknown> | null {
   return objectPayload(objectPayload(payload)?.result);
+}
+
+/** Returns a documented stable error code, or `null` for any other body. */
+function reportedStableErrorCode(payload: unknown): string | null {
+  const error = objectPayload(payload)?.error;
+  return typeof error === "string" && STABLE_ERROR_CODE_PATTERN.test(error) ? error : null;
+}
+
+/** Reports whether the listener's stable timeout envelope leaves a commit unknown. */
+async function isGatewayTimeout(response: Response): Promise<boolean> {
+  if (response.status !== GATEWAY_TIMEOUT_STATUS) {
+    return false;
+  }
+  try {
+    return reportedStableErrorCode(await response.json()) === GATEWAY_TIMEOUT_CODE;
+  } catch {
+    return false;
+  }
 }
 
 /** Reports whether a `200` envelope is the documented established-session one. */
@@ -264,8 +291,11 @@ export function readCsrfToken(): string | null {
  * continuation and no cookie at all, so this function returning anything other
  * than `session` means no session exists yet.
  *
- * Rejects with {@link LoginFailedError} for a transport failure, any response
- * other than the documented ones, and every denial alike.
+ * A transport failure, the listener's documented gateway timeout, or an
+ * unreadable or invalid session-establishing `200` rejects with
+ * {@link IndeterminateAuthenticationError}; callers reconcile only through
+ * {@link probeSession}. Every reported stable rejection remains a
+ * {@link LoginFailedError}.
  */
 export async function submitLogin(username: string, password: string): Promise<LoginOutcome> {
   let response: Response;
@@ -285,10 +315,13 @@ export async function submitLogin(username: string, password: string): Promise<L
       redirect: "error",
     });
   } catch {
-    throw new LoginFailedError();
+    throw new IndeterminateAuthenticationError();
   }
 
   if (response.status !== 200 && response.status !== CONTINUATION_STATUS) {
+    if (await isGatewayTimeout(response)) {
+      throw new IndeterminateAuthenticationError();
+    }
     throw new LoginFailedError();
   }
 
@@ -296,7 +329,7 @@ export async function submitLogin(username: string, password: string): Promise<L
   try {
     payload = await response.json();
   } catch {
-    throw new LoginFailedError();
+    throw response.status === 200 ? new IndeterminateAuthenticationError() : new LoginFailedError();
   }
 
   if (response.status === CONTINUATION_STATUS) {
@@ -308,7 +341,7 @@ export async function submitLogin(username: string, password: string): Promise<L
   }
 
   if (!isSessionEstablished(payload)) {
-    throw new LoginFailedError();
+    throw new IndeterminateAuthenticationError();
   }
   return { kind: "session" };
 }
@@ -340,17 +373,20 @@ async function submitContinuation(
       redirect: "error",
     });
   } catch {
-    throw new IndeterminateContinuationError();
+    throw new IndeterminateAuthenticationError();
   }
 
   if (response.status !== 200) {
+    if (await isGatewayTimeout(response)) {
+      throw new IndeterminateAuthenticationError();
+    }
     throw new LoginFailedError();
   }
 
   try {
     return await response.json();
   } catch {
-    throw new IndeterminateContinuationError();
+    throw new IndeterminateAuthenticationError();
   }
 }
 
@@ -363,14 +399,14 @@ async function submitContinuation(
  *
  * A known non-200 refusal rejects with {@link LoginFailedError}; its cause
  * remains opaque. A transport failure or unreadable or invalid 200 success
- * envelope rejects with {@link IndeterminateContinuationError}; callers must
+ * envelope rejects with {@link IndeterminateAuthenticationError}; callers must
  * use {@link probeSession} to reconcile whether a session was established,
  * with the cause remaining opaque.
  */
 export async function submitSecondFactor(continuation: string, code: string): Promise<void> {
   const payload = await submitContinuation(AUTH_MFA_VERIFY_PATH, { continuation, code });
   if (!isSessionEstablished(payload)) {
-    throw new IndeterminateContinuationError();
+    throw new IndeterminateAuthenticationError();
   }
 }
 
@@ -409,7 +445,7 @@ export async function openEnrollment(continuation: string): Promise<EnrollmentOp
  *
  * A known non-200 refusal rejects with {@link LoginFailedError}; its cause
  * remains opaque. A transport failure or unreadable or invalid 200 success
- * envelope rejects with {@link IndeterminateContinuationError}; callers must
+ * envelope rejects with {@link IndeterminateAuthenticationError}; callers must
  * use {@link probeSession} to reconcile whether a session was established,
  * with the cause remaining opaque.
  */
@@ -419,7 +455,7 @@ export async function confirmEnrollment(enrollment: string, code: string): Promi
     code,
   });
   if (!isSessionEstablished(payload)) {
-    throw new IndeterminateContinuationError();
+    throw new IndeterminateAuthenticationError();
   }
 }
 

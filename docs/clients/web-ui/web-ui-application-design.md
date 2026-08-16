@@ -480,7 +480,8 @@ absent authentication surface both render nothing; the remaining states are:
 | Second factor submitting | A code submission is in flight. | The input and the action are disabled, so a repeated activation cannot spend a second continuation. |
 | Enrollment | A verified password was admitted only to enrolling a factor, and the enrollment has been opened. | The one disclosure, a code input, and a confirmation action, described in [Second-Factor Steps](#second-factor-steps). |
 | Enrollment submitting | An enrollment confirmation is in flight. | The inputs and the action are disabled. |
-| Attempt ended | A one-time value was spent by a reported refusal, or an indeterminate completion was reconciled as unauthenticated. | The credential inputs return and the one fixed attempt-ended message is presented in an assertive live region. |
+| Indeterminate | A session-establishing submission reported no outcome and no session probe has yet authenticated this browser. | A fixed checking message while automatic probes run; afterwards, a fixed unresolved message and one `Check again` action. The submission controls and all attempt secrets are absent. |
+| Attempt ended | A one-time value was spent by a reported refusal. | The credential inputs return and the one fixed attempt-ended message is presented in an assertive live region. |
 | Authenticated | The session probe, or a completed sign-in, reports an established session. | The inputs and action are replaced by a fixed confirmation message in a polite live region. |
 
 The failure message is fixed and redacted: `Sign-in failed.` The login route
@@ -496,7 +497,7 @@ denial reaches only the failed and attempt-ended states.
 
 The username is held in component state for the duration of the panel. The
 password is held in component state only and is cleared as soon as the attempt
-it drove settles, whether that attempt succeeded or failed. Neither is ever
+it drove settles or indeterminate reconciliation begins. Neither is ever
 rendered, and neither is written to a URL, a cookie, or any browser storage.
 
 ### Second-Factor Steps
@@ -529,15 +530,25 @@ message and the same state are presented when an enrollment cannot be opened
 and when an enrollment confirmation is refused, because those refusals spend a
 one-time value identically and the Server reports no cause for any of them.
 
-When a verification or enrollment-confirmation response is unreadable, malformed,
-or interrupted after submission, the **[Web UI](../../glossary.md#applications-and-interfaces)**
-does not treat that outcome as a refusal. It first probes the ordinary session
-route: an authenticated result reaches Authenticated, an unauthenticated result
-reaches Attempt ended, and an absent result renders the existing blank
-authentication-surface state. The latter makes no claim that the submission
-succeeded or was refused. A reported non-200 refusal remains determinate and
-reaches Attempt ended without a session probe; no response or transport detail
-is rendered in either case.
+The login response that establishes a session, second-factor verification, and
+enrollment confirmation all treat a transport interruption, unreadable `200`,
+invalid session-establishing `200` envelope, and the listener's stable
+`504 gateway_timeout` envelope as indeterminate. The application immediately
+clears the password, code, continuation, enrollment value, setup key, and setup
+link, and never retries the mutating submission. It probes the ordinary session
+route immediately, then after 10 seconds and 30 seconds. An authenticated
+result reaches Authenticated; an unauthenticated or absent result is not proof
+of refusal and leaves the control in Indeterminate after the bounded schedule.
+`Check again` starts the same schedule only after the preceding one ended, so
+automatic reconciliation makes at most six session probes per minute, below the
+listener's 12-request burst and 20-requests-per-minute per-source budget.
+
+A reported stable non-`200` rejection, including `400`, `401`, `403`, and
+`503`, remains determinate and never starts a session probe. A reported refusal
+of a one-time code or enrollment confirmation reaches Attempt ended; a reported
+login refusal reaches Failed. Opening enrollment cannot establish a session, so
+its rejection also remains terminal. No reconciliation presentation renders a
+response detail, transport diagnostic, or secret.
 
 ### CSRF Cookie Handling
 
@@ -564,12 +575,13 @@ persists either itself.
 
 The continuation, the enrollment value, the submitted code, the setup key, and
 the setup link are held the same way: in component state for the one attempt
-that needs them, and dropped as soon as that attempt settles. None is written
-to a URL, a query string, a cookie, `localStorage`, or `sessionStorage`. The
-setup key and the setup link are the only two values this application renders
-at all, because an operator cannot capture them otherwise, and they are removed
-from the rendered output as soon as the enrollment they belong to settles.
-Nothing that outlives that enrollment retains them.
+that needs them, and dropped as soon as that attempt settles or indeterminate
+reconciliation begins. None is written to a URL, a query string, a cookie,
+`localStorage`, or `sessionStorage`. The setup key and the setup link are the
+only two values this application renders at all, because an operator cannot
+capture them otherwise, and they are removed from the rendered output as soon
+as the enrollment they belong to settles or reconciliation begins. Nothing that
+outlives that enrollment retains them.
 
 ## Same-Origin Requests
 

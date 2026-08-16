@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LoginPanel } from "./weavelit-login-form";
@@ -111,6 +111,12 @@ function refusal(): Promise<Response> {
   );
 }
 
+function gatewayTimeout(): Promise<Response> {
+  return Promise.resolve(
+    jsonResponse({ error: "gateway_timeout", correlation_id: CORRELATION }, 504),
+  );
+}
+
 /**
  * Answers each route from its own handler and fails an unrouted request.
  *
@@ -149,8 +155,75 @@ function passwordField(): HTMLInputElement {
   return screen.getByLabelText("Password");
 }
 
+interface ReactHookNode {
+  memoizedState: unknown;
+  next: ReactHookNode | null;
+}
+
+interface ReactFiberNode {
+  alternate: ReactFiberNode | null;
+  memoizedState: ReactHookNode | null;
+  return: ReactFiberNode | null;
+  type: unknown;
+}
+
+function hookValue(fiber: ReactFiberNode, index: number): unknown {
+  let hook = fiber.memoizedState;
+  for (let currentIndex = 0; currentIndex < index; currentIndex += 1) {
+    if (hook === null) {
+      throw new Error("LoginPanel state hook is unavailable");
+    }
+    hook = hook.next;
+  }
+  if (hook === null) {
+    throw new Error("LoginPanel state hook is unavailable");
+  }
+  return hook.memoizedState;
+}
+
+/**
+ * Reads controlled state after a factor transition unmounts the password
+ * input. The rendered authentication state selects the current Fiber rather
+ * than its previous alternate.
+ */
+function passwordState(): unknown {
+  const loginPanel = panel();
+  const fiberKey = Object.getOwnPropertyNames(loginPanel).find((key) =>
+    key.startsWith("__reactFiber$"),
+  );
+  if (fiberKey === undefined) {
+    throw new Error("LoginPanel Fiber is unavailable");
+  }
+
+  const hostFiber = (loginPanel as unknown as Record<string, ReactFiberNode | undefined>)[fiberKey];
+  if (hostFiber === undefined) {
+    throw new Error("LoginPanel Fiber is unavailable");
+  }
+
+  let fiber: ReactFiberNode | null = hostFiber;
+  while (fiber !== null && fiber.type !== LoginPanel) {
+    fiber = fiber.return;
+  }
+  if (fiber === null) {
+    throw new Error("LoginPanel Fiber is unavailable");
+  }
+
+  const renderedState = loginPanel.dataset.authenticationState;
+  const currentFiber = [fiber, fiber.alternate].find(
+    (candidate) => candidate !== null && hookValue(candidate, 5) === renderedState,
+  );
+  if (currentFiber === undefined || currentFiber === null) {
+    throw new Error("LoginPanel current Fiber is unavailable");
+  }
+  return hookValue(currentFiber, 1);
+}
+
 function submitButton(): HTMLButtonElement {
   return screen.getByRole("button", { name: "Sign in" });
+}
+
+function checkAgainButton(): HTMLButtonElement {
+  return screen.getByRole<HTMLButtonElement>("button", { name: "Check again" });
 }
 
 async function renderUnauthenticated(login: () => Promise<Response>) {
@@ -203,6 +276,7 @@ async function reachState(state: string): Promise<void> {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   Reflect.deleteProperty(globalThis.document, "cookie");
 });
 
@@ -295,6 +369,33 @@ describe("LoginPanel form", () => {
 });
 
 describe("LoginPanel failure presentation", () => {
+  it("reconciles a login timeout without resubmitting credentials", async () => {
+    let probes = 0;
+    const fetchMock = mockRoutes({
+      [SESSION_PATH]: () => {
+        probes += 1;
+        return probes <= 3 ? unauthenticatedProbe() : authenticatedProbe();
+      },
+      [LOGIN_PATH]: gatewayTimeout,
+    });
+    render(<LoginPanel />);
+    await reachState("unauthenticated");
+    fillCredentials();
+    vi.useFakeTimers();
+    fireEvent.click(submitButton());
+    await act(async () => {});
+
+    expect(panel().dataset.authenticationState).toBe("indeterminate");
+    expect(document.body.innerHTML).not.toContain(PASSWORD);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(panel().dataset.authenticationState).toBe("authenticated");
+    expect(requestsTo(fetchMock, LOGIN_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(4);
+  });
+
   it.each([
     [
       "a denied credential",
@@ -322,7 +423,6 @@ describe("LoginPanel failure presentation", () => {
           jsonResponse({ error: "service_unavailable", correlation_id: CORRELATION }, 503),
         ),
     ],
-    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
   ])("presents %s identically and discards the password", async (_label, login) => {
     await renderUnauthenticated(login);
 
@@ -342,6 +442,21 @@ describe("LoginPanel failure presentation", () => {
     expect(document.body.innerHTML).not.toContain("ECONNREFUSED");
     expect(document.body.innerHTML).not.toContain(CORRELATION);
     expect(document.body.innerHTML).not.toContain(PASSWORD);
+  });
+
+  it("keeps a login transport failure indeterminate without rendering its diagnostic", async () => {
+    const fetchMock = await renderUnauthenticated(() =>
+      Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443")),
+    );
+
+    fillCredentials();
+    fireEvent.click(submitButton());
+    await reachState("indeterminate");
+
+    expect(screen.getByRole("status").textContent).toBe("Checking whether your sign-in completed.");
+    expect(document.body.innerHTML).not.toContain("ECONNREFUSED");
+    expect(document.body.innerHTML).not.toContain(PASSWORD);
+    expect(requestsTo(fetchMock, LOGIN_PATH)).toHaveLength(1);
   });
 
   it("renders the same markup for two different denials", async () => {
@@ -394,7 +509,60 @@ describe("LoginPanel storage discipline", () => {
   });
 });
 
+describe("LoginPanel credential disposal", () => {
+  it.each([
+    ["second-factor", { [LOGIN_PATH]: continuationLogin("mfa_required") }, "second-factor"],
+    [
+      "enrollment",
+      {
+        [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
+        [MFA_ENROLLMENT_PATH]: openedEnrollment,
+      },
+      "enrollment",
+    ],
+  ])("clears the password state on the %s transition", async (_transition, routes, state) => {
+    await signInWith(routes);
+
+    // This makes the state assertion below a real observation of the entered
+    // credential, rather than an assertion against the component's empty
+    // initial value.
+    expect(passwordField().value).toBe(PASSWORD);
+    await reachState(state);
+    expect(passwordState()).toBe("");
+  });
+});
+
 describe("LoginPanel second factor", () => {
+  it("waits through delayed negative probes for a session that commits after MFA verification", async () => {
+    let probes = 0;
+    const fetchMock = await signInWith({
+      [SESSION_PATH]: () => {
+        probes += 1;
+        return probes === 1 || probes === 2 || probes === 3
+          ? unauthenticatedProbe()
+          : authenticatedProbe();
+      },
+      [LOGIN_PATH]: continuationLogin("mfa_required"),
+      [MFA_VERIFY_PATH]: gatewayTimeout,
+    });
+
+    await reachState("second-factor");
+    vi.useFakeTimers();
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+    await act(async () => {});
+
+    expect(panel().dataset.authenticationState).toBe("indeterminate");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(panel().dataset.authenticationState).toBe("authenticated");
+    expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(4);
+  });
+
   it("presents the code step after a 202 mfa_required and completes the login", async () => {
     const fetchMock = await signInWith({
       [LOGIN_PATH]: continuationLogin("mfa_required"),
@@ -500,27 +668,38 @@ describe("LoginPanel second factor", () => {
     expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
   });
 
-  it("ends an indeterminate second-factor attempt only after an unauthenticated probe", async () => {
+  it("keeps an unresolved second-factor attempt indeterminate and rechecks without resubmitting", async () => {
     let probes = 0;
     const fetchMock = await signInWith({
       [SESSION_PATH]: () => {
         probes += 1;
-        return probes === 1 ? unauthenticatedProbe() : unauthenticatedProbe();
+        return probes <= 4 ? unauthenticatedProbe() : authenticatedProbe();
       },
       [LOGIN_PATH]: continuationLogin("mfa_required"),
       [MFA_VERIFY_PATH]: () => Promise.reject(new Error("connection reset")),
     });
 
     await reachState("second-factor");
+    vi.useFakeTimers();
     fireEvent.change(codeField(), { target: { value: CODE } });
     fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
 
-    await reachState("attempt-ended");
+    expect(panel().dataset.authenticationState).toBe("indeterminate");
+    expect(checkAgainButton().disabled).toBe(false);
+    expect(screen.queryByLabelText("Authentication code")).toBeNull();
+    fireEvent.click(checkAgainButton());
+    await act(async () => {});
+
+    expect(panel().dataset.authenticationState).toBe("authenticated");
     expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(1);
-    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(5);
   });
 
-  it("renders no outcome when an indeterminate second-factor completion finds an absent surface", async () => {
+  it("keeps an absent second-factor reconciliation visibly indeterminate", async () => {
     let probes = 0;
     const fetchMock = await signInWith({
       [SESSION_PATH]: () => {
@@ -534,14 +713,18 @@ describe("LoginPanel second factor", () => {
     });
 
     await reachState("second-factor");
+    vi.useFakeTimers();
     fireEvent.change(codeField(), { target: { value: CODE } });
     fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
-
-    await waitFor(() => {
-      expect(document.querySelector("section[data-authentication-state]")).toBeNull();
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
     });
+
+    expect(panel().dataset.authenticationState).toBe("indeterminate");
+    expect(checkAgainButton().disabled).toBe(false);
     expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(1);
-    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(4);
   });
 });
 
@@ -638,7 +821,7 @@ describe("LoginPanel enrollment", () => {
     expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
   });
 
-  it("ends an indeterminate enrollment confirmation only after an unauthenticated probe", async () => {
+  it("keeps an unresolved enrollment confirmation indeterminate", async () => {
     let probes = 0;
     const fetchMock = await signInWith({
       [SESSION_PATH]: () => {
@@ -651,12 +834,19 @@ describe("LoginPanel enrollment", () => {
     });
 
     await reachState("enrollment");
+    vi.useFakeTimers();
     fireEvent.change(codeField(), { target: { value: CODE } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm authenticator app" }));
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
 
-    await reachState("attempt-ended");
+    expect(panel().dataset.authenticationState).toBe("indeterminate");
+    expect(checkAgainButton().disabled).toBe(false);
+    expect(screen.queryByLabelText("Setup key")).toBeNull();
     expect(requestsTo(fetchMock, MFA_CONFIRM_PATH)).toHaveLength(1);
-    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(4);
   });
 
   it("ends the attempt when the enrollment cannot be opened", async () => {

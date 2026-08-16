@@ -218,6 +218,7 @@ body {
 .shell__login-authenticated,
 .shell__login-failure,
 .shell__login-attempt-ended,
+.shell__login-indeterminate,
 .shell__login-disclosure {
   margin: var(--ds-space-md) 0 0;
 }

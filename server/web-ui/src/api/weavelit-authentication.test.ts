@@ -8,7 +8,7 @@ import {
   AUTH_SESSION_PATH,
   CSRF_COOKIE_NAME,
   CSRF_HEADER_NAME,
-  IndeterminateContinuationError,
+  IndeterminateAuthenticationError,
   LoginFailedError,
   confirmEnrollment,
   isSessionEstablished,
@@ -159,6 +159,14 @@ describe("isSessionIdentity", () => {
 });
 
 describe("submitLogin", () => {
+  it("reports a documented gateway timeout as an opaque indeterminate outcome", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(rejectionResponse("gateway_timeout", 504));
+
+    await expect(submitLogin(USERNAME, PASSWORD)).rejects.toBeInstanceOf(
+      IndeterminateAuthenticationError,
+    );
+  });
+
   it("submits the credentials in the request body of a same-origin PUT", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(establishedResponse());
 
@@ -198,9 +206,6 @@ describe("submitLogin", () => {
       "an unavailable service",
       () => Promise.resolve(rejectionResponse("service_unavailable", 503)),
     ],
-    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
-    ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
-    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
   ])("rejects %s with one indistinguishable failure", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
 
@@ -213,6 +218,22 @@ describe("submitLogin", () => {
     // constant, so nothing derived from the response can be recovered from it.
     expect(Object.keys(error)).toEqual(["name"]);
     expect(JSON.stringify(error)).toBe('{"name":"LoginFailedError"}');
+  });
+
+  it.each([
+    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
+    ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
+    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
+  ])("reports %s as an opaque indeterminate outcome", async (_label, response) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(response);
+
+    const failure = await submitLogin(USERNAME, PASSWORD).catch((reason: unknown) => reason);
+
+    expect(failure).toBeInstanceOf(IndeterminateAuthenticationError);
+    const error = failure as IndeterminateAuthenticationError;
+    expect(error.message).toBe("authentication_indeterminate");
+    expect(Object.keys(error)).toEqual(["name"]);
+    expect(JSON.stringify(error)).toBe('{"name":"IndeterminateAuthenticationError"}');
   });
 
   it("reports an established session for the documented 200", async () => {
@@ -339,6 +360,14 @@ describe("readEnrollmentOpened", () => {
 });
 
 describe("submitSecondFactor", () => {
+  it("reports a documented gateway timeout as an opaque indeterminate outcome", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(rejectionResponse("gateway_timeout", 504));
+
+    await expect(submitSecondFactor(CONTINUATION, CODE)).rejects.toBeInstanceOf(
+      IndeterminateAuthenticationError,
+    );
+  });
+
   it("submits the continuation and the code in the body of a same-origin PUT", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(establishedResponse());
 
@@ -389,11 +418,11 @@ describe("submitSecondFactor", () => {
 
     const failure = await submitSecondFactor(CONTINUATION, CODE).catch((reason: unknown) => reason);
 
-    expect(failure).toBeInstanceOf(IndeterminateContinuationError);
-    const error = failure as IndeterminateContinuationError;
-    expect(error.message).toBe("continuation_indeterminate");
+    expect(failure).toBeInstanceOf(IndeterminateAuthenticationError);
+    const error = failure as IndeterminateAuthenticationError;
+    expect(error.message).toBe("authentication_indeterminate");
     expect(Object.keys(error)).toEqual(["name"]);
-    expect(JSON.stringify(error)).toBe('{"name":"IndeterminateContinuationError"}');
+    expect(JSON.stringify(error)).toBe('{"name":"IndeterminateAuthenticationError"}');
   });
 });
 
@@ -457,6 +486,14 @@ describe("openEnrollment", () => {
 });
 
 describe("confirmEnrollment", () => {
+  it("reports a documented gateway timeout as an opaque indeterminate outcome", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(rejectionResponse("gateway_timeout", 504));
+
+    await expect(confirmEnrollment(ENROLLMENT, CODE)).rejects.toBeInstanceOf(
+      IndeterminateAuthenticationError,
+    );
+  });
+
   it("submits the enrollment value and the code in the body of a same-origin PUT", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(establishedResponse());
 
@@ -498,11 +535,11 @@ describe("confirmEnrollment", () => {
 
     const failure = await confirmEnrollment(ENROLLMENT, CODE).catch((reason: unknown) => reason);
 
-    expect(failure).toBeInstanceOf(IndeterminateContinuationError);
-    const error = failure as IndeterminateContinuationError;
-    expect(error.message).toBe("continuation_indeterminate");
+    expect(failure).toBeInstanceOf(IndeterminateAuthenticationError);
+    const error = failure as IndeterminateAuthenticationError;
+    expect(error.message).toBe("authentication_indeterminate");
     expect(Object.keys(error)).toEqual(["name"]);
-    expect(JSON.stringify(error)).toBe('{"name":"IndeterminateContinuationError"}');
+    expect(JSON.stringify(error)).toBe('{"name":"IndeterminateAuthenticationError"}');
   });
 });
 

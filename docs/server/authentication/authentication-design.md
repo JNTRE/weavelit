@@ -138,6 +138,16 @@ simultaneous logins is verified one at a time and each waits for the
 verifications already admitted ahead of it. No other route shares this lane or
 is affected by it; only the login route's own concurrency is bounded this way.
 
+A listener response deadline does not cancel admitted blocking authentication
+work. A direct session login, second-factor verification, or enrollment
+confirmation may therefore finish its transaction and issue a session after the
+listener returned its stable `gateway_timeout` response or the browser lost the
+response. Only a valid success response or a later authenticated session proves
+that outcome; a negative session observation at one instant proves neither
+refusal nor that the transaction will not commit later. The [Web UI Application
+Design](../../clients/web-ui/web-ui-application-design.md#second-factor-steps)
+owns the bounded client reconciliation that applies this residual.
+
 ## Session Representation
 
 A session token is an opaque 32-byte random value encoded as unpadded
@@ -145,6 +155,11 @@ Base64url. The Application Database stores only the token's SHA-256 hash and
 its lifecycle metadata; the plaintext token is never persisted. The Server
 issues the session in a `__Host-weavelit_session` cookie with `Secure`,
 `HttpOnly`, `SameSite=Strict`, `Path=/`, and no `Domain` attribute.
+
+The raw entropy that produces session, CSRF, and continuation bearer values is
+filled directly into zeroizing storage and remains there through Base64url
+encoding. The encoded bearer itself is also held in a clearing owner; the Server
+does not leave an application-owned ordinary random-byte array after encoding.
 
 The session uses a balanced lifetime policy: a 30-minute idle timeout, a
 12-hour absolute maximum, and a browser-session cookie carrying no `Max-Age`

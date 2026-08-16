@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type JSX } from "react";
 
 import {
-  IndeterminateContinuationError,
+  IndeterminateAuthenticationError,
   MFA_CODE_DIGITS,
   MFA_CODE_PATTERN,
   confirmEnrollment,
@@ -61,6 +61,14 @@ const ATTEMPT_ENDED_MESSAGE =
 
 const AUTHENTICATED_MESSAGE = "You are signed in.";
 
+const INDETERMINATE_MESSAGE = "Your sign-in outcome is still being checked.";
+const CHECKING_MESSAGE = "Checking whether your sign-in completed.";
+const CHECK_AGAIN_LABEL = "Check again";
+
+// Three probes over thirty seconds allow a delayed blocking commit to appear
+// while keeping automatic reconciliation at six probes per minute or fewer.
+const RECONCILIATION_RETRY_DELAYS_MS = [10_000, 20_000] as const;
+
 const USERNAME_INPUT_ID = "weavelit-login-username";
 const PASSWORD_INPUT_ID = "weavelit-login-password";
 const CODE_INPUT_ID = "weavelit-login-code";
@@ -85,6 +93,7 @@ type LoginViewState =
   | "submitting"
   | "failed"
   | "attempt-ended"
+  | "indeterminate"
   | "second-factor"
   | "second-factor-submitting"
   | "enrollment"
@@ -123,12 +132,20 @@ export function LoginPanel(): JSX.Element | null {
   const [continuation, setContinuation] = useState("");
   const [provisioning, setProvisioning] = useState<EnrollmentOpened | null>(null);
   const [state, setState] = useState<LoginViewState>("checking");
+  const [reconciling, setReconciling] = useState(false);
   const mounted = useRef(true);
+  const reconciliationAttempt = useRef(0);
+  const reconciliationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      reconciliationAttempt.current += 1;
+      if (reconciliationTimer.current !== null) {
+        clearTimeout(reconciliationTimer.current);
+        reconciliationTimer.current = null;
+      }
     };
   }, []);
 
@@ -157,26 +174,58 @@ export function LoginPanel(): JSX.Element | null {
 
   /** Settles the attempt and drops every one-time value it was holding. */
   const endAttempt = useCallback((settled: LoginViewState) => {
+    setPassword("");
     setCode("");
     setContinuation("");
     setProvisioning(null);
     setState(settled);
   }, []);
 
-  const reconcileIndeterminateContinuation = useCallback(() => {
-    void probeSession().then((probe) => {
-      if (!mounted.current) {
+  const reconcileIndeterminateAuthentication = useCallback(() => {
+    if (reconciling) {
+      return;
+    }
+    if (reconciliationTimer.current !== null) {
+      clearTimeout(reconciliationTimer.current);
+      reconciliationTimer.current = null;
+    }
+
+    endAttempt("indeterminate");
+    setReconciling(true);
+    reconciliationAttempt.current += 1;
+    const attempt = reconciliationAttempt.current;
+
+    const probe = (retry: number): void => {
+      if (!mounted.current || reconciliationAttempt.current !== attempt) {
         return;
       }
-      endAttempt(
-        probe.kind === "authenticated"
-          ? "authenticated"
-          : probe.kind === "unauthenticated"
-            ? "attempt-ended"
-            : "absent",
-      );
-    });
-  }, [endAttempt]);
+      void probeSession().then((result) => {
+        if (!mounted.current || reconciliationAttempt.current !== attempt) {
+          return;
+        }
+        if (result.kind === "authenticated") {
+          reconciliationTimer.current = null;
+          setReconciling(false);
+          endAttempt("authenticated");
+          return;
+        }
+
+        const delay = RECONCILIATION_RETRY_DELAYS_MS[retry];
+        if (delay === undefined) {
+          reconciliationTimer.current = null;
+          setReconciling(false);
+          setState("indeterminate");
+          return;
+        }
+        reconciliationTimer.current = setTimeout(() => {
+          reconciliationTimer.current = null;
+          probe(retry + 1);
+        }, delay);
+      });
+    };
+
+    probe(0);
+  }, [endAttempt, reconciling]);
 
   const submit = useCallback(() => {
     if (username === "" || password === "") {
@@ -208,14 +257,17 @@ export function LoginPanel(): JSX.Element | null {
           },
         );
       },
-      () => {
-        setPassword("");
+      (error: unknown) => {
+        if (error instanceof IndeterminateAuthenticationError) {
+          reconcileIndeterminateAuthentication();
+          return;
+        }
         // Every rejection presents identically, so the reason is discarded
         // here rather than inspected. There is nothing in it to render.
         endAttempt("failed");
       },
     );
-  }, [username, password, endAttempt]);
+  }, [username, password, endAttempt, reconcileIndeterminateAuthentication]);
 
   const submitCode = useCallback(() => {
     if (!MFA_CODE_PATTERN.test(code) || continuation === "") {
@@ -227,14 +279,14 @@ export function LoginPanel(): JSX.Element | null {
         endAttempt("authenticated");
       },
       (error: unknown) => {
-        if (error instanceof IndeterminateContinuationError) {
-          reconcileIndeterminateContinuation();
+        if (error instanceof IndeterminateAuthenticationError) {
+          reconcileIndeterminateAuthentication();
           return;
         }
         endAttempt("attempt-ended");
       },
     );
-  }, [code, continuation, endAttempt, reconcileIndeterminateContinuation]);
+  }, [code, continuation, endAttempt, reconcileIndeterminateAuthentication]);
 
   const submitEnrollmentCode = useCallback(() => {
     if (!MFA_CODE_PATTERN.test(code) || provisioning === null) {
@@ -246,14 +298,14 @@ export function LoginPanel(): JSX.Element | null {
         endAttempt("authenticated");
       },
       (error: unknown) => {
-        if (error instanceof IndeterminateContinuationError) {
-          reconcileIndeterminateContinuation();
+        if (error instanceof IndeterminateAuthenticationError) {
+          reconcileIndeterminateAuthentication();
           return;
         }
         endAttempt("attempt-ended");
       },
     );
-  }, [code, provisioning, endAttempt, reconcileIndeterminateContinuation]);
+  }, [code, provisioning, endAttempt, reconcileIndeterminateAuthentication]);
 
   if (state === "checking" || state === "absent") {
     return null;
@@ -318,6 +370,21 @@ export function LoginPanel(): JSX.Element | null {
               {ATTEMPT_ENDED_MESSAGE}
             </p>
           ) : null}
+        </>
+      ) : null}
+      {state === "indeterminate" ? (
+        <>
+          <p className="shell__login-indeterminate" role="status">
+            {reconciling ? CHECKING_MESSAGE : INDETERMINATE_MESSAGE}
+          </p>
+          <button
+            type="button"
+            className="shell__login-action"
+            onClick={reconcileIndeterminateAuthentication}
+            disabled={reconciling}
+          >
+            {CHECK_AGAIN_LABEL}
+          </button>
         </>
       ) : null}
       {state === "second-factor" || state === "second-factor-submitting" ? (
