@@ -34,6 +34,17 @@ impl TimeStep {
 pub struct TotpSecret(Zeroizing<[u8; SECRET_LENGTH]>);
 
 impl TotpSecret {
+    /// Adopts an already protected fixed-length secret without another copy.
+    ///
+    /// Server-owned callers use this when the bytes already live in zeroizing
+    /// storage, such as fresh operating-system entropy or decrypted factor
+    /// data. The module never generates the bytes itself; randomness has one
+    /// owner and it is not this crate.
+    #[must_use]
+    pub fn from_zeroizing(bytes: Zeroizing<[u8; SECRET_LENGTH]>) -> Self {
+        Self(bytes)
+    }
+
     /// Adopts the secret bytes the Server drew from the operating system.
     ///
     /// The parameter is a fixed-length array, so a secret of any other size,
@@ -42,7 +53,7 @@ impl TotpSecret {
     /// one owner and it is not this crate.
     #[must_use]
     pub fn from_bytes(bytes: [u8; SECRET_LENGTH]) -> Self {
-        Self(Zeroizing::new(bytes))
+        Self::from_zeroizing(Zeroizing::new(bytes))
     }
 
     /// Returns the secret's unpadded RFC 4648 Base32 encoding.
@@ -146,6 +157,14 @@ mod tests {
         assert_eq!(encoded.expose(), RFC_6238_BASE32);
         assert_eq!(encoded.expose().len(), 32);
         assert!(!encoded.expose().contains('='));
+    }
+
+    #[test]
+    fn adoption_of_a_zeroizing_rfc_secret_preserves_its_known_base32_and_code() {
+        let secret = TotpSecret::from_zeroizing(Zeroizing::new(RFC_6238_SECRET));
+
+        assert_eq!(secret.base32().expose(), RFC_6238_BASE32);
+        assert_eq!(secret.verify("287082", 59), Some(TimeStep(1)));
     }
 
     #[test]

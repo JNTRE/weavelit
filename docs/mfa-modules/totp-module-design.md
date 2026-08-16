@@ -13,12 +13,16 @@ responsibilities defined in the
 
 ## Profile And Secret Handling
 
-The compiled-in TOTP MFA Module uses the `totp-rs` library and the RFC 6238
-profile: HMAC-SHA-1, 6 digits, a 30-second period, and `T0=0`. A secret is a
-random 160-bit value stored as unpadded RFC 4648 Base32 and is provisioned
-through an `otpauth://` URI disclosed exactly once. The Server supplies the
-twenty secret bytes from the operating-system random source; the Module never
-generates them. The Module holds the secret and the provisioning URI in
+The compiled-in **[Time-Based One-Time Password (TOTP)](../glossary.md#identities-and-access)**
+**[MFA Module](../glossary.md#applications-and-interfaces)** uses the `totp-rs`
+library and the RFC 6238 profile: HMAC-SHA-1, 6 digits, a 30-second period, and
+`T0=0`. A secret is a random 160-bit value stored as unpadded RFC 4648 Base32
+and is provisioned through an `otpauth://` URI disclosed exactly once. The
+Server supplies the twenty secret bytes from the operating-system random source
+directly into zeroizing storage; the Module never generates them. Fresh
+enrollment retains a separate zeroizing copy only for the pending confirmation,
+and decrypted factor data is copied into zeroizing storage before the Module
+adopts it. The Module holds the secret and the provisioning URI in
 zeroizing types that redact in `Debug`, so neither can reach a log, an error,
 or a response body except through an explicit disclosure. Verification accepts
 the current time step and one step on either side. The Module derives and

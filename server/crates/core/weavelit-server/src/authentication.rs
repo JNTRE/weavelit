@@ -904,8 +904,8 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         username: &Name,
     ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
         let unavailable = AuthenticationRejection::ServiceUnavailable;
-        let bytes = random_bytes::<SECRET_LENGTH>().ok_or(unavailable)?;
-        let secret = TotpSecret::from_bytes(bytes);
+        let bytes = random_totp_secret().ok_or(unavailable)?;
+        let secret = TotpSecret::from_zeroizing(bytes.clone());
         let base32 = secret.base32();
         let uri = secret
             .provisioning_uri(
@@ -919,7 +919,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         let enrollment = self.continuations.issue(PendingClaim::EnrollmentConfirm {
             account,
             client_module,
-            secret: Zeroizing::new(bytes),
+            secret: bytes,
         })?;
 
         Ok(MfaEnrollmentOpened {
@@ -965,7 +965,9 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         };
 
         let unavailable = AuthenticationRejection::ServiceUnavailable;
-        let Some(step) = TotpSecret::from_bytes(*secret).verify(code, unix_seconds(now)?) else {
+        let Some(step) =
+            TotpSecret::from_zeroizing(secret.clone()).verify(code, unix_seconds(now)?)
+        else {
             return Err(self.deny(correlation_id));
         };
         let step = MfaTimeStep::from_step(step.as_u64()).map_err(|_| unavailable)?;
@@ -1044,8 +1046,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                 &factor.protected_factor_data,
             )
             .map_err(|_| unavailable)?;
-        let bytes: [u8; SECRET_LENGTH] = opened.as_slice().try_into().map_err(|_| unavailable)?;
-        Ok(TotpSecret::from_bytes(bytes))
+        if opened.len() != SECRET_LENGTH {
+            return Err(unavailable);
+        }
+        let mut bytes = Zeroizing::new([0_u8; SECRET_LENGTH]);
+        bytes.copy_from_slice(opened.as_slice());
+        Ok(TotpSecret::from_zeroizing(bytes))
     }
 
     /// Issues one continuation for a claim this runtime already decided.
@@ -1559,6 +1565,13 @@ fn open_system_log(
 pub(crate) fn random_bytes<const BYTES: usize>() -> Option<[u8; BYTES]> {
     let mut bytes = [0_u8; BYTES];
     getrandom::fill(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// Fills a zeroizing TOTP-secret buffer from operating-system randomness.
+fn random_totp_secret() -> Option<Zeroizing<[u8; SECRET_LENGTH]>> {
+    let mut bytes = Zeroizing::new([0_u8; SECRET_LENGTH]);
+    getrandom::fill(&mut *bytes).ok()?;
     Some(bytes)
 }
 
