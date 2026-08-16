@@ -315,11 +315,12 @@ pub fn validate_mfa_session_request(
 /// accepts its JSON array form, which would let a bearer value or a code be
 /// submitted through a shape the API contract does not document. An unknown
 /// field, a duplicate key, a missing field, a wrongly typed value, and the
-/// array form are all rejected.
+/// array form are all rejected. Each secret is wrapped as it is read, so a
+/// later rejection clears every decoded secret owner.
 macro_rules! strict_body {
     ($name:ident, $expecting:literal, $($field:ident),+ $(,)?) => {
         struct $name {
-            $($field: String,)+
+            $($field: Zeroizing<String>,)+
         }
 
         impl<'de> Deserialize<'de> for $name {
@@ -339,7 +340,7 @@ macro_rules! strict_body {
                         self,
                         mut map: M,
                     ) -> Result<Self::Value, M::Error> {
-                        $(let mut $field: Option<String> = None;)+
+                        $(let mut $field: Option<Zeroizing<String>> = None;)+
                         while let Some(key) = map.next_key::<String>()? {
                             match key.as_str() {
                                 $(stringify!($field) => {
@@ -348,7 +349,7 @@ macro_rules! strict_body {
                                             stringify!($field),
                                         ));
                                     }
-                                    $field = Some(map.next_value()?);
+                                    $field = Some(Zeroizing::new(map.next_value()?));
                                 })+
                                 unknown => {
                                     return Err(de::Error::unknown_field(unknown, FIELDS));
@@ -463,11 +464,13 @@ fn parse_body<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, Authentica
 /// core, so a malformed submission costs no store lookup. It is refused as a
 /// denied submission rather than as a malformed request, so a client cannot
 /// learn the accepted shape by watching which status it receives.
-fn submitted_bearer(value: String) -> Result<Zeroizing<String>, AuthenticationRejection> {
+fn submitted_bearer(
+    value: Zeroizing<String>,
+) -> Result<Zeroizing<String>, AuthenticationRejection> {
     if CookieValue::new(&value).is_none() {
         return Err(AuthenticationRejection::AuthenticationFailed);
     }
-    Ok(Zeroizing::new(value))
+    Ok(value)
 }
 
 /// Accepts only a value shaped like a code this profile issues.
@@ -475,13 +478,13 @@ fn submitted_bearer(value: String) -> Result<Zeroizing<String>, AuthenticationRe
 /// Shape alone is checked here; whether the digits are the right ones is
 /// decided by the Server core against a secret this crate never sees. A wrong
 /// shape and a wrong code are the same refusal.
-fn submitted_code(value: String) -> Result<Zeroizing<String>, AuthenticationRejection> {
+fn submitted_code(value: Zeroizing<String>) -> Result<Zeroizing<String>, AuthenticationRejection> {
     let accepted =
         value.len() == MFA_CODE_DIGITS && value.bytes().all(|byte| byte.is_ascii_digit());
     if !accepted {
         return Err(AuthenticationRejection::AuthenticationFailed);
     }
-    Ok(Zeroizing::new(value))
+    Ok(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -936,6 +939,39 @@ mod tests {
         }
     }
 
+    /// Pins every generated strict-body secret field to the clearing owner.
+    ///
+    /// The explicit type annotations make a regression to `String` fail to
+    /// compile, including on parser rejection paths where a returned body is
+    /// unavailable for observation.
+    #[test]
+    fn strict_mfa_body_secret_fields_are_zeroizing_strings() {
+        let parsed = parse_body_wiped::<VerifyBody, _>(
+            format!("{{\"continuation\":\"{CONTINUATION}\",\"code\":\"287082\"}}").into_bytes(),
+        )
+        .expect("the verification body parses");
+        let continuation: Zeroizing<String> = parsed.continuation;
+        let code: Zeroizing<String> = parsed.code;
+        assert_eq!(continuation.as_str(), CONTINUATION);
+        assert_eq!(code.as_str(), "287082");
+
+        let parsed = parse_body_wiped::<EnrollmentBody, _>(
+            format!("{{\"continuation\":\"{CONTINUATION}\"}}").into_bytes(),
+        )
+        .expect("the enrollment body parses");
+        let continuation: Zeroizing<String> = parsed.continuation;
+        assert_eq!(continuation.as_str(), CONTINUATION);
+
+        let parsed = parse_body_wiped::<ConfirmBody, _>(
+            format!("{{\"enrollment\":\"{ENROLLMENT}\",\"code\":\"287082\"}}").into_bytes(),
+        )
+        .expect("the enrollment confirmation body parses");
+        let enrollment: Zeroizing<String> = parsed.enrollment;
+        let code: Zeroizing<String> = parsed.code;
+        assert_eq!(enrollment.as_str(), ENROLLMENT);
+        assert_eq!(code.as_str(), "287082");
+    }
+
     #[test]
     fn every_second_factor_body_is_cleared_on_the_parsed_and_rejected_paths_alike() {
         assert_cleared::<VerifyBody>(&format!(
@@ -946,6 +982,38 @@ mod tests {
             "{{\"enrollment\":\"{ENROLLMENT}\",\"code\":\"287082\"}}"
         ));
         assert_cleared::<SelfEnrollmentBody>("{\"password\":\"correct horse battery staple\"}");
+    }
+
+    #[test]
+    fn decoded_mfa_secrets_remain_in_clearing_owners_on_every_parse_rejection() {
+        for body in [
+            format!(
+                "{{\"continuation\":\"{CONTINUATION}\",\"code\":\"287082\",\"code\":\"287082\"}}"
+            ),
+            format!("{{\"continuation\":\"{CONTINUATION}\",\"code\":\"287082\",\"unknown\":true}}"),
+            format!("{{\"continuation\":\"{CONTINUATION}\"}}"),
+            format!("{{\"continuation\":\"{CONTINUATION}\",\"code\":\"287082\"}} trailing"),
+        ] {
+            assert_rejected_and_cleared::<VerifyBody>(&body);
+        }
+
+        for body in [
+            format!("{{\"continuation\":\"{CONTINUATION}\",\"continuation\":\"{CONTINUATION}\"}}"),
+            format!("{{\"continuation\":\"{CONTINUATION}\",\"unknown\":true}}"),
+            "{}".to_owned(),
+            format!("{{\"continuation\":\"{CONTINUATION}\"}} trailing"),
+        ] {
+            assert_rejected_and_cleared::<EnrollmentBody>(&body);
+        }
+
+        for body in [
+            format!("{{\"enrollment\":\"{ENROLLMENT}\",\"code\":\"287082\",\"code\":\"287082\"}}"),
+            format!("{{\"enrollment\":\"{ENROLLMENT}\",\"code\":\"287082\",\"unknown\":true}}"),
+            format!("{{\"enrollment\":\"{ENROLLMENT}\"}}"),
+            format!("{{\"enrollment\":\"{ENROLLMENT}\",\"code\":\"287082\"}} trailing"),
+        ] {
+            assert_rejected_and_cleared::<ConfirmBody>(&body);
+        }
     }
 
     /// Asserts that `body` and a malformed variant of it are both cleared.
@@ -974,24 +1042,59 @@ mod tests {
         assert!(!released.is_empty());
     }
 
+    fn assert_rejected_and_cleared<T: for<'de> Deserialize<'de>>(body: &str) {
+        let (parsed, released) = parse_and_observe(body, parse_body_wiped::<T, _>);
+        assert_eq!(
+            parsed.err(),
+            Some(AuthenticationRejection::BadRequest),
+            "the malformed body must be refused: {body}"
+        );
+        assert_eq!(
+            released,
+            vec![0u8; released.len()],
+            "a rejected body must leave no readable secret bytes behind: {body}"
+        );
+        assert!(!released.is_empty());
+    }
+
     #[tokio::test]
     async fn a_malformed_bearer_or_code_is_refused_as_a_denied_submission() {
-        for body in [
-            "{\"continuation\":\"not a token\",\"code\":\"287082\"}".to_owned(),
-            format!("{{\"continuation\":\"{CONTINUATION}\",\"code\":\"28708\"}}"),
-            format!("{{\"continuation\":\"{CONTINUATION}\",\"code\":\"28708a\"}}"),
-            format!("{{\"continuation\":\"{CONTINUATION}\",\"code\":\"2870822\"}}"),
+        for (route, body) in [
+            (
+                AUTH_MFA_VERIFY_ROUTE,
+                "{\"continuation\":\"not a token\",\"code\":\"287082\"}".to_owned(),
+            ),
+            (
+                AUTH_MFA_ENROLLMENT_ROUTE,
+                "{\"continuation\":\"not a token\"}".to_owned(),
+            ),
+            (
+                AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+                "{\"enrollment\":\"not a token\",\"code\":\"287082\"}".to_owned(),
+            ),
+            (
+                AUTH_MFA_VERIFY_ROUTE,
+                format!("{{\"continuation\":\"{CONTINUATION}\",\"code\":\"28708\"}}"),
+            ),
+            (
+                AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+                format!("{{\"enrollment\":\"{ENROLLMENT}\",\"code\":\"28708\"}}"),
+            ),
         ] {
-            let response = answered(submission(AUTH_MFA_VERIFY_ROUTE, &body)).await;
+            let response = answered(submission(route, &body)).await;
 
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{body}");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{route} {body}"
+            );
             assert_eq!(
                 envelope(&response),
                 format!(
                     "{{\"error\":\"authentication_failed\",\
                      \"correlation_id\":\"{CORRELATION}\"}}"
                 ),
-                "{body}"
+                "{route} {body}"
             );
         }
     }
