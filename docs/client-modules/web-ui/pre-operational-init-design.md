@@ -256,6 +256,11 @@ without variation. The collected request buffer is taken into sole ownership
 before it is read and is cleared when that ownership ends, on the accepted path
 and on every rejection path alike.
 
+The parser places every decoded protected Log Module setting value in a
+clearing owner as it is read. A duplicate, unknown, missing, or later trailing
+content rejection therefore drops a clearing owner rather than a standalone
+plaintext allocation.
+
 That contract's limits apply here unchanged: the clear is defense in depth
 rather than a whole-process guarantee, because the transport layer's own read
 buffers are outside this surface, and a buffer this surface cannot take sole

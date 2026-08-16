@@ -773,17 +773,41 @@ struct ProtectedSettingBody {
 
 impl<'de> Deserialize<'de> for ProtectedSettingBody {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (key, value) = deserialize_setting(deserializer, "a protected setting object")?;
-        Ok(ProtectedSettingBody {
-            key,
-            // The parsed allocation is moved rather than copied, so the only
-            // plaintext copy of the value is the one that clears on drop.
-            value: Zeroizing::new(value),
-        })
+        struct BodyVisitor;
+
+        impl<'de> Visitor<'de> for BodyVisitor {
+            type Value = ProtectedSettingBody;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a protected setting object")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut key: Option<String> = None;
+                let mut value: Option<Zeroizing<String>> = None;
+                while let Some(field) = map.next_key::<String>()? {
+                    match field.as_str() {
+                        "key" => assign(&mut key, map.next_value()?, "key")?,
+                        "value" => {
+                            assign(&mut value, Zeroizing::new(map.next_value()?), "value")?;
+                        }
+                        unknown => {
+                            return Err(de::Error::unknown_field(unknown, &["key", "value"]));
+                        }
+                    }
+                }
+                Ok(ProtectedSettingBody {
+                    key: key.ok_or_else(|| de::Error::missing_field("key"))?,
+                    value: value.ok_or_else(|| de::Error::missing_field("value"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(BodyVisitor)
     }
 }
 
-/// Parses the `{"key":...,"value":...}` shape both setting objects share.
+/// Parses the `{"key":...,"value":...}` shape for a non-secret setting.
 fn deserialize_setting<'de, D: Deserializer<'de>>(
     deserializer: D,
     expecting: &'static str,
@@ -990,9 +1014,9 @@ mod tests {
 
     use super::{
         INIT_ROUTE, InitBody, InitBodySeed, InitCompleted, InitRecoveryKeyPrepared, InitRejection,
-        MAX_INIT_BODY_BYTES, MAX_INIT_LOG_MODULES, ProofPolicy, RECOVERY_PROOF_BASE64_CHARS,
-        init_completed_response, init_recovery_key_prepared_response, parse_init_body,
-        parse_init_body_wiped, submitted_recovery_proof, validate_init_request,
+        MAX_INIT_BODY_BYTES, MAX_INIT_LOG_MODULES, ProofPolicy, ProtectedSettingBody,
+        RECOVERY_PROOF_BASE64_CHARS, init_completed_response, init_recovery_key_prepared_response,
+        parse_init_body, parse_init_body_wiped, submitted_recovery_proof, validate_init_request,
     };
     use crate::{
         CSRF_HEADER_NAME, ExpectedOrigin, SelectedBackend, typed_json::TypedJsonEnvelope,
@@ -1125,6 +1149,54 @@ mod tests {
         let parsed = parse_init_body(without.as_bytes(), ProofPolicy::Forbidden)
             .expect("an omitted display name must be accepted");
         assert_eq!(parsed.request.administrator.display_name, None);
+    }
+
+    #[test]
+    fn protected_setting_values_use_a_zeroizing_decode_owner() {
+        let setting = format!("{{\"key\":\"token\",\"value\":\"{SECRET_SETTING}\"}}");
+        let mut deserializer = serde_json::Deserializer::from_slice(setting.as_bytes());
+        let parsed = <ProtectedSettingBody as serde::Deserialize>::deserialize(&mut deserializer)
+            .expect("the protected setting fixture must parse");
+        let value: Zeroizing<String> = parsed.value;
+        assert_eq!(value.as_str(), SECRET_SETTING);
+    }
+
+    #[test]
+    fn protected_setting_values_clear_on_value_first_parse_rejections() {
+        let value_first = format!("\"key\":\"token\",\"value\":\"{SECRET_SETTING}\"");
+        for (rejection, body) in [
+            (
+                "duplicate value",
+                body(None).replace(
+                    &value_first,
+                    &format!("{value_first},\"value\":\"{SECRET_SETTING}\""),
+                ),
+            ),
+            (
+                "unknown field",
+                body(None).replace(&value_first, &format!("{value_first},\"unknown\":true")),
+            ),
+            (
+                "missing key",
+                body(None).replace(&value_first, &format!("\"value\":\"{SECRET_SETTING}\"")),
+            ),
+            ("trailing content", format!("{} trailing", body(None))),
+        ] {
+            let (parsed, released) = parse_and_observe(&body, |buffer| {
+                parse_init_body_wiped(buffer, ProofPolicy::Forbidden)
+            });
+            assert_eq!(
+                parsed.err(),
+                Some(InitRejection::BadRequest),
+                "the {rejection} body must be refused"
+            );
+            assert_eq!(
+                released,
+                vec![0u8; released.len()],
+                "the {rejection} body must leave no readable secret bytes behind"
+            );
+            assert!(!released.is_empty());
+        }
     }
 
     #[test]
