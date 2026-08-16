@@ -68,6 +68,14 @@ pub const MAX_PROVISIONING_URI_BYTES: usize = 288;
 /// response past the bound the listener would redact it for.
 pub const MAX_RECOVERY_KEY_LINE_BYTES: usize = 128;
 
+/// Capacity reserved before any typed envelope is serialized.
+///
+/// The closed envelope shapes below can construct at most 504 bytes, so this
+/// 512-byte capacity is both the listener's enforced typed-body bound and
+/// enough to prevent appending a secret result value from reallocating a prior
+/// plaintext allocation.
+pub const MAX_TYPED_JSON_BODY_BYTES: usize = 512;
+
 /// A stable, lowercase, dependency-neutral code or result field name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StableCode(String);
@@ -102,7 +110,7 @@ impl StableCode {
 /// The wrapped value is a bearer secret, so this type renders nothing: it
 /// implements neither `Debug` nor `Display`, and no comparison.
 #[derive(Clone)]
-pub struct OpaqueToken(String);
+pub struct OpaqueToken(Zeroizing<String>);
 
 impl OpaqueToken {
     /// Accepts only `[A-Za-z0-9_-]` within the token bound.
@@ -117,11 +125,11 @@ impl OpaqueToken {
         {
             return None;
         }
-        Some(Self(value.to_owned()))
+        Some(Self(Zeroizing::new(value.to_owned())))
     }
 
     fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -136,7 +144,7 @@ impl OpaqueToken {
 /// The wrapped value is one-time provisioning data, so this type renders
 /// nothing: it implements neither `Debug` nor `Display`, and no comparison.
 #[derive(Clone)]
-pub struct ProvisioningUri(String);
+pub struct ProvisioningUri(Zeroizing<String>);
 
 impl ProvisioningUri {
     /// Accepts only `[A-Za-z0-9-._~%:/?&=]` within the provisioning bound.
@@ -154,11 +162,11 @@ impl ProvisioningUri {
         }) {
             return None;
         }
-        Some(Self(value.to_owned()))
+        Some(Self(Zeroizing::new(value.to_owned())))
     }
 
     fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -193,7 +201,7 @@ impl RecoveryKeyLine {
     }
 
     fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -290,13 +298,14 @@ pub enum TypedJsonEnvelope {
 impl TypedJsonEnvelope {
     /// Serializes the envelope into its approved wire shape.
     #[must_use]
-    pub fn serialize(&self) -> String {
+    pub fn serialize(&self) -> Zeroizing<String> {
+        let mut text = Zeroizing::new(String::with_capacity(MAX_TYPED_JSON_BODY_BYTES));
         match self {
             Self::Result {
                 result,
                 correlation_id,
             } => {
-                let mut text = String::from("{\"result\":{");
+                text.push_str("{\"result\":{");
                 for (index, (name, value)) in result.fields.iter().enumerate() {
                     if index > 0 {
                         text.push(',');
@@ -333,11 +342,15 @@ impl TypedJsonEnvelope {
             Self::Error {
                 error,
                 correlation_id,
-            } => format!(
-                "{{\"error\":\"{}\",\"correlation_id\":\"{}\"}}",
-                error.as_str(),
-                correlation_id.as_str()
-            ),
+            } => {
+                let _ = write!(
+                    text,
+                    "{{\"error\":\"{}\",\"correlation_id\":\"{}\"}}",
+                    error.as_str(),
+                    correlation_id.as_str()
+                );
+                text
+            }
         }
     }
 }
@@ -378,10 +391,11 @@ pub fn typed_json_response_with_cookies(
 mod tests {
     use super::{
         MAX_OPAQUE_TOKEN_BYTES, MAX_PROVISIONING_URI_BYTES, MAX_RECOVERY_KEY_LINE_BYTES,
-        MAX_RESPONSE_CORRELATION_BYTES, MAX_STABLE_CODE_BYTES, MAX_TYPED_RESULT_FIELDS,
-        OpaqueToken, ProvisioningUri, RecoveryKeyLine, ResponseCorrelation, StableCode,
-        TypedJsonEnvelope, TypedResult, TypedValue,
+        MAX_RESPONSE_CORRELATION_BYTES, MAX_STABLE_CODE_BYTES, MAX_TYPED_JSON_BODY_BYTES,
+        MAX_TYPED_RESULT_FIELDS, OpaqueToken, ProvisioningUri, RecoveryKeyLine,
+        ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
     };
+    use zeroize::Zeroizing;
 
     fn correlation() -> ResponseCorrelation {
         ResponseCorrelation::new(&"c".repeat(MAX_RESPONSE_CORRELATION_BYTES)).unwrap()
@@ -394,6 +408,8 @@ mod tests {
     fn longest_token() -> OpaqueToken {
         OpaqueToken::new(&"a".repeat(MAX_OPAQUE_TOKEN_BYTES)).unwrap()
     }
+
+    fn assert_clearing_string(_: &Zeroizing<String>) {}
 
     #[test]
     fn stable_codes_accept_only_the_closed_character_set() {
@@ -513,6 +529,24 @@ mod tests {
     }
 
     #[test]
+    fn typed_secret_values_and_serialized_envelopes_use_clearing_owners() {
+        let token = longest_token();
+        let uri = ProvisioningUri::new(&"a".repeat(MAX_PROVISIONING_URI_BYTES)).unwrap();
+        let recovery_key = RecoveryKeyLine::new(&"A".repeat(MAX_RECOVERY_KEY_LINE_BYTES)).unwrap();
+        assert_clearing_string(&token.0);
+        assert_clearing_string(&uri.0);
+        assert_clearing_string(&recovery_key.0);
+
+        let serialized = TypedJsonEnvelope::Error {
+            error: longest_code(),
+            correlation_id: correlation(),
+        }
+        .serialize();
+        assert_clearing_string(&serialized);
+        assert_eq!(serialized.capacity(), MAX_TYPED_JSON_BODY_BYTES);
+    }
+
+    #[test]
     fn both_envelopes_serialize_to_their_approved_shapes() {
         let correlation = ResponseCorrelation::new("restore-0123456789").unwrap();
         let error = TypedJsonEnvelope::Error {
@@ -520,7 +554,7 @@ mod tests {
             correlation_id: correlation.clone(),
         };
         assert_eq!(
-            error.serialize(),
+            error.serialize().as_str(),
             "{\"error\":\"restore_pending\",\"correlation_id\":\"restore-0123456789\"}"
         );
 
@@ -546,7 +580,7 @@ mod tests {
             correlation_id: correlation.clone(),
         };
         assert_eq!(
-            result.serialize(),
+            result.serialize().as_str(),
             "{\"result\":{\"accepted\":true,\"bytes\":0,\"state\":\"uninitialized\",\
              \"restore_ticket\":\"Ab0-_zZ9\"},\"correlation_id\":\"restore-0123456789\"}"
         );
@@ -556,7 +590,7 @@ mod tests {
             correlation_id: correlation,
         };
         assert_eq!(
-            empty.serialize(),
+            empty.serialize().as_str(),
             "{\"result\":{},\"correlation_id\":\"restore-0123456789\"}"
         );
     }

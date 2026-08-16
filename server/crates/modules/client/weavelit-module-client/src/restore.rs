@@ -557,6 +557,7 @@ mod tests {
             .get::<TypedJsonEnvelope>()
             .expect("a Restore success renders a typed envelope")
             .serialize()
+            .to_string()
     }
 
     /// Parses a recovery-key body through a buffer that observes its own wipe.

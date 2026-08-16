@@ -875,7 +875,7 @@ mod tests {
         response
             .extensions()
             .get::<TypedJsonEnvelope>()
-            .map_or_else(String::new, TypedJsonEnvelope::serialize)
+            .map_or_else(String::new, |envelope| envelope.serialize().to_string())
     }
 
     fn cookie_effect(response: &axum::response::Response) -> Option<String> {
@@ -1229,7 +1229,7 @@ mod tests {
                 .expect("a rejection must carry a typed envelope")
                 .serialize();
             assert_eq!(
-                envelope,
+                envelope.as_str(),
                 format!(
                     "{{\"error\":\"{}\",\"correlation_id\":\"correlation-0123456789\"}}",
                     rejection.code()

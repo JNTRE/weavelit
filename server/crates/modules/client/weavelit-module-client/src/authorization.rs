@@ -166,7 +166,7 @@ mod tests {
         let envelope = response
             .extensions()
             .get::<TypedJsonEnvelope>()
-            .map(TypedJsonEnvelope::serialize);
+            .map(|envelope| envelope.serialize().to_string());
         let cookies = response.extensions().get::<CookieEffect>().is_some();
         let mut headers = response
             .headers()

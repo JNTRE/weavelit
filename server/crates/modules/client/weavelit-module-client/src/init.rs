@@ -1083,6 +1083,7 @@ mod tests {
             .get::<TypedJsonEnvelope>()
             .expect("an Init success renders a typed envelope")
             .serialize()
+            .to_string()
     }
 
     /// Returns only the rejection side, so a schema expectation never depends

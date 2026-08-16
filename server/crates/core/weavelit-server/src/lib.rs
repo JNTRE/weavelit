@@ -60,6 +60,7 @@ use weavelit_server_lifecycle::{
 };
 use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::{Name, TOTAL_REQUEST_DEADLINE};
+use zeroize::{Zeroize, Zeroizing};
 
 pub mod authentication;
 pub mod authorization;
@@ -74,7 +75,7 @@ use operational::{
     ActiveDatabase, OperationalComposer, OperationalDatabase, OperationalMount, OperationalRuntime,
 };
 use transport::{HeadRead, MountedSurface, ProcessingDeadline, TransportCapability};
-use typed_json::TypedJsonEnvelope;
+use typed_json::{MAX_TYPED_JSON_BODY_BYTES, TypedJsonEnvelope};
 
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
 const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
@@ -130,14 +131,6 @@ const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
 /// document, two asset, and one status request, plus two immediate reloads.
 const RATE_LIMIT_BURST: u32 = 12;
 const MAX_JSON_BODY_BYTES: usize = 128;
-/// Derived from the typed envelope's own maxima rather than from the fixed
-/// profile's bound: a 48-byte stable code, a correlation identifier at the
-/// canonical 64-byte bound, and at most four result fields, each a 48-byte
-/// name and a 48-byte code value. The largest error envelope is 144 bytes and
-/// the largest result envelope is 504 bytes, so 512 bounds both. The listener
-/// re-checks a serialized envelope against this bound and redacts rather than
-/// truncating, so the derivation is enforced and not merely documented.
-const MAX_TYPED_JSON_BODY_BYTES: usize = 512;
 const MAX_HTML_BODY_BYTES: usize = 16 * 1024;
 const MAX_JAVASCRIPT_BODY_BYTES: usize = 256 * 1024;
 const MAX_CSS_BODY_BYTES: usize = 64 * 1024;
@@ -441,6 +434,49 @@ impl BoundedResponse {
             cookies: None,
             acknowledgement: None,
         }
+    }
+}
+
+/// Owns a typed response allocation until the last [`Bytes`] clone drops.
+struct WipedResponseBody {
+    bytes: Vec<u8>,
+    #[cfg(test)]
+    drop_observer: Option<WipedResponseDropObserver>,
+}
+
+#[cfg(test)]
+type WipedResponseDropObserver = Box<dyn FnOnce(&[u8]) + Send>;
+
+impl WipedResponseBody {
+    fn from_text(mut text: Zeroizing<String>) -> Self {
+        Self {
+            bytes: std::mem::take(&mut *text).into_bytes(),
+            #[cfg(test)]
+            drop_observer: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_drop_observer(mut self, observer: WipedResponseDropObserver) -> Self {
+        self.drop_observer = Some(observer);
+        self
+    }
+}
+
+impl AsRef<[u8]> for WipedResponseBody {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Drop for WipedResponseBody {
+    fn drop(&mut self) {
+        self.bytes.as_mut_slice().zeroize();
+        #[cfg(test)]
+        if let Some(observer) = self.drop_observer.take() {
+            observer(&self.bytes);
+        }
+        self.bytes.zeroize();
     }
 }
 
@@ -1956,7 +1992,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         return BoundedResponse {
             status,
             profile: ResponseProfile::TypedJson,
-            body: Bytes::from(body),
+            body: Bytes::from_owner(WipedResponseBody::from_text(body)),
             allow,
             cookies,
             acknowledgement,
@@ -2785,16 +2821,16 @@ pub(crate) mod tests {
     use zeroize::Zeroizing;
 
     use super::{
-        APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse,
+        APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse, Bytes,
         ConnectionSlots, ConnectionTimeouts, DatabaseError, Deadline, LifecycleTransitionGate,
         MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
         RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
         RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
         RestrictedStartup, SHUTDOWN_DATABASE_BUDGET, SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD,
         ServingMode, ServingModeSwitch, ShutdownBudget, ShutdownSignal, StartupError,
-        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WorkflowArbiter, accept_and_drain_connections,
-        bounded_response_from_axum, classify_restricted_startup, close_active_database,
-        fallback_router, gateway_timeout_response,
+        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedResponseBody, WorkflowArbiter,
+        accept_and_drain_connections, bounded_response_from_axum, classify_restricted_startup,
+        close_active_database, fallback_router, gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
@@ -8782,6 +8818,26 @@ pub(crate) mod tests {
         }
     }
 
+    fn typed_response_with_wipe_observer(
+        observer: std::sync::mpsc::Sender<bool>,
+    ) -> BoundedResponse {
+        let body = WipedResponseBody::from_text(typed_envelope().serialize()).with_drop_observer(
+            Box::new(move |body| {
+                observer
+                    .send(!body.is_empty() && body.iter().all(|byte| *byte == 0))
+                    .expect("the test owns the wipe observer receiver");
+            }),
+        );
+        BoundedResponse {
+            status: StatusCode::OK,
+            profile: ResponseProfile::TypedJson,
+            body: Bytes::from_owner(body),
+            allow: None,
+            cookies: None,
+            acknowledgement: None,
+        }
+    }
+
     /// The listener serializes the envelope itself and discards whatever the
     /// route put in its body and headers.
     #[tokio::test]
@@ -8967,6 +9023,78 @@ pub(crate) mod tests {
             acknowledgement: Some(acknowledgement.clone()),
             ..BoundedResponse::json(StatusCode::OK, "{\"error\":\"not_found\"}")
         }
+    }
+
+    #[tokio::test]
+    async fn a_successful_typed_response_write_wipes_its_buffer() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        write_response_and_acknowledge(
+            &mut AcceptingWriter,
+            typed_response_with_wipe_observer(observer),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_typed_response_write_error_wipes_its_buffer() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        write_response_and_acknowledge(
+            &mut FailingWriter,
+            typed_response_with_wipe_observer(observer),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_typed_response_shutdown_error_wipes_its_buffer() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        write_response_and_acknowledge(
+            &mut DisconnectingWriter,
+            typed_response_with_wipe_observer(observer),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_typed_response_write_wipes_its_buffer() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        write_response_and_acknowledge(
+            &mut StalledWriter,
+            typed_response_with_wipe_observer(observer),
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[test]
+    fn a_typed_response_buffer_waits_for_its_final_bytes_clone_before_wiping() {
+        let (observer, observed) = std::sync::mpsc::channel();
+        let response = typed_response_with_wipe_observer(observer);
+        let retained = response.body.clone();
+
+        drop(response);
+        assert!(matches!(
+            observed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+
+        drop(retained);
+        assert!(observed.try_recv().unwrap());
     }
 
     /// A write that completed hands the action to the listener exactly once,

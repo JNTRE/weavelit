@@ -853,7 +853,7 @@ mod tests {
         response
             .extensions()
             .get::<TypedJsonEnvelope>()
-            .map_or_else(String::new, TypedJsonEnvelope::serialize)
+            .map_or_else(String::new, |envelope| envelope.serialize().to_string())
     }
 
     async fn answered(request: Request<Body>) -> Response {

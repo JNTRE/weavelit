@@ -830,9 +830,12 @@ mod tests {
                 .extensions()
                 .get::<TypedJsonEnvelope>()
                 .map(TypedJsonEnvelope::serialize),
-            Some(format!(
-                "{{\"error\":\"authorization_denied\",\"correlation_id\":\"{CORRELATION}\"}}"
-            ))
+            Some(
+                format!(
+                    "{{\"error\":\"authorization_denied\",\"correlation_id\":\"{CORRELATION}\"}}"
+                )
+                .into()
+            )
         );
     }
 

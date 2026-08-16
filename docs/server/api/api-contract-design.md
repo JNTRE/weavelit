@@ -234,6 +234,16 @@ bounded and fails closed rather than emitting a partial `Set-Cookie` line; see
 the [Server Authentication Design](../authentication/authentication-design.md#cookie-emission)
 for the exact bound.
 
+#### Typed Response Buffer Clearing
+
+The typed profile serializes each envelope into a controlled, fixed-capacity
+application buffer. The listener transfers that allocation to the response
+body owner and clears it when the final body clone is released, including after
+a successful write, write or shutdown failure, and response-timeout
+cancellation. This is a guarantee only for that controlled typed response
+buffer. Copies held by TLS, the kernel or network transport, and the allocator
+are outside application control.
+
 #### Producer Obligations
 
 Failing closed is the envelope's last defence, not a route's error-handling
