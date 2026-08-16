@@ -12,7 +12,7 @@
 //! or a second `Path` cannot be introduced by a route, by a request, or by
 //! anything a caller can express.
 
-use std::fmt::Write;
+use zeroize::Zeroizing;
 
 /// The session cookie name, `__Host-` prefixed so a sibling host cannot set it.
 pub const SESSION_COOKIE_NAME: &str = "__Host-weavelit_session";
@@ -63,22 +63,23 @@ const DELETION_ATTRIBUTE: &str = "; Max-Age=0";
 /// The wrapped value is a bearer secret, so this type renders nothing: it
 /// implements neither `Debug` nor `Display`, and no comparison.
 #[derive(Clone)]
-pub struct CookieValue(String);
+pub struct CookieValue(Zeroizing<String>);
 
 impl CookieValue {
     /// Accepts only `[A-Za-z0-9_-]` within [`MAX_COOKIE_VALUE_BYTES`].
     #[must_use]
     pub fn new(value: &str) -> Option<Self> {
-        if value.is_empty() || value.len() > MAX_COOKIE_VALUE_BYTES {
-            return None;
-        }
-        if !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        {
-            return None;
-        }
-        Some(Self(value.to_owned()))
+        Self::is_valid(value).then(|| Self(Zeroizing::new(value.to_owned())))
+    }
+
+    /// Checks whether a borrowed value has the shape of an issued cookie.
+    #[must_use]
+    pub fn is_valid(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= MAX_COOKIE_VALUE_BYTES
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     }
 
     fn as_str(&self) -> &str {
@@ -119,17 +120,39 @@ impl CookieEffect {
             Self::ClearSession => ("", "", DELETION_ATTRIBUTE),
         };
 
-        let mut text = String::new();
-        let mut lines = 0_usize;
-        for (name, value, attributes) in [
+        let parts = [
             (SESSION_COOKIE_NAME, session, SESSION_ATTRIBUTES),
             (CSRF_COOKIE_NAME, csrf, CSRF_ATTRIBUTES),
-        ] {
-            write!(text, "Set-Cookie: {name}={value}{attributes}{expiry}\r\n").ok()?;
-            lines += 1;
+        ];
+        let lines = parts.len();
+        let bytes = parts
+            .iter()
+            .fold(0_usize, |total, (name, value, attributes)| {
+                total
+                    + "Set-Cookie: ".len()
+                    + name.len()
+                    + 1
+                    + value.len()
+                    + attributes.len()
+                    + expiry.len()
+                    + "\r\n".len()
+            });
+        if lines > MAX_COOKIE_LINES || bytes > MAX_COOKIE_HEADER_BYTES {
+            return None;
         }
 
-        bounded_lines(text, lines)
+        let mut text = Zeroizing::new(String::with_capacity(bytes));
+        for (name, value, attributes) in parts {
+            text.push_str("Set-Cookie: ");
+            text.push_str(name);
+            text.push('=');
+            text.push_str(value);
+            text.push_str(attributes);
+            text.push_str(expiry);
+            text.push_str("\r\n");
+        }
+        debug_assert_eq!(text.len(), bytes);
+        Some(CookieLines(text))
     }
 }
 
@@ -139,7 +162,8 @@ impl CookieEffect {
 /// exercised directly. No constructible effect can breach it today, which is
 /// the point: the bound is what keeps a future attribute or line change from
 /// silently growing the response head.
-fn bounded_lines(text: String, lines: usize) -> Option<CookieLines> {
+#[cfg(test)]
+fn bounded_lines(text: Zeroizing<String>, lines: usize) -> Option<CookieLines> {
     if lines > MAX_COOKIE_LINES || text.len() > MAX_COOKIE_HEADER_BYTES {
         return None;
     }
@@ -151,7 +175,7 @@ fn bounded_lines(text: String, lines: usize) -> Option<CookieLines> {
 /// The only constructor is [`CookieEffect::render`], so no caller can build
 /// this value from text of its own.
 #[derive(Clone)]
-pub struct CookieLines(String);
+pub struct CookieLines(Zeroizing<String>);
 
 impl CookieLines {
     /// Returns the complete header lines, each already CRLF terminated.
@@ -167,6 +191,7 @@ mod tests {
         CookieEffect, CookieValue, MAX_COOKIE_HEADER_BYTES, MAX_COOKIE_LINES,
         MAX_COOKIE_VALUE_BYTES, bounded_lines,
     };
+    use zeroize::Zeroizing;
 
     fn value(text: &str) -> CookieValue {
         CookieValue::new(text).expect("the test value must be accepted")
@@ -174,8 +199,10 @@ mod tests {
 
     #[test]
     fn cookie_values_accept_only_the_closed_character_set() {
-        assert!(CookieValue::new("Ab0-_zZ9").is_some());
-        assert!(CookieValue::new(&"a".repeat(MAX_COOKIE_VALUE_BYTES)).is_some());
+        for accepted in ["Ab0-_zZ9", &"a".repeat(MAX_COOKIE_VALUE_BYTES)] {
+            assert!(CookieValue::is_valid(accepted), "{accepted}");
+            assert!(CookieValue::new(accepted).is_some(), "{accepted}");
+        }
         for rejected in [
             "",
             "with space",
@@ -189,9 +216,12 @@ mod tests {
             "with/slash",
             "with+plus",
         ] {
+            assert!(!CookieValue::is_valid(rejected), "{rejected}");
             assert!(CookieValue::new(rejected).is_none(), "{rejected}");
         }
-        assert!(CookieValue::new(&"a".repeat(MAX_COOKIE_VALUE_BYTES + 1)).is_none());
+        let over_bound = "a".repeat(MAX_COOKIE_VALUE_BYTES + 1);
+        assert!(!CookieValue::is_valid(&over_bound));
+        assert!(CookieValue::new(&over_bound).is_none());
     }
 
     #[test]
@@ -291,10 +321,10 @@ mod tests {
     /// response with its fixed failure and emits no cookie at all.
     #[test]
     fn rendered_text_outside_either_bound_renders_nothing() {
-        let at_bound = "a".repeat(MAX_COOKIE_HEADER_BYTES);
+        let at_bound = Zeroizing::new("a".repeat(MAX_COOKIE_HEADER_BYTES));
         assert!(bounded_lines(at_bound.clone(), MAX_COOKIE_LINES).is_some());
 
-        let over_bytes = "a".repeat(MAX_COOKIE_HEADER_BYTES + 1);
+        let over_bytes = Zeroizing::new("a".repeat(MAX_COOKIE_HEADER_BYTES + 1));
         assert!(bounded_lines(over_bytes, MAX_COOKIE_LINES).is_none());
         assert!(bounded_lines(at_bound, MAX_COOKIE_LINES + 1).is_none());
     }

@@ -437,17 +437,17 @@ impl BoundedResponse {
     }
 }
 
-/// Owns a typed response allocation until the last [`Bytes`] clone drops.
-struct WipedResponseBody {
+/// Owns a response allocation until the last [`Bytes`] clone drops.
+struct WipedResponseBytes {
     bytes: Vec<u8>,
     #[cfg(test)]
-    drop_observer: Option<WipedResponseDropObserver>,
+    drop_observer: Option<WipedResponseBytesDropObserver>,
 }
 
 #[cfg(test)]
-type WipedResponseDropObserver = Box<dyn FnOnce(&[u8]) + Send>;
+type WipedResponseBytesDropObserver = Box<dyn FnOnce(&[u8]) + Send>;
 
-impl WipedResponseBody {
+impl WipedResponseBytes {
     fn from_text(mut text: Zeroizing<String>) -> Self {
         Self {
             bytes: std::mem::take(&mut *text).into_bytes(),
@@ -457,19 +457,19 @@ impl WipedResponseBody {
     }
 
     #[cfg(test)]
-    fn with_drop_observer(mut self, observer: WipedResponseDropObserver) -> Self {
+    fn with_drop_observer(mut self, observer: WipedResponseBytesDropObserver) -> Self {
         self.drop_observer = Some(observer);
         self
     }
 }
 
-impl AsRef<[u8]> for WipedResponseBody {
+impl AsRef<[u8]> for WipedResponseBytes {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
     }
 }
 
-impl Drop for WipedResponseBody {
+impl Drop for WipedResponseBytes {
     fn drop(&mut self) {
         self.bytes.as_mut_slice().zeroize();
         #[cfg(test)]
@@ -1992,7 +1992,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         return BoundedResponse {
             status,
             profile: ResponseProfile::TypedJson,
-            body: Bytes::from_owner(WipedResponseBody::from_text(body)),
+            body: Bytes::from_owner(WipedResponseBytes::from_text(body)),
             allow,
             cookies,
             acknowledgement,
@@ -2090,19 +2090,70 @@ async fn write_bounded_response<S>(stream: &mut S, response: BoundedResponse) ->
 where
     S: AsyncWrite + Unpin,
 {
+    write_bounded_response_inner(
+        stream,
+        response,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+async fn write_bounded_response_inner<S>(
+    stream: &mut S,
+    response: BoundedResponse,
+    #[cfg(test)] head_observer: Option<WipedResponseBytesDropObserver>,
+) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let allow = response.allow.map_or("", AllowedMethod::allow_header);
     let cookies = response.cookies.as_ref().map_or("", CookieLines::as_str);
-    let head = format!(
-        "HTTP/1.1 {} \r\nContent-Type: {}\r\n{}{}{}\r\n",
-        response.status.as_u16(),
-        response.profile.media_type(),
-        allow,
-        cookies,
-        response.profile.security_headers(),
-    );
-    stream.write_all(head.as_bytes()).await?;
+    let status = response.status.as_str();
+    let media_type = response.profile.media_type();
+    let security_headers = response.profile.security_headers();
+    let head_length = "HTTP/1.1 ".len()
+        + status.len()
+        + " \r\nContent-Type: ".len()
+        + media_type.len()
+        + "\r\n".len()
+        + allow.len()
+        + cookies.len()
+        + security_headers.len()
+        + "\r\n".len();
+    let mut rendered_head = Zeroizing::new(String::with_capacity(head_length));
+    rendered_head.push_str("HTTP/1.1 ");
+    rendered_head.push_str(status);
+    rendered_head.push_str(" \r\nContent-Type: ");
+    rendered_head.push_str(media_type);
+    rendered_head.push_str("\r\n");
+    rendered_head.push_str(allow);
+    rendered_head.push_str(cookies);
+    rendered_head.push_str(security_headers);
+    rendered_head.push_str("\r\n");
+    debug_assert_eq!(rendered_head.len(), head_length);
+    let head_owner = WipedResponseBytes::from_text(rendered_head);
+    #[cfg(test)]
+    let head_owner = match head_observer {
+        Some(observer) => head_owner.with_drop_observer(observer),
+        None => head_owner,
+    };
+    let head = Bytes::from_owner(head_owner);
+    stream.write_all(&head).await?;
     stream.write_all(&response.body).await?;
     stream.shutdown().await
+}
+
+#[cfg(test)]
+async fn write_bounded_response_with_head_wipe_observer<S>(
+    stream: &mut S,
+    response: BoundedResponse,
+    observer: WipedResponseBytesDropObserver,
+) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    write_bounded_response_inner(stream, response, Some(observer)).await
 }
 
 /// Writes a bounded response and runs its post-write action only on success.
@@ -2801,10 +2852,10 @@ pub(crate) mod tests {
     use weavelit_module_client::{
         APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
         AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
-        AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_SESSION_ROUTE,
-        DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE,
-        InitRejection, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME,
-        RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
+        AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_SESSION_ROUTE, CookieEffect,
+        CookieValue, DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE,
+        INIT_ROUTE, InitRejection, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
+        RESTORE_TICKET_HEADER_NAME, RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
     };
     use weavelit_server_database::{
         ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
@@ -2828,9 +2879,10 @@ pub(crate) mod tests {
         RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
         RestrictedStartup, SHUTDOWN_DATABASE_BUDGET, SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD,
         ServingMode, ServingModeSwitch, ShutdownBudget, ShutdownSignal, StartupError,
-        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedResponseBody, WorkflowArbiter,
-        accept_and_drain_connections, bounded_response_from_axum, classify_restricted_startup,
-        close_active_database, fallback_router, gateway_timeout_response,
+        StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedResponseBytes, WipedResponseBytesDropObserver,
+        WorkflowArbiter, accept_and_drain_connections, bounded_response_from_axum,
+        classify_restricted_startup, close_active_database, fallback_router,
+        gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
@@ -2848,6 +2900,7 @@ pub(crate) mod tests {
             RecoveryKeyLine, ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult,
             TypedValue, typed_json_response,
         },
+        write_bounded_response, write_bounded_response_with_head_wipe_observer,
         write_response_and_acknowledge,
     };
 
@@ -8821,7 +8874,7 @@ pub(crate) mod tests {
     fn typed_response_with_wipe_observer(
         observer: std::sync::mpsc::Sender<bool>,
     ) -> BoundedResponse {
-        let body = WipedResponseBody::from_text(typed_envelope().serialize()).with_drop_observer(
+        let body = WipedResponseBytes::from_text(typed_envelope().serialize()).with_drop_observer(
             Box::new(move |body| {
                 observer
                     .send(!body.is_empty() && body.iter().all(|byte| *byte == 0))
@@ -8942,6 +8995,30 @@ pub(crate) mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CapturingWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl AsyncWrite for CapturingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.bytes.extend_from_slice(buffer);
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
     /// Fails the write itself, as a transport whose peer is already gone does.
     struct FailingWriter;
 
@@ -9025,6 +9102,23 @@ pub(crate) mod tests {
         }
     }
 
+    fn cookie_response() -> BoundedResponse {
+        let cookies = CookieEffect::IssueSession {
+            session: CookieValue::new("session-token-value").unwrap(),
+            csrf: CookieValue::new("csrf-token-value").unwrap(),
+        }
+        .render()
+        .unwrap();
+        BoundedResponse {
+            status: StatusCode::OK,
+            profile: ResponseProfile::TypedJson,
+            body: Bytes::from_static(b"{\"error\":\"not_found\"}"),
+            allow: None,
+            cookies: Some(cookies),
+            acknowledgement: None,
+        }
+    }
+
     #[tokio::test]
     async fn a_successful_typed_response_write_wipes_its_buffer() {
         let (observer, observed) = std::sync::mpsc::channel();
@@ -9036,6 +9130,100 @@ pub(crate) mod tests {
         )
         .await;
 
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_cookie_response_emits_the_two_set_cookie_lines_in_order() {
+        let mut writer = CapturingWriter::default();
+
+        write_bounded_response(&mut writer, cookie_response())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            writer.bytes,
+            b"HTTP/1.1 200 \r\nContent-Type: application/json; charset=utf-8\r\n\
+              Set-Cookie: __Host-weavelit_session=session-token-value; Secure; HttpOnly; SameSite=Strict; Path=/\r\n\
+              Set-Cookie: __Host-weavelit_csrf=csrf-token-value; Secure; SameSite=Strict; Path=/\r\n\
+              \r\n{\"error\":\"not_found\"}"
+        );
+    }
+
+    fn head_wipe_observer(
+        observer: std::sync::mpsc::Sender<bool>,
+    ) -> WipedResponseBytesDropObserver {
+        Box::new(move |head| {
+            observer
+                .send(!head.is_empty() && head.iter().all(|byte| *byte == 0))
+                .expect("the test owns the wipe observer receiver");
+        })
+    }
+
+    #[tokio::test]
+    async fn a_successful_cookie_response_write_wipes_its_head() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        write_bounded_response_with_head_wipe_observer(
+            &mut AcceptingWriter,
+            cookie_response(),
+            head_wipe_observer(observer),
+        )
+        .await
+        .unwrap();
+
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_cookie_response_write_error_wipes_its_head() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        assert!(
+            write_bounded_response_with_head_wipe_observer(
+                &mut FailingWriter,
+                cookie_response(),
+                head_wipe_observer(observer),
+            )
+            .await
+            .is_err()
+        );
+
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_cookie_response_shutdown_error_wipes_its_head() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        assert!(
+            write_bounded_response_with_head_wipe_observer(
+                &mut DisconnectingWriter,
+                cookie_response(),
+                head_wipe_observer(observer),
+            )
+            .await
+            .is_err()
+        );
+
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_cookie_response_write_wipes_its_head() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        let timed_out = tokio::time::timeout(
+            REQUEST_PROCESSING_TIMEOUT,
+            write_bounded_response_with_head_wipe_observer(
+                &mut StalledWriter,
+                cookie_response(),
+                head_wipe_observer(observer),
+            ),
+        )
+        .await;
+
+        assert!(timed_out.is_err());
         assert!(observed.try_recv().unwrap());
     }
 

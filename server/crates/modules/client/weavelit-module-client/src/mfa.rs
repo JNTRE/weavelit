@@ -467,7 +467,7 @@ fn parse_body<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, Authentica
 fn submitted_bearer(
     value: Zeroizing<String>,
 ) -> Result<Zeroizing<String>, AuthenticationRejection> {
-    if CookieValue::new(&value).is_none() {
+    if !CookieValue::is_valid(&value) {
         return Err(AuthenticationRejection::AuthenticationFailed);
     }
     Ok(value)

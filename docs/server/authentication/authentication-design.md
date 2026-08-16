@@ -230,6 +230,14 @@ is replaced with the fixed unavailable failure and no cookie is emitted, so a
 future attribute change that grew the rendered text fails closed instead of
 shipping a partial `Set-Cookie` line.
 
+The session and CSRF values and their rendered lines remain in controlled
+application-owned clearing buffers. The renderer determines the two-line byte
+length before one bounded allocation, and the listener composes its complete
+response head from borrowed framing and those lines before delivery. The
+listener owns that head through the head write, body write, and connection
+shutdown; TLS, kernel, network-transport, and allocator copies remain outside
+application control.
+
 ## Authentication-Failure System Log Recording
 
 A denied local authentication attempt is recorded as a System Log record

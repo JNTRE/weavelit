@@ -398,7 +398,7 @@ pub fn submitted_csrf_token(headers: &HeaderMap) -> Result<&str, AuthenticationR
     let invalid = AuthenticationRejection::SessionInvalid;
     let value = single_header(headers, CSRF_HEADER_NAME).ok_or(invalid)?;
     let token = value.to_str().map_err(|_| invalid)?;
-    if CookieValue::new(token).is_none() {
+    if !CookieValue::is_valid(token) {
         return Err(invalid);
     }
     Ok(token)
@@ -411,7 +411,7 @@ pub fn submitted_csrf_token(headers: &HeaderMap) -> Result<&str, AuthenticationR
 pub fn submitted_session_token(headers: &HeaderMap) -> Result<&str, AuthenticationRejection> {
     let invalid = AuthenticationRejection::SessionInvalid;
     let token = cookie_value(headers, SESSION_COOKIE_NAME).ok_or(invalid)?;
-    if CookieValue::new(token).is_none() {
+    if !CookieValue::is_valid(token) {
         return Err(invalid);
     }
     Ok(token)
