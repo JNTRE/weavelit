@@ -188,11 +188,12 @@ pub struct InitRecoveryKeySubmission {
 pub struct InitFinalizeSubmission {
     /// The submitted initialization request.
     pub request: InitRequestSubmission,
-    /// The submitted proof of possession, already checked for shape only.
+    /// The submitted proof of possession, cleared when dropped and already
+    /// checked for shape only.
     ///
     /// Whether it matches the checkpoint's expected proof is decided by the
     /// Server core, which holds the only value it could be compared against.
-    pub recovery_key_proof: String,
+    pub recovery_key_proof: Zeroizing<String>,
     /// The admitted request's extensions, which carry the Server core's own
     /// admission permit.
     pub context: Extensions,
@@ -414,7 +415,9 @@ pub fn validate_init_request(
 /// expected value is decided by the Server core. An absent member is its own
 /// category, so a client that never submitted a proof is told what to do rather
 /// than told its proof was wrong.
-fn submitted_recovery_proof(submitted: Option<String>) -> Result<String, InitRejection> {
+fn submitted_recovery_proof(
+    submitted: Option<Zeroizing<String>>,
+) -> Result<Zeroizing<String>, InitRejection> {
     let proof = submitted.ok_or(InitRejection::RecoveryKeyConfirmationRequired)?;
     if proof.is_empty() {
         return Err(InitRejection::RecoveryKeyConfirmationRequired);
@@ -452,7 +455,7 @@ enum ProofPolicy {
 /// an oversized body are all rejected.
 struct InitBody {
     request: InitRequestSubmission,
-    recovery_key_proof: Option<String>,
+    recovery_key_proof: Option<Zeroizing<String>>,
 }
 
 const INIT_FIELDS: &[&str] = &[
@@ -505,7 +508,7 @@ impl<'de> Visitor<'de> for InitBodyVisitor {
         let mut log_modules: Option<Vec<LogModuleBody>> = None;
         let mut system_log: Option<String> = None;
         let mut audit_log: Option<String> = None;
-        let mut recovery_key_proof: Option<String> = None;
+        let mut recovery_key_proof: Option<Zeroizing<String>> = None;
 
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
@@ -525,7 +528,7 @@ impl<'de> Visitor<'de> for InitBodyVisitor {
                 "recovery_key_proof" if self.proof == ProofPolicy::Required => {
                     assign(
                         &mut recovery_key_proof,
-                        map.next_value()?,
+                        Zeroizing::new(map.next_value()?),
                         "recovery_key_proof",
                     )?;
                 }
@@ -1010,13 +1013,14 @@ fn typed_field(name: &str, value: TypedValue) -> Option<TypedResult> {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+    use axum::http::{Extensions, HeaderMap, HeaderValue, Method, StatusCode};
 
     use super::{
-        INIT_ROUTE, InitBody, InitBodySeed, InitCompleted, InitRecoveryKeyPrepared, InitRejection,
-        MAX_INIT_BODY_BYTES, MAX_INIT_LOG_MODULES, ProofPolicy, ProtectedSettingBody,
-        RECOVERY_PROOF_BASE64_CHARS, init_completed_response, init_recovery_key_prepared_response,
-        parse_init_body, parse_init_body_wiped, submitted_recovery_proof, validate_init_request,
+        INIT_ROUTE, InitBody, InitBodySeed, InitCompleted, InitFinalizeSubmission,
+        InitRecoveryKeyPrepared, InitRejection, MAX_INIT_BODY_BYTES, MAX_INIT_LOG_MODULES,
+        ProofPolicy, ProtectedSettingBody, RECOVERY_PROOF_BASE64_CHARS, init_completed_response,
+        init_recovery_key_prepared_response, parse_init_body, parse_init_body_wiped,
+        submitted_recovery_proof, validate_init_request,
     };
     use crate::{
         CSRF_HEADER_NAME, ExpectedOrigin, SelectedBackend, typed_json::TypedJsonEnvelope,
@@ -1060,6 +1064,16 @@ mod tests {
              \"enabled\":true,\"settings\":[{{\"key\":\"path\",\"value\":\"system.db\"}}],\
              \"protected_settings\":[{{\"key\":\"token\",\"value\":\"{SECRET_SETTING}\"}}]}}],\
              \"system_log\":\"system\",\"audit_log\":\"audit\"{proof}}}"
+        )
+    }
+
+    /// Returns an accepted finalize body whose proof is decoded before every
+    /// other member, so later parser failures must drop that decoded value.
+    fn proof_first_body(proof: &str) -> String {
+        let without_proof = body(None);
+        format!(
+            "{{\"recovery_key_proof\":\"{proof}\",{}",
+            &without_proof[1..]
         )
     }
 
@@ -1140,7 +1154,33 @@ mod tests {
         assert_eq!(module.settings[0].value, "system.db");
         assert_eq!(module.protected_settings[0].key, "token");
         assert_eq!(module.protected_settings[0].value.as_str(), SECRET_SETTING);
-        assert_eq!(parsed.recovery_key_proof.as_deref(), Some(PROOF));
+        assert_eq!(
+            parsed
+                .recovery_key_proof
+                .as_ref()
+                .map(|proof| proof.as_str()),
+            Some(PROOF)
+        );
+    }
+
+    #[test]
+    fn recovery_proofs_stay_zeroizing_through_the_finalization_handoff() {
+        let InitBody {
+            request,
+            recovery_key_proof,
+        } = parse_init_body(body(Some(PROOF)).as_bytes(), ProofPolicy::Required)
+            .expect("the fixture body must be accepted");
+        let parsed_proof: Option<Zeroizing<String>> = recovery_key_proof;
+        let validated_proof: Zeroizing<String> = submitted_recovery_proof(parsed_proof)
+            .expect("the fixture proof must have the required shape");
+        let handoff = InitFinalizeSubmission {
+            request,
+            recovery_key_proof: validated_proof,
+            context: Extensions::new(),
+        };
+        let handoff_proof: &Zeroizing<String> = &handoff.recovery_key_proof;
+
+        assert_eq!(handoff_proof.as_str(), PROOF);
     }
 
     #[test]
@@ -1184,6 +1224,52 @@ mod tests {
         ] {
             let (parsed, released) = parse_and_observe(&body, |buffer| {
                 parse_init_body_wiped(buffer, ProofPolicy::Forbidden)
+            });
+            assert_eq!(
+                parsed.err(),
+                Some(InitRejection::BadRequest),
+                "the {rejection} body must be refused"
+            );
+            assert_eq!(
+                released,
+                vec![0u8; released.len()],
+                "the {rejection} body must leave no readable secret bytes behind"
+            );
+            assert!(!released.is_empty());
+        }
+    }
+
+    #[test]
+    fn recovery_proofs_clear_on_proof_first_finalize_rejections() {
+        let proof_member = format!("\"recovery_key_proof\":\"{PROOF}\"");
+        let accepted = proof_first_body(PROOF);
+        assert!(accepted.starts_with(&format!("{{{proof_member},")));
+
+        for (rejection, body) in [
+            (
+                "duplicate proof",
+                accepted.replacen(
+                    &proof_member,
+                    &format!("{proof_member},\"recovery_key_proof\":\"{PROOF}\""),
+                    1,
+                ),
+            ),
+            (
+                "unknown field",
+                accepted.replacen(
+                    &proof_member,
+                    &format!("{proof_member},\"unknown\":true"),
+                    1,
+                ),
+            ),
+            (
+                "missing field",
+                accepted.replace(",\"audit_log\":\"audit\"", ""),
+            ),
+            ("trailing content", format!("{accepted} trailing")),
+        ] {
+            let (parsed, released) = parse_and_observe(&body, |buffer| {
+                parse_init_body_wiped(buffer, ProofPolicy::Required)
             });
             assert_eq!(
                 parsed.err(),
@@ -1323,7 +1409,7 @@ mod tests {
             Err(InitRejection::RecoveryKeyConfirmationRequired)
         );
         assert_eq!(
-            submitted_recovery_proof(Some(String::new())),
+            submitted_recovery_proof(Some(Zeroizing::new(String::new()))),
             Err(InitRejection::RecoveryKeyConfirmationRequired)
         );
         for misshapen in [
@@ -1333,15 +1419,15 @@ mod tests {
             &"=".repeat(RECOVERY_PROOF_BASE64_CHARS),
         ] {
             assert_eq!(
-                submitted_recovery_proof(Some(misshapen.to_owned())),
+                submitted_recovery_proof(Some(Zeroizing::new(misshapen.to_owned()))),
                 Err(InitRejection::RecoveryKeyConfirmationInvalid),
                 "{misshapen}"
             );
         }
-        assert_eq!(
-            submitted_recovery_proof(Some(PROOF.to_owned())),
-            Ok(PROOF.to_owned())
-        );
+        let validated_proof: Zeroizing<String> =
+            submitted_recovery_proof(Some(Zeroizing::new(PROOF.to_owned())))
+                .expect("the fixture proof must have the required shape");
+        assert_eq!(validated_proof.as_str(), PROOF);
     }
 
     #[test]

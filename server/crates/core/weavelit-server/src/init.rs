@@ -3308,7 +3308,7 @@ mod tests {
         let rejection = orchestrator
             .finalize(InitFinalizeSubmission {
                 request: direct_request(),
-                recovery_key_proof: delivered.proof(),
+                recovery_key_proof: Zeroizing::new(delivered.proof()),
                 context,
             })
             .await
