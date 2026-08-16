@@ -1301,7 +1301,7 @@ mod tests {
     use crate::{
         APPLICATION_DATABASE_FILE, PreoperationalComposer, RateLimiter,
         ResponseWriteAcknowledgement, RestrictedStartup, SHUTDOWN_DATABASE_BUDGET,
-        SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET, ServingMode, ServingModeSwitch, StartupError,
+        SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode, ServingModeSwitch, StartupError,
         StartupOutcome, bounded_response_from_axum, classify_restricted_startup,
         close_active_database, fallback_router,
         operational::test_support::ActivationBarrier,
@@ -2472,11 +2472,8 @@ mod tests {
         // finalization leaving the region and never by this test ordering the
         // two by hand.
         activating.release();
-        let quiesced = gate.quiesce(SHUTDOWN_LIFECYCLE_TRANSITION_BUDGET).await;
-        assert!(
-            quiesced.is_some(),
-            "the region must empty inside its budget"
-        );
+        let quiesced = gate.quiesce(SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD).await;
+        assert!(!quiesced.overrun, "the region must empty inside its budget");
         assert!(
             close_active_database(
                 surface.startup.active_database().clone(),

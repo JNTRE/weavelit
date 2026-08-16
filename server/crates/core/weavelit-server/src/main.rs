@@ -47,12 +47,11 @@ fn run() -> Result<(), StartupError> {
         startup,
         ShutdownSignal::new(signalled),
     ));
-    // The listener has already spent its whole shutdown budget by this point,
-    // including its wait for any irreversible lifecycle transition, so nothing
-    // is given further time here. Anything still running either overran a
-    // budget the listener already reported as an incomplete shutdown, or is
-    // blocking work no runtime can cancel, and is left behind rather than
-    // holding the process open.
+    // The listener does not return while a lifecycle transition admitted before
+    // the stop still holds its gate: it waits through activation or release
+    // before attempting the database close. Nothing lifecycle-owned is left
+    // behind here; only blocking work that already exceeded its own close
+    // budget can remain after the listener reported an incomplete shutdown.
     runtime.shutdown_timeout(Duration::ZERO);
 
     result

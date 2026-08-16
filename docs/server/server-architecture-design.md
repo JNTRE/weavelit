@@ -470,24 +470,24 @@ A signalled shutdown runs in a fixed order:
 5. The Application Database is closed once draining and that wait have both
    ended.
 
-Each stage is bounded separately, because they fail differently: a request that
-will not finish must not consume the allowance the database close needs, and a
+Each stage has a separate failure policy, because a request that will not
+finish must not consume the allowance the database close needs, and a
 transition that must not be interrupted must not be cut short by whatever a
-client is doing to a connection. Draining is allowed 25 seconds, the wait for a
-lifecycle transition is allowed 300 seconds, and the close is allowed 5 seconds.
-Draining and the wait run concurrently, so a whole shutdown is bounded at 305
-seconds. That whole budget is derived in code from those stages rather than
-restated, so no stage can be changed without the supervisor requirement
-following it.
+client is doing to a connection. Draining is allowed 25 seconds and the close
+is allowed 5 seconds. A lifecycle transition still holding its gate at 300
+seconds crosses an overrun reporting threshold; shutdown records that result
+but continues waiting for the transition to release. Draining and threshold
+observation run concurrently, but an admitted lifecycle transition makes the
+graceful-stop duration unbounded.
 
 The drain budget deliberately exceeds the longest an ordinary connection may
 occupy the listener, which is the TLS handshake, request-read, and processing
 budgets in sequence, so a request admitted just before the signal can still
 finish inside it; that relationship is asserted at compile time rather than
-restated as a convention. It says nothing about a lifecycle transition, which is
-bounded by the wait instead. Whatever the drain does not finish is terminated
-before the close begins, so a request that will not end cannot delay the
-database close behind it.
+restated as a convention. It says nothing about a lifecycle transition, which
+the gate allows to finish even after its reporting threshold. Whatever the drain
+does not finish is terminated before the close begins, so a request that will
+not end cannot delay the database close behind it.
 
 #### The Lifecycle Transition Gate
 
@@ -511,9 +511,9 @@ The gate is a runtime-owned value the listener, Init, and Restore all share. It
 holds a single permit and a stop flag. A workflow enters it immediately before
 its point of no return and holds it until the record is committed and its
 database is registered; it never waits for the permit, because the mutation lane
-already admits one workflow at a
-time. A shutdown sets the flag synchronously on the signal and then waits, inside
-the transition budget, to acquire and retain the same permit.
+already admits one workflow at a time. A shutdown sets the flag synchronously
+on the signal, records whether the 300-second transition threshold expires, and
+continues awaiting the same acquisition until it can retain the permit.
 
 The flag is read on both sides of the acquisition, which is what closes the race
 between a stop being signalled and a workflow entering. A workflow whose
@@ -531,12 +531,13 @@ The gate is deliberately not the lifecycle mutation lane. A Restore holds that
 lane across artifact upload, decryption, and validation, so waiting on it would
 expose how long a stop takes to work a submitter supplies.
 
-If the transition budget expires with a workflow still inside the region, the
-gate stays closed, the shutdown is reported as `shutdown_incomplete`, and the
-process exits without waiting further. That residual case can still interrupt
-the critical operation, and it is accepted deliberately: a workflow that has
-overrun its own approved deadline by that much must not be able to hold a host
-supervisor's stop open indefinitely.
+If the transition threshold expires with a workflow still inside the region,
+the gate stays closed and shutdown records `shutdown_incomplete`, but it keeps
+awaiting the same permit. Once the workflow releases it, shutdown retains that
+permit through the Application Database close and then returns the incomplete
+result. An admitted critical operation is never interrupted solely because it
+outlasted the threshold, even though it can hold a graceful stop open
+indefinitely.
 
 The close runs through one process-wide owner of whichever Application Database
 is serving. A deployment becomes operational either from a sealed startup or
@@ -553,21 +554,21 @@ operation is still closed exactly once, but the shutdown is reported as failed
 however cleanly the backend closed, because the operation that poisoned the lane
 has an untrusted outcome.
 
-A shutdown that completes every stage inside its budget exits with status `0`
-and no terminating signal. A drain that does not finish, a lifecycle transition
-that does not leave the gate, or a database that does not close cleanly, is
-reported as `shutdown_incomplete` and exits with status `1`; it is an unclean
-stop rather than a startup failure, and it is never reported as a clean one. The
-exit status is returned rather than set by an immediate process exit, so an
-orderly shutdown still unwinds normally and every retained value, including the
-process-lifetime state-root lock, is released by its own destructor.
+A shutdown that completes the drain and database-close stages cleanly without a
+lifecycle-transition threshold overrun exits with status `0` and no terminating
+signal. A drain that does not finish, a lifecycle-transition threshold overrun,
+or a database that does not close cleanly, is reported as `shutdown_incomplete`
+and exits with status `1`; it is an unclean stop rather than a startup failure,
+and it is never reported as a clean one. The exit status is returned rather than
+set by an immediate process exit, so an orderly shutdown still unwinds normally
+and every retained value, including the process-lifetime state-root lock, is
+released by its own destructor.
 
-A host supervisor must allow more than the Server's whole 305-second budget
-before it kills the process, or it would kill a shutdown that is still inside
-its own budget, including one waiting for an irreversible lifecycle transition
-to reach a committed record. A packaged service unit must therefore stop the
-Server with `SIGTERM` and set a stop timeout greater than 305 seconds; 315
-seconds is the recommended value.
+No finite host-supervisor kill timeout preserves the guarantee for an admitted
+lifecycle transition: it may still be completing after the 300-second overrun
+threshold. A packaged service unit must stop the Server with `SIGTERM` and use
+`TimeoutStopSec=infinity`; any finite force-kill timeout weakens the
+no-interruption guarantee.
 
 ### Bounded Request Reading
 

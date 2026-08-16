@@ -769,13 +769,14 @@ typed error presentation. The allowed pairs are:
 | `shutdown_incomplete` | `shutdown_incomplete` |
 
 The `shutdown_incomplete` pair is the only one that reports a stop rather than
-a start. A signalled shutdown that drains its accepted requests, waits out any
-irreversible lifecycle transition already under way, and closes the
-Application Database inside their budgets exits with status `0` and no
-terminating signal; one that exceeds a budget or cannot close cleanly writes
-this pair and exits with status `1`. It reports that the process stopped
-without completing its own shutdown, not that a deployment needs an operator
-action, and it never accompanies a clean stop. The
+a start. A signalled shutdown that drains its accepted requests, waits until an
+irreversible lifecycle transition already under way releases its gate, and
+closes the Application Database cleanly exits with status `0` and no
+terminating signal. A drain-budget overrun, a 300-second lifecycle-transition
+overrun threshold, or an unclean close writes this pair and exits with status
+`1`, but the threshold never permits the transition to be interrupted. It
+reports that the process stopped without completing its own shutdown, not that
+a deployment needs an operator action, and it never accompanies a clean stop. The
 [Server Architecture Design](../server-architecture-design.md) owns the
 shutdown sequence, its lifecycle transition gate, and its budgets.
 
@@ -940,8 +941,9 @@ only after the drain completes, and that a failing close is reported rather
 than hidden. Transition-gate tests prove that a closed gate refuses every
 subsequent entry without retaining its permit, that a signalled shutdown waits
 for an irreversible lifecycle transition to leave the gate before the database
-is closed, and that a transition outlasting its budget reports
-`shutdown_incomplete` rather than waiting further. Init and Restore tests prove
+is closed, and that a transition crossing its 300-second overrun threshold
+keeps shutdown pending until it releases, then reports `shutdown_incomplete`.
+Init and Restore tests prove
 that a workflow refused at a closed gate commits nothing, leaves the deployment
 record and its anchors untouched, and is indistinguishable to its submitter from
 the failure that entry point already produces, and that a Restore admitted

@@ -39,6 +39,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Install the Server package's service definition and its required non-secret configuration, persistent-state, and log locations.
-- Stop the Server with `SIGTERM`, which the Server handles as a request to shut down, and set the service stop timeout longer than the Server's whole 305-second internal shutdown budget so the supervisor cannot kill a shutdown still inside it, including one waiting for an irreversible lifecycle transition to reach a committed record; use `TimeoutStopSec=315s` unless the documented budget changes.
+- Stop the Server with `SIGTERM`, which the Server handles as a request to shut down, and set `TimeoutStopSec=infinity` so an admitted irreversible lifecycle transition can reach activation or release before the supervisor kills the process. Any finite force-kill timeout weakens this no-interruption guarantee.
 - Do not create application users, configure Service Connections, complete Init, or start normal operation during package installation.
 - Keep Debian packaging behavior aligned with the documented Ubuntu 26.04 LTS `amd64` support requirement.

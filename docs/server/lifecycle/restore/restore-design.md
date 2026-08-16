@@ -485,8 +485,10 @@ answers `restore_failed`, the same stable failure a timeout or storage failure
 answers, so a submitter learns nothing about the Server's shutdown state from
 it, and the deployment is left exactly as a pre-checkpoint failure leaves it.
 The [Server Architecture Design](../../server-architecture-design.md) owns the
-gate, the shutdown budget that bounds the wait, and the accepted residual risk
-of a transition that outlasts it.
+gate and the 300-second shutdown overrun reporting threshold. A threshold
+overrun reports `shutdown_incomplete` only after an admitted Restore releases
+the gate and its registered Application Database closes; it never authorizes
+interrupting the replacement chain.
 
 No step above preflights the System Log or Audit Log destination; step 6 only
 resolves the assigned System Log module's identifier, and component-availability

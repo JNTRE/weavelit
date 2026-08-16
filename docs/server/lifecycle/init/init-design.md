@@ -217,17 +217,19 @@ pending delivery, and marking the request whose written response may publish
 finalization all run inside that same uninterruptible chain, and any failure
 among them ends the delivery stage with this process already fail closed.
 
-The gate bounds process exit, not request cancellation. A shutdown that observes
-an in-flight preparation waits for it to commit its checkpoint, and a shutdown
-signalled earlier stops the preparation before it commits anything. Neither the
-gate nor the liveness lease removes the residual window in which a stop is
-signalled between the lease check and the gate entry succeeding, because the
-gate's stop flag is read again after its permit is taken and a workflow that
-observes the closed flag then refuses. What remains is the case in which the
-lifecycle transition budget expires while a preparation is still inside the
-region, which the
-[Server Architecture Design](../../server-architecture-design.md) documents as
-an accepted residual risk.
+The gate prevents process exit through an admitted transition; it does not
+cancel requests. A shutdown that observes an in-flight preparation waits until
+it commits its checkpoint and releases the gate, and a shutdown signalled
+earlier stops the preparation before it commits anything. Neither the gate nor
+the liveness lease removes the residual window in which a stop is signalled
+between the lease check and the gate entry succeeding, because the gate's stop
+flag is read again after its permit is taken and a workflow that observes the
+closed flag then refuses. If the 300-second lifecycle-transition overrun
+threshold expires after admission, shutdown remains pending until the region
+releases and then reports `shutdown_incomplete`; the threshold never authorizes
+interrupting the preparation. The
+[Server Architecture Design](../../server-architecture-design.md) owns that
+shutdown behavior.
 
 The residual behavior is delivery uncertainty, never silent commitment. A
 preparation whose response timed out may have created a checkpoint the client
