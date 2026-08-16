@@ -197,6 +197,9 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
     }
   }, [reconcile, state]);
 
+  // An unresolved attempt may still commit with this exact artifact and key,
+  // so a retry cannot replace either payload while reconciliation is pending.
+  const payloadLocked = state.kind === "indeterminate";
   // A probe in flight holds the controls too, so no retry is submitted against
   // a deployment that may already have stopped serving this route.
   const busy = state.kind === "submitting" || (state.kind === "indeterminate" && state.checking);
@@ -219,7 +222,7 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
             className="shell__restore-artifact"
             type="file"
             onChange={chooseArtifact}
-            disabled={busy}
+            disabled={busy || payloadLocked}
           />
           <label className="shell__restore-label" htmlFor={RECOVERY_KEY_INPUT_ID}>
             {RECOVERY_KEY_LABEL}
@@ -232,7 +235,7 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
             spellCheck={false}
             value={recoveryKey}
             onChange={changeRecoveryKey}
-            disabled={busy}
+            disabled={busy || payloadLocked}
           />
           <button
             type="button"

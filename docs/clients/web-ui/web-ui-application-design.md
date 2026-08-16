@@ -258,9 +258,11 @@ setup surface; an absent surface proves nothing, so the control holds the
 indeterminate state, which names the reported code, states that whether the
 backup was restored is not yet known, and tells the person to keep the
 submitted key because it is still the key this backup is encrypted with. It
-offers a recheck control and leaves the retry available with that key. The
-controls are held disabled while a probe is in flight, so no retry is issued
-against routes a committed Restore no longer serves.
+offers a recheck control and leaves the retry available only with the original
+artifact and key. Those payload controls remain disabled throughout the
+indeterminate state, so a retry cannot be mistaken for a different Restore;
+the retry action is held disabled while a probe is in flight, so no retry is
+issued against routes a committed Restore no longer serves.
 
 Once a submission has gone unsettled, a retry answered `restore_not_allowed` or
 `not_found` is reconciled the same way rather than believed. A Restore that

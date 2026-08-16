@@ -308,7 +308,7 @@ describe("RestoreSubmissionForm", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("keeps an unsettled Restore unsettled, with its key, when nothing can settle it", async () => {
+  it("keeps an unsettled Restore unsettled, with its original payload, when nothing can settle it", async () => {
     const fetchMock = mockRoutedFetch({
       key: () => Promise.resolve(ticketResponse()),
       upload: () => Promise.reject(new Error("ECONNRESET")),
@@ -331,6 +331,8 @@ describe("RestoreSubmissionForm", () => {
     // The key stays with the attempt it drove, because that attempt has not
     // settled and this is the only copy of it.
     expect(recoveryKeyInput().value).toBe(RECOVERY_KEY);
+    expect(artifactInput().disabled).toBe(true);
+    expect(recoveryKeyInput().disabled).toBe(true);
     expect(actionButton().disabled).toBe(false);
     expect(recheckButton()).not.toBeNull();
   });
