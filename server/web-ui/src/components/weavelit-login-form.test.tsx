@@ -37,6 +37,17 @@ function unauthenticatedProbe(): Promise<Response> {
   );
 }
 
+/** Refuses a second probe so determinate-outcome tests cannot pass silently. */
+function initialUnauthenticatedProbeOnly(): () => Promise<Response> {
+  let probes = 0;
+  return () => {
+    probes += 1;
+    return probes === 1
+      ? unauthenticatedProbe()
+      : Promise.reject(new Error("unexpected session probe"));
+  };
+}
+
 function authenticatedProbe(): Promise<Response> {
   return Promise.resolve(
     jsonResponse(
@@ -438,6 +449,7 @@ describe("LoginPanel second factor", () => {
 
   it("ends the attempt when the submitted code is refused", async () => {
     const fetchMock = await signInWith({
+      [SESSION_PATH]: initialUnauthenticatedProbeOnly(),
       [LOGIN_PATH]: continuationLogin("mfa_required"),
       [MFA_VERIFY_PATH]: refusal,
     });
@@ -455,10 +467,81 @@ describe("LoginPanel second factor", () => {
     expect(passwordField().value).toBe("");
     expect(submitButton().disabled).toBe(true);
     expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(1);
     expect(document.body.innerHTML).not.toContain(CONTINUATION);
     expect(document.body.innerHTML).not.toContain(CODE);
     expect(document.body.innerHTML).not.toContain("authentication_failed");
     expect(document.body.innerHTML).not.toContain(CORRELATION);
+  });
+
+  it.each([
+    [
+      "an unreadable success response",
+      () => Promise.resolve(new Response("not json", { status: 200 })),
+    ],
+    ["a malformed success response", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
+  ])("reconciles %s through an authenticated session probe", async (_label, verify) => {
+    let probes = 0;
+    const fetchMock = await signInWith({
+      [SESSION_PATH]: () => {
+        probes += 1;
+        return probes === 1 ? unauthenticatedProbe() : authenticatedProbe();
+      },
+      [LOGIN_PATH]: continuationLogin("mfa_required"),
+      [MFA_VERIFY_PATH]: verify,
+    });
+
+    await reachState("second-factor");
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+
+    await reachState("authenticated");
+    expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
+  });
+
+  it("ends an indeterminate second-factor attempt only after an unauthenticated probe", async () => {
+    let probes = 0;
+    const fetchMock = await signInWith({
+      [SESSION_PATH]: () => {
+        probes += 1;
+        return probes === 1 ? unauthenticatedProbe() : unauthenticatedProbe();
+      },
+      [LOGIN_PATH]: continuationLogin("mfa_required"),
+      [MFA_VERIFY_PATH]: () => Promise.reject(new Error("connection reset")),
+    });
+
+    await reachState("second-factor");
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+
+    await reachState("attempt-ended");
+    expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
+  });
+
+  it("renders no outcome when an indeterminate second-factor completion finds an absent surface", async () => {
+    let probes = 0;
+    const fetchMock = await signInWith({
+      [SESSION_PATH]: () => {
+        probes += 1;
+        return probes === 1
+          ? unauthenticatedProbe()
+          : Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      },
+      [LOGIN_PATH]: continuationLogin("mfa_required"),
+      [MFA_VERIFY_PATH]: () => Promise.reject(new Error("connection reset")),
+    });
+
+    await reachState("second-factor");
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+
+    await waitFor(() => {
+      expect(document.querySelector("section[data-authentication-state]")).toBeNull();
+    });
+    expect(requestsTo(fetchMock, MFA_VERIFY_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
   });
 });
 
@@ -504,6 +587,7 @@ describe("LoginPanel enrollment", () => {
 
   it("ends the attempt when the enrollment confirmation is refused", async () => {
     const fetchMock = await signInWith({
+      [SESSION_PATH]: initialUnauthenticatedProbeOnly(),
       [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
       [MFA_ENROLLMENT_PATH]: openedEnrollment,
       [MFA_CONFIRM_PATH]: refusal,
@@ -517,6 +601,7 @@ describe("LoginPanel enrollment", () => {
     await reachState("attempt-ended");
     expect(screen.getByRole("alert").textContent).toBe(ATTEMPT_ENDED_MESSAGE);
     expect(requestsTo(fetchMock, MFA_CONFIRM_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(1);
     // The refused enrollment is gone: the secret it disclosed is not held for a
     // retry, because the Server has already spent the value that confirms it.
     expect(screen.queryByLabelText("Setup key")).toBeNull();
@@ -524,6 +609,54 @@ describe("LoginPanel enrollment", () => {
     expect(document.body.innerHTML).not.toContain(PROVISIONING_URI);
     expect(document.body.innerHTML).not.toContain(ENROLLMENT);
     expect(usernameField().value).toBe(USERNAME);
+  });
+
+  it.each([
+    [
+      "an unreadable success response",
+      () => Promise.resolve(new Response("not json", { status: 200 })),
+    ],
+    ["a malformed success response", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
+  ])("reconciles %s through an authenticated session probe", async (_label, confirm) => {
+    let probes = 0;
+    const fetchMock = await signInWith({
+      [SESSION_PATH]: () => {
+        probes += 1;
+        return probes === 1 ? unauthenticatedProbe() : authenticatedProbe();
+      },
+      [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
+      [MFA_ENROLLMENT_PATH]: openedEnrollment,
+      [MFA_CONFIRM_PATH]: confirm,
+    });
+
+    await reachState("enrollment");
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm authenticator app" }));
+
+    await reachState("authenticated");
+    expect(requestsTo(fetchMock, MFA_CONFIRM_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
+  });
+
+  it("ends an indeterminate enrollment confirmation only after an unauthenticated probe", async () => {
+    let probes = 0;
+    const fetchMock = await signInWith({
+      [SESSION_PATH]: () => {
+        probes += 1;
+        return probes === 1 ? unauthenticatedProbe() : unauthenticatedProbe();
+      },
+      [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
+      [MFA_ENROLLMENT_PATH]: openedEnrollment,
+      [MFA_CONFIRM_PATH]: () => Promise.reject(new Error("connection reset")),
+    });
+
+    await reachState("enrollment");
+    fireEvent.change(codeField(), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm authenticator app" }));
+
+    await reachState("attempt-ended");
+    expect(requestsTo(fetchMock, MFA_CONFIRM_PATH)).toHaveLength(1);
+    expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(2);
   });
 
   it("ends the attempt when the enrollment cannot be opened", async () => {

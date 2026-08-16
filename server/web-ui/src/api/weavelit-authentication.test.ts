@@ -8,6 +8,7 @@ import {
   AUTH_SESSION_PATH,
   CSRF_COOKIE_NAME,
   CSRF_HEADER_NAME,
+  IndeterminateContinuationError,
   LoginFailedError,
   confirmEnrollment,
   isSessionEstablished,
@@ -365,17 +366,34 @@ describe("submitSecondFactor", () => {
       () => Promise.resolve(rejectionResponse("authentication_failed", 401)),
     ],
     ["a malformed submission", () => Promise.resolve(rejectionResponse("bad_request", 400))],
+    [
+      "an unavailable response",
+      () => Promise.resolve(rejectionResponse("service_unavailable", 503)),
+    ],
     ["a continuation answer", () => Promise.resolve(continuationResponse("mfa_required"))],
-    ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
-    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
-    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
-  ])("rejects %s with one indistinguishable failure", async (_label, response) => {
+  ])("rejects %s as a reported refusal", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
 
     const failure = await submitSecondFactor(CONTINUATION, CODE).catch((reason: unknown) => reason);
 
     expect(failure).toBeInstanceOf(LoginFailedError);
     expect(JSON.stringify(failure)).toBe('{"name":"LoginFailedError"}');
+  });
+
+  it.each([
+    ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
+    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
+    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
+  ])("reports %s as an opaque indeterminate outcome", async (_label, response) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(response);
+
+    const failure = await submitSecondFactor(CONTINUATION, CODE).catch((reason: unknown) => reason);
+
+    expect(failure).toBeInstanceOf(IndeterminateContinuationError);
+    const error = failure as IndeterminateContinuationError;
+    expect(error.message).toBe("continuation_indeterminate");
+    expect(Object.keys(error)).toEqual(["name"]);
+    expect(JSON.stringify(error)).toBe('{"name":"IndeterminateContinuationError"}');
   });
 });
 
@@ -457,16 +475,34 @@ describe("confirmEnrollment", () => {
   it.each([
     ["a refused code", () => Promise.resolve(rejectionResponse("authentication_failed", 401))],
     ["a malformed submission", () => Promise.resolve(rejectionResponse("bad_request", 400))],
-    ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
-    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
-    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
-  ])("rejects %s with one indistinguishable failure", async (_label, response) => {
+    [
+      "an unavailable response",
+      () => Promise.resolve(rejectionResponse("service_unavailable", 503)),
+    ],
+    ["a continuation answer", () => Promise.resolve(continuationResponse("mfa_required"))],
+  ])("rejects %s as a reported refusal", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
 
     const failure = await confirmEnrollment(ENROLLMENT, CODE).catch((reason: unknown) => reason);
 
     expect(failure).toBeInstanceOf(LoginFailedError);
     expect(JSON.stringify(failure)).toBe('{"name":"LoginFailedError"}');
+  });
+
+  it.each([
+    ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
+    ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
+    ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
+  ])("reports %s as an opaque indeterminate outcome", async (_label, response) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(response);
+
+    const failure = await confirmEnrollment(ENROLLMENT, CODE).catch((reason: unknown) => reason);
+
+    expect(failure).toBeInstanceOf(IndeterminateContinuationError);
+    const error = failure as IndeterminateContinuationError;
+    expect(error.message).toBe("continuation_indeterminate");
+    expect(Object.keys(error)).toEqual(["name"]);
+    expect(JSON.stringify(error)).toBe('{"name":"IndeterminateContinuationError"}');
   });
 });
 

@@ -480,7 +480,7 @@ absent authentication surface both render nothing; the remaining states are:
 | Second factor submitting | A code submission is in flight. | The input and the action are disabled, so a repeated activation cannot spend a second continuation. |
 | Enrollment | A verified password was admitted only to enrolling a factor, and the enrollment has been opened. | The one disclosure, a code input, and a confirmation action, described in [Second-Factor Steps](#second-factor-steps). |
 | Enrollment submitting | An enrollment confirmation is in flight. | The inputs and the action are disabled. |
-| Attempt ended | A one-time value was spent by a refused request. | The credential inputs return and the one fixed attempt-ended message is presented in an assertive live region. |
+| Attempt ended | A one-time value was spent by a reported refusal, or an indeterminate completion was reconciled as unauthenticated. | The credential inputs return and the one fixed attempt-ended message is presented in an assertive live region. |
 | Authenticated | The session probe, or a completed sign-in, reports an established session. | The inputs and action are replaced by a fixed confirmation message in a polite live region. |
 
 The failure message is fixed and redacted: `Sign-in failed.` The login route
@@ -528,6 +528,16 @@ cleared, which is the only thing that can follow a spent continuation. The same
 message and the same state are presented when an enrollment cannot be opened
 and when an enrollment confirmation is refused, because those refusals spend a
 one-time value identically and the Server reports no cause for any of them.
+
+When a verification or enrollment-confirmation response is unreadable, malformed,
+or interrupted after submission, the **[Web UI](../../glossary.md#applications-and-interfaces)**
+does not treat that outcome as a refusal. It first probes the ordinary session
+route: an authenticated result reaches Authenticated, an unauthenticated result
+reaches Attempt ended, and an absent result renders the existing blank
+authentication-surface state. The latter makes no claim that the submission
+succeeded or was refused. A reported non-200 refusal remains determinate and
+reaches Attempt ended without a session probe; no response or transport detail
+is rendered in either case.
 
 ### CSRF Cookie Handling
 

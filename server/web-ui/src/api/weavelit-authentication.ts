@@ -87,6 +87,20 @@ export class LoginFailedError extends Error {
 }
 
 /**
+ * A continuation request whose Server-side outcome cannot be known locally.
+ *
+ * This holds no response or transport detail. The presentation layer may only
+ * reconcile it through the ordinary session route, because a session cookie
+ * could have been committed before the browser could read the response.
+ */
+export class IndeterminateContinuationError extends Error {
+  constructor() {
+    super("continuation_indeterminate");
+    this.name = "IndeterminateContinuationError";
+  }
+}
+
+/**
  * What a session probe found, which is a fact about the served surface rather
  * than about any credential.
  *
@@ -326,7 +340,7 @@ async function submitContinuation(
       redirect: "error",
     });
   } catch {
-    throw new LoginFailedError();
+    throw new IndeterminateContinuationError();
   }
 
   if (response.status !== 200) {
@@ -336,7 +350,7 @@ async function submitContinuation(
   try {
     return await response.json();
   } catch {
-    throw new LoginFailedError();
+    throw new IndeterminateContinuationError();
   }
 }
 
@@ -347,12 +361,16 @@ async function submitContinuation(
  * accepted, so a rejection ends the attempt it resumed rather than inviting
  * another code against the same continuation.
  *
- * Rejects with {@link LoginFailedError} for every refusal alike.
+ * A known non-200 refusal rejects with {@link LoginFailedError}; its cause
+ * remains opaque. A transport failure or unreadable or invalid 200 success
+ * envelope rejects with {@link IndeterminateContinuationError}; callers must
+ * use {@link probeSession} to reconcile whether a session was established,
+ * with the cause remaining opaque.
  */
 export async function submitSecondFactor(continuation: string, code: string): Promise<void> {
   const payload = await submitContinuation(AUTH_MFA_VERIFY_PATH, { continuation, code });
   if (!isSessionEstablished(payload)) {
-    throw new LoginFailedError();
+    throw new IndeterminateContinuationError();
   }
 }
 
@@ -368,9 +386,15 @@ export async function submitSecondFactor(continuation: string, code: string): Pr
  * Rejects with {@link LoginFailedError} for every refusal alike.
  */
 export async function openEnrollment(continuation: string): Promise<EnrollmentOpened> {
-  const opened = readEnrollmentOpened(
-    await submitContinuation(AUTH_MFA_ENROLLMENT_PATH, { continuation }),
-  );
+  let payload: unknown;
+  try {
+    payload = await submitContinuation(AUTH_MFA_ENROLLMENT_PATH, { continuation });
+  } catch {
+    // Opening enrollment cannot establish a session, so preserving the
+    // existing generic rejection is truthful and needs no reconciliation.
+    throw new LoginFailedError();
+  }
+  const opened = readEnrollmentOpened(payload);
   if (opened === null) {
     throw new LoginFailedError();
   }
@@ -383,7 +407,11 @@ export async function openEnrollment(continuation: string): Promise<EnrollmentOp
  * The enrollment value is spent by this request whether or not the code was
  * accepted, so a rejection ends the attempt and leaves no factor behind.
  *
- * Rejects with {@link LoginFailedError} for every refusal alike.
+ * A known non-200 refusal rejects with {@link LoginFailedError}; its cause
+ * remains opaque. A transport failure or unreadable or invalid 200 success
+ * envelope rejects with {@link IndeterminateContinuationError}; callers must
+ * use {@link probeSession} to reconcile whether a session was established,
+ * with the cause remaining opaque.
  */
 export async function confirmEnrollment(enrollment: string, code: string): Promise<void> {
   const payload = await submitContinuation(AUTH_MFA_ENROLLMENT_CONFIRM_PATH, {
@@ -391,7 +419,7 @@ export async function confirmEnrollment(enrollment: string, code: string): Promi
     code,
   });
   if (!isSessionEstablished(payload)) {
-    throw new LoginFailedError();
+    throw new IndeterminateContinuationError();
   }
 }
 

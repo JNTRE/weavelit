@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type JSX } from "react";
 
 import {
+  IndeterminateContinuationError,
   MFA_CODE_DIGITS,
   MFA_CODE_PATTERN,
   confirmEnrollment,
@@ -162,6 +163,21 @@ export function LoginPanel(): JSX.Element | null {
     setState(settled);
   }, []);
 
+  const reconcileIndeterminateContinuation = useCallback(() => {
+    void probeSession().then((probe) => {
+      if (!mounted.current) {
+        return;
+      }
+      endAttempt(
+        probe.kind === "authenticated"
+          ? "authenticated"
+          : probe.kind === "unauthenticated"
+            ? "attempt-ended"
+            : "absent",
+      );
+    });
+  }, [endAttempt]);
+
   const submit = useCallback(() => {
     if (username === "" || password === "") {
       return;
@@ -210,11 +226,15 @@ export function LoginPanel(): JSX.Element | null {
       () => {
         endAttempt("authenticated");
       },
-      () => {
+      (error: unknown) => {
+        if (error instanceof IndeterminateContinuationError) {
+          reconcileIndeterminateContinuation();
+          return;
+        }
         endAttempt("attempt-ended");
       },
     );
-  }, [code, continuation, endAttempt]);
+  }, [code, continuation, endAttempt, reconcileIndeterminateContinuation]);
 
   const submitEnrollmentCode = useCallback(() => {
     if (!MFA_CODE_PATTERN.test(code) || provisioning === null) {
@@ -225,11 +245,15 @@ export function LoginPanel(): JSX.Element | null {
       () => {
         endAttempt("authenticated");
       },
-      () => {
+      (error: unknown) => {
+        if (error instanceof IndeterminateContinuationError) {
+          reconcileIndeterminateContinuation();
+          return;
+        }
         endAttempt("attempt-ended");
       },
     );
-  }, [code, provisioning, endAttempt]);
+  }, [code, provisioning, endAttempt, reconcileIndeterminateContinuation]);
 
   if (state === "checking" || state === "absent") {
     return null;
