@@ -174,6 +174,21 @@ function correctable(code: string, codes: readonly string[]): boolean {
   return codes.includes(code);
 }
 
+interface PreparationRejection {
+  readonly password: string;
+  readonly state:
+    | { readonly kind: "details"; readonly code: string }
+    | { readonly kind: "closed"; readonly code: string };
+}
+
+export function settlePreparationRejection(password: string, code: string): PreparationRejection {
+  const retryable = correctable(code, CORRECTABLE_PREPARATION_CODES);
+  return {
+    password: retryable ? password : "",
+    state: retryable ? { kind: "details", code } : { kind: "closed", code },
+  };
+}
+
 /**
  * Reports whether a finalization failure established no outcome whatsoever.
  *
@@ -208,11 +223,11 @@ export interface InitWorkflowProps {
  * The password and the delivered recovery key are held in component state only.
  * Neither is written to a URL, a cookie, `localStorage`, `sessionStorage`, a
  * log, or any rendered failure message, and neither survives the submission it
- * drives: the password is cleared as soon as a finalization attempt settles, and
- * the key is dropped on completion and on any permanent failure. An attempt
- * that reported no outcome keeps the key in that same component memory until an
- * operational surface settles it, because dropping a key a deployment may still
- * be sealed with would destroy the only copy of it.
+ * drives: the password is cleared as soon as a preparation or finalization
+ * attempt settles, and the key is dropped on completion and on any permanent
+ * failure. An attempt that reported no outcome keeps the key in that same
+ * component memory until an operational surface settles it, because dropping a
+ * key a deployment may still be sealed with would destroy the only copy of it.
  *
  * Between key delivery and finalization the Server serves the finalization
  * route alone, so this component never reloads, re-requests status, or fetches
@@ -289,11 +304,9 @@ export function InitWorkflow({ onCompleted }: InitWorkflowProps): JSX.Element {
       },
       (reason: unknown) => {
         const code = failureCode(reason);
-        setState(
-          correctable(code, CORRECTABLE_PREPARATION_CODES)
-            ? { kind: "details", code }
-            : { kind: "closed", code },
-        );
+        const settled = settlePreparationRejection(password, code);
+        setPassword(settled.password);
+        setState(settled.state);
       },
     );
   }, [complete, username, displayName, password, systemLogModule, auditLogModule]);

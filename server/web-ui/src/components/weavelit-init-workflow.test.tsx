@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { InitWorkflow } from "./weavelit-init-workflow";
+import { InitWorkflow, settlePreparationRejection } from "./weavelit-init-workflow";
 
 const RECOVERY_KEY = "AGE-SECRET-KEY-1QQQSYQCYQ5RQWZQFPG9SCRGWPUGPZYSNZS23V9CCRYDPK8QARC0SWRYDWG";
 const DELIVERY_NONCE = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
@@ -745,6 +745,11 @@ describe("InitWorkflow", () => {
   });
 
   it("fails closed when a preparation rejection cannot be corrected", async () => {
+    expect(settlePreparationRejection(PASSWORD, "already_initialized")).toEqual({
+      password: "",
+      state: { kind: "closed", code: "already_initialized" },
+    });
+
     mockRoutedFetch({
       prepare: () => Promise.resolve(jsonResponse({ error: "already_initialized" }, 409)),
       finalize: () => Promise.resolve(completionResponse()),
@@ -758,6 +763,7 @@ describe("InitWorkflow", () => {
     expect(document.querySelector("[data-init-error]")?.getAttribute("data-init-error")).toBe(
       "already_initialized",
     );
+    expect(section().dataset.initState).toBe("closed");
   });
 
   it("fails closed when the proof cannot be derived from the delivered key", async () => {
