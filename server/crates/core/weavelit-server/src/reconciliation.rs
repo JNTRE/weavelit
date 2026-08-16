@@ -19,11 +19,13 @@ pub struct ReconciliationCapability {
 }
 
 impl ReconciliationCapability {
-    /// Mints a capability from operating-system entropy supplied by the caller.
+    /// Mints a capability from protected operating-system entropy supplied by the caller.
     #[must_use]
-    pub fn from_entropy(entropy: [u8; RECONCILIATION_CAPABILITY_ENTROPY_BYTES]) -> Self {
+    pub fn from_zeroizing_entropy(
+        entropy: Zeroizing<[u8; RECONCILIATION_CAPABILITY_ENTROPY_BYTES]>,
+    ) -> Self {
         Self {
-            text: Zeroizing::new(URL_SAFE_NO_PAD.encode(entropy)),
+            text: Zeroizing::new(URL_SAFE_NO_PAD.encode(&entropy[..])),
         }
     }
 
@@ -65,8 +67,9 @@ mod tests {
 
     #[test]
     fn a_submitted_capability_has_the_digest_of_the_value_that_was_issued() {
-        let issued =
-            ReconciliationCapability::from_entropy([0xA5; RECONCILIATION_CAPABILITY_ENTROPY_BYTES]);
+        let issued = ReconciliationCapability::from_zeroizing_entropy(Zeroizing::new(
+            [0xA5; RECONCILIATION_CAPABILITY_ENTROPY_BYTES],
+        ));
         let submitted =
             ReconciliationCapability::from_submitted(Zeroizing::new(issued.as_str().to_owned()));
 

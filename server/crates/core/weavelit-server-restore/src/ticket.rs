@@ -45,14 +45,14 @@ pub struct RestoreTicket {
 }
 
 impl RestoreTicket {
-    /// Mints a ticket from operating-system randomness supplied by the caller.
+    /// Mints a ticket from protected operating-system entropy supplied by the caller.
     ///
     /// The caller supplies the entropy because randomness is a Server runtime
     /// capability; this type owns only the encoding and the digest.
     #[must_use]
-    pub fn from_entropy(entropy: [u8; RESTORE_TICKET_ENTROPY_BYTES]) -> Self {
+    pub fn from_zeroizing_entropy(entropy: Zeroizing<[u8; RESTORE_TICKET_ENTROPY_BYTES]>) -> Self {
         Self {
-            text: Zeroizing::new(URL_SAFE_NO_PAD.encode(entropy)),
+            text: Zeroizing::new(URL_SAFE_NO_PAD.encode(&entropy[..])),
         }
     }
 
@@ -117,6 +117,7 @@ mod tests {
     use super::{
         RESTORE_TICKET_ENTROPY_BYTES, RESTORE_TICKET_TEXT_BYTES, RestoreTicket, RestoreTicketDigest,
     };
+    use zeroize::Zeroizing;
 
     fn seeded_ticket(seed: u8) -> RestoreTicket {
         let mut entropy = [0_u8; RESTORE_TICKET_ENTROPY_BYTES];
@@ -125,7 +126,7 @@ mod tests {
                 .wrapping_mul(31)
                 .wrapping_add(u8::try_from(index).unwrap_or(u8::MAX));
         }
-        RestoreTicket::from_entropy(entropy)
+        RestoreTicket::from_zeroizing_entropy(Zeroizing::new(entropy))
     }
 
     #[test]

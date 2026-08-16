@@ -17,7 +17,7 @@ use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
 use crate::error::AuthenticationError;
-use crate::random::random_bytes;
+use crate::random::random_zeroizing_bytes;
 
 /// Entropy one session or CSRF token carries, in bytes.
 pub const SESSION_TOKEN_ENTROPY_BYTES: usize = 32;
@@ -58,19 +58,21 @@ macro_rules! bearer_token {
         impl $token {
             /// Generates a token from operating-system randomness.
             pub fn generate() -> Result<Self, AuthenticationError> {
-                Ok(Self::from_entropy(random_bytes::<
+                Ok(Self::from_zeroizing_entropy(random_zeroizing_bytes::<
                     SESSION_TOKEN_ENTROPY_BYTES,
                 >()?))
             }
 
-            /// Encodes caller-supplied entropy as a token.
+            /// Encodes caller-supplied protected entropy as a token.
             ///
             /// Production code uses [`Self::generate`]; this entry point exists
             /// so a test can pin an exact encoded value.
             #[must_use]
-            pub fn from_entropy(entropy: [u8; SESSION_TOKEN_ENTROPY_BYTES]) -> Self {
+            pub fn from_zeroizing_entropy(
+                entropy: Zeroizing<[u8; SESSION_TOKEN_ENTROPY_BYTES]>,
+            ) -> Self {
                 Self {
-                    text: Zeroizing::new(URL_SAFE_NO_PAD.encode(entropy)),
+                    text: Zeroizing::new(URL_SAFE_NO_PAD.encode(&entropy[..])),
                 }
             }
 
@@ -212,6 +214,7 @@ mod tests {
         CsrfToken, CsrfTokenDigest, SESSION_TOKEN_ENTROPY_BYTES, SESSION_TOKEN_TEXT_BYTES,
         SessionSecrets, SessionToken, SessionTokenDigest,
     };
+    use zeroize::Zeroizing;
 
     fn seeded(seed: u8) -> [u8; SESSION_TOKEN_ENTROPY_BYTES] {
         let mut entropy = [0_u8; SESSION_TOKEN_ENTROPY_BYTES];
@@ -223,15 +226,22 @@ mod tests {
         entropy
     }
 
+    fn protected(
+        entropy: [u8; SESSION_TOKEN_ENTROPY_BYTES],
+    ) -> Zeroizing<[u8; SESSION_TOKEN_ENTROPY_BYTES]> {
+        Zeroizing::new(entropy)
+    }
+
     #[test]
     fn a_token_encodes_its_full_entropy_as_unpadded_base64url() {
-        let session = SessionToken::from_entropy([0_u8; SESSION_TOKEN_ENTROPY_BYTES]);
+        let session =
+            SessionToken::from_zeroizing_entropy(protected([0_u8; SESSION_TOKEN_ENTROPY_BYTES]));
         assert_eq!(
             session.as_str(),
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         );
 
-        let session = SessionToken::from_entropy(seeded(7));
+        let session = SessionToken::from_zeroizing_entropy(protected(seeded(7)));
         assert_eq!(session.as_str().len(), SESSION_TOKEN_TEXT_BYTES);
         assert!(
             session
@@ -241,7 +251,7 @@ mod tests {
             "a token must never require escaping in a cookie or JSON body"
         );
 
-        let csrf = CsrfToken::from_entropy(seeded(7));
+        let csrf = CsrfToken::from_zeroizing_entropy(protected(seeded(7)));
         assert_eq!(csrf.as_str(), session.as_str());
     }
 
@@ -263,11 +273,13 @@ mod tests {
 
     #[test]
     fn a_digest_matches_only_its_own_token() {
-        let token = SessionToken::from_entropy(seeded(3));
+        let token = SessionToken::from_zeroizing_entropy(protected(seeded(3)));
         let digest = token.digest();
         assert!(digest.matches(&SessionTokenDigest::of(token.as_str())));
         assert!(!digest.matches(&SessionTokenDigest::of("")));
-        assert!(!digest.matches(&SessionToken::from_entropy(seeded(4)).digest()));
+        assert!(
+            !digest.matches(&SessionToken::from_zeroizing_entropy(protected(seeded(4))).digest())
+        );
 
         let mut altered = token.as_str().to_owned();
         altered.replace_range(0..1, if altered.starts_with('A') { "B" } else { "A" });
@@ -280,8 +292,8 @@ mod tests {
     #[test]
     fn the_session_and_csrf_digests_are_domain_separated() {
         let entropy = seeded(11);
-        let session = SessionToken::from_entropy(entropy);
-        let csrf = CsrfToken::from_entropy(entropy);
+        let session = SessionToken::from_zeroizing_entropy(protected(entropy));
+        let csrf = CsrfToken::from_zeroizing_entropy(protected(entropy));
         assert_eq!(session.as_str(), csrf.as_str());
         assert_ne!(
             session.digest().as_bytes(),
@@ -298,14 +310,14 @@ mod tests {
     fn a_digest_is_the_domain_separated_sha256_of_the_token() {
         use sha2::{Digest as _, Sha256};
 
-        let token = SessionToken::from_entropy(seeded(5));
+        let token = SessionToken::from_zeroizing_entropy(protected(seeded(5)));
         let mut expected = Sha256::new();
         expected.update(b"weavelit.session.token.v1");
         expected.update(token.as_str().as_bytes());
         let expected: [u8; 32] = expected.finalize().into();
         assert_eq!(token.digest().as_bytes(), &expected);
 
-        let csrf = CsrfToken::from_entropy(seeded(5));
+        let csrf = CsrfToken::from_zeroizing_entropy(protected(seeded(5)));
         let mut expected = Sha256::new();
         expected.update(b"weavelit.session.csrf.v1");
         expected.update(csrf.as_str().as_bytes());

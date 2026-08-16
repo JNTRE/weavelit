@@ -288,11 +288,18 @@ impl RestoreOrchestrator {
         let budget = admission.budget;
         let remaining = budget.remaining().ok_or(RestoreRejection::RestoreFailed)?;
 
-        let ticket = RestoreTicket::from_entropy(random_bytes().map_err(restore_rejection)?);
-        let digest = ticket.digest();
-        let reconciliation = ReconciliationCapability::from_entropy(
-            random_bytes::<RECONCILIATION_CAPABILITY_ENTROPY_BYTES>().map_err(restore_rejection)?,
+        let ticket = RestoreTicket::from_zeroizing_entropy(
+            crate::authentication::random_zeroizing_bytes()
+                .ok_or(RestoreRejection::RestoreFailed)?,
         );
+        let digest = ticket.digest();
+        let reconciliation =
+            ReconciliationCapability::from_zeroizing_entropy(
+                crate::authentication::random_zeroizing_bytes::<
+                    RECONCILIATION_CAPABILITY_ENTROPY_BYTES,
+                >()
+                .ok_or(RestoreRejection::RestoreFailed)?,
+            );
         let reconciliation_digest = reconciliation.digest();
         let correlation_identifier = correlation_identifier().map_err(restore_rejection)?;
         let expires_at = Deadline::now() + UPLOAD_DEADLINE.min(remaining);
@@ -982,7 +989,7 @@ mod tests {
                 .wrapping_mul(37)
                 .wrapping_add(u8::try_from(index).unwrap_or(u8::MAX));
         }
-        RestoreTicket::from_entropy(entropy)
+        RestoreTicket::from_zeroizing_entropy(Zeroizing::new(entropy))
     }
 
     /// Builds a retained submission holding [`RECOVERY_KEY`].

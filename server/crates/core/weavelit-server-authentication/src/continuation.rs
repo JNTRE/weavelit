@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::error::AuthenticationError;
-use crate::random::random_bytes;
+use crate::random::random_zeroizing_bytes;
 
 /// Entropy one continuation carries, in bytes.
 ///
@@ -52,19 +52,19 @@ pub struct Continuation {
 impl Continuation {
     /// Mints a continuation from operating-system randomness.
     pub fn generate() -> Result<Self, AuthenticationError> {
-        Ok(Self::from_entropy(random_bytes::<
+        Ok(Self::from_zeroizing_entropy(random_zeroizing_bytes::<
             CONTINUATION_ENTROPY_BYTES,
         >()?))
     }
 
-    /// Encodes caller-supplied entropy as a continuation.
+    /// Encodes caller-supplied protected entropy as a continuation.
     ///
     /// Production code uses [`Self::generate`]; this entry point exists so a
     /// test can pin an exact encoded value.
     #[must_use]
-    pub fn from_entropy(entropy: [u8; CONTINUATION_ENTROPY_BYTES]) -> Self {
+    pub fn from_zeroizing_entropy(entropy: Zeroizing<[u8; CONTINUATION_ENTROPY_BYTES]>) -> Self {
         Self {
-            text: Zeroizing::new(URL_SAFE_NO_PAD.encode(entropy)),
+            text: Zeroizing::new(URL_SAFE_NO_PAD.encode(&entropy[..])),
         }
     }
 
@@ -135,11 +135,12 @@ mod tests {
     use super::{
         CONTINUATION_ENTROPY_BYTES, CONTINUATION_TEXT_BYTES, Continuation, ContinuationDigest,
     };
+    use zeroize::Zeroizing;
 
     fn seeded(seed: u8) -> Continuation {
         let mut entropy = [0_u8; CONTINUATION_ENTROPY_BYTES];
         entropy[0] = seed;
-        Continuation::from_entropy(entropy)
+        Continuation::from_zeroizing_entropy(Zeroizing::new(entropy))
     }
 
     #[test]

@@ -1568,11 +1568,16 @@ pub(crate) fn random_bytes<const BYTES: usize>() -> Option<[u8; BYTES]> {
     Some(bytes)
 }
 
-/// Fills a zeroizing TOTP-secret buffer from operating-system randomness.
-fn random_totp_secret() -> Option<Zeroizing<[u8; SECRET_LENGTH]>> {
-    let mut bytes = Zeroizing::new([0_u8; SECRET_LENGTH]);
+/// Fills a zeroizing fixed-size buffer from operating-system randomness.
+pub(crate) fn random_zeroizing_bytes<const BYTES: usize>() -> Option<Zeroizing<[u8; BYTES]>> {
+    let mut bytes = Zeroizing::new([0_u8; BYTES]);
     getrandom::fill(&mut *bytes).ok()?;
     Some(bytes)
+}
+
+/// Fills a zeroizing TOTP-secret buffer from operating-system randomness.
+fn random_totp_secret() -> Option<Zeroizing<[u8; SECRET_LENGTH]>> {
+    random_zeroizing_bytes()
 }
 
 /// Renders bytes as lowercase hexadecimal.

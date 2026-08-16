@@ -535,10 +535,13 @@ impl InitOrchestrator {
         let metadata = checkpoint.encode().map_err(init_rejection)?;
         let correlation_identifier = crate::authentication::correlation_identifier()
             .ok_or(InitRejection::ServiceUnavailable)?;
-        let reconciliation = ReconciliationCapability::from_entropy(
-            crate::authentication::random_bytes::<RECONCILIATION_CAPABILITY_ENTROPY_BYTES>()
+        let reconciliation =
+            ReconciliationCapability::from_zeroizing_entropy(
+                crate::authentication::random_zeroizing_bytes::<
+                    RECONCILIATION_CAPABILITY_ENTROPY_BYTES,
+                >()
                 .ok_or(InitRejection::ServiceUnavailable)?,
-        );
+            );
         let reconciliation_digest = reconciliation.digest();
 
         #[cfg(test)]

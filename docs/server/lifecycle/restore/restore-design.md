@@ -507,22 +507,23 @@ validation crate, which resolves the backup's references against it.
 
 The orchestration above runs behind a submission split into two requests. The
 first carries the private recovery key alone; the runtime retains it, mints a
-one-time ticket from operating-system randomness, and returns only the ticket.
-The second presents that ticket and uploads the encrypted artifact. The recovery
-key therefore never travels with the artifact, and no artifact is admitted
-without a ticket this Server issued.
+one-time ticket by filling its raw operating-system entropy directly into
+zeroizing storage, and returns only the ticket. The second presents that ticket
+and uploads the encrypted artifact. The recovery key therefore never travels
+with the artifact, and no artifact is admitted without a ticket this Server
+issued.
 
 Alongside the ticket, the runtime mints an independent high-entropy lifecycle
-reconciliation capability from operating-system entropy and computes its
-domain-separated digest. The capability is returned once, in the same response
-as the ticket, and is held only by the requesting browser; the runtime retains
-only the digest, in memory with the pending submission, until the artifact
-request completes the atomic checkpoint replacement, which writes the digest
-into the Application Database's dedicated live reconciliation record. That
-record is outside `ApplicationState` and therefore outside every backup, and
-the write atomically replaces whatever digest a prior completed workflow left
-in that same singleton record. It is the only value the submission-bound
-lifecycle reconciliation route the
+reconciliation capability by filling its raw operating-system entropy directly
+into zeroizing storage and computes its domain-separated digest. The capability
+is returned once, in the same response as the ticket, and is held only by the
+requesting browser; the runtime retains only the digest, in memory with the
+pending submission, until the artifact request completes the atomic checkpoint
+replacement, which writes the digest into the Application Database's dedicated
+live reconciliation record. That record is outside `ApplicationState` and
+therefore outside every backup, and the write atomically replaces whatever
+digest a prior completed workflow left in that same singleton record. It is the
+only value the submission-bound lifecycle reconciliation route the
 [API Contract Design](../../../server/api/api-contract-design.md#lifecycle-reconciliation)
 defines ever compares a submitted capability against; the capability itself is
 never persisted.
