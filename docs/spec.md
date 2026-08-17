@@ -257,6 +257,27 @@ and MUST require an authenticated, usable Administrator session and the Server
 Administration Permission. Weavelit MUST NOT provide a host-level, out-of-band,
 or unauthenticated account-recovery interface.
 
+#### Password Reset And MFA Reset (Independent Operations)
+
+An Administrator MAY initiate a **password reset** for any local Human User,
+including themselves. Password reset is a Server-owned operation that generates
+a temporary password and requires the user to change their password at the next
+sign-in. Password reset does NOT affect MFA enrollment; users retain their MFA
+factors unless an Administrator separately resets their MFA.
+
+An Administrator MAY initiate an **MFA reset** for any local Human User,
+including themselves, to clear and re-enroll an MFA factor. MFA reset does NOT
+affect the user's password and is independent from password reset.
+
+Password reset and MFA reset MUST produce separate Audit Log events; one
+operation MUST NOT be represented as the other.
+
+An Administrator CANNOT remove the **Server Administration Permission** from an
+account if doing so would leave no active accounts with that permission.
+Attempting to do so returns a stable error: "Cannot remove the last Server
+Administration Permission grant." Account disabling is permitted separately
+from grant removal.
+
 ### Automation Identities
 
 The Server MUST restrict creation and management of an
@@ -370,6 +391,20 @@ replacement record for rejected input. A workflow that requires logging MUST
 fail when it cannot construct a valid bounded record. Rejection errors MUST be
 stable and payload-free, and every destination, including future Log Modules,
 MUST receive only complete bounded records.
+
+**Consequential operations** (those that modify application state or external
+systems) MUST fail with a stable error if the required Audit Log destination is
+unavailable and cannot accept the record. **Non-consequential operations** (such
+as read-only queries or internal-only tasks) MAY succeed even if the Audit Log
+destination is temporarily unavailable; in such cases, the Server MUST record
+the failure in System Logs for operator visibility.
+
+An initialized deployment does not crash or exit if an Audit Log destination
+becomes unavailable after the Server has begun normal operation. Requests for
+consequential operations fail with a stable error, but the Server remains
+operational for other requests. Operators MUST monitor System Logs for
+`dependency.audit-log-unavailable` events and restore destination connectivity
+to resume consequential operations.
 
 Administrators MUST be able to view System Logs and Audit Logs through a
 read-only Web UI logging area and configure Log Modules through an

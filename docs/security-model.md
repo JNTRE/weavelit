@@ -162,6 +162,24 @@ transport these workflows, but they must not persist passwords or password
 verifiers or implement independent password hashing or verification. Browser
 sessions must use secure, Server-managed session handling.
 
+#### Administrator-Initiated Password Reset
+
+Password reset initiated by an Administrator is distinct from user-initiated
+password change. Reset operations:
+
+1. Generate a temporary password via the Server's password-generation logic
+   (never stored as a normal credential).
+2. Require the user to change the temporary password at the next sign-in before
+   performing any other action.
+3. Revoke all active sessions for the user (forcing re-authentication with the
+   temporary password).
+
+Temporary passwords MUST NOT be revealed to the Administrator; the Server
+handles delivery to the user through the configured Administration Plane
+channel. Forced-change semantics ensure the temporary password is discarded
+after first use, preventing password-reuse attacks and limiting the window
+during which an Administrator holds a valid credential for a user account.
+
 ## Multifactor Authentication Security Profile
 
 The initial **[Time-Based One-Time Password (TOTP)](glossary.md#identities-and-access)**

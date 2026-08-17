@@ -180,6 +180,46 @@ which compares stored digests rather than bearer values, and the decision to
 accept that row as the presented session is a constant-time comparison of the
 two digests.
 
+#### Password Reset Workflow
+
+Administrator-initiated password reset follows this contract:
+
+1. **Reset Request:** An authenticated Administrator with ServerAdministration
+   permission requests a password reset for a user account.
+2. **Temporary Password Generation:** The Server generates a temporary password
+   using the same `PasswordVerifierFactory` as account creation, producing a
+   hashed, salted credential. The temporary password is ephemeral and never
+   persisted; only its hash is retained for validation.
+3. **Forced-Change State:** The Server sets the account's
+   `must_change_password` flag to `true` and revokes all active sessions for
+   the user.
+4. **User Authentication with Temporary Password:** When the user attempts to
+   sign in with their username and the temporary password, the Server:
+   - Verifies the temporary password against the retained hash.
+   - Checks the `must_change_password` flag.
+   - If the flag is set, requires the user to change their password before
+     admitting them to any other operation (including MFA enrollment).
+5. **Forced-Change Gate:** All routes (except logout and password-change
+   routes) check the `must_change_password` flag AFTER MFA step-up validation.
+   If the flag is set, the Server rejects the request with a stable error and
+   directs the user to the password-change route.
+6. **Password Change:** When the user changes their password (using their
+   current temporary password for verification), the Server:
+   - Clears the `must_change_password` flag.
+   - Generates a normal session credential and admits the user to subsequent
+     operations.
+
+**MFA-Ordering Invariant:** The forced-change gate MUST sit AFTER the MFA
+step-up gate in an atomic transaction. This ensures that if MFA is required, the
+user must complete MFA before reaching the password-change route, preventing
+unauthorized password changes by actors with only the temporary password.
+
+**Continuation Semantics:** The forced-change state is represented by the
+`must_change_password: bool` field in the Account record (Application Database)
+and MUST survive Server restarts. Forced-change is NOT a per-session
+continuation; it is a stable account property until explicitly cleared by a
+password change.
+
 ## Session Storage And Lifetime
 
 A session lives in the Application Database's `SessionStore`, which is a

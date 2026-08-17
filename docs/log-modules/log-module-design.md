@@ -86,6 +86,23 @@ at-least-once attempts and one persisted completion record per identifier for
 the MVP SQLite destination; it does not claim distributed exactly-once delivery
 or select a fan-out policy.
 
+**Operational Resilience Requirement:** The Server does NOT crash or exit if a
+Log Module destination becomes unavailable during normal operation (after
+Init/Restore). Instead:
+
+- Delivery requests fail with a stable, payload-free error
+  (`LogDeliveryError::Destination`).
+- For **consequential operations** (those whose failure must be auditable), the
+  route layer propagates the delivery error, causing the operation to fail with
+  a stable error message: "Audit Log unavailable; operation rejected."
+- For **non-consequential operations** (read-only queries, health checks, or
+  internal-only tasks), the route layer MAY absorb the delivery failure and
+  succeed, after recording the failure in System Logs.
+
+A "consequential operation" is an operation that modifies application state
+(account creation, permission grant, policy change, etc.). All Administration
+Plane mutations are consequential and MUST fail if Audit Log delivery fails.
+
 ## Destination Preflight And Configuration Validation
 
 `LogDestination` declares `preflight` as a required trait method rather than a
@@ -111,6 +128,12 @@ factory must reject any setting it does not define as
 `LogDestinationError::ConfigurationInvalid`; `LogModuleCatalog::create_destination`
 propagates that rejection as `LogConfigurationError::Destination`, so an
 unconfigured or misconfigured setting is refused rather than silently ignored.
+
+**Runtime vs. Configuration-Time Failures:** If preflight fails during Init or
+Restore, the Server MUST fail closed (Init/Restore fails, no deployment
+proceeds). If a destination becomes unavailable **after** Init succeeds and
+normal operation has begun, the failure is handled at the route layer (see
+"Operational Resilience Requirement" above); the Server remains operational.
 
 ### Declaring The Settings A Module Accepts
 
@@ -163,6 +186,21 @@ and `authorization.automation-scope.changed`;
 `dependency.service-connection.changed`; `provider.operation.started` and
 `provider.operation.completed`; and `internal.server-configuration.changed`,
 `internal.user-status.changed`, and `internal.log-policy.changed`.
+
+- **`dependency.audit-log-unavailable`** (System Log)
+  - Recorded when a Log Module destination fails to accept an Audit Log record.
+  - Recorded when a consequential operation fails because Audit Log delivery
+    was unavailable.
+  - Recorded when a non-consequential operation absorbs an audit-delivery
+    failure.
+  - Context: timestamp, destination module name, reason for failure (if
+    available), affected operation (if applicable).
+
+- **`authorization.group-grant.removal-denied`** (Audit Log)
+  - Recorded when an Administrator attempts to remove the last
+    ServerAdministration grant from an account and the operation is rejected.
+  - Context: administrator (principal), target group, target account, reason
+    (e.g., "would orphan permission").
 
 **[Init](../glossary.md#states-and-requests)** and
 **[Restore](../glossary.md#states-and-requests)** completion results remain
