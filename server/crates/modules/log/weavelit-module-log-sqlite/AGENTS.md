@@ -41,4 +41,4 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Accept only pre-redacted structured records; do not add secrets or unnecessary sensitive payloads to the SQLite destination.
 - Keep this crate's files, schema, migrations, connections, health checks, configuration, and lifecycle separate from every Application Database backend.
-- Do not add a Cargo manifest or select SQLite dependencies until an implementation issue approves the crate behavior and dependency evidence.
+- Keep the compiled-in `rusqlite` dependency workspace-pinned and reviewed before a version change.

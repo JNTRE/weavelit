@@ -3,9 +3,10 @@
 <!--
 Native type: epic
 Copy the sections beginning with `##` into a temporary body file and replace every
-bracketed placeholder. Create the issue with
-`gh issue create --body-file <completed-file> --type epic`, then assign the
-component labels, Priority, milestone, Project status, and child issues.
+bracketed placeholder. Choose a title in `<type>(<scope>): <description>` format
+as required by `CONTRIBUTING.md`. Create the issue with
+`gh issue create --title "<title>" --body-file <completed-file> --type epic`, then
+assign the component labels, Priority, milestone, Project status, and child issues.
 -->
 
 ## Outcome

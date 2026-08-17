@@ -9,12 +9,18 @@ Use this section to understand what this directory owns, what it does not own, a
 - This directory owns Server System Log construction, classification, and pre-redaction design before records reach a Log Module, including durable Init and Restore completion results, plus future observability design documentation.
 - It does not own implementation artifacts or claims that metrics, tracing, monitoring, or alerting design is currently defined.
 - Audit accountability belongs in the sibling `../audit/` directory.
+- The canonical System Log record schema and event classification taxonomy are defined in [Log Module Design](../../log-modules/log-module-design.md); this guide does not duplicate that schema.
 
 ## Asset Inventory
 
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and future-scope rules for Server observability.
+- `authentication-failure-record-design.md`: Fixed classification, detail, and
+  delivery-timing design for the local authentication-failure System Log
+  record.
+- `authorization-denial-record-design.md`: Fixed classification, detail, and
+  delivery-timing design for the authorization-denial System Log record.
 
 ## Usage Guidance
 

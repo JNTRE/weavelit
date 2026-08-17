@@ -488,9 +488,25 @@ each startup rather than issuing, renewing, or replacing it.
 | `InitializationPending` | Matching locator and Init checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_new`; expose no route. |
 | `InitializationPending` | Matching locator and Restore checkpoint | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_restore`; expose no route. |
 | `InitializationPending` | Matching locator and initialized database | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required`; expose no route. |
-| `Initialized` | Matching locator and initialized database | Load application state and start normal authenticated operation. |
-| Any record requiring retained SQLite inspection | Existing `application.sqlite3-wal` | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required` without opening the Application Database; expose no route. |
+| `Initialized` | Matching locator | Load the sealed deployment through its authoritative read-write open, recovering any retained SQLite write-ahead log, then start normal authenticated operation. |
+| `Uninitialized` or `InitializationPending` | Matching locator and existing `application.sqlite3-wal` | Classify retained partial state as `lifecycle_interrupted` / `operator_redeploy_required` without opening the Application Database; expose no route. |
+| `Initialized` | Database that cannot be opened or recovered, fails integrity validation, is bound to another deployment, or holds incomplete or unacknowledged initialized state | Fail startup closed before binding a listener; report no redeployment action. |
 | Any existing record | Missing required locator, identifier mismatch, unexpected state combination, unsafe or malformed state, unavailable database, or integrity failure | Fail startup closed without exposing Init or Restore. |
+
+The write-ahead log rule differs by record state because the two states are
+classified by different means. A pre-operational record is classified by
+non-mutating retained inspection, which opens the main database file immutably
+and therefore ignores the log; classifying past a log would read stale state,
+and no automatic reconciliation of an interrupted Init or Restore is safe. A
+sealed record is not inspected at all. It is classified from the deployment
+record alone and verified by the authoritative sealed load, which reopens the
+database read-write so SQLite recovers the log exactly as it does for any other
+client. An operational Server retains its Application Database open, so a log is
+present at every abrupt termination; treating that log as a redeployment
+condition would make an initialized deployment unable to start again. The
+lifecycle crate still deletes no sidecar, and the sealed load still fails closed
+on every genuine failure rather than translating it into an operator
+redeployment action.
 
 An unavailable, missing, malformed, unsafe, mismatched, or integrity-failing
 configured database never causes the Server to expose a pre-operational
@@ -508,6 +524,22 @@ Module's fixed JSON `404` result. The
 [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md)
 defines its public contract; this lifecycle boundary remains the authority for
 whether the route exists.
+
+An `Initialized` record maps to the Web UI Client Module's operational surface.
+The runtime loads the sealed deployment's application state through the same
+exclusive mutation permit before it serves anything, and that load re-reads the
+deployment record and re-inspects the database independently of the
+classification that selected it. Because classification of a sealed record
+consults only the deployment record, that load is the sole authority over the
+database: it reopens the database read-write, so SQLite recovers any retained
+write-ahead log, and it fails startup closed before binding rather than serving
+anything if recovery, integrity, deployment binding, or completeness fails.
+Because the pre-operational status and Application Database contracts cannot be
+expressed in an operational capability declaration, they are absent from the
+sealed surface rather than mounted and denied; every request for them receives
+the same fixed JSON `404` result. The
+[Server Architecture Design](../server-architecture-design.md#serving-mode-switch)
+defines how the runtime changes the surface a running listener serves.
 
 ## Application Database Selection
 
@@ -595,6 +627,42 @@ Only after the seal's configured valid-run commit path completes may the runtime
 remove all pre-operational routes, load application state, and enable normal
 authenticated operation in the same process.
 
+The crate exposes this ordering as a chain of single-use stages rather than
+independently callable steps, so an out-of-order or repeated call does not
+compile:
+
+```text
+authorize_workflow -> create_checkpoint -> complete_checkpoint
+                   -> acknowledge_completion -> seal
+```
+
+Each stage consumes the previous one and carries the exclusive permit forward,
+so the whole workflow runs under one uninterrupted permit and no other mutation
+can interleave. Authorization performs every check that can be made before a
+durable change, including opening the selected database and confirming it is
+uninitialized, so a caller that fails during preparation leaves nothing
+retained. Creating the checkpoint is the point of no return. Sealing is
+reachable only from an acknowledged workflow, so an unacknowledged deployment
+cannot be sealed by construction.
+
+Sealing does not trust the calls that appeared to succeed. It re-reads the
+deployment record and the database, requires the record to be
+`InitializationPending`, requires the database to report initialized state bound
+to this same deployment, loads that state, and requires the persisted completion
+obligation to be acknowledged. Only after every one of those fallible checks
+passes is the record written, so the record advances only once the deployment is
+known to be complete, acknowledged, and loadable. A backend that misreports its
+own durable state fails closed rather than producing a sealed deployment.
+
+Sealing returns the sealed deployment: the loaded application state and the
+database the workflow held open. Retaining that handle rather than dropping it
+lets an in-process activation continue on the database the workflow committed
+through instead of reopening the target, so a running deployment never holds two
+open handles to one Application Database file. The sealed deployment is a single
+value that hands both halves to the runtime together, so a caller cannot take
+the state and leave the database behind. A later startup that classifies a
+sealed deployment loads it through the same path and receives the same pair.
+
 If database state commits but sealing or in-process activation fails, the
 runtime exposes no routes and fails closed. On restart, the lifecycle crate
 classifies the retained partial state and exits without invoking either workflow
@@ -604,6 +672,82 @@ failed replacement Restore: a new deployment requires redeploying and beginning
 Init again; a replacement Restore requires redeploying and using independently
 retained compatible backup and recovery material. The lifecycle crate neither
 retains that material nor manages its durability.
+
+### Init Checkpoint Release And Reauthorization
+
+Init spans two requests, so it cannot hold one uninterrupted permit the way
+Restore does. The lifecycle crate exposes a single Init-only transition that
+creates the checkpoint and then releases both the exclusive permit and the
+database handle before returning. Restore does not use it: the transition
+creates an Init checkpoint by construction, and Restore continues through the
+unchanged continuous chain.
+
+Releasing closes the Application Database rather than merely dropping the
+handle, so the backend leaves behind no open-handle artifact and the retained
+state a later startup inspects is exactly the created checkpoint. The close runs
+while the permit is still held, so no other mutation observes a half-released
+lane.
+
+What the transition returns is a released Init checkpoint: a value that names
+the pending checkpoint and nothing else. It holds no permit, no database, and no
+capability to complete, acknowledge, or seal anything, and those absences are
+compile-time properties rather than documented conventions. It has no durable
+representation, so it exists only for the life of the process that created it
+and a restart cannot reconstruct one.
+
+The second request must reauthorize. Reauthorization takes a fresh exclusive
+mutation permit, rechecks that the deployment record is still
+`InitializationPending`, reopens the selected database, and requires the retained
+checkpoint to equal the released one exactly: same deployment identifier, same
+workflow kind, and same checkpoint metadata. A mismatched deployment, altered
+metadata, a different workflow, an absent checkpoint, or a database that has
+since committed application state each fail closed and authorize nothing. Only
+an exact match yields a pending workflow, which then continues through the same
+unchanged `complete_checkpoint -> acknowledge_completion -> seal` chain.
+
+Releasing changes nothing about restart classification. A released Init
+checkpoint is still a retained Init checkpoint, so a startup that finds one
+classifies the deployment as an interrupted lifecycle whose operator action is
+to redeploy and begin a new deployment. That startup binds no listener and
+performs no retry, completion logging, sealing, cleanup, recreation, or
+reconciliation, and it leaves the deployment record, the database locator, and
+the Application Database unchanged.
+
+## Application At-Rest Protection
+
+The lifecycle crate owns the deployment's Server-local at-rest key, so it also
+owns the capability that protects application secrets stored in the Application
+Database. The approved anchor profile gives a deployment exactly one 256-bit
+at-rest key, so protection reuses that key rather than deriving a second key
+hierarchy.
+
+The capability is a seal-only contract. A caller submits one bounded plaintext
+and a protected-value kind and receives the opaque bytes to store. It cannot
+read key material, and it cannot recover the plaintext of a value that is
+already stored, so holding the capability does not grant the ability to read
+stored secrets.
+
+The protected-value kinds are `component-secret`, `mfa-factor-data`, and
+`service-connection-credential`. The kind label is bound into the sealed value
+as additional authenticated data under the prefix
+`weavelit:application-protected-value:v1:`, so a value sealed for one purpose
+cannot be replayed as another. These labels persist inside stored values, so an
+existing label is never renamed or reused for a different meaning.
+
+Each sealed value uses the same XChaCha20-Poly1305 envelope, format version, and
+canonical encoding as the deployment record and database locator, with a fresh
+24-byte nonce per call. Sealing the same plaintext twice therefore yields
+distinct stored values.
+
+A sealed value is stored as one Application Database protected value, so its
+envelope must fit that bound. The envelope adds a fixed header, a Base64 nonce,
+and Base64 expansion of the plaintext and authentication tag, so the accepted
+plaintext is bounded well below the stored bound at 32 KiB rather than tuned to
+the exact worst case. A plaintext that is empty or exceeds that bound is refused
+before any encryption occurs. Any workflow that admits secret material,
+including Restore, applies the same plaintext bound during validation, so a
+secret that could never be sealed is refused before a workflow begins rather
+than failing partway through it.
 
 ## Errors And Sensitive Output
 
@@ -622,14 +766,31 @@ typed error presentation. The allowed pairs are:
 | `storage_integrity_failure` | `anchor_set_invalid`, `anchor_version_unsupported`, `anchor_binding_invalid`, `database_integrity_failure` |
 | `deployment_state_invalid` | `state_combination_invalid` |
 | `lifecycle_interrupted` | `operator_redeploy_new`, `operator_redeploy_restore`, `operator_redeploy_required` |
+| `shutdown_incomplete` | `shutdown_incomplete` |
+
+The `shutdown_incomplete` pair is the only one that reports a stop rather than
+a start. A signalled shutdown that drains its accepted requests, waits until an
+irreversible lifecycle transition already under way releases its gate, and
+closes the Application Database cleanly exits with status `0` and no
+terminating signal. A drain-budget overrun, a 300-second lifecycle-transition
+overrun threshold, a five-second database-close overrun threshold, or an
+unclean close writes this pair and exits with status `1`, but neither threshold
+permits the admitted work to be interrupted. It reports that the process
+stopped without completing its own shutdown, not that a deployment needs an
+operator action, and it never accompanies a clean stop. The
+[Server Architecture Design](../server-architecture-design.md) owns the
+shutdown sequence, its lifecycle transition gate, and its budgets.
 
 The `lifecycle_interrupted` pairs are stable action-class diagnostics. They
 identify only whether the operator must redeploy for a new deployment, redeploy
 before a new Restore using independently retained material, or redeploy before
 determining a fresh supported workflow. `operator_redeploy_required` also
-covers retained SQLite WAL state that cannot be inspected without touching
-source artifacts. These pairs do not disclose retained payloads, host paths,
-deployment identifiers, state contents, or internal errors.
+covers pre-operational retained SQLite write-ahead log state that cannot be
+inspected without touching source artifacts. It never covers a sealed
+deployment, whose write-ahead log is recovered by its authoritative read-write
+load and whose failures use the storage and deployment-state pairs instead.
+These pairs do not disclose retained payloads, host paths, deployment
+identifiers, state contents, or internal errors.
 
 For example, a missing environment variable produces exactly:
 
@@ -741,11 +902,20 @@ and orphan classification, interrupted bootstrap classification, every invalid
 partial anchor set, and failure handling for file synchronization, rename,
 record commit, directory synchronization, and cleanup. Tests retain real SQLite
 `-journal`, `-wal`, and `-shm` sidecars rather than deleting them as lifecycle
-orphans. A retained WAL is classified through the generic operator action
-without opening SQLite, and raw directory snapshots prove that the original
-database and sidecars remain unchanged. They do not assert power-cut or abrupt
-termination survival as a Weavelit guarantee; where the Server can restart,
-they assert fail-closed classification and redacted operator-action output.
+orphans. A write-ahead log retained over either pre-operational record state is
+classified through the generic operator action without opening SQLite, and raw
+directory snapshots prove that the original database and sidecars remain
+unchanged. A sealed record is classified `Initialized` without any retained
+inspection at all, proved by a backend that counts inspection calls and would
+otherwise report the generic operator action. A composed startup test in
+`weavelit-server` leaves a real, unrecovered write-ahead log by committing a
+probe write from a synchronized child process and killing it, then proves the
+sealed startup recovers that write and loads its application state, while an
+unopenable database and one bound to another deployment still fail closed before
+any listener binds. They do not
+assert power-cut or abrupt termination survival as a Weavelit guarantee; where
+the Server can restart, they assert fail-closed classification and redacted
+operator-action output.
 
 Format and cryptographic negative vectors change one property at a time:
 oversized, empty, truncated, invalid UTF-8, non-canonical, duplicate, unknown,
@@ -760,6 +930,42 @@ Application Database integration tests verify workflow checkpoint
 discrimination, atomic one-time state replacement, and deployment-identifier
 enforcement. Server process tests verify route gating and each transition from
 restricted pre-operational state to normal operation.
+
+Shutdown tests drive the real listener shutdown path with an injected trigger
+and synchronize on observed progress rather than on elapsed time, so none of
+them sleeps or lets a duration decide the result. They prove that a signalled
+shutdown stops accepting and frees the bound address, that a request already
+in flight still receives its complete response, that a shutdown signalled as a
+connection arrives stops instead of serving it, that a drain which cannot
+finish reports `shutdown_incomplete`, that the Application Database is closed
+only after the drain completes, and that a failing close is reported rather
+than hidden. Transition-gate tests prove that a closed gate refuses every
+subsequent entry without retaining its permit, that a signalled shutdown waits
+for an irreversible lifecycle transition to leave the gate before the database
+is closed, and that a transition crossing its 300-second overrun threshold
+keeps shutdown pending until it releases, then reports `shutdown_incomplete`.
+Database-close tests use a deterministic blocking backend to prove that a close
+crossing its five-second reporting threshold also keeps shutdown pending until
+it finishes, closes exactly once, and then reports `shutdown_incomplete`.
+Init and Restore tests prove
+that a workflow refused at a closed gate commits nothing, leaves the deployment
+record and its anchors untouched, and is indistinguishable to its submitter from
+the failure that entry point already produces, and that a Restore admitted
+through the gate has sealed its record before the waiting shutdown is released.
+That last ordering is taken from a boundary the blocking replacement chain
+announces once it is already inside the region, rather than from the gate's own
+permit, which is held from the moment an entrant acquires it and therefore
+before that entry has been finalized against the stop flag.
+Exactly-once closing is proved by a database whose close counts
+itself: duplicate shutdown requests, and requests through separate clones of
+the owner, still count one close, and a lane poisoned by a panicking operation
+counts one close while reporting a failed shutdown. Against real SQLite, both
+routes into normal operation, sealed startup and in-process Restore, are closed
+through the same owner and each leaves no write-ahead log behind, after which
+the state root reclassifies as `Initialized`. A process test signals the built
+Server binary with `SIGTERM` once it is really accepting, then requires exit
+status `0` with no terminating signal and proves that both the listener address
+and the state-root lock are immediately reusable.
 
 ## Related Documents
 

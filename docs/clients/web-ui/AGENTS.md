@@ -15,7 +15,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Web UI.
-- `web-ui-application-design.md`: Build toolchain, generated production outputs, application shell, status presentation states, and the Application Database selection control for the Web UI browser application.
+- `web-ui-application-design.md`: Build toolchain, generated production outputs, application shell, status presentation states, the first-launch Init and Restore choice, the Application Database selection control, the Init workflow, the Restore submission control, and the sign-in control for the Web UI browser application.
 
 ## Usage Guidance
 

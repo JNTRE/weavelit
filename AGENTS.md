@@ -31,7 +31,8 @@ Apply instructions in this order:
 - `.dockerignore`: Docker build-context exclusions for the dev container image build.
 - `.devcontainer/`: VS Code Dev Containers configuration for local development workflows.
 - `.vscode/`: Shared VS Code workspace settings.
-- `CONTRIBUTING.md`: Branch, pull-request, branch-name, and Conventional Commit requirements.
+- `CONTRIBUTING.md`: Branch, pull-request, branch-name, agent-created issue-title,
+  and Conventional Commit requirements.
 - `README.md`: Repository identification and high-level implementation layout.
 - `docs/`: Canonical product, security, terminology, and unresolved-decision documentation; follow `docs/AGENTS.md` for changes within it.
 - `weavelit-cli/`: Source, tests, and macOS release packaging for the separately packaged Weavelit CLI; follow its local guide.

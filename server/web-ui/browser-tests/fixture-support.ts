@@ -291,10 +291,10 @@ export async function waitForServerReady(
 /**
  * Sends `SIGTERM` and waits for the process to actually end.
  *
- * The Server installs no signal handler, so this terminates the process rather
- * than shutting the application down in an orderly way. Termination is what
- * frees the listener port and the state-root lock, because the kernel closes
- * the descriptors the process held.
+ * The Server treats the signal as a request to stop and shuts down under its
+ * own control, so the exit reports a status rather than a terminating signal.
+ * Awaiting that exit is what proves the listener port and the state-root lock
+ * were released, because the process releases them as it stops.
  */
 export async function terminateServer(server: RunningServer): Promise<ServerExit> {
   const already = server.observedExit();

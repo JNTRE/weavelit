@@ -32,3 +32,7 @@ path = "src/dispatch.rs"
 [[bin]]
 name = "catalog-dispatch"
 path = "src/catalog_dispatch.rs"
+
+[[bin]]
+name = "server-authority"
+path = "src/server_authority.rs"

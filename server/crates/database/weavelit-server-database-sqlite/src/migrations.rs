@@ -25,6 +25,26 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0002_create_lifecycle_state",
         sql: include_str!("../migrations/0002_create_lifecycle_state.sql"),
     },
+    Migration {
+        sequence: 3,
+        identifier: "0003_create_application_state",
+        sql: include_str!("../migrations/0003_create_application_state.sql"),
+    },
+    Migration {
+        sequence: 4,
+        identifier: "0004_create_session_store",
+        sql: include_str!("../migrations/0004_create_session_store.sql"),
+    },
+    Migration {
+        sequence: 5,
+        identifier: "0005_add_mfa_policy_and_replay_watermark",
+        sql: include_str!("../migrations/0005_add_mfa_policy_and_replay_watermark.sql"),
+    },
+    Migration {
+        sequence: 6,
+        identifier: "0006_add_lifecycle_reconciliation",
+        sql: include_str!("../migrations/0006_add_lifecycle_reconciliation.sql"),
+    },
 ];
 
 struct AppliedMigration {

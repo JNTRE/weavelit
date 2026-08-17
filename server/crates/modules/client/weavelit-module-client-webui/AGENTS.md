@@ -1,16 +1,19 @@
 # Web UI Client Module Crate Agent Guide
 
 This directory is reserved for the compiled-in Web UI Client Module crate. It
-mounts browser-facing routes on the Server's HTTPS listener, translates the
-restricted Init and Restore contracts while the Server is uninitialized, and
+declares the browser-facing capabilities the Server mounts on its HTTPS
+listener, owns the compile-time Web UI asset allowlist and its delivery, and
 uses secure Server-managed browser sessions and shared authorization during
-normal operation.
+normal operation. The shared request schemas, validation, handlers, and fixed
+response profile behind its declared capabilities live in
+`../weavelit-module-client/`.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns the Web UI Client Module's Server connection-surface behavior.
+- This directory owns the Web UI Client Module's browser-specific Server connection-surface behavior and its declared capabilities.
+- It does not own the shared Client Module API contract, request schemas, validation, handlers, or fixed response profile; those belong in `../weavelit-module-client/`.
 - It does not own the TypeScript and React Web UI application source; that belongs in `../../../../web-ui/`.
 - It does not own lifecycle, Init, or Restore availability or semantics, Server
     authorization policy, provider credentials, or provider integration behavior.
@@ -23,7 +26,7 @@ Use this section as the source of truth for what assets belong in this directory
 - `Cargo.toml`: Compiled-in Web UI Client Module package manifest.
 - `build.rs`: Fail-closed check that the generated Web UI production assets embedded by this crate exist and are current before compilation.
 - `build_manifest.rs`: Bundle-input inventory, SHA-256 hashing, and strict build content manifest verification used by `build.rs`.
-- `src/lib.rs`: Pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the compile-time Web UI asset allowlist and its delivery routes, and contract tests.
+- `src/lib.rs`: The pre-operational and operational capability declarations this Client Module returns, the compile-time Web UI asset allowlist and its delivery routes, and asset contract tests.
 - `tests/build_manifest.rs`: Tests for the build-time asset freshness verification.
 
 ## Usage Guidance
@@ -32,7 +35,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then each parent `AGENTS.md` upward to the repository root.
 - Read `../../../../../docs/server/lifecycle/lifecycle-design.md`, `../../../../../docs/server/lifecycle/init/init-design.md`, `../../../../../docs/server/lifecycle/restore/restore-design.md`, `../../../../../docs/client-modules/web-ui/`, and `../../../../../docs/clients/web-ui/` before changing Web UI pre-operational, access, or connection behavior.
-- Keep browser-facing request translation here and application presentation behavior in the Server Web UI source boundary.
+- Keep browser-specific request translation here and application presentation behavior in the Server Web UI source boundary.
+- Keep behavior every Client Module must share in `../weavelit-module-client/` rather than reimplementing it here.
 - Add contract and security tests for lifecycle-gated route availability, Init,
   Restore, sessions, caller identity, authorization, and sensitive-data
   exposure as required by `../../../../../docs/testing.md`.
@@ -51,6 +55,9 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
     restricted Init and Restore routes only when the runtime lifecycle gate
     permits them; during normal operation, make this Client Module's routes
     unavailable when it is disabled.
+- Declare a capability only by supplying its collaborators, so this Client
+    Module can neither claim a capability it did not supply nor supply one it
+    did not claim.
 - Translate shared status and database-selection requests only through
     Server-owned lifecycle operations, Init requests only through Init
     operations, and Restore requests only through Restore operations. Do not

@@ -1,11 +1,10 @@
 use rusqlite::{TransactionBehavior, params};
-use weavelit_server_database::{
-    DatabaseError, DatabaseInspection, WorkflowCheckpoint, WorkflowKind,
-};
+use weavelit_server_database::{DatabaseError, DatabaseInspection, WorkflowCheckpoint};
 
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::inspection::inspect_connection;
+use crate::state::encode_workflow;
 
 impl SqliteDatabase {
     pub(super) fn create_checkpoint_atomic(
@@ -32,7 +31,7 @@ impl SqliteDatabase {
                  VALUES (1, ?1, 'pending', ?2, ?3)",
                 params![
                     checkpoint.deployment_identifier().as_bytes().as_slice(),
-                    workflow_name(checkpoint.workflow()),
+                    encode_workflow(checkpoint.workflow()),
                     checkpoint.metadata().as_bytes(),
                 ],
             )
@@ -40,12 +39,5 @@ impl SqliteDatabase {
         transaction
             .commit()
             .map_err(|error| map_sqlite_error(error, ErrorContext::Checkpoint))
-    }
-}
-
-fn workflow_name(workflow: WorkflowKind) -> &'static str {
-    match workflow {
-        WorkflowKind::Init => "init",
-        WorkflowKind::Restore => "restore",
     }
 }

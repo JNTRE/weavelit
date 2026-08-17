@@ -1,0 +1,24 @@
+[workspace]
+
+[package]
+name = "weavelit-server-init-forbidden-init-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavelit-server-database = { path = "../../../../../database/weavelit-server-database" }
+weavelit-server-init = { path = "../../.." }
+weavelit-server-recovery-key = { path = "../../../../weavelit-server-recovery-key" }
+
+[[bin]]
+name = "authorization-constructor"
+path = "src/authorization_constructor.rs"
+
+[[bin]]
+name = "checkpoint-constructor"
+path = "src/checkpoint_constructor.rs"
+
+[[bin]]
+name = "delivery-clone"
+path = "src/delivery_clone.rs"

@@ -1,8 +1,9 @@
 # Server Crates Agent Guide
 
 This directory is the Rust source boundary for the Weavelit Server package. It
-groups core orchestration, Application Database, and compiled-in Client, MFA,
-Log, and Service Module crates that are released together with the Server.
+groups core orchestration, authentication, Application Database, and compiled-in
+Client, MFA, Log, and Service Module crates that are released together with the
+Server.
 
 ## Purpose and Scope
 
@@ -17,7 +18,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and Rust crate-boundary rules.
-- `core/`: Server runtime, lifecycle, Init, and Restore crates.
+- `core/`: Server runtime, lifecycle, Init, Restore, and authentication crates.
 - `database/`: Internal Application Database contract and backend crates.
 - `modules/`: Compiled-in Client, MFA, Log, and Service Module crate boundaries.
 

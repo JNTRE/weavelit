@@ -8,13 +8,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use weavelit_server_log_authority::ServerLogAuthority;
+
 const MAX_LOG_MODULES: usize = 64;
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 const RECORD_ID_LENGTH: usize = 16;
+
+/// Most non-secret settings one configured destination may receive.
+pub const MAX_DESTINATION_SETTINGS: usize = 64;
+
+/// Maximum UTF-8 bytes in one destination setting key.
+pub const MAX_DESTINATION_SETTING_KEY_BYTES: usize = 256;
+
+/// Maximum UTF-8 bytes in one destination setting value.
+pub const MAX_DESTINATION_SETTING_VALUE_BYTES: usize = 4 * 1024;
 const MAX_CORRELATION_ID_BYTES: usize = 64;
 const MAX_SYSTEM_CLASSIFICATION_BYTES: usize = 128;
 const MAX_SYSTEM_DETAIL_BYTES: usize = 4 * 1024;
+const MAX_AUDIT_CLASSIFICATION_BYTES: usize = 128;
 const MAX_AUDIT_PRINCIPAL_BYTES: usize = 256;
+const MAX_AUDIT_RESPONSIBLE_OWNER_BYTES: usize = 256;
 const MAX_AUDIT_ACTION_BYTES: usize = 128;
 const MAX_AUDIT_TARGET_BYTES: usize = 1024;
 const MAX_AUDIT_DETAIL_BYTES: usize = 4 * 1024;
@@ -99,6 +112,12 @@ impl TrustedRecordIssuer {
         Self { _private: () }
     }
 
+    /// Creates the issuer for a holder of Server-owned logging authority.
+    #[must_use]
+    pub const fn from_server_authority(_authority: &ServerLogAuthority) -> Self {
+        Self::new()
+    }
+
     /// Issues an identifier from Server-generated entropy.
     pub fn issue(&self, entropy: [u8; RECORD_ID_LENGTH]) -> Result<RecordId, RecordError> {
         if entropy == [0; RECORD_ID_LENGTH] {
@@ -165,24 +184,212 @@ pub enum LogResult {
     Failure,
 }
 
+/// Closed catalog of System Log classifications selected by Observability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SystemLogClassification {
+    LifecycleStartup,
+    LifecycleInit,
+    LifecycleRestore,
+    OperationalState,
+    ConfigurationChange,
+    AuthenticationFailure,
+    AuthorizationDenial,
+    DependencyFailure,
+    ProviderFailure,
+    InternalError,
+}
+
+impl SystemLogClassification {
+    /// Returns the canonical literal persisted by a destination.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LifecycleStartup => "lifecycle.startup",
+            Self::LifecycleInit => "lifecycle.init",
+            Self::LifecycleRestore => "lifecycle.restore",
+            Self::OperationalState => "operational.state",
+            Self::ConfigurationChange => "configuration.change",
+            Self::AuthenticationFailure => "authentication.failure",
+            Self::AuthorizationDenial => "authorization.denial",
+            Self::DependencyFailure => "dependency.failure",
+            Self::ProviderFailure => "provider.failure",
+            Self::InternalError => "internal.error",
+        }
+    }
+}
+
+/// Closed catalog of Audit Log classifications selected by Audit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditLogClassification {
+    LifecycleBackupCreated,
+    AuthenticationUserCreated,
+    AuthenticationUserDisabled,
+    AuthenticationPasswordChanged,
+    AuthenticationPasswordResetStarted,
+    AuthenticationMfaEnrolled,
+    AuthenticationMfaReset,
+    AuthenticationMfaRequirementChanged,
+    AuthenticationMfaModuleEnablementChanged,
+    AuthenticationSessionRevoked,
+    AuthorizationGroupCreated,
+    AuthorizationGroupMembershipChanged,
+    AuthorizationGroupGrantChanged,
+    AuthorizationAutomationScopeChanged,
+    DependencyLogModuleConfigurationChanged,
+    DependencyServiceConnectionChanged,
+    ProviderOperationStarted,
+    ProviderOperationCompleted,
+    InternalServerConfigurationChanged,
+    InternalUserStatusChanged,
+    InternalLogPolicyChanged,
+}
+
+impl AuditLogClassification {
+    /// Returns the canonical literal persisted by a destination.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LifecycleBackupCreated => "lifecycle.backup.created",
+            Self::AuthenticationUserCreated => "authentication.user.created",
+            Self::AuthenticationUserDisabled => "authentication.user.disabled",
+            Self::AuthenticationPasswordChanged => "authentication.password.changed",
+            Self::AuthenticationPasswordResetStarted => "authentication.password-reset.started",
+            Self::AuthenticationMfaEnrolled => "authentication.mfa.enrolled",
+            Self::AuthenticationMfaReset => "authentication.mfa.reset",
+            Self::AuthenticationMfaRequirementChanged => "authentication.mfa-requirement.changed",
+            Self::AuthenticationMfaModuleEnablementChanged => {
+                "authentication.mfa-module-enablement.changed"
+            }
+            Self::AuthenticationSessionRevoked => "authentication.session.revoked",
+            Self::AuthorizationGroupCreated => "authorization.group.created",
+            Self::AuthorizationGroupMembershipChanged => "authorization.group-membership.changed",
+            Self::AuthorizationGroupGrantChanged => "authorization.group-grant.changed",
+            Self::AuthorizationAutomationScopeChanged => "authorization.automation-scope.changed",
+            Self::DependencyLogModuleConfigurationChanged => {
+                "dependency.log-module-configuration.changed"
+            }
+            Self::DependencyServiceConnectionChanged => "dependency.service-connection.changed",
+            Self::ProviderOperationStarted => "provider.operation.started",
+            Self::ProviderOperationCompleted => "provider.operation.completed",
+            Self::InternalServerConfigurationChanged => "internal.server-configuration.changed",
+            Self::InternalUserStatusChanged => "internal.user-status.changed",
+            Self::InternalLogPolicyChanged => "internal.log-policy.changed",
+        }
+    }
+}
+
+/// The accountable kind of an Audit principal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditPrincipalType {
+    Human,
+    Automation,
+}
+
+impl AuditPrincipalType {
+    /// Returns the canonical literal persisted by a destination.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Automation => "automation",
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum AuditPrincipalKind {
+    Human,
+    Automation { responsible_owner: Box<str> },
+}
+
+/// Typed accountable principal for an Audit Log record.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuditPrincipal {
+    principal: Box<str>,
+    kind: AuditPrincipalKind,
+}
+
+impl AuditPrincipal {
+    /// Creates a bounded human principal, which intentionally has no Responsible Owner.
+    pub fn human(principal: impl Into<Box<str>>) -> Result<Self, RecordError> {
+        let principal = principal.into();
+        if !is_nonempty_within_bytes(&principal, MAX_AUDIT_PRINCIPAL_BYTES) {
+            return Err(RecordError::InvalidAuditPrincipal);
+        }
+        Ok(Self {
+            principal,
+            kind: AuditPrincipalKind::Human,
+        })
+    }
+
+    /// Creates a bounded automation principal with its required Responsible Owner.
+    pub fn automation(
+        principal: impl Into<Box<str>>,
+        responsible_owner: impl Into<Box<str>>,
+    ) -> Result<Self, RecordError> {
+        let principal = principal.into();
+        let responsible_owner = responsible_owner.into();
+        if !is_nonempty_within_bytes(&principal, MAX_AUDIT_PRINCIPAL_BYTES)
+            || !is_nonempty_within_bytes(&responsible_owner, MAX_AUDIT_RESPONSIBLE_OWNER_BYTES)
+        {
+            return Err(RecordError::InvalidAuditPrincipal);
+        }
+        Ok(Self {
+            principal,
+            kind: AuditPrincipalKind::Automation { responsible_owner },
+        })
+    }
+
+    fn is_valid(&self) -> bool {
+        is_nonempty_within_bytes(&self.principal, MAX_AUDIT_PRINCIPAL_BYTES)
+            && match &self.kind {
+                AuditPrincipalKind::Human => true,
+                AuditPrincipalKind::Automation { responsible_owner } => {
+                    is_nonempty_within_bytes(responsible_owner, MAX_AUDIT_RESPONSIBLE_OWNER_BYTES)
+                }
+            }
+    }
+
+    /// Returns the bounded accountable principal identifier.
+    pub fn as_str(&self) -> &str {
+        &self.principal
+    }
+
+    /// Returns whether this principal is human or automation.
+    pub const fn principal_type(&self) -> AuditPrincipalType {
+        match self.kind {
+            AuditPrincipalKind::Human => AuditPrincipalType::Human,
+            AuditPrincipalKind::Automation { .. } => AuditPrincipalType::Automation,
+        }
+    }
+
+    /// Returns the required Responsible Owner for automation principals only.
+    pub fn responsible_owner(&self) -> Option<&str> {
+        match &self.kind {
+            AuditPrincipalKind::Human => None,
+            AuditPrincipalKind::Automation { responsible_owner } => Some(responsible_owner),
+        }
+    }
+}
+
+impl fmt::Debug for AuditPrincipal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditPrincipal(REDACTED)")
+    }
+}
+
 /// Typed pre-redacted System Log body owned by Observability.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SystemLogBody {
-    classification: Box<str>,
+    classification: SystemLogClassification,
     detail: Box<str>,
 }
 
 impl SystemLogBody {
     /// Creates a complete pre-redacted System Log body.
     pub fn new(
-        classification: impl Into<Box<str>>,
+        classification: SystemLogClassification,
         detail: impl Into<Box<str>>,
     ) -> Result<Self, RecordError> {
-        let classification = classification.into();
         let detail = detail.into();
-        if !is_nonempty_within_bytes(&classification, MAX_SYSTEM_CLASSIFICATION_BYTES)
-            || !is_nonempty_within_bytes(&detail, MAX_SYSTEM_DETAIL_BYTES)
-        {
+        if !is_nonempty_within_bytes(&detail, MAX_SYSTEM_DETAIL_BYTES) {
             return Err(RecordError::InvalidSystemLogBody);
         }
         Ok(Self {
@@ -192,8 +399,10 @@ impl SystemLogBody {
     }
 
     fn is_valid(&self) -> bool {
-        is_nonempty_within_bytes(&self.classification, MAX_SYSTEM_CLASSIFICATION_BYTES)
-            && is_nonempty_within_bytes(&self.detail, MAX_SYSTEM_DETAIL_BYTES)
+        is_nonempty_within_bytes(
+            self.classification.as_str(),
+            MAX_SYSTEM_CLASSIFICATION_BYTES,
+        ) && is_nonempty_within_bytes(&self.detail, MAX_SYSTEM_DETAIL_BYTES)
     }
 }
 
@@ -206,7 +415,7 @@ impl fmt::Debug for SystemLogBody {
 impl SystemLogBody {
     /// Returns the pre-redacted operational classification.
     pub fn classification(&self) -> &str {
-        &self.classification
+        self.classification.as_str()
     }
 
     /// Returns the pre-redacted operational detail.
@@ -218,7 +427,8 @@ impl SystemLogBody {
 /// Typed pre-redacted Audit Log body owned by Audit.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuditLogBody {
-    principal: Box<str>,
+    classification: AuditLogClassification,
+    principal: AuditPrincipal,
     action: Box<str>,
     target: Box<str>,
     detail: Box<str>,
@@ -227,23 +437,23 @@ pub struct AuditLogBody {
 impl AuditLogBody {
     /// Creates a complete pre-redacted Audit Log body.
     pub fn new(
-        principal: impl Into<Box<str>>,
+        classification: AuditLogClassification,
+        principal: AuditPrincipal,
         action: impl Into<Box<str>>,
         target: impl Into<Box<str>>,
         detail: impl Into<Box<str>>,
     ) -> Result<Self, RecordError> {
-        let principal = principal.into();
         let action = action.into();
         let target = target.into();
         let detail = detail.into();
-        if !is_nonempty_within_bytes(&principal, MAX_AUDIT_PRINCIPAL_BYTES)
-            || !is_nonempty_within_bytes(&action, MAX_AUDIT_ACTION_BYTES)
+        if !is_nonempty_within_bytes(&action, MAX_AUDIT_ACTION_BYTES)
             || !is_nonempty_within_bytes(&target, MAX_AUDIT_TARGET_BYTES)
             || !is_nonempty_within_bytes(&detail, MAX_AUDIT_DETAIL_BYTES)
         {
             return Err(RecordError::InvalidAuditLogBody);
         }
         Ok(Self {
+            classification,
             principal,
             action,
             target,
@@ -252,7 +462,8 @@ impl AuditLogBody {
     }
 
     fn is_valid(&self) -> bool {
-        is_nonempty_within_bytes(&self.principal, MAX_AUDIT_PRINCIPAL_BYTES)
+        is_nonempty_within_bytes(self.classification.as_str(), MAX_AUDIT_CLASSIFICATION_BYTES)
+            && self.principal.is_valid()
             && is_nonempty_within_bytes(&self.action, MAX_AUDIT_ACTION_BYTES)
             && is_nonempty_within_bytes(&self.target, MAX_AUDIT_TARGET_BYTES)
             && is_nonempty_within_bytes(&self.detail, MAX_AUDIT_DETAIL_BYTES)
@@ -266,9 +477,24 @@ impl fmt::Debug for AuditLogBody {
 }
 
 impl AuditLogBody {
+    /// Returns the pre-redacted accountability classification.
+    pub fn classification(&self) -> &str {
+        self.classification.as_str()
+    }
+
     /// Returns the pre-redacted accountable principal.
     pub fn principal(&self) -> &str {
-        &self.principal
+        self.principal.as_str()
+    }
+
+    /// Returns the accountable principal type.
+    pub const fn principal_type(&self) -> AuditPrincipalType {
+        self.principal.principal_type()
+    }
+
+    /// Returns the required Responsible Owner for automation principals only.
+    pub fn responsible_owner(&self) -> Option<&str> {
+        self.principal.responsible_owner()
     }
 
     /// Returns the pre-redacted accountable action.
@@ -348,7 +574,10 @@ impl CompleteLogRecord {
         if record_payload_bytes(
             &correlation_id,
             &[
+                body.classification(),
                 body.principal(),
+                body.principal_type().as_str(),
+                body.responsible_owner().unwrap_or_default(),
                 body.action(),
                 body.target(),
                 body.detail(),
@@ -532,10 +761,161 @@ impl fmt::Debug for LogModuleIdentifier {
     }
 }
 
+/// The non-secret configuration one destination is opened against.
+///
+/// A destination is configured by the deployment's committed Log Module
+/// configuration rather than by anything it reads itself, so this is the only
+/// way settings reach a factory. Keys are unique and every key and value is
+/// bounded before a module sees them, so a module cannot be handed an
+/// unbounded or ambiguous configuration.
+///
+/// Secret settings are deliberately absent: they are sealed application state
+/// and are never carried through this contract.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct DestinationSettings(Box<[(Box<str>, Box<str>)]>);
+
+impl DestinationSettings {
+    /// Validates and orders the non-secret settings of one configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogConfigurationError::SettingsInvalid`] when the collection
+    /// exceeds [`MAX_DESTINATION_SETTINGS`], a key or value is empty or past
+    /// its bound, or two entries share a key.
+    pub fn new(settings: Vec<(String, String)>) -> Result<Self, LogConfigurationError> {
+        if settings.len() > MAX_DESTINATION_SETTINGS {
+            return Err(LogConfigurationError::SettingsInvalid);
+        }
+        let mut entries: Vec<(Box<str>, Box<str>)> = Vec::with_capacity(settings.len());
+        for (key, value) in settings {
+            if !is_nonempty_within_bytes(&key, MAX_DESTINATION_SETTING_KEY_BYTES)
+                || !is_nonempty_within_bytes(&value, MAX_DESTINATION_SETTING_VALUE_BYTES)
+            {
+                return Err(LogConfigurationError::SettingsInvalid);
+            }
+            if entries.iter().any(|(held, _)| held.as_ref() == key) {
+                return Err(LogConfigurationError::SettingsInvalid);
+            }
+            entries.push((key.into_boxed_str(), value.into_boxed_str()));
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(Self(entries.into_boxed_slice()))
+    }
+
+    /// Returns whether the configuration declared no setting at all.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns how many settings the configuration declared.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns the value declared for `key`, if any.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(held, _)| held.as_ref() == key)
+            .map(|(_, value)| value.as_ref())
+    }
+
+    /// Returns every declared key in canonical order.
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.0.iter().map(|(key, _)| key.as_ref())
+    }
+}
+
+impl fmt::Debug for DestinationSettings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DestinationSettings")
+            .field("setting_count", &self.0.len())
+            .finish()
+    }
+}
+
+/// The non-secret setting keys one Log Module defines.
+///
+/// A module declares this once, on its factory. The catalog carries that one
+/// declaration on the module's validated declaration, so a committed
+/// configuration can be judged against what the module accepts without opening
+/// a destination, and the module's own factory refuses the settings it is
+/// handed against the same declaration rather than a rule restated elsewhere.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct LogSettingsContract(Box<[Box<str>]>);
+
+impl LogSettingsContract {
+    /// Declares a module that defines no setting at all.
+    #[must_use]
+    pub fn none() -> Self {
+        Self(Box::default())
+    }
+
+    /// Validates and orders the setting keys a module defines.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogCatalogError::InvalidSettingsDeclaration`] when the
+    /// declaration exceeds [`MAX_DESTINATION_SETTINGS`], a key is empty or past
+    /// [`MAX_DESTINATION_SETTING_KEY_BYTES`], or a key is declared twice.
+    pub fn new(keys: Vec<String>) -> Result<Self, LogCatalogError> {
+        if keys.len() > MAX_DESTINATION_SETTINGS {
+            return Err(LogCatalogError::InvalidSettingsDeclaration);
+        }
+        let mut declared: Vec<Box<str>> = Vec::with_capacity(keys.len());
+        for key in keys {
+            if !is_nonempty_within_bytes(&key, MAX_DESTINATION_SETTING_KEY_BYTES)
+                || declared.iter().any(|held| held.as_ref() == key)
+            {
+                return Err(LogCatalogError::InvalidSettingsDeclaration);
+            }
+            declared.push(key.into_boxed_str());
+        }
+        declared.sort();
+        Ok(Self(declared.into_boxed_slice()))
+    }
+
+    /// Returns whether `key` is a setting this module defines.
+    #[must_use]
+    pub fn defines(&self, key: &str) -> bool {
+        self.0
+            .binary_search_by(|held| held.as_ref().cmp(key))
+            .is_ok()
+    }
+
+    /// Returns whether every setting in `settings` is one this module defines.
+    ///
+    /// The comparison is pure: it opens no destination and creates no local
+    /// state, so a configuration can be judged before anything durable exists.
+    #[must_use]
+    pub fn accepts(&self, settings: &DestinationSettings) -> bool {
+        settings.keys().all(|key| self.defines(key))
+    }
+
+    /// Returns every declared key in canonical order.
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.0.iter().map(|key| key.as_ref())
+    }
+}
+
+impl fmt::Debug for LogSettingsContract {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LogSettingsContract")
+            .field("declared_key_count", &self.0.len())
+            .finish()
+    }
+}
+
 /// Trusted context supplied by Server runtime composition to a module factory.
 pub struct TrustedLogModuleContext {
     local_root: PathBuf,
     deployment_identity: [u8; RECORD_ID_LENGTH],
+    settings: DestinationSettings,
 }
 
 impl TrustedLogModuleContext {
@@ -545,7 +925,25 @@ impl TrustedLogModuleContext {
         Self {
             local_root,
             deployment_identity,
+            settings: DestinationSettings::default(),
         }
+    }
+
+    /// Adds the committed configuration's non-secret settings to the context.
+    #[must_use]
+    pub fn with_settings(mut self, settings: DestinationSettings) -> Self {
+        self.settings = settings;
+        self
+    }
+
+    /// Creates the context for a holder of Server-owned logging authority.
+    #[must_use]
+    pub fn from_server_authority(
+        _authority: &ServerLogAuthority,
+        local_root: PathBuf,
+        deployment_identity: [u8; RECORD_ID_LENGTH],
+    ) -> Self {
+        Self::new(local_root, deployment_identity)
     }
 
     /// Returns the Server-supplied local root without deriving a destination path.
@@ -556,6 +954,11 @@ impl TrustedLogModuleContext {
     /// Returns the Server-supplied deployment identity for destination binding.
     pub const fn deployment_identity(&self) -> &[u8; RECORD_ID_LENGTH] {
         &self.deployment_identity
+    }
+
+    /// Returns the committed configuration's non-secret settings.
+    pub const fn settings(&self) -> &DestinationSettings {
+        &self.settings
     }
 }
 
@@ -571,6 +974,7 @@ impl fmt::Debug for TrustedLogModuleContext {
 pub struct LogModuleFactoryContext<'a> {
     local_root: &'a Path,
     deployment_identity: &'a [u8; RECORD_ID_LENGTH],
+    settings: &'a DestinationSettings,
 }
 
 impl<'a> LogModuleFactoryContext<'a> {
@@ -578,6 +982,7 @@ impl<'a> LogModuleFactoryContext<'a> {
         Self {
             local_root: context.local_root(),
             deployment_identity: context.deployment_identity(),
+            settings: context.settings(),
         }
     }
 
@@ -589,6 +994,14 @@ impl<'a> LogModuleFactoryContext<'a> {
     /// Returns the Server-supplied deployment identity for destination binding.
     pub const fn deployment_identity(&self) -> &'a [u8; RECORD_ID_LENGTH] {
         self.deployment_identity
+    }
+
+    /// Returns the committed configuration's non-secret settings.
+    ///
+    /// A module must reject a setting it does not define: an unconfigured or
+    /// misconfigured assignment is refused rather than silently ignored.
+    pub const fn settings(&self) -> &'a DestinationSettings {
+        self.settings
     }
 }
 
@@ -635,10 +1048,35 @@ pub trait LogDestination: Send + Sync {
         record: &CompleteLogRecord,
         acknowledgement: DurableAcknowledgement,
     ) -> Result<DurableAcknowledgement, LogDestinationError>;
+
+    /// Proves the destination can complete its commit path for `record_type`.
+    ///
+    /// Init runs this before it commits application state, so an assignment
+    /// whose configured storage interface could not durably accept the assigned
+    /// log type is refused while the deployment can still be corrected rather
+    /// than after the record it was supposed to carry already exists. The check
+    /// must exercise the same commit path delivery uses and must leave no
+    /// record behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LogDestinationError`] when the commit path is unreachable
+    /// for `record_type`.
+    fn preflight(&self, record_type: LogRecordType) -> Result<(), LogDestinationError>;
 }
 
 /// Factory for one runtime-supplied compiled-in Log Module destination.
 pub trait LogDestinationFactory: Send + Sync {
+    /// Declares the non-secret settings this module's destinations accept.
+    ///
+    /// The declaration is required rather than defaulted, so a Log Module
+    /// cannot be implemented without deciding which settings it defines. The
+    /// catalog publishes this one declaration, and [`Self::create`] refuses the
+    /// settings it is handed against the same declaration, so a configuration
+    /// can be judged without opening anything and cannot be judged by a rule
+    /// the module does not enforce.
+    fn accepted_settings(&self) -> LogSettingsContract;
+
     /// Creates a destination using read-only Server-owned factory inputs.
     fn create(
         &self,
@@ -681,6 +1119,7 @@ impl fmt::Debug for LogModuleRegistration {
 pub struct LogModuleDeclaration {
     identifier: LogModuleIdentifier,
     capabilities: LogCapabilities,
+    accepted_settings: LogSettingsContract,
 }
 
 impl LogModuleDeclaration {
@@ -693,6 +1132,14 @@ impl LogModuleDeclaration {
     pub const fn capabilities(&self) -> &LogCapabilities {
         &self.capabilities
     }
+
+    /// Returns the settings the module's factory declared it accepts.
+    ///
+    /// This is the module's own declaration, carried here so a caller can judge
+    /// a configuration against it without creating a destination.
+    pub const fn accepted_settings(&self) -> &LogSettingsContract {
+        &self.accepted_settings
+    }
 }
 
 impl fmt::Debug for LogModuleDeclaration {
@@ -700,6 +1147,7 @@ impl fmt::Debug for LogModuleDeclaration {
         formatter
             .debug_struct("LogModuleDeclaration")
             .field("capabilities", &self.capabilities)
+            .field("accepted_settings", &self.accepted_settings)
             .finish_non_exhaustive()
     }
 }
@@ -731,10 +1179,12 @@ impl LogModuleCatalog {
             {
                 return Err(LogCatalogError::DuplicateModuleIdentifier);
             }
+            let accepted_settings = registration.factory.accepted_settings();
             entries.push(LogModuleEntry {
                 declaration: LogModuleDeclaration {
                     identifier,
                     capabilities: registration.capabilities,
+                    accepted_settings,
                 },
                 factory: registration.factory,
             });
@@ -801,6 +1251,26 @@ pub struct ConfiguredLogDestination {
 }
 
 impl ConfiguredLogDestination {
+    /// Proves the destination can durably accept `record_type` before it is used.
+    ///
+    /// The declared capability is checked first, so an assignment to a module
+    /// that does not serve the assigned log type is refused without reaching
+    /// the module at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogDeliveryError::CapabilityUnavailable`] when the module does
+    /// not declare `record_type`, or [`LogDeliveryError::Destination`] when the
+    /// module could not prove its commit path.
+    pub fn preflight(&self, record_type: LogRecordType) -> Result<(), LogDeliveryError> {
+        if !self.capabilities.supports(record_type) {
+            return Err(LogDeliveryError::CapabilityUnavailable);
+        }
+        self.destination
+            .preflight(record_type)
+            .map_err(LogDeliveryError::Destination)
+    }
+
     /// Synchronously delivers one complete record and requires durable acknowledgement.
     pub fn deliver(&self, record: &CompleteLogRecord) -> Result<(), LogDeliveryError> {
         if !self.capabilities.supports(record.record_type()) {
@@ -836,6 +1306,8 @@ pub enum RecordError {
     InvalidCorrelationIdentifier,
     /// A System Log field was empty or exceeded its fixed bound.
     InvalidSystemLogBody,
+    /// An Audit principal was empty, too long, or lacked its required owner.
+    InvalidAuditPrincipal,
     /// An Audit Log field was empty or exceeded its fixed bound.
     InvalidAuditLogBody,
     /// The correlation identifier and record body exceeded their combined fixed bound.
@@ -865,6 +1337,8 @@ pub enum LogCatalogError {
     EmptyCapabilities,
     /// A module declared one record type more than once.
     DuplicateCapability,
+    /// A module's accepted-settings declaration was unbounded or ambiguous.
+    InvalidSettingsDeclaration,
 }
 
 impl fmt::Display for LogCatalogError {
@@ -905,6 +1379,8 @@ impl StdError for LogDestinationError {}
 pub enum LogConfigurationError {
     /// The selected module is not in the compiled-in catalog.
     UnknownModule,
+    /// The configuration's non-secret settings were unbounded or ambiguous.
+    SettingsInvalid,
     /// The selected module rejected trusted runtime configuration.
     Destination(LogDestinationError),
 }
@@ -913,6 +1389,9 @@ impl fmt::Display for LogConfigurationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownModule => formatter.write_str("log module is not registered"),
+            Self::SettingsInvalid => {
+                formatter.write_str("log module configuration settings are invalid")
+            }
             Self::Destination(error) => error.fmt(formatter),
         }
     }
@@ -991,7 +1470,10 @@ mod tests {
             event_time: u64,
             result: LogResult,
             correlation_id: Box<str>,
+            classification: Box<str>,
             principal: Box<str>,
+            principal_type: Box<str>,
+            responsible_owner: Option<Box<str>>,
             action: Box<str>,
             target: Box<str>,
             detail: Box<str>,
@@ -1020,7 +1502,10 @@ mod tests {
                     event_time: record.event_time().unix_milliseconds(),
                     result: record.result(),
                     correlation_id: record.correlation_id().as_str().into(),
+                    classification: record.body().classification().into(),
                     principal: record.body().principal().into(),
+                    principal_type: record.body().principal_type().as_str().into(),
+                    responsible_owner: record.body().responsible_owner().map(Into::into),
                     action: record.body().action().into(),
                     target: record.body().target().into(),
                     detail: record.body().detail().into(),
@@ -1063,6 +1548,14 @@ mod tests {
             records.push(persisted_record);
             Ok(acknowledgement)
         }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            let _records = self
+                .records
+                .lock()
+                .expect("test record lock must not poison");
+            Ok(())
+        }
     }
 
     struct ReplayFactory {
@@ -1070,6 +1563,10 @@ mod tests {
     }
 
     impl LogDestinationFactory for ReplayFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
         fn create(
             &self,
             _context: &LogModuleFactoryContext<'_>,
@@ -1085,6 +1582,10 @@ mod tests {
     }
 
     impl LogDestinationFactory for ContextForwardingFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
         fn create(
             &self,
             context: &LogModuleFactoryContext<'_>,
@@ -1119,16 +1620,81 @@ mod tests {
                 record_type,
             })
         }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            Ok(())
+        }
     }
 
     struct MismatchedAcknowledgementFactory;
 
     impl LogDestinationFactory for MismatchedAcknowledgementFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
         fn create(
             &self,
             _context: &LogModuleFactoryContext<'_>,
         ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
             Ok(Box::new(MismatchedAcknowledgementDestination))
+        }
+    }
+
+    struct UnprovableDestination;
+
+    impl LogDestination for UnprovableDestination {
+        fn deliver(
+            &self,
+            _record: &CompleteLogRecord,
+            acknowledgement: DurableAcknowledgement,
+        ) -> Result<DurableAcknowledgement, LogDestinationError> {
+            Ok(acknowledgement)
+        }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            Err(LogDestinationError::Unavailable)
+        }
+    }
+
+    /// A module that accepts only the settings it defines.
+    struct SettingsBoundFactory {
+        observed: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl SettingsBoundFactory {
+        /// The one declaration the catalog publishes and `create` refuses against.
+        fn accepted_settings() -> LogSettingsContract {
+            LogSettingsContract::new(vec!["retention_days".to_owned()])
+                .expect("the test settings declaration is valid")
+        }
+    }
+
+    impl LogDestinationFactory for SettingsBoundFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            Self::accepted_settings()
+        }
+
+        fn create(
+            &self,
+            context: &LogModuleFactoryContext<'_>,
+        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+            let settings = context.settings();
+            if !Self::accepted_settings().accepts(settings) {
+                return Err(LogDestinationError::ConfigurationInvalid);
+            }
+            *self.observed.lock().expect("test lock must not poison") = settings
+                .keys()
+                .map(|key| {
+                    (
+                        key.to_owned(),
+                        settings.get(key).expect("declared key resolves").to_owned(),
+                    )
+                })
+                .collect();
+            Ok(Box::new(ReplayDestination::new(Arc::new(Mutex::new(
+                Vec::new(),
+            )))))
         }
     }
 
@@ -1142,7 +1708,8 @@ mod tests {
             EventTime::from_unix_milliseconds(1_725_000_000_000),
             LogResult::Success,
             CorrelationId::new("correlation-1").expect("valid correlation identifier"),
-            SystemLogBody::new("lifecycle-complete", detail).expect("complete system body"),
+            SystemLogBody::new(SystemLogClassification::LifecycleStartup, detail)
+                .expect("complete system body"),
         )
         .expect("complete system record")
     }
@@ -1153,8 +1720,14 @@ mod tests {
             EventTime::from_unix_milliseconds(1_725_000_000_000),
             LogResult::Success,
             CorrelationId::new("correlation-1").expect("valid correlation identifier"),
-            AuditLogBody::new("administrator", "init", "deployment", "complete")
-                .expect("complete audit body"),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").expect("complete human principal"),
+                "init",
+                "deployment",
+                "complete",
+            )
+            .expect("complete audit body"),
         )
         .expect("complete audit record")
     }
@@ -1164,8 +1737,185 @@ mod tests {
     }
 
     fn assert_rejection_is_payload_free(error: RecordError, rejected: &str) {
-        assert!(!error.to_string().contains(rejected));
-        assert!(!format!("{error:?}").contains(rejected));
+        if !rejected.is_empty() {
+            assert!(!error.to_string().contains(rejected));
+            assert!(!format!("{error:?}").contains(rejected));
+        }
+    }
+
+    #[test]
+    fn classification_catalogs_project_every_registered_canonical_literal() {
+        for (classification, literal) in [
+            (
+                SystemLogClassification::LifecycleStartup,
+                "lifecycle.startup",
+            ),
+            (SystemLogClassification::LifecycleInit, "lifecycle.init"),
+            (
+                SystemLogClassification::LifecycleRestore,
+                "lifecycle.restore",
+            ),
+            (
+                SystemLogClassification::OperationalState,
+                "operational.state",
+            ),
+            (
+                SystemLogClassification::ConfigurationChange,
+                "configuration.change",
+            ),
+            (
+                SystemLogClassification::AuthenticationFailure,
+                "authentication.failure",
+            ),
+            (
+                SystemLogClassification::AuthorizationDenial,
+                "authorization.denial",
+            ),
+            (
+                SystemLogClassification::DependencyFailure,
+                "dependency.failure",
+            ),
+            (SystemLogClassification::ProviderFailure, "provider.failure"),
+            (SystemLogClassification::InternalError, "internal.error"),
+        ] {
+            assert_eq!(classification.as_str(), literal);
+            assert_eq!(
+                SystemLogBody::new(classification, "detail")
+                    .expect("registered System classifications construct")
+                    .classification(),
+                literal
+            );
+        }
+
+        for (classification, literal) in [
+            (
+                AuditLogClassification::LifecycleBackupCreated,
+                "lifecycle.backup.created",
+            ),
+            (
+                AuditLogClassification::AuthenticationUserCreated,
+                "authentication.user.created",
+            ),
+            (
+                AuditLogClassification::AuthenticationUserDisabled,
+                "authentication.user.disabled",
+            ),
+            (
+                AuditLogClassification::AuthenticationPasswordChanged,
+                "authentication.password.changed",
+            ),
+            (
+                AuditLogClassification::AuthenticationPasswordResetStarted,
+                "authentication.password-reset.started",
+            ),
+            (
+                AuditLogClassification::AuthenticationMfaEnrolled,
+                "authentication.mfa.enrolled",
+            ),
+            (
+                AuditLogClassification::AuthenticationMfaReset,
+                "authentication.mfa.reset",
+            ),
+            (
+                AuditLogClassification::AuthenticationMfaRequirementChanged,
+                "authentication.mfa-requirement.changed",
+            ),
+            (
+                AuditLogClassification::AuthenticationMfaModuleEnablementChanged,
+                "authentication.mfa-module-enablement.changed",
+            ),
+            (
+                AuditLogClassification::AuthenticationSessionRevoked,
+                "authentication.session.revoked",
+            ),
+            (
+                AuditLogClassification::AuthorizationGroupCreated,
+                "authorization.group.created",
+            ),
+            (
+                AuditLogClassification::AuthorizationGroupMembershipChanged,
+                "authorization.group-membership.changed",
+            ),
+            (
+                AuditLogClassification::AuthorizationGroupGrantChanged,
+                "authorization.group-grant.changed",
+            ),
+            (
+                AuditLogClassification::AuthorizationAutomationScopeChanged,
+                "authorization.automation-scope.changed",
+            ),
+            (
+                AuditLogClassification::DependencyLogModuleConfigurationChanged,
+                "dependency.log-module-configuration.changed",
+            ),
+            (
+                AuditLogClassification::DependencyServiceConnectionChanged,
+                "dependency.service-connection.changed",
+            ),
+            (
+                AuditLogClassification::ProviderOperationStarted,
+                "provider.operation.started",
+            ),
+            (
+                AuditLogClassification::ProviderOperationCompleted,
+                "provider.operation.completed",
+            ),
+            (
+                AuditLogClassification::InternalServerConfigurationChanged,
+                "internal.server-configuration.changed",
+            ),
+            (
+                AuditLogClassification::InternalUserStatusChanged,
+                "internal.user-status.changed",
+            ),
+            (
+                AuditLogClassification::InternalLogPolicyChanged,
+                "internal.log-policy.changed",
+            ),
+        ] {
+            assert_eq!(classification.as_str(), literal);
+            assert_eq!(
+                AuditLogBody::new(
+                    classification,
+                    AuditPrincipal::human("administrator").expect("bounded human principal"),
+                    "action",
+                    "target",
+                    "detail",
+                )
+                .expect("registered Audit classifications construct")
+                .classification(),
+                literal
+            );
+        }
+    }
+
+    #[test]
+    fn audit_principals_enforce_owner_shape_and_redact_rejections() {
+        let human = AuditPrincipal::human("administrator").expect("bounded human principal");
+        assert_eq!(human.principal_type(), AuditPrincipalType::Human);
+        assert_eq!(human.responsible_owner(), None);
+
+        let automation = AuditPrincipal::automation("restore-worker", "administrator")
+            .expect("bounded automation principal");
+        assert_eq!(automation.principal_type(), AuditPrincipalType::Automation);
+        assert_eq!(automation.responsible_owner(), Some("administrator"));
+        for sensitive in ["restore-worker", "administrator"] {
+            assert!(!format!("{automation:?}").contains(sensitive));
+        }
+
+        for rejected in [String::new(), "p".repeat(MAX_AUDIT_PRINCIPAL_BYTES + 1)] {
+            let error = AuditPrincipal::human(rejected.as_str()).unwrap_err();
+            assert_eq!(error, RecordError::InvalidAuditPrincipal);
+            assert_rejection_is_payload_free(error, &rejected);
+        }
+        for rejected in [
+            String::new(),
+            "o".repeat(MAX_AUDIT_RESPONSIBLE_OWNER_BYTES + 1),
+        ] {
+            let error = AuditPrincipal::automation("automation", rejected.as_str()).unwrap_err();
+            assert_eq!(error, RecordError::InvalidAuditPrincipal);
+            assert_rejection_is_payload_free(error, &rejected);
+        }
     }
 
     fn cargo_json_messages(output: &std::process::Output) -> Vec<Value> {
@@ -1236,12 +1986,25 @@ mod tests {
         let issuer = TrustedRecordIssuer::new();
         let correlation_id = CorrelationId::new("c".repeat(MAX_CORRELATION_ID_BYTES)).unwrap();
         let system_body = SystemLogBody::new(
-            "s".repeat(MAX_SYSTEM_CLASSIFICATION_BYTES),
+            SystemLogClassification::LifecycleStartup,
             "d".repeat(MAX_SYSTEM_DETAIL_BYTES),
         )
         .unwrap();
         let audit_body = AuditLogBody::new(
-            "p".repeat(MAX_AUDIT_PRINCIPAL_BYTES),
+            AuditLogClassification::LifecycleBackupCreated,
+            AuditPrincipal::human("p".repeat(MAX_AUDIT_PRINCIPAL_BYTES)).unwrap(),
+            "a".repeat(MAX_AUDIT_ACTION_BYTES),
+            "t".repeat(MAX_AUDIT_TARGET_BYTES),
+            "d".repeat(MAX_AUDIT_DETAIL_BYTES),
+        )
+        .unwrap();
+        let automation_body = AuditLogBody::new(
+            AuditLogClassification::LifecycleBackupCreated,
+            AuditPrincipal::automation(
+                "p".repeat(MAX_AUDIT_PRINCIPAL_BYTES),
+                "o".repeat(MAX_AUDIT_RESPONSIBLE_OWNER_BYTES),
+            )
+            .unwrap(),
             "a".repeat(MAX_AUDIT_ACTION_BYTES),
             "t".repeat(MAX_AUDIT_TARGET_BYTES),
             "d".repeat(MAX_AUDIT_DETAIL_BYTES),
@@ -1268,6 +2031,16 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            CompleteLogRecord::audit(
+                issuer.issue([3; RECORD_ID_LENGTH]).unwrap(),
+                EventTime::from_unix_milliseconds(1),
+                LogResult::Success,
+                CorrelationId::new("c".repeat(MAX_CORRELATION_ID_BYTES)).unwrap(),
+                automation_body,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1285,7 +2058,9 @@ mod tests {
             "x".repeat(MAX_SYSTEM_DETAIL_BYTES + 1),
             utf8_overflow(MAX_SYSTEM_DETAIL_BYTES),
         ] {
-            let error = SystemLogBody::new("classification", rejected.as_str()).unwrap_err();
+            let error =
+                SystemLogBody::new(SystemLogClassification::LifecycleStartup, rejected.as_str())
+                    .unwrap_err();
             assert_eq!(error, RecordError::InvalidSystemLogBody);
             assert_rejection_is_payload_free(error, &rejected);
         }
@@ -1294,8 +2069,14 @@ mod tests {
             "x".repeat(MAX_AUDIT_TARGET_BYTES + 1),
             utf8_overflow(MAX_AUDIT_TARGET_BYTES),
         ] {
-            let error =
-                AuditLogBody::new("principal", "action", rejected.as_str(), "detail").unwrap_err();
+            let error = AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("principal").unwrap(),
+                "action",
+                rejected.as_str(),
+                "detail",
+            )
+            .unwrap_err();
             assert_eq!(error, RecordError::InvalidAuditLogBody);
             assert_rejection_is_payload_free(error, &rejected);
         }
@@ -1305,7 +2086,7 @@ mod tests {
     fn complete_record_rejects_an_aggregate_overflow_before_delivery() {
         let rejected = "x".repeat(MAX_RECORD_PAYLOAD_BYTES);
         let body = SystemLogBody {
-            classification: "classification".into(),
+            classification: SystemLogClassification::LifecycleStartup,
             detail: rejected.clone().into(),
         };
         let mut deliveries = 0;
@@ -1584,6 +2365,256 @@ mod tests {
     }
 
     #[test]
+    fn destination_settings_reject_unbounded_or_ambiguous_configuration() {
+        assert_eq!(
+            DestinationSettings::new(
+                (0..=MAX_DESTINATION_SETTINGS)
+                    .map(|index| (format!("key-{index}"), "value".to_owned()))
+                    .collect()
+            ),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![(String::new(), "value".to_owned())]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![("key".to_owned(), String::new())]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![(
+                "k".repeat(MAX_DESTINATION_SETTING_KEY_BYTES + 1),
+                "value".to_owned()
+            )]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![(
+                "key".to_owned(),
+                "v".repeat(MAX_DESTINATION_SETTING_VALUE_BYTES + 1)
+            )]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+        assert_eq!(
+            DestinationSettings::new(vec![
+                ("key".to_owned(), "first".to_owned()),
+                ("key".to_owned(), "second".to_owned()),
+            ]),
+            Err(LogConfigurationError::SettingsInvalid)
+        );
+
+        let accepted = DestinationSettings::new(vec![
+            (
+                "k".repeat(MAX_DESTINATION_SETTING_KEY_BYTES),
+                "v".repeat(MAX_DESTINATION_SETTING_VALUE_BYTES),
+            ),
+            ("retention_days".to_owned(), "30".to_owned()),
+        ])
+        .expect("bounded settings are accepted");
+        assert_eq!(accepted.len(), 2);
+        assert_eq!(accepted.get("retention_days"), Some("30"));
+        assert_eq!(accepted.get("absent"), None);
+        assert!(DestinationSettings::default().is_empty());
+    }
+
+    #[test]
+    fn a_factory_receives_the_committed_configuration_settings() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Box::new(SettingsBoundFactory {
+                observed: Arc::clone(&observed),
+            }),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+
+        let accepted = trusted_context().with_settings(
+            DestinationSettings::new(vec![("retention_days".to_owned(), "30".to_owned())])
+                .expect("bounded settings"),
+        );
+        let _destination = catalog
+            .create_destination(&identifier, &accepted)
+            .expect("a defined setting is accepted");
+        assert_eq!(
+            observed
+                .lock()
+                .expect("test lock must not poison")
+                .as_slice(),
+            &[("retention_days".to_owned(), "30".to_owned())]
+        );
+
+        let rejected = trusted_context().with_settings(
+            DestinationSettings::new(vec![("unknown".to_owned(), "1".to_owned())])
+                .expect("bounded settings"),
+        );
+        assert_eq!(
+            catalog
+                .create_destination(&identifier, &rejected)
+                .expect_err("an undefined setting is refused"),
+            LogConfigurationError::Destination(LogDestinationError::ConfigurationInvalid)
+        );
+    }
+
+    #[test]
+    fn a_settings_declaration_rejects_an_unbounded_or_ambiguous_key_set() {
+        assert_eq!(
+            LogSettingsContract::new(
+                (0..=MAX_DESTINATION_SETTINGS)
+                    .map(|index| format!("key-{index}"))
+                    .collect()
+            ),
+            Err(LogCatalogError::InvalidSettingsDeclaration)
+        );
+        assert_eq!(
+            LogSettingsContract::new(vec![String::new()]),
+            Err(LogCatalogError::InvalidSettingsDeclaration)
+        );
+        assert_eq!(
+            LogSettingsContract::new(vec!["k".repeat(MAX_DESTINATION_SETTING_KEY_BYTES + 1)]),
+            Err(LogCatalogError::InvalidSettingsDeclaration)
+        );
+        assert_eq!(
+            LogSettingsContract::new(vec!["key".to_owned(), "key".to_owned()]),
+            Err(LogCatalogError::InvalidSettingsDeclaration)
+        );
+
+        let declared =
+            LogSettingsContract::new(vec!["retention_days".to_owned(), "host".to_owned()])
+                .expect("a bounded declaration is accepted");
+        assert_eq!(
+            declared.keys().collect::<Vec<_>>(),
+            ["host", "retention_days"]
+        );
+        assert!(declared.defines("host"));
+        assert!(!declared.defines("absent"));
+
+        let none = LogSettingsContract::none();
+        assert_eq!(none.keys().len(), 0);
+        assert!(none.accepts(&DestinationSettings::default()));
+        assert!(
+            !none.accepts(
+                &DestinationSettings::new(vec![("retention_days".to_owned(), "30".to_owned())])
+                    .expect("bounded settings")
+            )
+        );
+    }
+
+    /// The catalog carries the module's own declaration, so a configuration can
+    /// be judged against it without creating a destination.
+    #[test]
+    fn the_catalog_publishes_the_settings_declaration_its_factory_makes() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Box::new(SettingsBoundFactory {
+                observed: Arc::clone(&observed),
+            }),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let undeclared = DestinationSettings::new(vec![("unknown".to_owned(), "1".to_owned())])
+            .expect("bounded settings");
+
+        let published = catalog
+            .declaration(&identifier)
+            .expect("a registered module publishes its declaration")
+            .accepted_settings();
+        assert_eq!(published.keys().collect::<Vec<_>>(), ["retention_days"]);
+        assert!(
+            published.accepts(
+                &DestinationSettings::new(vec![("retention_days".to_owned(), "30".to_owned())])
+                    .expect("bounded settings")
+            )
+        );
+        assert!(!published.accepts(&undeclared));
+
+        // Judging the configuration created nothing, and the module refuses the
+        // same configuration against the same declaration when it is opened.
+        assert!(
+            observed
+                .lock()
+                .expect("test lock must not poison")
+                .is_empty()
+        );
+        assert_eq!(
+            catalog
+                .create_destination(&identifier, &trusted_context().with_settings(undeclared))
+                .expect_err("an undeclared setting is refused"),
+            LogConfigurationError::Destination(LogDestinationError::ConfigurationInvalid)
+        );
+    }
+
+    #[test]
+    fn preflight_refuses_an_undeclared_record_type_without_reaching_the_module() {
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
+        let catalog = catalog(
+            LogCapabilities::new(vec![LogRecordType::System])
+                .expect("valid capability declaration"),
+            Arc::clone(&records),
+        );
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let destination = catalog
+            .create_destination(&identifier, &trusted_context())
+            .expect("registered destination is configured");
+
+        assert_eq!(destination.preflight(LogRecordType::System), Ok(()));
+        assert_eq!(
+            destination.preflight(LogRecordType::Audit),
+            Err(LogDeliveryError::CapabilityUnavailable)
+        );
+        assert!(
+            records
+                .lock()
+                .expect("test record lock must not poison")
+                .is_empty(),
+            "preflight must leave no record behind"
+        );
+    }
+
+    #[test]
+    fn preflight_surfaces_a_destination_that_cannot_prove_its_commit_path() {
+        struct UnprovableFactory;
+
+        impl LogDestinationFactory for UnprovableFactory {
+            fn accepted_settings(&self) -> LogSettingsContract {
+                LogSettingsContract::none()
+            }
+
+            fn create(
+                &self,
+                _context: &LogModuleFactoryContext<'_>,
+            ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+                Ok(Box::new(UnprovableDestination))
+            }
+        }
+
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "sqlite",
+            LogCapabilities::new(vec![LogRecordType::System, LogRecordType::Audit])
+                .expect("valid capability declaration"),
+            Box::new(UnprovableFactory),
+        )])
+        .expect("valid log module catalog");
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let destination = catalog
+            .create_destination(&identifier, &trusted_context())
+            .expect("registered destination is configured");
+
+        assert_eq!(
+            destination.preflight(LogRecordType::System),
+            Err(LogDeliveryError::Destination(
+                LogDestinationError::Unavailable
+            ))
+        );
+    }
+
+    #[test]
     fn external_consumers_can_register_but_cannot_construct_server_authority() {
         let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         let target_root = std::env::temp_dir().join(format!(
@@ -1650,6 +2681,7 @@ mod tests {
             ("acknowledgement", "E0624"),
             ("dispatch", "E0451"),
             ("catalog-dispatch", "E0308"),
+            ("server-authority", "E0603"),
         ] {
             assert_forbidden_fixture_rejected(&fixture_root, &target_root, binary, expected_code);
         }

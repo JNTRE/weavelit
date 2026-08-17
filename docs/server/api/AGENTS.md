@@ -29,6 +29,9 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Server API.
+- `api-contract-design.md`: Canonical version 1 API contract, covering Client
+  Module composition and capability declaration, route organization, result and
+  error representation, pagination, idempotency, and compatibility.
 
 ## Usage Guidance
 

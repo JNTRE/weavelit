@@ -17,6 +17,8 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Web UI Client Module.
 - `pre-operational-status-design.md`: Versioned status-only pre-operational transport contract and Web UI Client Module boundary for Milestone 1.
 - `pre-operational-database-selection-design.md`: Versioned pre-operational Application Database selection transport contract, request schema, same-origin and CSRF preconditions, and rejection contract for the Web UI Client Module.
+- `pre-operational-restore-design.md`: Versioned pre-operational two-request Restore submission transport contract, the one-time submission ticket, request schemas, artifact bounds, same-origin and CSRF preconditions, and rejection contract for the Web UI Client Module.
+- `pre-operational-init-design.md`: Versioned pre-operational two-request Init submission transport contract, request schema, same-origin and CSRF preconditions, browser-side recovery-key proof derivation, and rejection contract for the Web UI Client Module, which declares this capability for composition by the `weavelit-server` runtime.
 - `embedded-asset-delivery-design.md`: Compile-time embedded asset allowlist, MIME types, security headers, body bounds, and path-rejection behavior for the Web UI Client Module.
 
 ## Usage Guidance

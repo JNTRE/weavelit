@@ -7,12 +7,13 @@ use std::{
 };
 
 use weavelit_server_lifecycle::{
-    ApplicationDatabase, ApplicationDatabaseFactory, BackendCatalog, BackendIdentifier,
-    BackendOpenError, BackendRegistration, CatalogError, ConnectionFieldDeclaration,
-    ConnectionFieldIdentifier, ConnectionFieldInput, ConnectionFieldRequirement,
-    ConnectionValidationError, ConnectionValue, ConnectionValueKind, DatabaseError,
-    DatabaseInspection, DeploymentIdentifier, LifecycleError, RetainedDatabaseInspection,
-    SecretClassification, TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint,
+    ApplicationDatabase, ApplicationDatabaseFactory, ApplicationState, BackendCatalog,
+    BackendIdentifier, BackendOpenError, BackendRegistration, CatalogError,
+    ConnectionFieldDeclaration, ConnectionFieldIdentifier, ConnectionFieldInput,
+    ConnectionFieldRequirement, ConnectionValidationError, ConnectionValue, ConnectionValueKind,
+    DatabaseError, DatabaseInspection, DeploymentIdentifier, InitializedState, LifecycleError,
+    RetainedDatabaseInspection, SecretClassification, StateIdentifier, TrustedBackendContext,
+    ValidatedConnectionSettings, WorkflowCheckpoint,
 };
 
 const SENSITIVE_PATH: &str = "/private/sensitive/application.sqlite3";
@@ -29,6 +30,59 @@ impl ApplicationDatabase for FakeDatabase {
     }
 
     fn create_checkpoint(&mut self, _checkpoint: &WorkflowCheckpoint) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    fn complete_checkpoint(
+        &mut self,
+        _checkpoint: &WorkflowCheckpoint,
+        _state: &ApplicationState,
+        _reconciliation: &weavelit_server_database::ReconciliationDigest,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::InvalidState)
+    }
+
+    fn load_initialized_state(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<InitializedState, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn acknowledge_completion(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+        _record_identifier: StateIdentifier,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_human_authorization(
+        &mut self,
+        _account: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_component_enablement(
+        &mut self,
+    ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
+        None
+    }
+
+    fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+        None
+    }
+
+    fn reconciliation(&mut self) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
+        None
+    }
+
+    fn close(self: Box<Self>) -> Result<(), DatabaseError> {
         Ok(())
     }
 }

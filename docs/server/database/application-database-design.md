@@ -49,6 +49,19 @@ mechanics. It supports only these capabilities:
    validates a backup artifact or private recovery key.
 5. Load the initialized application-owned state and deployment identifier
    required by Server startup.
+6. Acknowledge the persisted completion obligation of a finished Init or
+   Restore workflow exactly once.
+7. Close the open database, releasing it and leaving no work for recovery.
+
+Closing consumes the backend, so a use after close is not expressible rather
+than detected. The Server holds one open handle for the deployment's lifetime
+and closes it through a single process-wide owner during shutdown; that owner
+takes the handle out of every clone at once, so the backend's close runs exactly
+once however many times shutdown is requested, and every later operation is
+refused as unavailable. A backend that cannot leave its storage free of pending
+recovery work reports an unclean close rather than a clean one. The Server
+retains and awaits every close it starts; its five-second reporting threshold
+marks the shutdown incomplete but never permits the close to be abandoned.
 
 The Rust contract is synchronous and object-safe. `ApplicationDatabase`
 requires a movable backend and takes exclusive mutable access for every call;
@@ -108,10 +121,130 @@ reset. Every later Init or Restore attempt returns the stable
 `AlreadyInitialized` error.
 
 The backend compares the expected deployment identifier on every checkpoint,
-finalization, load, and restore operation. It rejects a mismatch before changing
-state. The identifier is an integrity binding between this database and the
-Server-local deployment record and locator; it is not an authentication
-credential or secret.
+finalization, load, restore, and acknowledgement operation. It rejects a
+mismatch before changing state. The identifier is an integrity binding between
+this database and the Server-local deployment record and locator; it is not an
+authentication credential or secret.
+
+## Application State Model
+
+The contract carries deployment-bound application state as a bounded typed
+aggregate of normalized entities, not as an opaque serialized snapshot. Each
+recoverable state type is a distinct type with its own validated fields, so a
+backend persists it in normalized relational form and the Server can reason
+about, migrate, and integrity-check individual entities. `ApplicationState`
+covers component configuration, protected component secrets, local accounts,
+password verifiers, Groups, Group memberships, Group grants, protected MFA
+factor data, Service Connection credentials, the persisted recovery public key,
+non-secret Log Module configuration and settings, System Log and Audit Log
+assignments, and the workflow completion obligation.
+
+The aggregate has no session, Log Module destination data, or Log Module
+credential member. Active sessions, System Logs and Audit Logs, other Log Module
+destination data, and Log Module authentication or connection credentials
+therefore cannot enter persisted application state through this contract.
+
+Live sessions are still stored in the Application Database, through the separate
+`SessionStore` contract described in [Live Session Storage](#live-session-storage).
+They are live operational data rather than restorable state: they survive an
+ordinary restart, they never appear in normalized state or in a backup, and a
+Restore clears them. A backend has no schema in which to record log records, Log
+Module destination data, or Log Module credentials at all.
+
+## Live Session Storage
+
+`SessionStore` is a separate backend-neutral contract from `ApplicationState`,
+so session data cannot reach a backup or a normalized state document by
+construction. A stored session holds the session token digest, the per-session
+CSRF digest, the owning account, the issuing
+**[Client Module](../../glossary.md#applications-and-interfaces)**, the issue
+instant, the last-seen instant, and an absolute expiry instant. It caches no
+Group, grant, or other authorization data; authorization is evaluated live.
+
+A digest is a distinct 32-byte type with one constructor that accepts a
+`[u8; 32]` and rejects the reserved all-zero value. There is no constructor from
+a string or from any variable-length input and no conversion from one, so no
+plaintext token or CSRF value can inhabit the type or be persisted through it.
+Neither digest type implements `Display`, and `Debug` renders a fixed redacted
+string. A digest is compared through a constant-time equality method; the types
+implement no ordinary equality.
+
+The absolute expiry is derived once from the issue instant using the approved
+profile's 12-hour maximum. It is not a caller-supplied field and is never
+extended. A session is expired when the clock reaches `last_seen_at` plus the
+30-minute idle timeout or reaches the absolute expiry; the instant one unit
+before each boundary is still valid. If the clock has moved backwards so that
+the present instant precedes either recorded instant, the session is refused
+before any lifetime arithmetic is performed and its recorded activity is not
+advanced, so a rolled-back clock fails closed rather than granting a longer
+lifetime. A session refused for a backwards clock is not destroyed, because the
+clock rather than the session is what is wrong.
+
+The contract provides atomic `create`, `validate_and_touch`, `rotate_csrf`,
+`revoke`, and `revoke_for_account` operations.
+`validate_and_touch` and `rotate_csrf` remove a session they find expired.
+`validate_and_touch` takes the presented CSRF digest and compares it inside the
+same transaction that resolves the session, and it advances the recorded
+activity only when the digests match, so a request failing that comparison
+cannot extend the idle timeout. A mismatch is reported as the same rejection an
+unknown session token produces.
+Completing a state replacement clears every stored session inside the same
+atomic replacement.
+
+Issuing a session is also what removes expired ones. Every insertion first
+removes sessions already expired at the instant the new session is issued,
+inside the transaction that inserts it, so no separate sweep, timer, or
+unreferenced maintenance operation is needed and no expired row can accumulate
+while sessions are being issued. The removal is bounded: one insertion removes
+at most a fixed batch of expired rows, so a single login can never be made to
+delete an unbounded number of rows and a large accumulation is drained across
+subsequent insertions instead. Rows accumulate only by issuing sessions, so a
+bounded batch per insertion keeps pace with the only source of growth. Removal
+failure does not fail the login: the insertion still commits, because the
+session's correctness does not depend on the removal, and rows left behind are
+already unusable and are offered to the next insertion. A failure severe enough
+to also prevent the insertion still fails the login through the insertion
+itself, so no token is ever issued for a session that was not stored.
+
+Every text field is bounded, non-empty, and free of control characters. A state
+identifier is an opaque 16-byte value that rejects the reserved all-zero
+representation. A password verifier is a bounded ASCII PHC string, and the
+recovery public key is the canonical lowercase `age1` recipient encoding
+defined by the [Server Restore Design](../lifecycle/restore/restore-design.md).
+
+Reversibly encrypted values are modeled as opaque protected byte payloads. The
+Application Database stores and returns those bytes exactly. It never accepts
+raw key material, derives keys, encrypts, decrypts, interprets, or discloses
+them. The Server-local at-rest key material stays inside lifecycle ownership.
+
+`ApplicationState` is constructed through a checked constructor that orders
+every collection deterministically, rejects duplicate identifiers and duplicate
+unique keys, rejects references to absent accounts, Groups, or Log Module
+configurations, and requires exactly one enabled Log Module assignment for each
+of the System Log and the Audit Log. Rejections use the same redacted
+contract-input errors as other invalid inputs and never echo the rejected
+value. A backend that decodes persisted state through the same constructor
+therefore detects malformed durable state and returns `IntegrityFailure`.
+
+The completion obligation carries the bounded, non-secret System Log fields for
+the workflow-result record required by the
+[Technical Specification](../../spec.md#logging-and-accountability): its record
+identifier, workflow discriminator, classification, correlation identifier, UTC
+Unix millisecond event time, and detail. Checkpoint replacement persists it
+unacknowledged in the same transaction as the state it completes, so an
+interrupted workflow cannot lose its logging obligation. Acknowledgement is a
+separate one-time operation that requires initialized state, the expected
+deployment identifier, and the exact persisted record identifier; a second
+attempt or an unknown record identifier returns `InvalidState`. Loading
+initialized state reports whether the obligation is still outstanding.
+
+Checkpoint replacement is workflow-neutral and serves both the Init and the
+Restore final write. It receives the expected deployment identifier through the
+supplied checkpoint, requires the persisted pending checkpoint to equal that
+checkpoint exactly, and requires the state's completion obligation to name the
+same workflow. A different deployment returns `DeploymentMismatch`, a different
+or absent checkpoint returns `InvalidState`, and initialized state returns
+`AlreadyInitialized`.
 
 The contract initially exposes these storage-neutral error categories:
 
@@ -136,6 +269,61 @@ remain private and are mapped to these safe categories before reaching the
 Server. `DatabaseError` variants carry no dynamic payload and use stable,
 storage-neutral display text. Invalid contract inputs use the same redaction
 rule and never include the rejected identifier or metadata.
+
+## MFA Replay Watermark Storage
+
+`MfaStore` is a third backend-neutral contract, separate from both
+`ApplicationState` and `SessionStore`. It records, for each enrolled MFA
+factor, the highest time step the Server has ever accepted from that factor, so
+a code presented a second time inside the acceptance window described in the
+[Authentication Design](../authentication/authentication-design.md#replay-watermark)
+is refused.
+
+A time step is a distinct type whose checked constructor rejects a value a
+backend could not store, and which exposes its domain value and its stored
+representation separately, so the conversion at the storage boundary is total.
+
+The contract exposes reading a factor's current watermark and one combined
+accept operation. The accept operation names the Module's configuration
+component, the factor, the presented step, and the session to issue. It reads
+the component's enabled setting, performs the watermark comparison and write,
+and writes the session, all in one transaction, and reports whether the step was
+accepted, refused as a replay, or refused because the Module was disabled. It
+does not return the watermark for a caller to compare itself. The decision
+belongs to the store because a caller that read, decided, and then wrote would
+leave a window in which a concurrent presentation of the same code could be
+accepted twice, or in which a Module disabled while the code was in flight could
+still have a session issued behind the disablement's own session revocation.
+Nothing is written when the step is refused for either reason.
+
+The same contract owns issuing the session a login receives when no second
+factor gates it, enrolling a factor, changing a Module's enabled state, and
+counting enrolled accounts, because each of those is a decision the caller must
+not make from separately loaded state.
+
+Issuing that session names the Module's configuration component, the account,
+and the session. The store reads the enabled setting, reads whether the account
+holds a factor for that Module, and writes the session, all in one transaction,
+and writes nothing when the Module is enabled and the account holds a factor.
+A caller that decided both from state it loaded earlier would write a session
+for an enrolled account behind a Module enabled while the login was in flight,
+and no enablement change can revoke it: enabling revokes nothing, and disabling
+reaches only the sessions that already exist.
+
+Enrolling names the Module's configuration component and the session to issue as
+well as the factor: the store reads that component's enabled setting, refuses
+the enrollment when the Module is not enabled, and otherwise writes the factor,
+its confirming watermark, and the session, all in one transaction. It reports
+whether the factor was enrolled, was already present, or was refused because the
+Module was disabled. Changing enabled state is atomic with recounting the
+enrolled accounts an Administrator previewed and with revoking the sessions of
+accounts holding a factor.
+
+A watermark is live operational data in the same sense as a session: it belongs
+to the running deployment rather than to the restorable aggregate. It is not a
+member of `ApplicationState`, it never reaches a backup, and completing a state
+replacement clears every watermark inside the same atomic replacement that
+clears every session.
 
 ## Deployment Record, Locator, And Operational State
 
@@ -212,7 +400,11 @@ A backup includes the application configuration and state needed to restore
 operational status, including local accounts, password verifiers, Groups and
 their grants, enabled-module state, protected MFA factor data, Service
 Connection credentials, and other application configuration. It excludes active
-sessions, which are invalidated on restore. For Log Modules, it includes only
+sessions, which are invalidated on restore, and the live lifecycle
+reconciliation digest, which is not application state: each completed Init or
+Restore atomically writes its own digest outside `ApplicationState`, so a
+Restore's replacement digest always reflects that exact Restore rather than
+backup content. For Log Modules, it includes only
 non-secret configuration and assignments. System Logs and Audit Logs, other Log
 Module destination data, and Log Module authentication or connection credentials
 are outside this Application Database backup contract.

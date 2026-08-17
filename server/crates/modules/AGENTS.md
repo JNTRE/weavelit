@@ -42,7 +42,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep category directories free of Cargo manifests; each Module package belongs in a child directory named `weavelit-module-<module-type>-<implementation>`.
+- Keep category directories free of Cargo manifests; each Module package belongs in a child directory named `weavelit-module-<module-type>-<implementation>`, or `weavelit-module-<module-type>` for a shared base crate that owns a contract every implementation of that category serves.
 - Keep all modules compiled into the Server package; do not introduce runtime-installable plugins.
 - Keep module request translation and provider behavior subject to final Server authorization and policy evaluation.
 - Preserve module-specific requirements in their canonical `../../../docs/` boundary rather than duplicating them here.

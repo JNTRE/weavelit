@@ -18,12 +18,19 @@ time, result, and correlation identifier. It contains no SQLite, filesystem,
 Application Database, client-wire serialization, query, retention, backup,
 recovery, purge, or remote-credential behavior.
 
-The contract enforces UTF-8 byte limits before it constructs a complete record:
-the correlation identifier is at most 64 bytes; System classification and
-detail are at most 128 bytes and 4 KiB; and Audit principal, action, target,
-and detail are at most 256 bytes, 128 bytes, 1 KiB, and 4 KiB. The correlation
-identifier plus every body field is at most 8 KiB. Empty and oversized values
-are rejected without truncation, hashing, raw source payload retention, or a
+The contract enforces UTF-8 byte limits before it constructs a complete
+record. Every record carries a nonzero 16-byte random `record_id`, a UTC
+Unix-millisecond `event_time`, a `success` or `failure` `result`, a
+`correlation_id` of 1–64 bytes, and a `classification` selected from its
+closed typed catalog of lowercase dotted identifiers. A System record adds a
+`detail` of 1–4096 bytes; an Audit record adds a typed `principal` of 1–256
+bytes that is structurally either human with no
+**[Responsible Owner](../glossary.md#identities-and-access)** or automation
+with its required 1–256-byte `responsible_owner`, plus an `action` of 1–128
+bytes, a `target` of 1–1024 bytes, and its own `detail` of 1–4096 bytes. Every
+field is pre-redacted before construction, and the correlation identifier plus
+every body field is at most 8 KiB combined. Empty and oversized values are
+rejected without truncation, hashing, raw source payload retention, or a
 replacement record. Audit and Observability are the only producers of these
 pre-redacted bounded summaries; a logging-required workflow fails if it cannot
 construct one, and a destination receives no unbounded or partial record.
@@ -79,6 +86,93 @@ at-least-once attempts and one persisted completion record per identifier for
 the MVP SQLite destination; it does not claim distributed exactly-once delivery
 or select a fan-out policy.
 
+## Destination Preflight And Configuration Validation
+
+`LogDestination` declares `preflight` as a required trait method rather than a
+defaulted one, so a Log Module cannot be implemented without deciding how it
+proves that its configured destination can complete its commit path for a
+given record type before the Server relies on it for delivery.
+
+`ConfiguredLogDestination::preflight` checks the Server-declared capability
+before it delegates to the module: an assignment for a record type the module
+does not declare returns `LogDeliveryError::CapabilityUnavailable` without
+reaching the module at all. Only a declared record type reaches the module's
+own `preflight`, whose failure surfaces as `LogDeliveryError::Destination`
+carrying the module's stable, payload-free `LogDestinationError`.
+
+A valid preflight proof must exercise the same commit path that delivery later
+uses for that record type, and it must leave no persisted record behind on
+either outcome. A proof that only checks reachability, or that writes a record
+it does not remove, does not satisfy this contract.
+
+The trusted context a catalog destination receives also carries the
+destination's committed, non-secret configuration settings. A Log Module's
+factory must reject any setting it does not define as
+`LogDestinationError::ConfigurationInvalid`; `LogModuleCatalog::create_destination`
+propagates that rejection as `LogConfigurationError::Destination`, so an
+unconfigured or misconfigured setting is refused rather than silently ignored.
+
+### Declaring The Settings A Module Accepts
+
+A module states which settings it defines exactly once, through
+`LogDestinationFactory::accepted_settings`. Like `preflight`, the method is
+required rather than defaulted, so a Log Module cannot be implemented without
+deciding which settings it accepts. It returns a `LogSettingsContract`: a
+validated, ordered set of the setting keys the module defines, bounded by the
+same `MAX_DESTINATION_SETTINGS` count and `MAX_DESTINATION_SETTING_KEY_BYTES`
+key length that bound a committed configuration. A module that derives its whole
+destination from the trusted context, as the compiled-in `sqlite` module does,
+declares `LogSettingsContract::none()`.
+
+`LogModuleCatalog::new` reads that declaration from each registered factory and
+carries it on the module's validated `LogModuleDeclaration`, alongside its
+identifier and capabilities. `LogSettingsContract::accepts` then judges a
+configuration's settings against the module's own declaration. That comparison
+is pure: it inspects declared keys, opens no destination, and creates no local
+storage, so a caller may judge a configuration before anything durable exists.
+
+The declaration and the factory's own refusal are the same statement. A module
+refuses the settings it is handed by testing them against `accepted_settings`
+rather than by restating the rule inside its factory, so a configuration a
+caller judged as acceptable cannot be one the module then refuses to open, and a
+caller can never judge a configuration by a rule the module does not apply.
+This seam is what lets **[Init](../glossary.md#states-and-requests)** and
+**[Restore](../glossary.md#states-and-requests)** refuse a configuration
+carrying settings its named module could not serve before their checkpoints are
+committed, without opening the destination; see
+[Compiled-In Component Inventory](../server/lifecycle/restore/restore-design.md#compiled-in-component-inventory).
+
+## Event Classification Taxonomy
+
+Every classification is a lowercase dotted identifier that a producer selects
+from its closed typed catalog; a destination stores its canonical string
+opaquely and does not enforce the taxonomy. The initial System Log taxonomy is
+`lifecycle.startup`, `lifecycle.init`, `lifecycle.restore`,
+`operational.state`, `configuration.change`, `authentication.failure`,
+`authorization.denial`, `dependency.failure`, `provider.failure`, and
+`internal.error`. The initial Audit Log taxonomy is `lifecycle.backup.created`;
+`authentication.user.created`, `authentication.user.disabled`,
+`authentication.password.changed`, `authentication.password-reset.started`,
+`authentication.mfa.enrolled`, `authentication.mfa.reset`,
+`authentication.mfa-requirement.changed`,
+`authentication.mfa-module-enablement.changed`, and
+`authentication.session.revoked`; `authorization.group.created`,
+`authorization.group-membership.changed`, `authorization.group-grant.changed`,
+and `authorization.automation-scope.changed`;
+`dependency.log-module-configuration.changed` and
+`dependency.service-connection.changed`; `provider.operation.started` and
+`provider.operation.completed`; and `internal.server-configuration.changed`,
+`internal.user-status.changed`, and `internal.log-policy.changed`.
+
+**[Init](../glossary.md#states-and-requests)** and
+**[Restore](../glossary.md#states-and-requests)** completion results remain
+System-only events under `lifecycle.init` and `lifecycle.restore`. A raw
+dependency, provider, authorization, or internal failure is a System event; a
+consequential authenticated action that follows from it may additionally
+produce an Audit event. This taxonomy does not change the Log Module
+non-enrichment boundary: a destination never adds a field to a record it
+receives.
+
 ## MVP SQLite Destination
 
 `weavelit-module-log-sqlite` is the compiled-in MVP destination implementation.
@@ -97,11 +191,28 @@ the module, startup neither opens nor delivers to the destination.
 The destination stores System and Audit records separately within its own
 database. It must not depend on or reuse an Application Database crate, file,
 schema, connection, configuration, or resource. It may use the same
-workspace-pinned `rusqlite` package after dependency review. The Server
-preflights the destination before an Init or Restore application-state commit,
-keeps it for the process lifetime, and validates it during startup without
-post-commit reconciliation delivery. Restore imports Module configuration and
-assignments, never destination data.
+workspace-pinned `rusqlite` package after dependency review. Init preflights
+the System Log and Audit Log destinations before its application-state commit,
+keeps each destination for the process lifetime, and validates it during
+startup without post-commit reconciliation delivery. Restore does not preflight
+either destination: preflight proves a commit path by writing and deleting a
+durable probe row, and Restore guarantees that a pre-checkpoint failure leaves
+nothing behind, so Restore instead resolves the assigned System Log module's
+identifier and confirms the named module's availability before its point of no
+return, then opens that destination only after the checkpoint completes.
+Restore imports Module configuration and assignments, never destination data.
+
+This destination proves its preflight commit path by writing a probe row
+through the exact delivery commit path — the same immediate transaction and
+commit that delivery uses for that record type — then deleting the row within
+that same transaction, so storage that is read-only, out of space, or
+schema-incompatible is refused and no probe record survives either outcome.
+The probe uses a reserved all-zero record identifier; `TrustedRecordIssuer::issue`
+refuses to issue an all-zero identifier, so no genuine record can ever share
+it. This destination defines no destination configuration setting, so it
+refuses any setting a configuration supplies as
+`LogDestinationError::ConfigurationInvalid` rather than accepting or silently
+ignoring it.
 
 This MVP defines one local SQLite destination rather than Server-issued
 multiple destination instances. The recovery and capacity policy below defines
@@ -142,6 +253,16 @@ constraints rebuilds its tables transactionally and copies existing records
 only when they satisfy the new schema. An existing oversized row makes the
 migration fail closed without dropping, altering, or replacing any destination
 record; this MVP defines no data-recovery exception for that incompatibility.
+
+The migration ledger's existing checksummed migrations 1 and 2 remain
+unchanged. Migration 3 transactionally adds nullable `classification`,
+`principal_type`, and `responsible_owner` columns to the Audit table. Existing
+rows remain unchanged with all three new fields `NULL`. A newly written Audit
+record always supplies its canonical classification and principal type; its
+typed principal supplies no `responsible_owner` for a human and the required
+one for automation. The shared record contract enforces that structural rule
+before construction; SQLite stores the resulting canonical strings without
+enforcing the classification taxonomy.
 
 ### Descriptor-Relative Candidate Evidence
 
@@ -237,8 +358,19 @@ configuration and two explicit assignments to the same Server-owned
 validation; no client defines an alternative Log Module initialization path.
 
 Init rejects an absent, disabled, unconfigured, or incompatible assignment. It
-also rejects an assignment unless its configured Log Module can complete its
-configured supported storage interface's commit path for the assigned log type.
+also rejects any submitted configuration carrying a non-secret setting its named
+Log Module does not declare, judged against the module's own declared settings
+format on the compiled-in component inventory rather than against a rule Init
+restates. That rejection is part of request validation, so it is correctable:
+the person completing Init fixes the setting and retries the same finalization
+request. Reaching the module's factory with an undeclared setting instead would
+fail after the request was accepted, which is not a correctable outcome. Secret
+settings are outside the declaration and are never carried to a module through
+it, so they are not judged against it. Init also rejects an assignment unless
+its configured Log Module can complete its configured supported storage
+interface's commit path for the assigned log type, proven through the preflight
+contract described in
+[Destination Preflight And Configuration Validation](#destination-preflight-and-configuration-validation).
 After Init commits application state, it receives a durable acknowledgement for
 the Init completion result through the committed System Log assignment before
 the deployment is sealed. Init remains incomplete, and the Server does not begin
@@ -259,7 +391,12 @@ validation used during normal administration.
 Restore validates both restored assignments and does not seal the replacement
 deployment until the restored System Log assignment provides a durable
 acknowledgement for the required Restore result without recovery secrets or
-backup contents. A failure remains non-operational and follows the retained-state interruption boundary in the
+backup contents. That validation confirms each assigned Log Module is compiled
+into the replacement Server; it does not prove the Audit Log destination can
+complete its commit path, because Restore never opens or delivers to it. This
+is a documented limitation of the Restore path rather than a defect: an
+imported Audit Log assignment that cannot commit surfaces only when Audit
+logging is first attempted after Restore completes. A failure remains non-operational and follows the retained-state interruption boundary in the
 [Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored
 Log Module never reads backup contents or Application Database state directly.
 

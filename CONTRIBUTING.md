@@ -33,6 +33,25 @@ Use `<type>/<short-kebab-case-description>`, such as
 `docs/conventional-commits` or `fix/missing-project-file`. Use the same types
 listed for commits below.
 
+## Agent-created issue titles
+
+For every GitHub Issue created through a JNTRE workflow, use the same
+Conventional Commit subject format required for commit messages:
+
+```text
+<type>(<scope>): <description>
+```
+
+This applies to every native issue type, including epics, features, tasks,
+bugs, decisions, and risks. Choose the Conventional Commit type for the
+intended outcome rather than copying the native issue type. Keep the
+description short, imperative, and specific; put detailed context and
+acceptance criteria in the issue body.
+
+This requirement does not apply to user-submitted, imported, or otherwise
+externally created issues. Do not automatically retitle those issues merely to
+make them conform.
+
 ## Commit messages
 
 Follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)

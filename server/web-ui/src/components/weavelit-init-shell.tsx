@@ -7,11 +7,25 @@ import {
   useDeploymentStatus,
   type StatusViewState,
 } from "../hooks/weavelit-init-deployment-status";
+import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
+import { InitWorkflow } from "./weavelit-init-workflow";
+import { LoginPanel } from "./weavelit-login-form";
 
 const LOADING_MESSAGE = "Checking the deployment status.";
 const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
 const UNSELECTED_MESSAGE = "No Application Database is selected for this deployment.";
 const UNAVAILABLE_MESSAGE = "The deployment status is unavailable.";
+const INITIALIZED_MESSAGE = "This deployment is initialized and now runs in normal operation.";
+
+const CHOICE_HEADING = "First launch";
+const CHOICE_DESCRIPTION =
+  "Choose how this deployment becomes operational. These are mutually exclusive: only the path you choose is offered from here.";
+const INIT_CHOICE_LABEL = "Set up a new deployment";
+const INIT_CHOICE_DESCRIPTION =
+  "Create the first Administrator and issue this deployment's one-time recovery key.";
+const RESTORE_CHOICE_LABEL = "Restore from a backup";
+const RESTORE_CHOICE_DESCRIPTION =
+  "Replace this deployment's state from an encrypted backup and its existing recovery key.";
 
 const SELECTION_HEADING = "Application Database";
 const SELECTION_DESCRIPTION =
@@ -21,6 +35,9 @@ const SELECTION_FAILED_MESSAGE = "The Application Database was not selected. Try
 
 /** Presentation state of an Application Database selection submission. */
 type SelectionViewState = "idle" | "submitting" | "failed";
+
+/** The mutually exclusive first-launch path a person has chosen, if any. */
+type SetupChoice = "init" | "restore";
 
 function statusMessage(state: StatusViewState): string {
   switch (state.kind) {
@@ -37,6 +54,22 @@ function statusMessage(state: StatusViewState): string {
 export function ApplicationShell(): JSX.Element {
   const { state, applyStatus } = useDeploymentStatus();
   const [selection, setSelection] = useState<SelectionViewState>("idle");
+  const [choice, setChoice] = useState<SetupChoice | null>(null);
+  const [initialized, setInitialized] = useState(false);
+
+  const chooseInit = useCallback(() => {
+    setChoice("init");
+  }, []);
+  const chooseRestore = useCallback(() => {
+    setChoice("restore");
+  }, []);
+  // Either first-launch path seals this deployment and withdraws the
+  // pre-operational surface, so completion is adopted from the response the
+  // page already holds rather than from a status request that can no longer be
+  // served.
+  const completeSetup = useCallback(() => {
+    setInitialized(true);
+  }, []);
 
   const submit = useCallback(() => {
     setSelection("submitting");
@@ -53,15 +86,63 @@ export function ApplicationShell(): JSX.Element {
     );
   }, [applyStatus]);
 
-  const offerSelection = state.kind === "available" && !state.status.databaseSelected;
+  const status = state.kind === "available" ? state.status : null;
+  const databaseSelected = status?.databaseSelected === true;
+  // Once finalization is confirmed the pre-operational surface is gone, so every
+  // setup control is withdrawn regardless of the status this page last read.
+  const settingUp = status !== null && !initialized;
+  const offerChoice = settingUp && choice === null;
+  // Both paths need an Application Database, so the existing selection surface
+  // is reused after either choice rather than duplicated inside them.
+  const offerSelection = settingUp && choice !== null && !databaseSelected;
+  // Restore becomes eligible exactly when a database has been selected, and a
+  // confirmed Restore withdraws the form through the same completion signal
+  // Init uses rather than through a status projection that is no longer served.
+  const offerRestore = settingUp && choice === "restore" && databaseSelected;
+  const offerInit = settingUp && choice === "init" && databaseSelected;
+  // The pre-operational status route is served only before sealing, so its
+  // absence is the signal that this deployment may now be operational. The
+  // panel confirms that against the Server's own authentication surface and
+  // renders nothing when that surface is absent, so an unreachable Server does
+  // not produce a sign-in form that could never succeed.
+  const offerLogin = state.kind === "unavailable" || initialized;
 
   return (
     <main className="shell">
       <h1 className="shell__title">Weavelit Server</h1>
       <p className="shell__subtitle">Setup</p>
-      <p className="shell__status" data-status-state={state.kind} role="status" aria-live="polite">
-        {statusMessage(state)}
+      <p
+        className="shell__status"
+        data-status-state={initialized ? "initialized" : state.kind}
+        role="status"
+        aria-live="polite"
+      >
+        {initialized ? INITIALIZED_MESSAGE : statusMessage(state)}
       </p>
+      {offerChoice ? (
+        <section className="shell__choice" data-setup-choice="unchosen">
+          <h2 className="shell__choice-title">{CHOICE_HEADING}</h2>
+          <p className="shell__choice-description">{CHOICE_DESCRIPTION}</p>
+          <button
+            type="button"
+            className="shell__choice-action"
+            data-setup-path="init"
+            onClick={chooseInit}
+          >
+            {INIT_CHOICE_LABEL}
+          </button>
+          <p className="shell__choice-detail">{INIT_CHOICE_DESCRIPTION}</p>
+          <button
+            type="button"
+            className="shell__choice-action"
+            data-setup-path="restore"
+            onClick={chooseRestore}
+          >
+            {RESTORE_CHOICE_LABEL}
+          </button>
+          <p className="shell__choice-detail">{RESTORE_CHOICE_DESCRIPTION}</p>
+        </section>
+      ) : null}
       {offerSelection ? (
         <section className="shell__selection" data-selection-state={selection}>
           <h2 className="shell__selection-title">{SELECTION_HEADING}</h2>
@@ -81,6 +162,9 @@ export function ApplicationShell(): JSX.Element {
           ) : null}
         </section>
       ) : null}
+      {offerRestore ? <RestoreSubmissionForm onCompleted={completeSetup} /> : null}
+      {offerInit ? <InitWorkflow onCompleted={completeSetup} /> : null}
+      {offerLogin ? <LoginPanel /> : null}
     </main>
   );
 }

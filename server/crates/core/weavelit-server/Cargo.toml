@@ -13,21 +13,42 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+base64 = { version = "=0.23.0", default-features = false, features = ["alloc"] }
+getrandom = { version = "=0.4.3", default-features = false }
 http-body-util = "=0.1.4"
 httparse = "=1.10.1"
 rustls = { version = "=0.23.43", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+sha2 = { version = "=0.11.0", default-features = false }
 rustix.workspace = true
 tokio.workspace = true
 tokio-rustls = { version = "=0.26.4", default-features = false }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+weavelit-server-authentication = { path = "../weavelit-server-authentication" }
+weavelit-server-authorization = { path = "../weavelit-server-authorization" }
+weavelit-server-components = { path = "../weavelit-server-components" }
+weavelit-server-database = { path = "../../database/weavelit-server-database" }
 weavelit-server-database-sqlite = { path = "../../database/weavelit-server-database-sqlite" }
+weavelit-server-init = { path = "../weavelit-server-init" }
 weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
 weavelit-server-log = { path = "../weavelit-server-log" }
+weavelit-server-log-authority = { path = "../weavelit-server-log-authority" }
+weavelit-server-observability = { path = "../weavelit-server-observability" }
+weavelit-server-recovery-key = { path = "../weavelit-server-recovery-key" }
+weavelit-server-restore = { path = "../weavelit-server-restore" }
+weavelit-module-client = { path = "../../modules/client/weavelit-module-client" }
 weavelit-module-client-webui = { path = "../../modules/client/weavelit-module-client-webui" }
 weavelit-module-log-sqlite = { path = "../../modules/log/weavelit-module-log-sqlite" }
+weavelit-module-mfa-totp = { path = "../../modules/mfa/weavelit-module-mfa-totp" }
 
 [dev-dependencies]
 rcgen = "=0.14.8"
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
+# Enables the TOTP Module's code generator for this crate's tests only, so an
+# enrollment confirmation can be exercised end to end. The generator is absent
+# from the shipped binary because the production edge above does not enable it.
+weavelit-module-mfa-totp = { path = "../../modules/mfa/weavelit-module-mfa-totp", features = [
+    "test-support",
+] }

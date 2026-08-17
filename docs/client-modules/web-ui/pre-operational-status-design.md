@@ -171,6 +171,7 @@ check`.
 ## Related Documents
 
 - [Web UI Pre-Operational Database Selection Surface](pre-operational-database-selection-design.md)
+- [Web UI Pre-Operational Restore Surface](pre-operational-restore-design.md)
 - [Embedded Asset Delivery Design](embedded-asset-delivery-design.md)
 - [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
 - [Technical Specification](../../spec.md)

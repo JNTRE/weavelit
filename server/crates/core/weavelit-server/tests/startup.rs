@@ -1,20 +1,30 @@
 use std::{
     fs,
     hash::{DefaultHasher, Hash, Hasher},
-    io::Read,
-    net::{TcpListener, TcpStream},
-    os::unix::fs::{MetadataExt, PermissionsExt, symlink},
+    io::{BufRead, BufReader, Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
+    os::unix::{
+        fs::{MetadataExt, PermissionsExt, symlink},
+        process::ExitStatusExt,
+    },
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use weavelit_server::{
     StartupError, StartupOutcome, classify_restricted_startup, sqlite_catalog,
     validate_trusted_https_listener,
 };
-use weavelit_server_lifecycle::{BackendIdentifier, LifecycleStore, TrustedBackendContext};
+use weavelit_server_database::{
+    ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
+    LogClassification, LogDetail, LogModuleConfiguration, LogType, Name, RecoveryPublicKey,
+};
+use weavelit_server_lifecycle::{
+    ApplicationState, BackendIdentifier, CheckpointMetadata, DeploymentIdentifier, LifecycleStore,
+    StateIdentifier, TrustedBackendContext, WorkflowArbiter, WorkflowKind,
+};
 
 type RootEntrySnapshot = (PathBuf, u32, u32, u32, u64, u64, i64, i64, i64, i64, u64);
 
@@ -59,6 +69,13 @@ fn root_snapshot(path: &Path) -> Vec<RootEntrySnapshot> {
 
 fn assert_interrupted_startup(state_root: &Path, expected_reason: &str) {
     let before = root_snapshot(state_root);
+    assert_startup_failure(state_root, "lifecycle_interrupted", expected_reason);
+    assert_eq!(root_snapshot(state_root), before);
+}
+
+/// Runs the real Server binary and asserts it exits closed on the exact pair
+/// without ever accepting a connection on its configured listener address.
+fn assert_startup_failure(state_root: &Path, expected_category: &str, expected_reason: &str) {
     let (_tls_directory, certificate_path, private_key_path) = tls_material();
     let address = TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -76,11 +93,10 @@ fn assert_interrupted_startup(state_root: &Path, expected_reason: &str) {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         output.stderr,
-        format!("{{\"category\":\"lifecycle_interrupted\",\"reason\":\"{expected_reason}\"}}\n")
+        format!("{{\"category\":\"{expected_category}\",\"reason\":\"{expected_reason}\"}}\n")
             .as_bytes()
     );
     assert!(TcpStream::connect(address).is_err());
-    assert_eq!(root_snapshot(state_root), before);
 }
 
 fn context(root: &std::path::Path) -> TrustedBackendContext {
@@ -99,6 +115,239 @@ fn checkpoint_and_close_wal(path: &Path) {
 
 fn sqlite() -> BackendIdentifier {
     BackendIdentifier::new("sqlite").unwrap()
+}
+
+fn completion_record_identifier() -> StateIdentifier {
+    StateIdentifier::from_bytes([0x5A; 16]).unwrap()
+}
+
+/// Builds the smallest state the Application Database contract accepts.
+fn sealed_application_state() -> ApplicationState {
+    let configuration_identifier = StateIdentifier::from_bytes([0x11; 16]).unwrap();
+    ApplicationState::new(ApplicationStateInput {
+        configuration: vec![],
+        protected_secrets: vec![],
+        accounts: vec![],
+        password_verifiers: vec![],
+        groups: vec![],
+        group_memberships: vec![],
+        group_grants: vec![],
+        mfa_factors: vec![],
+        service_connections: vec![],
+        recovery_public_key: RecoveryPublicKey::new("age1recoverypublickeyvalue").unwrap(),
+        log_module_configurations: vec![LogModuleConfiguration {
+            identifier: configuration_identifier,
+            module: Name::new("log-sqlite").unwrap(),
+            name: Name::new("local").unwrap(),
+            enabled: true,
+            settings: vec![],
+        }],
+        log_assignments: LogType::ALL
+            .into_iter()
+            .map(|log_type| LogAssignment {
+                log_type,
+                configuration: configuration_identifier,
+            })
+            .collect(),
+        completion_obligation: CompletionObligation::new(
+            completion_record_identifier(),
+            WorkflowKind::Restore,
+            LogClassification::new("lifecycle.restore").unwrap(),
+            CorrelationIdentifier::new("correlation-identifier").unwrap(),
+            1_700_000_000_000,
+            LogDetail::new("restore completed").unwrap(),
+        )
+        .unwrap(),
+    })
+    .unwrap()
+}
+
+/// Seals a real deployment by driving the lifecycle typestate chain to `Initialized`.
+///
+/// Everything it opened is dropped before returning, so the state-root lock and
+/// the Application Database are both released for the startup path under test.
+fn seal_deployment(state_root: &Path) -> DeploymentIdentifier {
+    let mut store = LifecycleStore::open_or_create(state_root).unwrap();
+    let catalog = sqlite_catalog();
+    let context = context(state_root);
+    store
+        .select_database(&catalog, &context, &sqlite(), vec![])
+        .unwrap();
+
+    let arbiter = WorkflowArbiter::new(store);
+    let permit = arbiter.authorize_workflow(&catalog, &context).unwrap();
+    let deployment_identifier = permit.deployment_identifier();
+    permit
+        .create_checkpoint(
+            WorkflowKind::Restore,
+            CheckpointMetadata::from_bytes(b"restore-checkpoint-metadata".as_slice()).unwrap(),
+        )
+        .unwrap()
+        .complete_checkpoint(
+            &sealed_application_state(),
+            &weavelit_server_database::ReconciliationDigest::from_bytes([0xA0; 32]),
+        )
+        .unwrap()
+        .acknowledge_completion(completion_record_identifier())
+        .unwrap()
+        .seal()
+        .unwrap();
+    drop(arbiter);
+    deployment_identifier
+}
+
+/// Names the Application Database the write-ahead log writer child must open.
+const WAL_WRITER_DATABASE_ENVIRONMENT: &str = "WEAVELIT_TEST_WAL_WRITER_DATABASE";
+/// The exact readiness line the writer child emits once its write is durable.
+const WAL_WRITER_READY_MARKER: &str = "weavelit-test-wal-writer-ready";
+/// Value the writer child commits into the write-ahead log and never checkpoints.
+const WAL_PROBE_VALUE: i64 = 424_242;
+
+/// Counts probe rows visible through an `immutable=1` read, which ignores the WAL.
+fn probe_rows_ignoring_wal(database_path: &Path) -> i64 {
+    let uri = format!("file:{}?immutable=1", database_path.display());
+    let connection = Connection::open_with_flags(
+        Path::new(&uri),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .unwrap();
+    connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name = 'wal_recovery_probe'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// Child-process half of the sealed write-ahead log recovery test.
+///
+/// It commits a probe write with checkpointing disabled, reports readiness on
+/// stdout, and then blocks until the parent kills it, so the committed write
+/// exists only in the write-ahead log of an abruptly terminated process. It is
+/// ignored by default and does nothing at all unless its parent names a
+/// database, so an ordinary or `--include-ignored` run is unaffected.
+#[test]
+#[ignore = "spawned as a child process by the sealed write-ahead log recovery test"]
+fn write_ahead_log_writer_child() {
+    let Ok(database_path) = std::env::var(WAL_WRITER_DATABASE_ENVIRONMENT) else {
+        return;
+    };
+
+    let connection = Connection::open(&database_path).unwrap();
+    let journal_mode: String = connection
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_mode, "wal");
+    connection
+        .execute_batch(&format!(
+            "PRAGMA wal_autocheckpoint = 0;\
+             CREATE TABLE wal_recovery_probe (value INTEGER NOT NULL);\
+             INSERT INTO wal_recovery_probe (value) VALUES ({WAL_PROBE_VALUE});"
+        ))
+        .unwrap();
+
+    let mut stdout = std::io::stdout();
+    writeln!(stdout, "{WAL_WRITER_READY_MARKER}").unwrap();
+    stdout.flush().unwrap();
+
+    // Blocks until the parent kills this process; the connection is never closed.
+    let mut discarded = Vec::new();
+    std::io::stdin().read_to_end(&mut discarded).unwrap();
+}
+
+/// Leaves a real, unrecovered write-ahead log beside the sealed database.
+///
+/// The child is synchronized entirely by a blocking read of its readiness line,
+/// then killed, so nothing here depends on elapsed time.
+fn abandon_write_ahead_log(state_root: &Path) {
+    let database_path = state_root.join("application.sqlite3");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "write_ahead_log_writer_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(WAL_WRITER_DATABASE_ENVIRONMENT, &database_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    let ready = loop {
+        line.clear();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            break false;
+        }
+        if line.trim_end() == WAL_WRITER_READY_MARKER {
+            break true;
+        }
+    };
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(
+        ready,
+        "the write-ahead log writer child must report readiness"
+    );
+
+    assert!(
+        fs::metadata(state_root.join("application.sqlite3-wal"))
+            .unwrap()
+            .len()
+            > 0,
+        "the killed child must leave a non-empty write-ahead log"
+    );
+    assert_eq!(
+        probe_rows_ignoring_wal(&database_path),
+        0,
+        "the committed write must live only in the write-ahead log"
+    );
+}
+
+/// Blocks until the spawned Server is really accepting on `address`.
+///
+/// The wait ends on an accepted connection rather than on elapsed time; the
+/// deadline only turns a Server that never binds into a failure instead of a
+/// hang.
+fn await_listener(address: SocketAddr) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while TcpStream::connect(address).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "the Server did not bind its listener"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until this Server holds the lock in its own state root.
+///
+/// Unlike the listener address, the state root belongs to one test, so nothing
+/// else can satisfy this.
+fn await_state_root_lock(state_root: &Path, server: &mut Child) {
+    let lock = state_root.join("lifecycle.lock");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !lock.exists() {
+        if let Some(status) = server.try_wait().unwrap() {
+            panic!("the Server exited during startup with {status}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the Server did not take its state root lock"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Asks a running Server to stop exactly as a service supervisor does.
+fn terminate(server: &Child) {
+    let pid = rustix::process::Pid::from_raw(i32::try_from(server.id()).unwrap())
+        .expect("a spawned child has a valid process identifier");
+    rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
 }
 
 fn tls_material() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -357,14 +606,7 @@ fn serving_process_retains_state_root_lock() {
         .env("WEAVELIT_STATE_ROOT", &state_root)
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while TcpStream::connect(first_address).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "first server did not bind in time"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    await_listener(first_address);
 
     let mut second = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
         .env(
@@ -409,6 +651,47 @@ fn serving_process_retains_state_root_lock() {
 // ---------------------------------------------------------------------------
 // Tests: fresh startup and restart
 // ---------------------------------------------------------------------------
+
+/// A real supervisor stop must end as a clean exit, not as a killed process,
+/// and must leave nothing of the stopped generation holding the host.
+#[test]
+fn a_terminating_signal_stops_the_server_cleanly_and_frees_what_it_held() {
+    let (_state_directory, state_root) = state_root();
+    let (_tls_directory, certificate_path, private_key_path) = tls_material();
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let mut server = Command::new(env!("CARGO_BIN_EXE_weavelit-server"))
+        .env("WEAVELIT_HTTPS_LISTENER_ADDRESS", address.to_string())
+        .env("WEAVELIT_TLS_CERTIFICATE_PATH", certificate_path)
+        .env("WEAVELIT_TLS_PRIVATE_KEY_PATH", private_key_path)
+        .env("WEAVELIT_STATE_ROOT", &state_root)
+        .spawn()
+        .unwrap();
+    await_listener(address);
+    // An ephemeral port is chosen by binding and releasing it, so a concurrent
+    // test can win the same port and answer the probe above. The lock file
+    // appears in this test's own state root, and only after this child has
+    // registered its termination handler and bound its listener, so waiting for
+    // it proves the signal below reaches a Server that can already catch it.
+    await_state_root_lock(&state_root, &mut server);
+
+    terminate(&server);
+    let status = server.wait().unwrap();
+
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(
+        status.signal(),
+        None,
+        "a signalled shutdown must not end as a terminated process"
+    );
+    // The next Server generation can take back both the listener address and
+    // the state root the stopped one held.
+    drop(TcpListener::bind(address).unwrap());
+    drop(LifecycleStore::open_or_create(&state_root).unwrap());
+}
 
 #[test]
 fn fresh_first_start_classifies_as_uninitialized_without_database() {
@@ -579,6 +862,108 @@ fn retained_initialized_database_reports_redeploy_required_without_mutation_or_b
     drop(database);
 }
 
+#[test]
+fn retained_wal_over_a_pending_record_requires_generic_redeploy_without_mutation_or_bind() {
+    let (_dir, path) = state_root();
+    let writer;
+    {
+        let mut store = LifecycleStore::open_or_create(&path).unwrap();
+        let catalog = sqlite_catalog();
+        let database_context = context(&path);
+        store
+            .select_database(&catalog, &database_context, &sqlite(), vec![])
+            .unwrap();
+        let arbiter = WorkflowArbiter::new(store);
+        // Advances the record to InitializationPending over a durable checkpoint.
+        drop(
+            arbiter
+                .authorize_workflow(&catalog, &database_context)
+                .unwrap()
+                .create_checkpoint(
+                    WorkflowKind::Init,
+                    CheckpointMetadata::from_bytes(b"init-checkpoint-metadata".as_slice()).unwrap(),
+                )
+                .unwrap(),
+        );
+        drop(arbiter);
+        // Rewrites the checkpoint row with its own bytes, so a real write-ahead
+        // log exists over unchanged retained state, and holds it open.
+        writer = Connection::open(path.join("application.sqlite3")).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA wal_autocheckpoint = 0;\
+                 UPDATE weavelit_lifecycle_state SET checkpoint_metadata = checkpoint_metadata;",
+            )
+            .unwrap();
+    }
+    assert!(path.join("application.sqlite3-wal").exists());
+    assert!(path.join("application.sqlite3-shm").exists());
+    assert_interrupted_startup(&path, "operator_redeploy_required");
+    drop(writer);
+}
+
+// ---------------------------------------------------------------------------
+// Tests: sealed startup over retained recovery data
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sealed_startup_recovers_a_retained_wal_and_loads_its_application_state() {
+    let (_dir, path) = state_root();
+    let deployment_identifier = seal_deployment(&path);
+    abandon_write_ahead_log(&path);
+
+    let startup = classify_restricted_startup(&path)
+        .expect("a sealed deployment must start over a retained write-ahead log");
+
+    assert_eq!(startup.outcome(), StartupOutcome::Initialized);
+    let loaded = startup
+        .initialized_state()
+        .expect("a sealed deployment must retain its loaded application state");
+    assert_eq!(loaded.deployment_identifier(), deployment_identifier);
+    assert!(loaded.completion_acknowledged());
+    drop(startup);
+
+    // The probe write became durable in the main database, so the authoritative
+    // read-write open recovered the log rather than discarding or ignoring it.
+    let database_path = path.join("application.sqlite3");
+    let recovered = Connection::open(&database_path).unwrap();
+    let value: i64 = recovered
+        .query_row("SELECT value FROM wal_recovery_probe", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(value, WAL_PROBE_VALUE);
+}
+
+#[test]
+fn sealed_startup_over_an_unrecoverable_database_fails_closed_without_binding() {
+    let (_dir, path) = state_root();
+    seal_deployment(&path);
+
+    // Nothing in the retained file is a database any more, so the authoritative
+    // read-write open cannot succeed and no recovery can rescue it.
+    let database_path = path.join("application.sqlite3");
+    let length = fs::metadata(&database_path).unwrap().len();
+    fs::write(&database_path, vec![0xA5; usize::try_from(length).unwrap()]).unwrap();
+
+    assert_startup_failure(&path, "storage_unavailable", "database_unavailable");
+}
+
+#[test]
+fn sealed_startup_over_another_deployments_database_fails_closed_without_binding() {
+    let (_dir, path) = state_root();
+    seal_deployment(&path);
+
+    let database = Connection::open(path.join("application.sqlite3")).unwrap();
+    database
+        .execute(
+            "UPDATE weavelit_lifecycle_state SET deployment_identifier = ?1",
+            params![[0xA5_u8; 16].as_slice()],
+        )
+        .unwrap();
+    drop(database);
+
+    assert_startup_failure(&path, "storage_integrity_failure", "anchor_binding_invalid");
+}
+
 // ---------------------------------------------------------------------------
 // Tests: fail-closed retained-state failures
 // ---------------------------------------------------------------------------
@@ -697,6 +1082,7 @@ fn every_startup_error_has_well_formed_category_reason() {
         StartupError::LifecycleInterruptedRedeployNew,
         StartupError::LifecycleInterruptedRedeployRestore,
         StartupError::LifecycleInterruptedRedeployRequired,
+        StartupError::ShutdownIncomplete,
     ];
     let sensitive = "/private/weavelit/state-root/sensitive";
     for error in &errors {

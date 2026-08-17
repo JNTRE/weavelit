@@ -86,6 +86,24 @@ the system-defined **[Administrators Group](../../../glossary.md#identities-and-
 and adds the first user without accepting client-defined grants. The request
 does not duplicate the selected database connection configuration.
 
+Server semantic validation runs in full before anything is created, so every
+rule it enforces is a correctable request failure rather than a late failure
+with no retry path. It rejects a request whose Log Module configuration
+collection is empty or past its bound, names a Log Module this build does not
+compile in, repeats a configuration name, repeats a setting key, claims one
+protected setting key twice for the same Log Module, exceeds the per
+configuration setting bounds, carries a non-secret setting the named Log Module
+does not declare, assigns both log types to one configuration, or names an
+absent or disabled configuration for either assignment. Declared settings are
+judged against the module's own declaration carried on the
+[compiled-in component inventory](../restore/restore-design.md#compiled-in-component-inventory),
+the same authority Restore uses, so Init never restates what a module accepts.
+Secret settings are outside that declaration and are never carried to a module
+through it, so they are not judged against it. This check exists because the
+Log Module preflight that would otherwise catch an undeclared setting runs after
+the recovery-key delivery has been claimed, where a failure ends this process's
+Init instead of inviting a correction.
+
 Client applications submit user-supplied secrets over HTTPS and must not place
 them in URLs or persistent client storage.
 **[Client Modules](../../../glossary.md#applications-and-interfaces)** pass secret
@@ -108,27 +126,47 @@ initialized before the requesting client proves possession of the private key:
 
 1. Recovery-key preparation requires a selected, uninitialized Application
    Database. Under the lifecycle authority's exclusive mutation permit, the
-   Init crate generates the recovery key pair and asks the database contract to
-   atomically record an Init checkpoint containing the deployment identifier,
-   public key, and a unique delivery nonce. The lifecycle crate advances the
-   deployment record to `InitializationPending`. Init returns the private key
-   once over HTTPS only after both writes complete their configured valid-run
-   commit paths. The private key exists only transiently in Server memory and
-   response handling and is never persisted.
-2. The client saves the private key outside Weavelit and derives the
-   key-format-defined proof of possession for the delivery nonce. It submits
-   that proof, but not the private key, with the complete normalized
-   `InitializeServer` request.
+   Init crate generates the recovery key pair and a unique delivery nonce, then
+   computes the expected proof value as HMAC-SHA-256 over the delivery nonce
+   keyed by the private key's raw bytes. Key generation and proof computation
+   complete before the Init crate asks the database contract to atomically
+   record an Init checkpoint containing the deployment identifier, the public
+   recipient, the delivery nonce, and the expected proof value. The checkpoint
+   never contains the private key in any form, including as an HMAC key. The
+   lifecycle crate advances the deployment record to `InitializationPending`.
+   Init returns the private key once over HTTPS only after both writes
+   complete their configured valid-run commit paths, and discards its copy of
+   the private key immediately after the response is written. The private key
+   exists only transiently in Server memory and response handling and is never
+   persisted in any form. Alongside the key pair, the Init crate mints an
+   independent high-entropy lifecycle reconciliation capability from
+   operating-system entropy and computes its domain-separated digest. The
+   capability itself is returned once, in the same response as the private
+   key, and is held only by the requesting browser; the crate retains only
+   the digest, in memory with the pending delivery, until finalization
+   persists it.
+2. The client saves the private key outside Weavelit and computes the same
+   HMAC-SHA-256 over the delivery nonce, keyed by the private key's raw bytes
+   it retained. It submits that proof, but not the private key, with the
+   complete normalized `InitializeServer` request.
 3. The Init crate obtains the reopened selected database from the lifecycle
-   authority, verifies that the deployment identifiers, checkpoint, and proof
-   match, validates the complete request, verifies the
+   authority, verifies that the deployment identifiers and checkpoint match,
+   compares the submitted proof to the checkpoint's stored expected proof value
+   in constant time, validates the complete request, verifies the
    **[Log Module](../../../glossary.md#applications-and-interfaces)** assignments
    and their ability to provide the durable acknowledgement defined in the
    [Technical Specification](../../../spec.md#logging-and-accountability) for
    each assigned log type, and atomically replaces the checkpoint with complete
    initialized application state bound to the deployment identifier. The
    committed state includes the non-secret Init completion-event fields as a
-   pending obligation.
+   pending obligation. That same atomic replacement also writes the
+   reconciliation digest minted during preparation into the Application
+   Database's dedicated live reconciliation record, outside
+   `ApplicationState` and therefore outside every backup. The digest is the
+   only value the submission-bound lifecycle reconciliation route the
+   [API Contract Design](../../../server/api/api-contract-design.md#lifecycle-reconciliation)
+   defines ever compares a submitted capability against; the capability
+   itself is never persisted.
 4. The Init crate loads the committed
    **[System Log](../../../glossary.md#applications-and-interfaces)** assignment,
    receives the required durable acknowledgement for the successful Init result,
@@ -146,24 +184,172 @@ key long enough to finalize Init; safeguarding the downloaded private key
 outside Weavelit remains the responsibility of the person completing Init. The
 Server never redisplays a private key associated with an existing checkpoint.
 
-If delivery, validation, final persistence, System Log completion,
-deployment-record sealing, or in-process activation is interrupted after the
-checkpoint exists, the Server exposes no routes and fails closed. On restart,
-the shared lifecycle classifies the retained state with the stable
-`lifecycle_interrupted` / `operator_redeploy_new` diagnostic; it does not
-redisplay a key, resume Init, retry a request or completion log, reset the
-checkpoint, delete retained state, or seal the deployment. The operator may
-preserve the failed root for diagnosis or evidence, or discard it and redeploy
-before beginning a new Init. An external Log Module destination may retain a
-non-application artifact created during validation; cleanup remains that
-module's design and is not a lifecycle recovery action.
+The runtime mounts the recovery-key route whenever the deployment has already
+selected an Application Database, the same eligibility Restore uses. It mounts
+the finalization route only after the recovery-key response has actually been
+written to the requesting client, confirmed by a listener-owned response-write
+acknowledgement rather than by the checkpoint's existence alone. A write
+failure, a client disconnect, or an expired response budget leaves this
+process fail closed with no finalization route at all, even though the
+checkpoint already exists; nothing reopens, discards, or retries that
+checkpoint automatically. A written response is the one observable event the
+runtime treats as ruling out the Server having failed to send the key; it is
+not proof that a person received or retained it. Preparation itself retains no
+lifecycle mutex, Application Database handle, or mutation-lane permit once the
+checkpoint is durable: the permit, the handle, and the lane are all released
+before the recovery-key response is produced, so none of them is held while
+the person saves that key outside Weavelit.
+
+Preparation's blocking chain cannot be cancelled once it starts, and dropping
+the route future — which is what the listener's processing timeout does — does
+not stop it. The request therefore holds a liveness lease that the chain
+observes exactly once, after every reversible step and immediately before the
+first commitment. A chain that finds the lease closed commits nothing at all:
+no fail-closed publication, no checkpoint, and no delivery. It discards the
+generated key material and leaves the deployment selected, uninitialized, and
+preparable, so a person whose request timed out before that point simply
+retries.
+
+That check is advisory rather than a correctness boundary, because a
+cancellation can still land immediately after it. Immediately after it, and
+still before the first commitment, the chain enters the lifecycle transition
+gate and holds it until the checkpoint is written and its permit released. A
+shutdown signalled before that entry closes the gate, and the preparation is
+refused there rather than beginning a transition the process may not survive; a
+refusal answers the same `initialization_failed` outcome the chain already
+produces for a preparation abandoned before its first commitment, and commits
+nothing.
+
+Everything past the gate is ordered so the observable state can never be less
+severe than the durable state: the runtime publishes the fail-closed surface
+**before** it writes the checkpoint, not after. A cancellation that races the
+check therefore leaves a
+committed Init that is visibly fail closed, never one that still looks like a
+healthy uninitialized deployment. Producing the delivery line, recording the
+pending delivery, and marking the request whose written response may publish
+finalization all run inside that same uninterruptible chain, and any failure
+among them ends the delivery stage with this process already fail closed.
+
+The gate prevents process exit through an admitted transition; it does not
+cancel requests. A shutdown that observes an in-flight preparation waits until
+it commits its checkpoint and releases the gate, and a shutdown signalled
+earlier stops the preparation before it commits anything. Neither the gate nor
+the liveness lease removes the residual window in which a stop is signalled
+between the lease check and the gate entry succeeding, because the gate's stop
+flag is read again after its permit is taken and a workflow that observes the
+closed flag then refuses. If the 300-second lifecycle-transition overrun
+threshold expires after admission, shutdown remains pending until the region
+releases and then reports `shutdown_incomplete`; the threshold never authorizes
+interrupting the preparation. The
+[Server Architecture Design](../../server-architecture-design.md) owns that
+shutdown behavior.
+
+The residual behavior is delivery uncertainty, never silent commitment. A
+preparation whose response timed out may have created a checkpoint the client
+never received the key for. The key was discarded with the request; nothing
+persists, reconstructs, retries, or later retrieves it, and no second request
+can pick it up. Such a deployment is fail closed with an
+`InitializationPending` checkpoint no one can finalize, and the operator
+redeploys, exactly as for any other interrupted Init.
+
+Finalization publishes its own outcome from inside its blocking chain for the
+same reason: a closed failure ends the delivery stage and publishes the
+fail-closed surface there, so an abandoned route future cannot leave this
+Server serving a healthier surface than its retained state deserves.
+Finalization carries no liveness lease of its own, because its response creates
+no irreplaceable secret, success publishes normal operation from inside the
+same chain, and an actionable failure restores the delivery for a retry. It
+enters the lifecycle transition gate after its last preflight and before it
+publishes the fail-closed surface, and releases it once the deployment record
+is sealed and the database it committed through has been registered and normal
+operation published, so the same stop that refuses a preparation refuses a
+finalization that has not yet committed and waits for one that has. Releasing
+at the seal would not be enough, because closing an unregistered database is a
+silent success and the activation could then outlive the process. A
+finalization refused at a closed gate answers the same closed
+`initialization_failed` outcome, leaves the pending checkpoint and its anchors
+untouched, and writes no System Log record.
+
+What finalization does observe is the listener's own processing deadline: the
+absolute instant at which the listener stops waiting for this request and
+answers `gateway_timeout`. The listener attaches that already-capped instant to
+the request before dispatch, and the blocking chain reads it rather than
+starting a budget of its own, so nothing downstream can reset or lengthen it.
+The chain checks it exactly once, after both Log Module preflights and
+immediately before it enters the lifecycle transition gate. That position is
+deliberate: everything before it — reauthorization, proof comparison, request
+validation, the password verifier, the replacement state build, and both
+preflights — is reversible work, and the gate entry is the first step of the
+publication and commit chain that a dropped route future cannot stop. It is
+the last moment at which abandoning the finalization is still free.
+
+An expired deadline is reported as the same actionable `initialization_failed`
+outcome a correctable request already reports, which returns the claimed
+delivery to the stage: the same Init checkpoint and the same delivered key stay
+finalizable, so the person retries the request that timed out with the key they
+already saved. No new rejection category, status, or reason value exists for
+this case, and the step the deadline passed at is not reported.
+
+The check narrows the window rather than closing it. A deadline can still
+expire immediately after the observation, so a `gateway_timeout` written by the
+listener can accompany a finalization that went on to commit, seal, and publish
+normal operation. This is the same accepted check-then-commit residual the
+[Server Restore Design](../restore/restore-design.md#backup-validation-and-restored-state)
+records for its own deadline recheck. What makes it safe here is the client
+rather than the Server: the
+[Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md#init-workflow)
+treats a `gateway_timeout` on finalization as an outcome that reported nothing
+instead of a failure, keeps the delivered key and its reconciliation
+capability, and reconciles through the submission-bound lifecycle
+reconciliation route before it decides anything.
+
+The delivered key remains a canonical age key, unchanged; only the proof
+mechanism above is Init-specific, and it does not alter Restore's accepted key
+syntax or backup recovery. This design stores the expected HMAC-SHA-256 proof
+value, not the private key, in the pending checkpoint as a stated tradeoff: a
+reader with Application Database access could compute a matching proof and
+finalize Init on a retained `InitializationPending` checkpoint. Such a reader
+already possesses the database and the deployment's retained state, so this
+does not lower the effective boundary the design otherwise relies on.
+
+If delivery, final persistence, System Log completion, deployment-record
+sealing, or in-process activation fails after the checkpoint exists, this
+process's Init ends permanently: the runtime fails closed immediately, exposing
+no route at all, and does not retry, reset, or reconcile the retained state.
+Request or proof validation failing is different and deliberately asymmetric:
+a malformed or non-matching proof, or a submitted request the Log Module or
+backend confirmation rejects, preserves same-process finalization with the
+existing checkpoint and delivered key intact, so a person corrects their input
+and retries the same finalization request without being issued another key.
+
+Restart behavior does not depend on that in-process distinction. A restart
+over any Init checkpoint — whether a recovery key was ever delivered, whether
+a person had already retried an actionable rejection, or whether this process
+had already failed closed — classifies the retained state with the stable
+`lifecycle_interrupted` / `operator_redeploy_new` diagnostic and exposes no
+route. It does not redisplay a key, resume Init, retry a request or completion
+log, reset the checkpoint, delete retained state, or seal the deployment. Init
+is deliberately not restart-resumable: only a fresh deployment, never this
+Server process resuming its own retained state, can complete an interrupted
+Init. The operator may preserve the failed root for diagnosis or evidence, or
+discard it and redeploy before beginning a new Init. An external Log Module
+destination may retain a non-application artifact created during a failed
+finalization attempt; cleanup remains that module's design and is not a
+lifecycle recovery action.
 
 ## Concurrency, Lifecycle, And Errors
 
 The lifecycle crate serializes deployment-record and locator mutation across
 **[Init](../../../glossary.md#states-and-requests)** and Restore. Recovery-key
 preparation and finalization run only under its exclusive workflow mutation
-permit. The
+permit. Preparation's authorization, key generation, checkpoint creation, and
+release, and finalization's reauthorization, proof verification, request
+validation, Log Module preflight, checkpoint replacement, completion delivery,
+sealing, and activation, each run in one blocking task with no cancellation
+point between them, so no caller timeout can abandon a deployment
+mid-commitment. Each chain also makes every serving-mode publication it owes
+from inside that task rather than after it, because a cancelled caller never
+resumes to make one. The
 **[Application Database](../../../glossary.md#applications-and-interfaces)**'s atomic
 state transitions remain the final one-time guard. Concurrent or stale requests
 are rechecked against current trusted state; at most one workflow can commit,
@@ -196,7 +382,8 @@ reach clients or logs.
 ## Test Evidence
 
 `weavelit-server-init` has direct tests for normalized-request validation,
-recovery-key generation, one-time delivery, proof, Init-checkpoint validation,
+recovery-key generation, one-time delivery, constant-time proof comparison,
+Init-checkpoint validation,
 atomic new-state creation, durable System Log completion during a
 valid run, retained-partial-state classification, absence of restart retry,
 reset, deletion, recreation, reconciliation, and sealing, redaction, rollback,
@@ -211,19 +398,48 @@ new-state persistence. Init-capable
 verify one-time private-key delivery, finalization, normalized errors, rejection
 of normal functions before Init, and rejection of Init after completion. Shared
 lifecycle tests own status, database selection, startup classification, and seal
-interruption classification. Server process tests verify the in-process
-transition to normal operation.
-**[Web UI](../../../glossary.md#applications-and-interfaces)** end-to-end tests cover
-the complete first-launch workflow and fail-closed handling of an interrupted
-delivery.
+interruption classification. `weavelit-server`'s own composition tests drive
+Init through its production route composition end to end: recovery-key and
+finalization route mounting eligibility, the finalization route staying
+unmounted until the recovery-key response is actually written, the asymmetric
+actionable-versus-fail-closed outcome at every failure stage, the one-time
+`AlreadyInitialized` guard at the mounted routes, restart's
+`lifecycle_interrupted` / `operator_redeploy_new` reclassification over a
+retained checkpoint, and the in-process transition to normal operation. Three
+of those tests drive an aborted route task against a blocking chain paused at a
+named boundary and rendezvous through the mutation lane rather than through any
+elapsed time: a preparation cancelled before its liveness check commits nothing
+and still permits a full Init, a preparation cancelled after it leaves a fail
+closed Server whose committed checkpoint no request can obtain a key for, and a
+closed finalization publishes the fail-closed surface even though its route
+task never resumed. Two further tests close the lifecycle transition gate and
+prove that a preparation refused there commits nothing, delivers no recovery
+key, and leaves the deployment uninitialized and preparable, and that a
+finalization refused there leaves its pending checkpoint, its anchors, and its
+System Log untouched. Three further tests pin the finalization deadline
+observation against a supplied deadline rather than elapsed time: a
+finalization inside its deadline observes it exactly once and commits, a
+finalization whose deadline has already passed commits nothing, publishes no
+serving mode, and leaves the same delivered key finalizable, and an admitted
+request carrying an already-expired deadline renders the actionable
+`initialization_failed` while a later request within its deadline still
+finalizes with that same key. A listener test proves the router is dispatched
+with the very deadline the listener bounds the same request at. The
+[Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md)
+first-launch Init workflow drives Init through the browser, and
+`server/web-ui/browser-tests/init-first-launch.spec.ts` exercises it end to
+end against the release Server binary, including a finalization answered as
+`gateway_timeout` that keeps the delivered key and completes on retry.
 
 ## Related Documents
 
 - [Init User Story](../../user-stories/init-user-story.md)
+- [Web UI Application Design](../../../clients/web-ui/web-ui-application-design.md)
 - [Technical Specification](../../../spec.md)
 - [Security Model](../../../security-model.md)
 - [Server Architecture Design](../../server-architecture-design.md)
 - [Server Lifecycle Design](../lifecycle-design.md)
+- [Server API Contract](../../api/api-contract-design.md)
 - [Application Database Design](../../database/application-database-design.md)
 - [Log Module Design](../../../log-modules/log-module-design.md)
 - [Development Container Design](../../../containers/dev/development-container-design.md)

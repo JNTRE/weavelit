@@ -37,6 +37,22 @@ function unselectedStatus(): Promise<Response> {
   return Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: false }));
 }
 
+function selectedStatus(): Promise<Response> {
+  return Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: true }));
+}
+
+/** Waits for the status projection, then takes one first-launch path. */
+async function choose(path: "init" | "restore"): Promise<void> {
+  await waitFor(() => {
+    expect(statusRegion().dataset.statusState).toBe("available");
+  });
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: path === "init" ? "Set up a new deployment" : "Restore from a backup",
+    }),
+  );
+}
+
 describe("ApplicationShell", () => {
   it("renders the loading state while the status request is pending", () => {
     vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>(() => {}));
@@ -104,6 +120,71 @@ describe("ApplicationShell", () => {
   });
 });
 
+describe("ApplicationShell first-launch choice", () => {
+  function choiceSection(): HTMLElement | null {
+    return document.querySelector("section.shell__choice");
+  }
+
+  it("offers exactly the two first-launch paths once the status projection arrives", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(choiceSection()).not.toBeNull();
+    });
+    expect(screen.getByRole("heading", { name: "First launch" })).toBeTruthy();
+    expect(screen.queryAllByRole("button")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Set up a new deployment" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restore from a backup" })).toBeTruthy();
+  });
+
+  it("offers no first-launch choice while the status request is pending", () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>(() => {}));
+
+    render(<ApplicationShell />);
+
+    expect(choiceSection()).toBeNull();
+  });
+
+  it("offers no first-launch choice when the status projection is no longer served", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED 127.0.0.1:8443"));
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("unavailable");
+    });
+    expect(choiceSection()).toBeNull();
+  });
+
+  it.each([
+    ["init", "section.shell__init", "section.shell__restore"],
+    ["restore", "section.shell__restore", "section.shell__init"],
+  ] as const)("withdraws the other path once %s is chosen", async (path, chosen, withdrawn) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => selectedStatus());
+
+    render(<ApplicationShell />);
+    await choose(path);
+
+    await waitFor(() => {
+      expect(document.querySelector(chosen)).not.toBeNull();
+    });
+    expect(document.querySelector(withdrawn)).toBeNull();
+    expect(choiceSection()).toBeNull();
+  });
+
+  it("reuses the existing selection surface for either path rather than duplicating it", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
+
+    render(<ApplicationShell />);
+    await choose("init");
+
+    expect(document.querySelectorAll("section.shell__selection")).toHaveLength(1);
+    expect(document.querySelector("section.shell__init")).toBeNull();
+  });
+});
+
 describe("ApplicationShell database selection control", () => {
   it("offers the selection control only when no Application Database is selected", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
@@ -111,9 +192,8 @@ describe("ApplicationShell database selection control", () => {
     render(<ApplicationShell />);
 
     expect(screen.queryAllByRole("button")).toHaveLength(0);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
+    expect(selectionButton().disabled).toBe(false);
     expect(screen.getByRole("heading", { name: "Application Database" })).toBeTruthy();
   });
 
@@ -127,7 +207,8 @@ describe("ApplicationShell database selection control", () => {
     await waitFor(() => {
       expect(statusRegion().dataset.statusState).toBe("available");
     });
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Select SQLite" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Application Database" })).toBeNull();
   });
 
   it("does not offer the selection control when the status is unavailable", async () => {
@@ -148,9 +229,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
 
     fireEvent.click(selectionButton());
 
@@ -176,9 +255,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("restore");
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     fireEvent.click(selectionButton());
@@ -188,7 +265,7 @@ describe("ApplicationShell database selection control", () => {
         "An Application Database is selected for this deployment.",
       );
     });
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Select SQLite" })).toBeNull();
 
     // One status request on mount and one selection request: the success
     // projection is authoritative, so no status refetch is issued.
@@ -210,9 +287,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
 
     fireEvent.click(selectionButton());
 
@@ -233,9 +308,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
 
     fireEvent.click(selectionButton());
 
@@ -254,9 +327,7 @@ describe("ApplicationShell database selection control", () => {
     });
 
     render(<ApplicationShell />);
-    await waitFor(() => {
-      expect(selectionButton().disabled).toBe(false);
-    });
+    await choose("init");
 
     fireEvent.click(selectionButton());
 
@@ -266,5 +337,326 @@ describe("ApplicationShell database selection control", () => {
     expect(statusRegion().textContent).toBe(
       "No Application Database is selected for this deployment.",
     );
+  });
+});
+
+describe("ApplicationShell Restore form gating", () => {
+  function restoreSection(): HTMLElement | null {
+    return document.querySelector("section.shell__restore");
+  }
+
+  function loginSection(): HTMLElement | null {
+    return document.querySelector("section[data-authentication-state]");
+  }
+
+  /**
+   * The shell's own status region.
+   *
+   * It is addressed by class rather than by role, because a completed Restore
+   * renders a live region of its own until the shell withdraws it.
+   */
+  function shellStatus(): HTMLElement {
+    return document.querySelector<HTMLElement>("p.shell__status")!;
+  }
+
+  it("offers the Restore form once an Application Database is selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => selectedStatus());
+
+    render(<ApplicationShell />);
+    await choose("restore");
+
+    await waitFor(() => {
+      expect(restoreSection()).not.toBeNull();
+    });
+    expect(screen.getByRole("heading", { name: "Restore" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restore backup" })).toBeTruthy();
+  });
+
+  it("does not offer the Restore form before a database is selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
+
+    render(<ApplicationShell />);
+    await choose("restore");
+
+    expect(restoreSection()).toBeNull();
+  });
+
+  it("does not offer the Restore form when the status is unavailable", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED 127.0.0.1:8443"));
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("unavailable");
+    });
+    expect(restoreSection()).toBeNull();
+  });
+
+  it("offers the Restore form as soon as a selection succeeds", async () => {
+    mockRoutedFetch({
+      status: unselectedStatus,
+      selection: () =>
+        Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: true })),
+    });
+
+    render(<ApplicationShell />);
+    await choose("restore");
+    expect(restoreSection()).toBeNull();
+
+    fireEvent.click(selectionButton());
+
+    await waitFor(() => {
+      expect(restoreSection()).not.toBeNull();
+    });
+  });
+
+  it("withdraws every setup control and offers sign-in once a Restore completes", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown, init?: RequestInit) => {
+      if (input === "/api/v1/restore") {
+        // The recovery-key route answers `202` with the one-time ticket.
+        return Promise.resolve(
+          jsonResponse(
+            {
+              result: {
+                restore_ticket: "0123456789abcdefghijklmnopqrstuvwxyzABC-_",
+                reconciliation_capability: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi",
+              },
+            },
+            202,
+          ),
+        );
+      }
+      if (input === "/api/v1/restore/artifact") {
+        return Promise.resolve(jsonResponse({ result: { lifecycle: "initialized" } }));
+      }
+      if (typeof input === "string" && input.startsWith("/api/v1/auth/")) {
+        return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+      }
+      expect(init?.method).not.toBe("PUT");
+      return selectedStatus();
+    });
+
+    render(<ApplicationShell />);
+    await choose("restore");
+
+    fireEvent.change(await screen.findByLabelText("Backup file"), {
+      target: {
+        files: [new File([new Uint8Array([0x57, 0x4c, 0x42, 0x4b])], "backup.wlitbackup")],
+      },
+    });
+    fireEvent.change(screen.getByLabelText("Recovery key"), {
+      target: { value: "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLE" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Restore backup" }));
+
+    // The page never re-reads status across the sealing boundary: completion is
+    // adopted from the Restore completion response it already holds.
+    await waitFor(() => {
+      expect(shellStatus().dataset.statusState).toBe("initialized");
+    });
+    expect(shellStatus().textContent).toBe(
+      "This deployment is initialized and now runs in normal operation.",
+    );
+    expect(restoreSection()).toBeNull();
+    expect(document.querySelector("section.shell__init")).toBeNull();
+    expect(document.querySelector("section.shell__selection")).toBeNull();
+    expect(document.querySelector("section.shell__choice")).toBeNull();
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+
+    const statusRequests = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter(([target]) => target === "/api/v1/status");
+    expect(statusRequests).toHaveLength(1);
+  });
+});
+
+describe("ApplicationShell Init workflow gating", () => {
+  function initSection(): HTMLElement | null {
+    return document.querySelector("section.shell__init");
+  }
+
+  function loginSection(): HTMLElement | null {
+    return document.querySelector("section[data-authentication-state]");
+  }
+
+  it("offers the Init workflow once an Application Database is selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => selectedStatus());
+
+    render(<ApplicationShell />);
+    await choose("init");
+
+    await waitFor(() => {
+      expect(initSection()).not.toBeNull();
+    });
+    expect(screen.getByRole("heading", { name: "Set up this deployment" })).toBeTruthy();
+  });
+
+  it("does not offer the Init workflow before a database is selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => unselectedStatus());
+
+    render(<ApplicationShell />);
+    await choose("init");
+
+    // A recovery key cannot be prepared before the database it would initialize
+    // has been selected, so the workflow that prepares it is not offered at all.
+    expect(initSection()).toBeNull();
+  });
+
+  it("offers the Init workflow as soon as a selection succeeds", async () => {
+    mockRoutedFetch({
+      status: unselectedStatus,
+      selection: () =>
+        Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: true })),
+    });
+
+    render(<ApplicationShell />);
+    await choose("init");
+    expect(initSection()).toBeNull();
+
+    fireEvent.click(selectionButton());
+
+    await waitFor(() => {
+      expect(initSection()).not.toBeNull();
+    });
+  });
+
+  it("withdraws every setup control and offers sign-in once Init completes", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown, init?: RequestInit) => {
+      if (input === "/api/v1/init/recovery-key") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              recovery_key:
+                "AGE-SECRET-KEY-1QQQSYQCYQ5RQWZQFPG9SCRGWPUGPZYSNZS23V9CCRYDPK8QARC0SWRYDWG",
+              delivery_nonce: "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+              reconciliation_capability: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi",
+            },
+          }),
+        );
+      }
+      if (input === "/api/v1/init") {
+        return Promise.resolve(jsonResponse({ result: { lifecycle: "initialized" } }));
+      }
+      if (typeof input === "string" && input.startsWith("/api/v1/auth/")) {
+        return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+      }
+      expect(init?.method).not.toBe("PUT");
+      return selectedStatus();
+    });
+
+    render(<ApplicationShell />);
+    await choose("init");
+
+    fireEvent.change(await screen.findByLabelText("System Log module"), {
+      target: { value: "sqlite" },
+    });
+    fireEvent.change(screen.getByLabelText("Audit Log module"), { target: { value: "sqlite" } });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "administrator" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare recovery key" }));
+
+    fireEvent.click(await screen.findByLabelText("I have saved this recovery key."));
+    fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Complete setup" }));
+
+    // The page never re-reads status across the sealing boundary: completion is
+    // adopted from the finalization response it already holds.
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("initialized");
+    });
+    expect(statusRegion().textContent).toBe(
+      "This deployment is initialized and now runs in normal operation.",
+    );
+    expect(initSection()).toBeNull();
+    expect(document.querySelector("section.shell__selection")).toBeNull();
+    expect(document.querySelector("section.shell__restore")).toBeNull();
+    expect(document.querySelector("section.shell__choice")).toBeNull();
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+
+    const statusRequests = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter(([target]) => target === "/api/v1/status");
+    expect(statusRequests).toHaveLength(1);
+  });
+});
+
+describe("ApplicationShell sign-in panel gating", () => {
+  function loginSection(): HTMLElement | null {
+    return document.querySelector("section[data-authentication-state]");
+  }
+
+  /** Reports whether a recorded request target is an authentication route. */
+  function authenticationTarget(input: unknown): boolean {
+    return typeof input === "string" && input.startsWith("/api/v1/auth/");
+  }
+
+  function routedFetch(routes: {
+    status: () => Promise<Response>;
+    session: () => Promise<Response>;
+  }) {
+    return vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((input: unknown) =>
+        authenticationTarget(input) ? routes.session() : routes.status(),
+      );
+  }
+
+  function sessionRejected(): Promise<Response> {
+    return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+  }
+
+  it.each([
+    ["no database is selected", () => unselectedStatus()],
+    [
+      "a database is selected",
+      () => Promise.resolve(jsonResponse({ lifecycle: "uninitialized", database_selected: true })),
+    ],
+  ])(
+    "issues no authentication request while the status projection is served (%s)",
+    async (_label, status) => {
+      const fetchMock = routedFetch({ status, session: sessionRejected });
+
+      render(<ApplicationShell />);
+
+      await waitFor(() => {
+        expect(statusRegion().dataset.statusState).toBe("available");
+      });
+      expect(loginSection()).toBeNull();
+      expect(fetchMock.mock.calls.filter(([target]) => authenticationTarget(target))).toHaveLength(
+        0,
+      );
+    },
+  );
+
+  it("offers the sign-in panel once the status projection is no longer served", async () => {
+    routedFetch({
+      status: () => Promise.resolve(jsonResponse({ error: "not_found" }, 404)),
+      session: sessionRejected,
+    });
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.getByLabelText("Username")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+  });
+
+  it("offers no sign-in panel when the authentication surface is absent too", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED 127.0.0.1:8443"));
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(statusRegion().dataset.statusState).toBe("unavailable");
+    });
+    await waitFor(() => {
+      expect(loginSection()).toBeNull();
+    });
   });
 });

@@ -6,8 +6,9 @@ This folder documents the **[Weavelit Server](../../glossary.md#applications-and
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Server authorization design for named **[Operation](../../glossary.md#applications-and-interfaces)** permissions and policy evaluation.
+- This directory owns Server authorization design for named **[Operation](../../glossary.md#applications-and-interfaces)** permissions and policy evaluation, including the grant model, effective-grant union, requirement precedence, and structural default-deny.
 - It does not own authentication credential validation; that belongs in the sibling `../authentication/` directory.
+- It does not own the content of the authorization-denial System Log record; that belongs in `../observability/authorization-denial-record-design.md`.
 - Detailed Group grant-evaluation and additional-permission decisions that
   remain unsettled belong in `../../open-questions.md`.
 

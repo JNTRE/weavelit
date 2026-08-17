@@ -1,17 +1,18 @@
 # Server Core Crates Agent Guide
 
 This directory groups the Weavelit Server runtime and its core lifecycle, Init,
-and Restore orchestration crates. These crates own Server-wide composition and
-pre-operational application workflows rather than component-specific storage or
-module behavior.
+Restore, authentication, authorization, and operation crates. These crates own
+Server-wide composition, pre-operational application workflows, and
+Server-owned credential, access, and post-authorization execution decisions
+rather than component-specific storage or module behavior.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Server runtime and core orchestration crate boundaries.
+- This directory owns Server runtime, core orchestration, and Server-owned authentication, authorization, and post-authorization operation crate boundaries.
 - It does not own Application Database backends or Client, MFA, Log, and Service Module implementations.
-- Child paths own executable, lifecycle, Init, and Restore implementation guidance.
+- Child paths own executable, lifecycle, Init, Restore, authentication, authorization, and operation implementation guidance.
 
 ## Asset Inventory
 
@@ -19,15 +20,24 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and Server core crate-boundary rules.
 - `weavelit-server/`: Weavelit Server executable crate.
+- `weavelit-server-authentication/`: Local password authentication core, the closed Argon2 profile allowlist, and session and CSRF secret material.
+- `weavelit-server-authorization/`: Group-based authorization decision, the additive effective-grant union, and the unforgeable decision proofs.
+- `weavelit-server-components/`: Neutral compiled-in component inventory shared by the workflows that check a deployment's declared components against what this build can actually serve.
+- `weavelit-server-init/`: Server-owned new-state workflow: the normalized initialization request, its semantic validation, recovery-key preparation and proof of possession, and construction of complete initial application state.
 - `weavelit-server-log/`: Typed Log Module contract and compiled-in catalog.
+- `weavelit-server-log-authority/`: Server-owned capability key that gates minting of trusted logging authority.
 - `weavelit-server-lifecycle/`: Backend-neutral lifecycle domain, validation, and runtime-supplied Application Database catalog contract.
+- `weavelit-server-observability/`: Server-owned construction and pre-redaction of System Log records.
+- `weavelit-server-operation/`: Post-authorization Service Connection selection and provider execution, structured so an authorization proof is spent at most once.
+- `weavelit-server-recovery-key/`: Canonical age recovery-key encoding shared by Init and Restore, and the delivery-nonce proof of possession that confirms a newly generated private key was retained.
+- `weavelit-server-restore/`: Server-owned backup envelope, decryption, compatibility, and restored-state validation.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read the nearest child `AGENTS.md`, then this `AGENTS.md`, `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read the matching canonical design under `../../../docs/server/` before changing runtime, lifecycle, Init, or Restore behavior.
+- Read the matching canonical design under `../../../docs/server/` before changing runtime, lifecycle, Init, Restore, authentication, or authorization behavior.
 - Keep component-specific persistence and module behavior in their sibling grouping directories.
 - Add or update focused tests with implementation behavior changes as required by `../../../docs/testing.md`.
 

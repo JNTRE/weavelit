@@ -221,6 +221,7 @@ gate remains `make -C server check`.
 ## Related Documents
 
 - [Web UI Pre-Operational Status Surface](pre-operational-status-design.md)
+- [Web UI Pre-Operational Restore Surface](pre-operational-restore-design.md)
 - [Embedded Asset Delivery Design](embedded-asset-delivery-design.md)
 - [Web UI Application Design](../../clients/web-ui/web-ui-application-design.md)
 - [Technical Specification](../../spec.md)

@@ -18,6 +18,8 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and TOTP MFA Module crate-boundary rules.
+- `Cargo.toml`: Crate manifest pinning the `totp-rs` and `percent-encoding` dependencies and their minimal features.
+- `src/`: TOTP module source, including the approved RFC 6238 profile, its registration, secret handling, and provisioning text.
 
 ## Usage Guidance
 
@@ -26,6 +28,8 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read this `AGENTS.md`, then each parent `AGENTS.md` upward to the repository root.
 - Read `../../../../../docs/mfa-modules/`, `../../../../../docs/server/authentication/`, and the Security Model before changing TOTP behavior.
 - Keep TOTP-specific enrollment, verification, and protected factor-data handling in this crate.
+- Keep the verification time a caller-supplied parameter; this crate reads no clock, so its tests stay deterministic without sleeping.
+- Keep the secret and the provisioning URI in zeroizing types that redact in `Debug` and implement no `Display`, and never delegate the underlying library's hexadecimal secret rendering.
 - Add focused security tests for enrollment, verification, disabled-method rejection, and secret absence from errors and logs, following `../../../../../docs/testing.md`.
 
 ## Standards and Conventions

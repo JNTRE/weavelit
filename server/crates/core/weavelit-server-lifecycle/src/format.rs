@@ -6,6 +6,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use weavelit_server_database::MAX_PROTECTED_VALUE_LENGTH;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
@@ -23,6 +24,13 @@ pub(crate) const RECORD_ENVELOPE_LIMIT: usize = 4 * 1024;
 pub(crate) const RECORD_PLAINTEXT_LIMIT: usize = 1024;
 pub(crate) const LOCATOR_ENVELOPE_LIMIT: usize = 64 * 1024;
 pub(crate) const LOCATOR_PLAINTEXT_LIMIT: usize = 32 * 1024;
+// A sealed value is stored as one Application Database protected value, so its
+// envelope must always fit that bound. The envelope adds a fixed JSON header, a
+// base64 nonce, and base64 expansion of the plaintext plus tag, so the
+// plaintext bound is held well below the envelope bound rather than tuned to
+// the exact worst case.
+pub(crate) const PROTECTED_ENVELOPE_LIMIT: usize = MAX_PROTECTED_VALUE_LENGTH;
+pub(crate) const PROTECTED_PLAINTEXT_LIMIT: usize = 32 * 1024;
 
 const KEY_LENGTH: usize = 32;
 const NONCE_LENGTH: usize = 24;
@@ -30,6 +38,7 @@ const TAG_LENGTH: usize = 16;
 const ALGORITHM: &str = "xchacha20-poly1305";
 const RECORD_AAD: &[u8] = b"weavelit:lifecycle:deployment-record:v1";
 const LOCATOR_AAD_PREFIX: &[u8] = b"weavelit:lifecycle:database-locator:v1:";
+const PROTECTED_AAD_PREFIX: &[u8] = b"weavelit:application-protected-value:v1:";
 
 pub(crate) struct AnchorKey(Zeroizing<[u8; KEY_LENGTH]>);
 
@@ -398,6 +407,48 @@ fn payload_to_value(value: ConnectionValueV1) -> Result<ConnectionValue, Lifecyc
     Ok(value)
 }
 
+pub(crate) fn encrypt_protected_value(
+    key: &AnchorKey,
+    kind: &str,
+    plaintext: &[u8],
+    nonce: [u8; NONCE_LENGTH],
+) -> Result<Vec<u8>, LifecycleError> {
+    if plaintext.is_empty() || plaintext.len() > PROTECTED_PLAINTEXT_LIMIT {
+        return Err(LifecycleError::IntegrityFailure);
+    }
+    let envelope = encrypt_envelope(key, nonce, &protected_aad(kind), plaintext)?;
+    if envelope.len() > PROTECTED_ENVELOPE_LIMIT {
+        return Err(LifecycleError::IntegrityFailure);
+    }
+    Ok(envelope)
+}
+
+/// Recovers one sealed value, refusing an envelope sealed for another kind.
+///
+/// The kind is bound as additional authenticated data, so a value sealed as an
+/// enrolled factor cannot be recovered as a component secret and the other way
+/// round.
+pub(crate) fn decrypt_protected_value(
+    key: &AnchorKey,
+    kind: &str,
+    bytes: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, LifecycleError> {
+    decrypt_envelope(
+        key,
+        bytes,
+        &protected_aad(kind),
+        PROTECTED_ENVELOPE_LIMIT,
+        PROTECTED_PLAINTEXT_LIMIT,
+    )
+}
+
+fn protected_aad(kind: &str) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(PROTECTED_AAD_PREFIX.len() + kind.len());
+    aad.extend_from_slice(PROTECTED_AAD_PREFIX);
+    aad.extend_from_slice(kind.as_bytes());
+    aad
+}
+
 fn locator_aad(generation: LocatorGeneration) -> Vec<u8> {
     let mut aad = Vec::with_capacity(LOCATOR_AAD_PREFIX.len() + generation.as_bytes().len());
     aad.extend_from_slice(LOCATOR_AAD_PREFIX);
@@ -606,5 +657,94 @@ mod tests {
         .unwrap();
         assert_eq!(calls, 2);
         assert_eq!(bytes[0], 1);
+    }
+
+    #[test]
+    fn a_sealed_protected_value_round_trips_only_under_its_own_key_and_kind() {
+        let key = AnchorKey::from_bytes(sequential_bytes(0x00)).unwrap();
+        let wrong_key = AnchorKey::from_bytes([9; KEY_LENGTH]).unwrap();
+        let plaintext = b"totp-shared-secret";
+
+        let sealed =
+            encrypt_protected_value(&key, "mfa-factor-data", plaintext, sequential_bytes(0x40))
+                .unwrap();
+
+        assert_eq!(
+            decrypt_protected_value(&key, "mfa-factor-data", &sealed)
+                .unwrap()
+                .as_slice(),
+            plaintext
+        );
+        for (other_key, other_kind) in [
+            (&wrong_key, "mfa-factor-data"),
+            (&key, "component-secret"),
+            (&key, "service-connection-credential"),
+        ] {
+            assert_eq!(
+                decrypt_protected_value(other_key, other_kind, &sealed).unwrap_err(),
+                LifecycleError::IntegrityFailure
+            );
+        }
+    }
+
+    #[test]
+    fn a_tampered_sealed_protected_value_is_rejected() {
+        let key = AnchorKey::from_bytes(sequential_bytes(0x00)).unwrap();
+        let sealed = encrypt_protected_value(
+            &key,
+            "component-secret",
+            b"provider-api-token",
+            sequential_bytes(0x40),
+        )
+        .unwrap();
+        let text = String::from_utf8(sealed).unwrap();
+        let ciphertext = text.rsplit_once("\":\"").unwrap().1.trim_end_matches("\"}");
+        let mut flipped: Vec<char> = ciphertext.chars().collect();
+        flipped[0] = if flipped[0] == 'A' { 'B' } else { 'A' };
+        let tampered = text.replace(ciphertext, &flipped.into_iter().collect::<String>());
+
+        assert_eq!(
+            decrypt_protected_value(&key, "component-secret", tampered.as_bytes()).unwrap_err(),
+            LifecycleError::IntegrityFailure
+        );
+    }
+
+    #[test]
+    fn a_maximum_size_plaintext_seals_within_the_protected_value_bound() {
+        let key = AnchorKey::from_bytes(sequential_bytes(0x00)).unwrap();
+
+        let sealed = encrypt_protected_value(
+            &key,
+            "component-secret",
+            &vec![0xA5; PROTECTED_PLAINTEXT_LIMIT],
+            sequential_bytes(0x40),
+        )
+        .unwrap();
+
+        assert!(sealed.len() <= PROTECTED_ENVELOPE_LIMIT);
+        assert_eq!(
+            decrypt_protected_value(&key, "component-secret", &sealed)
+                .unwrap()
+                .len(),
+            PROTECTED_PLAINTEXT_LIMIT
+        );
+    }
+
+    #[test]
+    fn an_empty_or_oversized_plaintext_is_refused_before_sealing() {
+        let key = AnchorKey::from_bytes(sequential_bytes(0x00)).unwrap();
+
+        for plaintext in [vec![], vec![0xA5; PROTECTED_PLAINTEXT_LIMIT + 1]] {
+            assert_eq!(
+                encrypt_protected_value(
+                    &key,
+                    "component-secret",
+                    &plaintext,
+                    sequential_bytes(0x40)
+                )
+                .unwrap_err(),
+                LifecycleError::IntegrityFailure
+            );
+        }
     }
 }

@@ -108,6 +108,22 @@ explicit source networks, origin controls, restricted cross-origin resource
 sharing (CORS), and cross-site request forgery (CSRF) protection appropriate to
 its request model. These controls must not depend on client-side enforcement.
 
+### Request-Head Buffer Clearing
+
+The listener holds every raw request head in one controlled owner. Its capacity
+includes the byte used to detect an aggregate-limit overflow, so a rejection
+does not replace a Cookie-, session-, CSRF-, or other header-bearing allocation
+before that owner can clear it. Parsed header values retain validated shared
+ranges of that owner. The owner clears on malformed, oversized, incomplete,
+framing, parser, timeout, and cancellation exits, or after the final non-empty
+header-value, HeaderMap, or Request clone releases it on an accepted request.
+
+This controls only the listener's raw request-head allocation. TLS, kernel or
+network transport, allocator, URI, and consumer-created copies remain outside
+application control. It does not change the deliberate exclusion of the
+encrypted **[Restore](glossary.md#states-and-requests)** artifact, which
+discloses nothing on its own.
+
 ## Protected Assets
 
 The security model protects:
@@ -287,18 +303,36 @@ file as connection material.
 The Server must treat every submitted backup as untrusted even when the supplied
 recovery key can decrypt it. Before application-state mutation, Restore must
 bound upload size, cryptographic work, decompression, parsed structures,
-collections, strings, execution time, and concurrency. It must validate the
-backup's authenticity, integrity, format version, compatibility, references,
-and complete contents. A rejected backup must leave the selected database
-without application state and expose only stable, redacted errors.
+collections, strings, execution time, and concurrency. The approved minimum
+transfer bounds are a 256 MiB maximum encrypted artifact and authenticated
+plaintext size, a 120-second upload deadline, a 300-second total request
+deadline, and at most one Restore operation in progress at a time. It must
+validate the backup's authenticity, integrity, format version, compatibility,
+references, and complete contents. A rejected backup must leave the selected
+database without application state and expose only stable, redacted errors. A
+wrong recovery key, an altered artifact, and any other authentication failure
+must remain indistinguishable in that redacted result.
 
-Restore must not persist a private recovery key, unwrapped backup key, or
-decrypted backup plaintext. If temporary staging is required, the Server may
-persist only the bounded encrypted artifact in protected storage and must remove
-it after success or rejection before lifecycle interruption. Retained staging
-state after interruption must remain fail-closed without Server-managed cleanup
-or resumption. The Restore Design owns concrete formats, algorithms, bounds,
-validation order, staging mechanics, and cleanup flow.
+The approved backup recovery-key profile uses the age v1 X25519 recipient
+format: X25519 key agreement with HKDF-SHA-256 and ChaCha20-Poly1305 wrap the
+per-backup data key, HMAC-SHA-256 authenticates the header, and the age STREAM
+construction with ChaCha20-Poly1305 encrypts the payload. A recovery key is
+accepted only in its canonical age Bech32 encoding: a lowercase `age1...`
+public recipient or an uppercase `AGE-SECRET-KEY-1...` private identity, as
+exactly one canonical line. For Milestone 1, Restore holds the encrypted
+artifact, the private recovery key, the unwrapped backup key, and decrypted
+backup plaintext entirely in bounded transient memory and must not persist any
+of them to temporary storage. Because at most one Restore operation may run
+and every input is bounded by this profile's approved transfer bounds, peak
+resident cost from this in-memory handling remains bounded. An interruption
+before a Restore checkpoint exists releases transient memory without
+Server-managed cleanup, resumption, or upload retry. On-disk staging of the
+bounded encrypted artifact in protected storage remains a possible future
+option if the artifact ceiling is raised or concurrent Restore is ever
+permitted, and would still require removal after success or rejection and
+fail-closed handling of any state retained after interruption. The Restore
+Design owns the concrete envelope format, validation order, and interruption
+handling that satisfy this profile.
 
 ## Log And Client Output Security Profile
 

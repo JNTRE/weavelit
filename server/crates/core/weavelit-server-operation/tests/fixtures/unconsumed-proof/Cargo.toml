@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "weavelit-server-operation-unconsumed-proof-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavelit-server-authorization = { path = "../../../../weavelit-server-authorization" }
+weavelit-server-database = { path = "../../../../../database/weavelit-server-database" }
+weavelit-server-operation = { path = "../../.." }
+
+[[bin]]
+name = "borrowed-proof"
+path = "src/borrowed_proof.rs"
+
+[[bin]]
+name = "reused-proof"
+path = "src/reused_proof.rs"
+
+[[bin]]
+name = "reused-selection"
+path = "src/reused_selection.rs"
+
+[[bin]]
+name = "selection-literal"
+path = "src/selection_literal.rs"

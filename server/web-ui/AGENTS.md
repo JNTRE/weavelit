@@ -22,13 +22,13 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and Server Web UI source-boundary rules.
 - `.node-version`: Pinned Node.js release used by local development, the development container, and CI.
 - `.npmrc`: npm client settings that force exact version pinning and engine enforcement.
-- `browser-tests/`: Playwright browser tests, covering the pre-operational status smoke test and the Application Database selection restart-persistence test, and the shared fixture that runs them against the release Server binary.
+- `browser-tests/`: Playwright browser tests, covering the pre-operational status smoke test, the Application Database selection restart-persistence test, the two-request Restore submission test, the first-launch Init workflow test, the sign-in and restart-persisted-session test, the second-factor and enrollment sign-in tests, and the shared fixture that runs them against the release Server binary.
 - `index.html`: Vite entry document for the single-page application.
 - `package.json`: Web UI manifest, exact dependency pins, and build, test, and validation scripts.
 - `package-lock.json`: Fully resolved npm dependency lock for reproducible installs.
 - `playwright.config.ts`: Playwright runner configuration for the browser tests.
 - `scripts/`: Build-output validation and build content manifest scripts run by the Server quality gate, and their Node test-runner tests.
-- `src/`: TypeScript and React application source and its unit tests, organized into `api/` (status and Application Database selection transport clients), `components/` (application shell), `hooks/` (deployment status hook), and `styles/` (application stylesheet), following the `weavelit-<phase>-<component>` file-naming convention.
+- `src/`: TypeScript and React application source and its unit tests, organized into `api/` (status, Application Database selection, Init setup and recovery-key proof-of-possession, Restore submission, and authentication transport clients), `components/` (application shell, Init workflow, Restore submission form, and sign-in form), `hooks/` (deployment status hook), and `styles/` (application stylesheet), following the `weavelit-<phase>-<component>` file-naming convention.
 - `tsconfig.json`: TypeScript compiler configuration for the application and its tests.
 - `vite.config.ts`: Vite build, deterministic output-naming, and Vitest configuration.
 

@@ -2,16 +2,28 @@
 resolver = "2"
 members = [
 	"crates/core/weavelit-server",
+	"crates/core/weavelit-server-authentication",
+	"crates/core/weavelit-server-authorization",
+	"crates/core/weavelit-server-components",
+	"crates/core/weavelit-server-init",
 	"crates/core/weavelit-server-log",
+	"crates/core/weavelit-server-log-authority",
 	"crates/core/weavelit-server-lifecycle",
+	"crates/core/weavelit-server-observability",
+	"crates/core/weavelit-server-operation",
+	"crates/core/weavelit-server-recovery-key",
+	"crates/core/weavelit-server-restore",
 	"crates/database/weavelit-server-database",
 	"crates/database/weavelit-server-database-sqlite",
+	"crates/modules/client/weavelit-module-client",
 	"crates/modules/client/weavelit-module-client-webui",
 	"crates/modules/log/weavelit-module-log-sqlite",
+	"crates/modules/mfa/weavelit-module-mfa-totp",
 ]
 
 [workspace.dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
 percent-encoding = { version = "=2.3.2", default-features = false }
 rustix = { version = "=1.1.4", default-features = false, features = ["std", "fs", "process"] }
-tokio = { version = "=1.53.1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+subtle = { version = "=2.6.1", default-features = false }
+tokio = { version = "=1.53.1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

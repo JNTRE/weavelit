@@ -2,6 +2,36 @@
 
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
+mod mfa;
+mod reconciliation;
+mod session;
+mod state;
+
+pub use mfa::{
+    MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment,
+    MfaModuleTarget, MfaStore, MfaTimeStep,
+};
+pub use reconciliation::{RECONCILIATION_DIGEST_LENGTH, ReconciliationDigest, ReconciliationStore};
+pub use session::{
+    MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
+    SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
+    SessionCsrfHash, SessionInstant, SessionRejection, SessionStore, SessionTokenHash,
+    SessionValidation, StoredSession,
+};
+pub use state::{
+    Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
+    COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
+    ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier, Description,
+    Group, GroupGrant, GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot,
+    InitializedState, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
+    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
+    MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH,
+    MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
+    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier,
+    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
+    StateIdentifier,
+};
+
 use std::{error::Error as StdError, fmt};
 
 /// Number of bytes in a deployment identifier.
@@ -147,6 +177,83 @@ pub trait ApplicationDatabase: Send {
 
     /// Atomically creates a checkpoint in an eligible uninitialized database.
     fn create_checkpoint(&mut self, checkpoint: &WorkflowCheckpoint) -> Result<(), DatabaseError>;
+
+    /// Atomically replaces the exact pending checkpoint with complete state once.
+    fn complete_checkpoint(
+        &mut self,
+        checkpoint: &WorkflowCheckpoint,
+        state: &ApplicationState,
+        reconciliation: &ReconciliationDigest,
+    ) -> Result<(), DatabaseError>;
+
+    /// Loads complete initialized state bound to the expected deployment.
+    fn load_initialized_state(
+        &mut self,
+        expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<InitializedState, DatabaseError>;
+
+    /// Marks the persisted completion obligation acknowledged exactly once.
+    fn acknowledge_completion(
+        &mut self,
+        expected_deployment_identifier: DeploymentIdentifier,
+        record_identifier: StateIdentifier,
+    ) -> Result<(), DatabaseError>;
+
+    /// Loads only what authorizing one account's request requires.
+    ///
+    /// This runs on every authorized request, so it is a deliberately narrow
+    /// read rather than a projection of loaded application state: it returns
+    /// the account's active flag and the Group grants joined from that
+    /// account's memberships, and nothing else. An account the database does
+    /// not hold returns `None` rather than an empty grant set, so an unknown
+    /// account and a granted-nothing account are not the same value.
+    fn load_human_authorization(
+        &mut self,
+        account: StateIdentifier,
+    ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError>;
+
+    /// Loads only which components an administrator has disabled.
+    ///
+    /// This runs on every authorized request beside the account's grants, so
+    /// it is a deliberately narrow read: it returns the disabled components
+    /// and nothing else. It is never captured at startup or carried in a
+    /// session, so disabling a component takes effect on the next request.
+    fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError>;
+
+    /// Returns this database's live session store, when it owns one.
+    ///
+    /// Live sessions are a separate contract from restorable application
+    /// state, so a backend answers for them separately. The method is required
+    /// rather than defaulted: a backend must state that it serves no session
+    /// store, and a caller that receives `None` refuses the request instead of
+    /// silently authenticating without durable sessions.
+    fn sessions(&mut self) -> Option<&mut dyn SessionStore>;
+
+    /// Returns this database's live MFA replay watermarks, when it owns them.
+    ///
+    /// A watermark is live operational data like a session, so a backend
+    /// answers for it separately from restorable state. The method is required
+    /// rather than defaulted: a caller that receives `None` refuses the
+    /// verification instead of accepting a code it cannot prove is unused.
+    fn mfa(&mut self) -> Option<&mut dyn MfaStore>;
+
+    /// Returns this database's live lifecycle reconciliation store, when it
+    /// owns one.
+    ///
+    /// Completion records its digest atomically with the application-state
+    /// replacement. The retained value is separate from restorable state, so
+    /// a Restore proves only its own submission and a backup carries none.
+    fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore>;
+
+    /// Closes the database and releases its storage cleanly.
+    ///
+    /// Taking the box consumes the only handle to the backend, so an operation
+    /// against a closed database is not a value a caller can construct. The
+    /// method is required rather than defaulted so a backend states how it
+    /// releases storage instead of inheriting a silent success it may not be
+    /// able to support, and it returns the failure rather than reporting a
+    /// clean stop it did not achieve.
+    fn close(self: Box<Self>) -> Result<(), DatabaseError>;
 }
 
 /// Invalid caller-provided value rejected before persistence access.
@@ -156,6 +263,38 @@ pub enum ContractInputError {
     InvalidDeploymentIdentifier,
     /// The encoded checkpoint metadata exceeds the contract limit.
     CheckpointMetadataTooLarge,
+    /// The entity identifier is the reserved all-zero value.
+    InvalidStateIdentifier,
+    /// A required text value is empty.
+    TextEmpty,
+    /// A text value exceeds its contract limit.
+    TextTooLong,
+    /// A text value contains control characters.
+    TextNotPrintable,
+    /// A protected value is empty.
+    ProtectedValueEmpty,
+    /// A protected value exceeds the contract limit.
+    ProtectedValueTooLarge,
+    /// The encoded password verifier is not a bounded PHC string.
+    InvalidPasswordVerifier,
+    /// The encoded recovery public key is not canonical.
+    InvalidRecoveryPublicKey,
+    /// The session or CSRF digest is the reserved all-zero value.
+    InvalidSessionDigest,
+    /// The session instant is negative or outside the accepted range.
+    InvalidSessionInstant,
+    /// The MFA time step is outside the representable range.
+    InvalidMfaTimeStep,
+    /// The completion-record event time is negative.
+    InvalidEventTime,
+    /// Two state entries share an identifier or unique key.
+    DuplicateEntry,
+    /// A state entry references an absent entity.
+    UnknownReference,
+    /// A required log type has no assignment.
+    MissingAssignment,
+    /// An assignment references a disabled Log Module configuration.
+    DisabledAssignment,
 }
 
 impl fmt::Display for ContractInputError {
@@ -163,6 +302,22 @@ impl fmt::Display for ContractInputError {
         let message = match self {
             Self::InvalidDeploymentIdentifier => "deployment identifier is invalid",
             Self::CheckpointMetadataTooLarge => "checkpoint metadata is too large",
+            Self::InvalidStateIdentifier => "state identifier is invalid",
+            Self::TextEmpty => "text value is empty",
+            Self::TextTooLong => "text value is too long",
+            Self::TextNotPrintable => "text value is not printable",
+            Self::ProtectedValueEmpty => "protected value is empty",
+            Self::ProtectedValueTooLarge => "protected value is too large",
+            Self::InvalidPasswordVerifier => "password verifier is invalid",
+            Self::InvalidRecoveryPublicKey => "recovery public key is invalid",
+            Self::InvalidSessionDigest => "session digest is invalid",
+            Self::InvalidSessionInstant => "session instant is invalid",
+            Self::InvalidMfaTimeStep => "mfa time step is invalid",
+            Self::InvalidEventTime => "completion event time is invalid",
+            Self::DuplicateEntry => "application state contains a duplicate entry",
+            Self::UnknownReference => "application state contains an unknown reference",
+            Self::MissingAssignment => "application state is missing a log assignment",
+            Self::DisabledAssignment => "application state assigns a disabled log module",
         };
         formatter.write_str(message)
     }

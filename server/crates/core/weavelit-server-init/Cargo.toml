@@ -1,0 +1,26 @@
+[package]
+name = "weavelit-server-init"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Init composes the shared pre-operational contracts and nothing else. It has no
+# dependency on `weavelit-server-restore`, on transport, on the listener, or on
+# any Client, Log, MFA, or Service Module, so the new-state workflow cannot
+# invoke or re-enable the existing-state workflow and cannot be steered by a
+# module.
+[dependencies]
+getrandom = { version = "=0.4.3", default-features = false }
+weavelit-server-authentication = { path = "../weavelit-server-authentication" }
+weavelit-server-components = { path = "../weavelit-server-components" }
+weavelit-server-database = { path = "../../database/weavelit-server-database" }
+weavelit-server-lifecycle = { path = "../weavelit-server-lifecycle" }
+weavelit-server-recovery-key = { path = "../weavelit-server-recovery-key" }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+
+# The forbidden-construction fixtures are driven through Cargo's JSON diagnostics.
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }

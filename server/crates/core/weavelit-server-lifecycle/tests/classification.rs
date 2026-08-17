@@ -6,7 +6,8 @@ use std::{
 
 use rusqlite::Connection;
 use weavelit_server_database::{
-    CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
+    ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection, DeploymentIdentifier,
+    InitializedState, StateIdentifier,
 };
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
@@ -148,6 +149,59 @@ impl ApplicationDatabase for FakeDatabase {
     }
 
     fn create_checkpoint(&mut self, _checkpoint: &WorkflowCheckpoint) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    fn complete_checkpoint(
+        &mut self,
+        _checkpoint: &WorkflowCheckpoint,
+        _state: &ApplicationState,
+        _reconciliation: &weavelit_server_database::ReconciliationDigest,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::InvalidState)
+    }
+
+    fn load_initialized_state(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+    ) -> Result<InitializedState, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn acknowledge_completion(
+        &mut self,
+        _expected_deployment_identifier: DeploymentIdentifier,
+        _record_identifier: StateIdentifier,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_human_authorization(
+        &mut self,
+        _account: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_component_enablement(
+        &mut self,
+    ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
+        None
+    }
+
+    fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+        None
+    }
+
+    fn reconciliation(&mut self) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
+        None
+    }
+
+    fn close(self: Box<Self>) -> Result<(), DatabaseError> {
         Ok(())
     }
 }
@@ -529,6 +583,62 @@ fn deployment_mismatch_on_database_fails_closed() {
         }
 
         fn create_checkpoint(&mut self, _: &WorkflowCheckpoint) -> Result<(), DatabaseError> {
+            Ok(())
+        }
+
+        fn complete_checkpoint(
+            &mut self,
+            _: &WorkflowCheckpoint,
+            _: &ApplicationState,
+            _: &weavelit_server_database::ReconciliationDigest,
+        ) -> Result<(), DatabaseError> {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_initialized_state(
+            &mut self,
+            _: DeploymentIdentifier,
+        ) -> Result<InitializedState, DatabaseError> {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn acknowledge_completion(
+            &mut self,
+            _: DeploymentIdentifier,
+            _: StateIdentifier,
+        ) -> Result<(), DatabaseError> {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_human_authorization(
+            &mut self,
+            _: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError>
+        {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_component_enablement(
+            &mut self,
+        ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn sessions(&mut self) -> Option<&mut dyn weavelit_server_database::SessionStore> {
+            None
+        }
+
+        fn mfa(&mut self) -> Option<&mut dyn weavelit_server_database::MfaStore> {
+            None
+        }
+
+        fn reconciliation(
+            &mut self,
+        ) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
+            None
+        }
+
+        fn close(self: Box<Self>) -> Result<(), DatabaseError> {
             Ok(())
         }
     }

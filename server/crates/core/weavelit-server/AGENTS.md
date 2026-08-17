@@ -2,9 +2,15 @@
 
 This crate assembles the trusted restricted lifecycle startup runtime, composes
 the SQLite backend catalog, and classifies startup state before any capability
-is exposed. Normal authenticated operation, HTTPS API, authorization,
-authentication configuration, and provider integrations are deferred to later
-epics.
+is exposed. It composes the Init and Restore orchestrations that join their
+validation crates to the lifecycle typestate chain, gate each workflow's route
+mounting on lifecycle eligibility and, for Init finalization, on a written
+recovery-key response, and activate normal operation in-process. It also owns
+the Server-core local authentication route layer (login, session validation,
+logout, TOTP second-factor verification, and TOTP enrollment) and the live
+authorization composition that evaluates every User Plane and Administration
+Plane request once a deployment is sealed. Provider integrations remain
+deferred to later epics.
 
 ## Purpose and Scope
 
@@ -24,8 +30,46 @@ Use this section as the source of truth for what assets belong in this directory
 - `AGENTS.md`: Local routing, inventory, and Server executable-boundary rules.
 - `Cargo.toml`: Rust package manifest for the Weavelit Server executable crate.
 - `src/lib.rs`: Restricted lifecycle startup composition, SQLite backend factory,
-  state-root configuration reading, `classify_restricted_startup`, and stable
-  error presentation.
+  state-root configuration reading, `classify_restricted_startup`, the listener's
+  serving-mode switch, the listener-owned response-write acknowledgement, and
+  stable error presentation.
+- `src/authentication.rs`: The local login, session-validation, and logout route
+  decisions: account and password-verifier resolution, the equal-work denial
+  path, the single-permit login admission lane, session issuance and
+  revocation, and best-effort authentication-failure System Log dispatch before
+  a denial is returned. It also owns the TOTP second-factor and enrollment
+  decisions: the eight-row login admission truth table, the single-use
+  continuation ticket, second-factor code verification, enrollment opening from
+  both a login continuation and a live session, enrollment confirmation, and
+  the enrolled-account preview and session-revoking Module enablement
+  primitives.
+- `src/authorization.rs`: `AuthorizationRuntime`, the live composition point for
+  both authorization decisions: the compiled-in served-component inventory, the
+  catalog built from one live component-enablement read, the `ValidatedSession`
+  gate that makes skipping session validation a compile failure, the live,
+  uncached reads of the account's grants and component enablement on every
+  call, and best-effort authorization-denial System Log dispatch before a
+  denial is returned.
+- `src/init.rs`: Server-owned Init orchestration and its two-request submission
+  protocol: the delivery stage that prepares the recovery-key checkpoint and
+  releases the lifecycle mutex, database handle, and mutation-lane permit
+  before the key is saved, the post-write publication that mounts finalization
+  only after the key response is actually written, reauthorization and
+  proof-of-possession verification, Log Module assignment preflight, the one
+  blocking commit-through-activation chain, and the asymmetric
+  actionable-versus-fail-closed failure handling.
+- `src/operational.rs`: The single operational composition seam: the shared
+  Application Database handle a sealed workflow hands over, the operational
+  composer that mounts the Web UI operational surface and the authentication
+  routes together with their transport registrations, and the mounted surface
+  value the serving-mode switch accepts.
+- `src/restore.rs`: Server-owned Restore orchestration that joins backup
+  validation to the lifecycle typestate chain, the one-time ticket store and
+  admission registrations behind the two-step submission protocol, the System
+  Log acknowledgement delivery, and in-process activation of normal operation.
+- `src/transport.rs`: Route-registered transport profiles and the admission
+  typestate that orders rate limiting, classification, framing, pre-body
+  validation, and permit acquisition ahead of any body allocation.
 - `src/main.rs`: Thin executable entry point that reads state-root configuration
   and calls the library composition function.
 - `tests/startup.rs`: Composition and process-level tests for restricted startup

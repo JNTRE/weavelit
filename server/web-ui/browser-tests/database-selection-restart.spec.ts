@@ -19,6 +19,7 @@ import {
 const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
 const UNSELECTED_MESSAGE = "No Application Database is selected for this deployment.";
 const SELECTION_ACTION_NAME = "Select SQLite";
+const RESTORE_CHOICE_NAME = "Restore from a backup";
 const SELECTION_PATH = "/api/v1/application-database";
 
 /**
@@ -87,6 +88,10 @@ test("a selected Application Database is presented immediately and survives a Se
     expect(document?.status()).toBe(200);
     await expect(status).toHaveAttribute("data-status-state", "available");
     await expect(status).toHaveText(UNSELECTED_MESSAGE);
+    // The selection surface follows the mutually exclusive first-launch choice,
+    // and is shared by both paths rather than duplicated inside either.
+    await expect(selection).toHaveCount(0);
+    await page.getByRole("button", { name: RESTORE_CHOICE_NAME }).click();
     await expect(selection).toHaveCount(1);
 
     // The selection is driven through the control the operator actually uses,
@@ -112,14 +117,14 @@ test("a selected Application Database is presented immediately and survives a Se
       sorted([...PAGE_LOAD_RESPONSES, `200 ${SELECTION_PATH}`]),
     );
 
-    // The Server is terminated, not shut down: the binary installs no signal
-    // handler. The exit is awaited and asserted rather than assumed, because
-    // only a real exit closes the listening socket and the state-root lock
-    // descriptor, and the restart below depends on both being released.
+    // The Server stops under its own control: it treats SIGTERM as a request
+    // to shut down. The exit is awaited and asserted rather than assumed,
+    // because only a real exit releases the listening socket and the
+    // state-root lock, and the restart below depends on both.
     const exit = await terminateServer(server);
     server = null;
-    expect(exit.signal, "the Server ended on SIGTERM").toBe("SIGTERM");
-    expect(exit.code, "the Server did not exit under its own control").toBeNull();
+    expect(exit.signal, "the Server was not killed").toBeNull();
+    expect(exit.code, "the Server shut down cleanly").toBe(0);
 
     // Rebinding the same port and reacquiring the state-root lock is itself
     // evidence that the terminated process released both.

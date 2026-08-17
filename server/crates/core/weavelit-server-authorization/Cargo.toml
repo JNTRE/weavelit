@@ -1,0 +1,19 @@
+[package]
+name = "weavelit-server-authorization"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Authorization reads only the Application Database's narrow authorization
+# projection. It deliberately takes no dependency on transport, the listener,
+# a Client Module, a Service Module, or the log contract, so a decision cannot
+# be influenced by, or leak into, any of them.
+[dependencies]
+weavelit-server-database = { path = "../../database/weavelit-server-database" }
+
+# The proof-forgery fixture is driven through Cargo's JSON diagnostics.
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
