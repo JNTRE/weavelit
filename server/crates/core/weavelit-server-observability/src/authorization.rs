@@ -1,17 +1,17 @@
 //! Authorization denial result produced for the System Log.
 
 use weavelit_server_database::StateIdentifier;
-use weavelit_server_log::{CompleteLogRecord, CorrelationId, EventTime, LogResult, SystemLogBody};
+use weavelit_server_log::{
+    CompleteLogRecord, CorrelationId, EventTime, LogResult, SystemLogBody, SystemLogClassification,
+};
 
 use crate::{ObservabilityError, ServerObservability};
 
 /// Classification carried by every authorization denial result.
 ///
-/// This is the registered System Log taxonomy value for an authorization
-/// denial. A destination tolerates an additively registered value, so an
-/// unregistered classification would still be stored, which is precisely why
-/// this must be pinned to the taxonomy rather than invented here.
-const AUTHORIZATION_DENIAL_CLASSIFICATION: &str = "authorization.denial";
+/// This is the registered System Log taxonomy value for an authorization denial.
+const AUTHORIZATION_DENIAL_CLASSIFICATION: SystemLogClassification =
+    SystemLogClassification::AuthorizationDenial;
 
 /// Detail carried by every authorization denial result.
 ///
@@ -112,7 +112,7 @@ mod tests {
         assert_eq!(view.body().classification(), "authorization.denial");
         assert_eq!(
             view.body().classification(),
-            AUTHORIZATION_DENIAL_CLASSIFICATION
+            AUTHORIZATION_DENIAL_CLASSIFICATION.as_str()
         );
         // Pinned literally for the same reason.
         assert_eq!(view.body().detail(), "request authorization denied");

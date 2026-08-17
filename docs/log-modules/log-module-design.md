@@ -21,18 +21,19 @@ recovery, purge, or remote-credential behavior.
 The contract enforces UTF-8 byte limits before it constructs a complete
 record. Every record carries a nonzero 16-byte random `record_id`, a UTC
 Unix-millisecond `event_time`, a `success` or `failure` `result`, a
-`correlation_id` of 1–64 bytes, and a `classification` of 1–128 bytes that is a
-lowercase dotted identifier. A System record adds a `detail` of 1–4096 bytes;
-an Audit record adds a `principal` of 1–256 bytes with its type, a nullable
-`responsible_owner` of 1–256 bytes that is required for an automation
-principal and forbidden for a human principal, an `action` of 1–128 bytes, a
-`target` of 1–1024 bytes, and its own `detail` of 1–4096 bytes. Every field is
-pre-redacted before construction, and the correlation identifier plus every
-body field is at most 8 KiB combined. Empty and oversized values are rejected
-without truncation, hashing, raw source payload retention, or a replacement
-record. Audit and Observability are the only producers of these pre-redacted
-bounded summaries; a logging-required workflow fails if it cannot construct
-one, and a destination receives no unbounded or partial record.
+`correlation_id` of 1–64 bytes, and a `classification` selected from its
+closed typed catalog of lowercase dotted identifiers. A System record adds a
+`detail` of 1–4096 bytes; an Audit record adds a typed `principal` of 1–256
+bytes that is structurally either human with no
+**[Responsible Owner](../glossary.md#identities-and-access)** or automation
+with its required 1–256-byte `responsible_owner`, plus an `action` of 1–128
+bytes, a `target` of 1–1024 bytes, and its own `detail` of 1–4096 bytes. Every
+field is pre-redacted before construction, and the correlation identifier plus
+every body field is at most 8 KiB combined. Empty and oversized values are
+rejected without truncation, hashing, raw source payload retention, or a
+replacement record. Audit and Observability are the only producers of these
+pre-redacted bounded summaries; a logging-required workflow fails if it cannot
+construct one, and a destination receives no unbounded or partial record.
 
 Its compiled-in catalog validates each registration before invoking its factory
 with trusted Server context. A configured destination accepts only a complete
@@ -144,8 +145,8 @@ committed, without opening the destination; see
 ## Event Classification Taxonomy
 
 Every classification is a lowercase dotted identifier that a producer selects
-from its registered values; a destination stores it opaquely and must tolerate
-an additive value registered later. The initial System Log taxonomy is
+from its closed typed catalog; a destination stores its canonical string
+opaquely and does not enforce the taxonomy. The initial System Log taxonomy is
 `lifecycle.startup`, `lifecycle.init`, `lifecycle.restore`,
 `operational.state`, `configuration.change`, `authentication.failure`,
 `authorization.denial`, `dependency.failure`, `provider.failure`, and
@@ -254,11 +255,14 @@ migration fail closed without dropping, altering, or replacing any destination
 record; this MVP defines no data-recovery exception for that incompatibility.
 
 The migration ledger's existing checksummed migrations 1 and 2 remain
-unchanged. Migration 3 transactionally adds a nullable `responsible_owner`
-column to the Audit table; existing rows copy forward with `responsible_owner`
-set to `NULL`, and the conditional requirement — required for an automation
-principal, forbidden for a human principal — is enforced only for records
-created after that migration runs.
+unchanged. Migration 3 transactionally adds nullable `classification`,
+`principal_type`, and `responsible_owner` columns to the Audit table. Existing
+rows remain unchanged with all three new fields `NULL`. A newly written Audit
+record always supplies its canonical classification and principal type; its
+typed principal supplies no `responsible_owner` for a human and the required
+one for automation. The shared record contract enforces that structural rule
+before construction; SQLite stores the resulting canonical strings without
+enforcing the classification taxonomy.
 
 ### Descriptor-Relative Candidate Evidence
 

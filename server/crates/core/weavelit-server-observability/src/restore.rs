@@ -4,12 +4,14 @@ use weavelit_server_database::{
     CompletionObligation, DeploymentIdentifier, LogClassification, LogDetail, StateIdentifier,
     WorkflowKind,
 };
-use weavelit_server_log::{CompleteLogRecord, CorrelationId, EventTime, LogResult, SystemLogBody};
+use weavelit_server_log::{
+    CompleteLogRecord, CorrelationId, EventTime, LogResult, SystemLogBody, SystemLogClassification,
+};
 
 use crate::{ObservabilityError, ServerObservability};
 
 /// Classification carried by every Restore completion result.
-const RESTORE_CLASSIFICATION: &str = "lifecycle.restore";
+const RESTORE_CLASSIFICATION: SystemLogClassification = SystemLogClassification::LifecycleRestore;
 
 /// Record and obligation describing one Restore completion result.
 ///
@@ -60,7 +62,7 @@ impl ServerObservability {
         let obligation = CompletionObligation::new(
             record_identifier,
             WorkflowKind::Restore,
-            LogClassification::new(RESTORE_CLASSIFICATION)
+            LogClassification::new(RESTORE_CLASSIFICATION.as_str())
                 .map_err(|_| ObservabilityError::InvalidCompletionObligation)?,
             weavelit_server_database::CorrelationIdentifier::new(correlation_identifier)
                 .map_err(|_| ObservabilityError::InvalidCompletionObligation)?,

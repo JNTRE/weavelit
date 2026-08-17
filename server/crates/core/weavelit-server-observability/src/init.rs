@@ -4,12 +4,14 @@ use weavelit_server_database::{
     CompletionObligation, DeploymentIdentifier, LogClassification, LogDetail, StateIdentifier,
     WorkflowKind,
 };
-use weavelit_server_log::{CompleteLogRecord, CorrelationId, EventTime, LogResult, SystemLogBody};
+use weavelit_server_log::{
+    CompleteLogRecord, CorrelationId, EventTime, LogResult, SystemLogBody, SystemLogClassification,
+};
 
 use crate::{ObservabilityError, ServerObservability};
 
 /// Classification carried by every Init completion result.
-const INIT_CLASSIFICATION: &str = "lifecycle.init";
+const INIT_CLASSIFICATION: SystemLogClassification = SystemLogClassification::LifecycleInit;
 
 /// Record and obligation describing one Init completion result.
 ///
@@ -61,7 +63,7 @@ impl ServerObservability {
         let obligation = CompletionObligation::new(
             record_identifier,
             WorkflowKind::Init,
-            LogClassification::new(INIT_CLASSIFICATION)
+            LogClassification::new(INIT_CLASSIFICATION.as_str())
                 .map_err(|_| ObservabilityError::InvalidCompletionObligation)?,
             weavelit_server_database::CorrelationIdentifier::new(correlation_identifier)
                 .map_err(|_| ObservabilityError::InvalidCompletionObligation)?,

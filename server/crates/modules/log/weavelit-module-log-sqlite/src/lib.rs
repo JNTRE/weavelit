@@ -118,6 +118,13 @@ const MIGRATIONS: &[Migration] = &[
                     DROP TABLE weavelit_log_system_records_legacy;\
                     DROP TABLE weavelit_log_audit_records_legacy;",
     },
+    Migration {
+        sequence: 3,
+        identifier: "0003_add_audit_accountability_schema",
+        sql: "ALTER TABLE weavelit_log_audit_records ADD COLUMN classification TEXT;\
+              ALTER TABLE weavelit_log_audit_records ADD COLUMN principal_type TEXT;\
+              ALTER TABLE weavelit_log_audit_records ADD COLUMN responsible_owner TEXT;",
+    },
 ];
 
 /// Factory for the compiled-in SQLite Log Module destination.
@@ -299,10 +306,7 @@ impl SqliteLogDestination {
                 return Ok(());
             };
 
-            transaction
-                .execute_batch(migration.sql)
-                .map_err(|_| LogDestinationError::IntegrityFailure)?;
-            insert_migration_ledger_entry(&transaction, migration)?;
+            apply_migration(&transaction, migration)?;
             transaction
                 .commit()
                 .map_err(|_| LogDestinationError::Unavailable)?;
@@ -356,8 +360,8 @@ impl SqliteLogDestination {
             ),
             LogRecordType::Audit => transaction.execute(
                 "INSERT INTO weavelit_log_audit_records \
-                    (record_id, event_time_milliseconds, result, correlation_id, principal, action, target, detail) \
-                    VALUES (?1, '0', 0, 'preflight', 'preflight', 'preflight', 'preflight', 'preflight')",
+                    (record_id, event_time_milliseconds, result, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+                    VALUES (?1, '0', 0, 'preflight', 'lifecycle.backup.created', 'preflight', 'human', NULL, 'preflight', 'preflight', 'preflight')",
                 params![PREFLIGHT_PROBE_RECORD_ID.as_slice()],
             ),
         };
@@ -415,7 +419,10 @@ enum PersistedLogRecord {
         event_time: u64,
         result: weavelit_server_log::LogResult,
         correlation_id: Box<str>,
+        classification: Box<str>,
         principal: Box<str>,
+        principal_type: Box<str>,
+        responsible_owner: Option<Box<str>>,
         action: Box<str>,
         target: Box<str>,
         detail: Box<str>,
@@ -438,7 +445,10 @@ impl From<&CompleteLogRecord> for PersistedLogRecord {
                 event_time: view.event_time().unix_milliseconds(),
                 result: view.result(),
                 correlation_id: view.correlation_id().as_str().into(),
+                classification: view.body().classification().into(),
                 principal: view.body().principal().into(),
+                principal_type: view.body().principal_type().as_str().into(),
+                responsible_owner: view.body().responsible_owner().map(Into::into),
                 action: view.body().action().into(),
                 target: view.body().target().into(),
                 detail: view.body().detail().into(),
@@ -572,6 +582,16 @@ fn insert_migration_ledger_entry(
         )
         .map_err(|_| LogDestinationError::IntegrityFailure)?;
     Ok(())
+}
+
+fn apply_migration(
+    transaction: &Transaction<'_>,
+    migration: &Migration,
+) -> Result<(), LogDestinationError> {
+    transaction
+        .execute_batch(migration.sql)
+        .map_err(|_| LogDestinationError::IntegrityFailure)?;
+    insert_migration_ledger_entry(transaction, migration)
 }
 
 fn validate_deployment_binding(
@@ -744,7 +764,10 @@ fn record_match(
             event_time,
             result,
             correlation_id,
+            classification,
             principal,
+            principal_type,
+            responsible_owner,
             action,
             target,
             detail,
@@ -752,7 +775,7 @@ fn record_match(
             let record_id = record_id.as_slice();
             let same_type = transaction
                 .query_row(
-                    "SELECT event_time_milliseconds, result, correlation_id, principal, action, target, detail \
+                    "SELECT event_time_milliseconds, result, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail \
                      FROM weavelit_log_audit_records WHERE record_id = ?1",
                     [record_id],
                     |row| {
@@ -763,7 +786,10 @@ fn record_match(
                             row.get::<_, String>(3)?,
                             row.get::<_, String>(4)?,
                             row.get::<_, String>(5)?,
-                            row.get::<_, String>(6)?,
+                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, String>(7)?,
+                            row.get::<_, String>(8)?,
+                            row.get::<_, String>(9)?,
                         ))
                     },
                 )
@@ -778,7 +804,10 @@ fn record_match(
                             event_time.to_string(),
                             result_value(*result),
                             correlation_id.to_string(),
+                            classification.to_string(),
                             principal.to_string(),
+                            principal_type.to_string(),
+                            responsible_owner.as_deref().map(str::to_owned),
                             action.to_string(),
                             target.to_string(),
                             detail.to_string(),
@@ -838,20 +867,26 @@ fn insert_record(
             event_time,
             result,
             correlation_id,
+            classification,
             principal,
+            principal_type,
+            responsible_owner,
             action,
             target,
             detail,
         } => transaction.execute(
             "INSERT INTO weavelit_log_audit_records \
-             (record_id, event_time_milliseconds, result, correlation_id, principal, action, target, detail) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (record_id, event_time_milliseconds, result, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 record_id.as_slice(),
                 event_time.to_string(),
                 result_value(*result),
                 correlation_id.as_ref(),
+                classification.as_ref(),
                 principal.as_ref(),
+                principal_type.as_ref(),
+                responsible_owner.as_deref(),
                 action.as_ref(),
                 target.as_ref(),
                 detail.as_ref(),
@@ -879,15 +914,15 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
-    use rusqlite::Connection;
+    use rusqlite::{Connection, TransactionBehavior};
     use weavelit_server_log::{
         DestinationSettings, LogDestination, LogDestinationError, LogDestinationFactory,
         LogRecordType, LogResult,
     };
 
     use super::{
-        MIGRATIONS, PersistedLogRecord, SqliteLogDestination as ProductionDestination,
-        SqliteLogDestinationFactory, checksum, trusted_open_flags,
+        MIGRATIONS, Migration, PersistedLogRecord, SqliteLogDestination as ProductionDestination,
+        SqliteLogDestinationFactory, apply_migration, checksum, trusted_open_flags,
     };
 
     struct TestDestinationInputs {
@@ -1051,6 +1086,26 @@ mod tests {
             .unwrap();
     }
 
+    fn create_migration_two_destination(
+        temporary_directory: &tempfile::TempDir,
+        deployment_identity: [u8; 16],
+    ) {
+        create_migration_one_destination(temporary_directory, deployment_identity);
+        let connection = Connection::open(database_path(temporary_directory)).unwrap();
+        connection.execute_batch(MIGRATIONS[1].sql).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_migration_ledger \
+                 (sequence_number, identifier, checksum) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    MIGRATIONS[1].sequence,
+                    MIGRATIONS[1].identifier,
+                    checksum(MIGRATIONS[1].sql.as_bytes()).as_slice()
+                ],
+            )
+            .unwrap();
+    }
+
     fn create_current_destination(
         temporary_directory: &tempfile::TempDir,
         deployment_identity: [u8; 16],
@@ -1083,16 +1138,38 @@ mod tests {
     }
 
     fn audit_record(record_id: [u8; 16]) -> PersistedLogRecord {
+        audit_record_with(record_id, "lifecycle.backup.created", "human", None)
+    }
+
+    fn audit_record_with(
+        record_id: [u8; 16],
+        classification: &str,
+        principal_type: &str,
+        responsible_owner: Option<&str>,
+    ) -> PersistedLogRecord {
         PersistedLogRecord::Audit {
             record_id,
             event_time: 42,
             result: LogResult::Failure,
             correlation_id: "audit-correlation".into(),
+            classification: classification.into(),
             principal: "operator".into(),
+            principal_type: principal_type.into(),
+            responsible_owner: responsible_owner.map(Into::into),
             action: "init".into(),
             target: "deployment".into(),
             detail: "pre-redacted".into(),
         }
+    }
+
+    fn audit_schema_columns(connection: &Connection) -> Vec<String> {
+        connection
+            .prepare("PRAGMA table_info(weavelit_log_audit_records)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
     }
 
     fn deliver(
@@ -1367,18 +1444,38 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        let audit_row: (String, String) = connection
+        let audit_row: (String, String, String, Option<String>, String, String) = connection
             .query_row(
-                "SELECT action, detail FROM weavelit_log_audit_records",
+                "SELECT classification, principal, principal_type, responsible_owner, action, detail \
+                 FROM weavelit_log_audit_records",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .unwrap();
         assert_eq!(
             system_row,
             (u64::MAX.to_string(), "pre-redacted-system-detail".into())
         );
-        assert_eq!(audit_row, ("init".into(), "pre-redacted".into()));
+        assert_eq!(
+            audit_row,
+            (
+                "lifecycle.backup.created".into(),
+                "operator".into(),
+                "human".into(),
+                None,
+                "init".into(),
+                "pre-redacted".into(),
+            )
+        );
     }
 
     #[test]
@@ -1399,7 +1496,10 @@ mod tests {
             event_time: 1,
             result: LogResult::Success,
             correlation_id: "c".repeat(64).into(),
+            classification: "c".repeat(128).into(),
             principal: "p".repeat(256).into(),
+            principal_type: "automation".into(),
+            responsible_owner: Some("o".repeat(256).into()),
             action: "a".repeat(128).into(),
             target: "t".repeat(1024).into(),
             detail: "d".repeat(4 * 1024).into(),
@@ -1418,11 +1518,13 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        let audit_lengths: (i64, i64, i64, i64, i64) = connection
+        let audit_lengths: (i64, i64, i64, i64, i64, i64, i64, i64) = connection
             .query_row(
-                "SELECT length(CAST(correlation_id AS BLOB)), length(CAST(principal AS BLOB)), \
-                 length(CAST(action AS BLOB)), length(CAST(target AS BLOB)), \
-                 length(CAST(detail AS BLOB)) FROM weavelit_log_audit_records",
+                "SELECT length(CAST(correlation_id AS BLOB)), length(CAST(classification AS BLOB)), \
+                 length(CAST(principal AS BLOB)), length(CAST(principal_type AS BLOB)), \
+                 length(CAST(responsible_owner AS BLOB)), length(CAST(action AS BLOB)), \
+                 length(CAST(target AS BLOB)), length(CAST(detail AS BLOB)) \
+                 FROM weavelit_log_audit_records",
                 [],
                 |row| {
                     Ok((
@@ -1431,12 +1533,27 @@ mod tests {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
                     ))
                 },
             )
             .unwrap();
         assert_eq!(system_lengths, (64, 128, 4 * 1024));
-        assert_eq!(audit_lengths, (64, 256, 128, 1024, 4 * 1024));
+        assert_eq!(
+            audit_lengths,
+            (
+                64,
+                128,
+                256,
+                i64::try_from("automation".len()).unwrap(),
+                256,
+                128,
+                1024,
+                4 * 1024
+            )
+        );
     }
 
     #[test]
@@ -1708,6 +1825,89 @@ mod tests {
     }
 
     #[test]
+    fn populated_migration_two_destination_upgrades_audit_schema_without_rewriting_legacy_rows() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        create_migration_two_destination(&temporary_directory, [7; 16]);
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_audit_records \
+                 (record_id, event_time_milliseconds, result, correlation_id, principal, action, target, detail) \
+                 VALUES (?1, '42', 0, 'legacy-correlation', 'legacy-principal', 'legacy-action', 'legacy-target', 'legacy-detail')",
+                rusqlite::params![vec![0x32_u8; 16]],
+            )
+            .unwrap();
+        drop(connection);
+        let context = context(&temporary_directory, [7; 16]);
+
+        drop(open(&context).unwrap());
+        drop(open(&context).unwrap());
+
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        let legacy_fields: (Option<String>, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT classification, principal_type, responsible_owner \
+                 FROM weavelit_log_audit_records WHERE record_id = ?1",
+                rusqlite::params![vec![0x32_u8; 16]],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let ledger: Vec<(i64, String)> = connection
+            .prepare(
+                "SELECT sequence_number, identifier FROM weavelit_log_migration_ledger \
+                 ORDER BY sequence_number",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(legacy_fields, (None, None, None));
+        assert_eq!(
+            ledger,
+            vec![
+                (1, "0001_create_log_destination_schema".into()),
+                (2, "0002_bound_record_payloads".into()),
+                (3, "0003_add_audit_accountability_schema".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_audit_schema_migration_leaves_no_partial_schema_or_ledger_entry() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        create_migration_two_destination(&temporary_directory, [7; 16]);
+        let mut connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        let before_columns = audit_schema_columns(&connection);
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let failing_migration = Migration {
+            sequence: MIGRATIONS[2].sequence,
+            identifier: MIGRATIONS[2].identifier,
+            sql: "ALTER TABLE weavelit_log_audit_records ADD COLUMN classification TEXT; \
+                  THIS IS NOT VALID SQL;",
+        };
+
+        assert_eq!(
+            apply_migration(&transaction, &failing_migration),
+            Err(LogDestinationError::IntegrityFailure)
+        );
+        drop(transaction);
+
+        assert_eq!(audit_schema_columns(&connection), before_columns);
+        let ledger_entries: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_migration_ledger",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ledger_entries, 2);
+    }
+
+    #[test]
     fn exact_replay_is_acknowledged_and_changed_replay_is_rejected() {
         let temporary_directory = tempfile::tempdir().unwrap();
         let context = context(&temporary_directory, [7; 16]);
@@ -1723,6 +1923,60 @@ mod tests {
         assert_eq!(
             deliver(&destination, &audit_record([3; 16])),
             Err(LogDestinationError::IntegrityFailure)
+        );
+    }
+
+    #[test]
+    fn audit_replay_compares_classification_principal_type_and_responsible_owner() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let destination = SqliteLogDestination::open(&context).unwrap();
+        let original = audit_record_with(
+            [0x45; 16],
+            "internal.log-policy.changed",
+            "automation",
+            Some("administrator"),
+        );
+
+        deliver(&destination, &original).unwrap();
+        deliver(&destination, &original).unwrap();
+        for changed in [
+            audit_record_with(
+                [0x45; 16],
+                "internal.server-configuration.changed",
+                "automation",
+                Some("administrator"),
+            ),
+            audit_record_with([0x45; 16], "internal.log-policy.changed", "human", None),
+            audit_record_with(
+                [0x45; 16],
+                "internal.log-policy.changed",
+                "automation",
+                Some("different-administrator"),
+            ),
+        ] {
+            assert_eq!(
+                deliver(&destination, &changed),
+                Err(LogDestinationError::IntegrityFailure)
+            );
+        }
+
+        let connection = destination.connection.lock().unwrap();
+        let fields: (String, String, Option<String>) = connection
+            .query_row(
+                "SELECT classification, principal_type, responsible_owner \
+                 FROM weavelit_log_audit_records WHERE record_id = ?1",
+                rusqlite::params![vec![0x45_u8; 16]],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            fields,
+            (
+                "internal.log-policy.changed".into(),
+                "automation".into(),
+                Some("administrator".into()),
+            )
         );
     }
 
@@ -1797,10 +2051,10 @@ mod tests {
     fn tampered_migration_ledger_fails_closed() {
         for mutation in [
             "UPDATE weavelit_log_migration_ledger SET checksum = zeroblob(32)",
-            "UPDATE weavelit_log_migration_ledger SET sequence_number = 3 WHERE sequence_number = 2",
+            "UPDATE weavelit_log_migration_ledger SET sequence_number = 4 WHERE sequence_number = 2",
             "DELETE FROM weavelit_log_migration_ledger",
             "INSERT INTO weavelit_log_migration_ledger (sequence_number, identifier, checksum) \
-             VALUES (3, '0003_unknown', zeroblob(32))",
+               VALUES (4, '0004_unknown', zeroblob(32))",
         ] {
             let temporary_directory = tempfile::tempdir().unwrap();
             let context = context(&temporary_directory, [7; 16]);

@@ -1,17 +1,17 @@
 //! Local authentication failure result produced for the System Log.
 
 use weavelit_server_database::StateIdentifier;
-use weavelit_server_log::{CompleteLogRecord, CorrelationId, EventTime, LogResult, SystemLogBody};
+use weavelit_server_log::{
+    CompleteLogRecord, CorrelationId, EventTime, LogResult, SystemLogBody, SystemLogClassification,
+};
 
 use crate::{ObservabilityError, ServerObservability};
 
 /// Classification carried by every local authentication failure result.
 ///
-/// This is the registered System Log taxonomy value for an authentication
-/// failure. A destination tolerates an additively registered value, so an
-/// unregistered classification would still be stored, which is precisely why
-/// this must be pinned to the taxonomy rather than invented here.
-const AUTHENTICATION_FAILURE_CLASSIFICATION: &str = "authentication.failure";
+/// This is the registered System Log taxonomy value for an authentication failure.
+const AUTHENTICATION_FAILURE_CLASSIFICATION: SystemLogClassification =
+    SystemLogClassification::AuthenticationFailure;
 
 /// Detail carried by every local authentication failure result.
 ///
@@ -102,7 +102,7 @@ mod tests {
         assert_eq!(view.body().classification(), "authentication.failure");
         assert_eq!(
             view.body().classification(),
-            AUTHENTICATION_FAILURE_CLASSIFICATION
+            AUTHENTICATION_FAILURE_CLASSIFICATION.as_str()
         );
         assert_eq!(view.body().detail(), AUTHENTICATION_FAILURE_DETAIL);
         assert_eq!(view.event_time().unix_milliseconds(), 1_700_000_000_000);

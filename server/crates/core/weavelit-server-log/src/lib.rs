@@ -25,7 +25,9 @@ pub const MAX_DESTINATION_SETTING_VALUE_BYTES: usize = 4 * 1024;
 const MAX_CORRELATION_ID_BYTES: usize = 64;
 const MAX_SYSTEM_CLASSIFICATION_BYTES: usize = 128;
 const MAX_SYSTEM_DETAIL_BYTES: usize = 4 * 1024;
+const MAX_AUDIT_CLASSIFICATION_BYTES: usize = 128;
 const MAX_AUDIT_PRINCIPAL_BYTES: usize = 256;
+const MAX_AUDIT_RESPONSIBLE_OWNER_BYTES: usize = 256;
 const MAX_AUDIT_ACTION_BYTES: usize = 128;
 const MAX_AUDIT_TARGET_BYTES: usize = 1024;
 const MAX_AUDIT_DETAIL_BYTES: usize = 4 * 1024;
@@ -182,24 +184,212 @@ pub enum LogResult {
     Failure,
 }
 
+/// Closed catalog of System Log classifications selected by Observability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SystemLogClassification {
+    LifecycleStartup,
+    LifecycleInit,
+    LifecycleRestore,
+    OperationalState,
+    ConfigurationChange,
+    AuthenticationFailure,
+    AuthorizationDenial,
+    DependencyFailure,
+    ProviderFailure,
+    InternalError,
+}
+
+impl SystemLogClassification {
+    /// Returns the canonical literal persisted by a destination.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LifecycleStartup => "lifecycle.startup",
+            Self::LifecycleInit => "lifecycle.init",
+            Self::LifecycleRestore => "lifecycle.restore",
+            Self::OperationalState => "operational.state",
+            Self::ConfigurationChange => "configuration.change",
+            Self::AuthenticationFailure => "authentication.failure",
+            Self::AuthorizationDenial => "authorization.denial",
+            Self::DependencyFailure => "dependency.failure",
+            Self::ProviderFailure => "provider.failure",
+            Self::InternalError => "internal.error",
+        }
+    }
+}
+
+/// Closed catalog of Audit Log classifications selected by Audit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditLogClassification {
+    LifecycleBackupCreated,
+    AuthenticationUserCreated,
+    AuthenticationUserDisabled,
+    AuthenticationPasswordChanged,
+    AuthenticationPasswordResetStarted,
+    AuthenticationMfaEnrolled,
+    AuthenticationMfaReset,
+    AuthenticationMfaRequirementChanged,
+    AuthenticationMfaModuleEnablementChanged,
+    AuthenticationSessionRevoked,
+    AuthorizationGroupCreated,
+    AuthorizationGroupMembershipChanged,
+    AuthorizationGroupGrantChanged,
+    AuthorizationAutomationScopeChanged,
+    DependencyLogModuleConfigurationChanged,
+    DependencyServiceConnectionChanged,
+    ProviderOperationStarted,
+    ProviderOperationCompleted,
+    InternalServerConfigurationChanged,
+    InternalUserStatusChanged,
+    InternalLogPolicyChanged,
+}
+
+impl AuditLogClassification {
+    /// Returns the canonical literal persisted by a destination.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LifecycleBackupCreated => "lifecycle.backup.created",
+            Self::AuthenticationUserCreated => "authentication.user.created",
+            Self::AuthenticationUserDisabled => "authentication.user.disabled",
+            Self::AuthenticationPasswordChanged => "authentication.password.changed",
+            Self::AuthenticationPasswordResetStarted => "authentication.password-reset.started",
+            Self::AuthenticationMfaEnrolled => "authentication.mfa.enrolled",
+            Self::AuthenticationMfaReset => "authentication.mfa.reset",
+            Self::AuthenticationMfaRequirementChanged => "authentication.mfa-requirement.changed",
+            Self::AuthenticationMfaModuleEnablementChanged => {
+                "authentication.mfa-module-enablement.changed"
+            }
+            Self::AuthenticationSessionRevoked => "authentication.session.revoked",
+            Self::AuthorizationGroupCreated => "authorization.group.created",
+            Self::AuthorizationGroupMembershipChanged => "authorization.group-membership.changed",
+            Self::AuthorizationGroupGrantChanged => "authorization.group-grant.changed",
+            Self::AuthorizationAutomationScopeChanged => "authorization.automation-scope.changed",
+            Self::DependencyLogModuleConfigurationChanged => {
+                "dependency.log-module-configuration.changed"
+            }
+            Self::DependencyServiceConnectionChanged => "dependency.service-connection.changed",
+            Self::ProviderOperationStarted => "provider.operation.started",
+            Self::ProviderOperationCompleted => "provider.operation.completed",
+            Self::InternalServerConfigurationChanged => "internal.server-configuration.changed",
+            Self::InternalUserStatusChanged => "internal.user-status.changed",
+            Self::InternalLogPolicyChanged => "internal.log-policy.changed",
+        }
+    }
+}
+
+/// The accountable kind of an Audit principal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditPrincipalType {
+    Human,
+    Automation,
+}
+
+impl AuditPrincipalType {
+    /// Returns the canonical literal persisted by a destination.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Automation => "automation",
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum AuditPrincipalKind {
+    Human,
+    Automation { responsible_owner: Box<str> },
+}
+
+/// Typed accountable principal for an Audit Log record.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuditPrincipal {
+    principal: Box<str>,
+    kind: AuditPrincipalKind,
+}
+
+impl AuditPrincipal {
+    /// Creates a bounded human principal, which intentionally has no Responsible Owner.
+    pub fn human(principal: impl Into<Box<str>>) -> Result<Self, RecordError> {
+        let principal = principal.into();
+        if !is_nonempty_within_bytes(&principal, MAX_AUDIT_PRINCIPAL_BYTES) {
+            return Err(RecordError::InvalidAuditPrincipal);
+        }
+        Ok(Self {
+            principal,
+            kind: AuditPrincipalKind::Human,
+        })
+    }
+
+    /// Creates a bounded automation principal with its required Responsible Owner.
+    pub fn automation(
+        principal: impl Into<Box<str>>,
+        responsible_owner: impl Into<Box<str>>,
+    ) -> Result<Self, RecordError> {
+        let principal = principal.into();
+        let responsible_owner = responsible_owner.into();
+        if !is_nonempty_within_bytes(&principal, MAX_AUDIT_PRINCIPAL_BYTES)
+            || !is_nonempty_within_bytes(&responsible_owner, MAX_AUDIT_RESPONSIBLE_OWNER_BYTES)
+        {
+            return Err(RecordError::InvalidAuditPrincipal);
+        }
+        Ok(Self {
+            principal,
+            kind: AuditPrincipalKind::Automation { responsible_owner },
+        })
+    }
+
+    fn is_valid(&self) -> bool {
+        is_nonempty_within_bytes(&self.principal, MAX_AUDIT_PRINCIPAL_BYTES)
+            && match &self.kind {
+                AuditPrincipalKind::Human => true,
+                AuditPrincipalKind::Automation { responsible_owner } => {
+                    is_nonempty_within_bytes(responsible_owner, MAX_AUDIT_RESPONSIBLE_OWNER_BYTES)
+                }
+            }
+    }
+
+    /// Returns the bounded accountable principal identifier.
+    pub fn as_str(&self) -> &str {
+        &self.principal
+    }
+
+    /// Returns whether this principal is human or automation.
+    pub const fn principal_type(&self) -> AuditPrincipalType {
+        match self.kind {
+            AuditPrincipalKind::Human => AuditPrincipalType::Human,
+            AuditPrincipalKind::Automation { .. } => AuditPrincipalType::Automation,
+        }
+    }
+
+    /// Returns the required Responsible Owner for automation principals only.
+    pub fn responsible_owner(&self) -> Option<&str> {
+        match &self.kind {
+            AuditPrincipalKind::Human => None,
+            AuditPrincipalKind::Automation { responsible_owner } => Some(responsible_owner),
+        }
+    }
+}
+
+impl fmt::Debug for AuditPrincipal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditPrincipal(REDACTED)")
+    }
+}
+
 /// Typed pre-redacted System Log body owned by Observability.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SystemLogBody {
-    classification: Box<str>,
+    classification: SystemLogClassification,
     detail: Box<str>,
 }
 
 impl SystemLogBody {
     /// Creates a complete pre-redacted System Log body.
     pub fn new(
-        classification: impl Into<Box<str>>,
+        classification: SystemLogClassification,
         detail: impl Into<Box<str>>,
     ) -> Result<Self, RecordError> {
-        let classification = classification.into();
         let detail = detail.into();
-        if !is_nonempty_within_bytes(&classification, MAX_SYSTEM_CLASSIFICATION_BYTES)
-            || !is_nonempty_within_bytes(&detail, MAX_SYSTEM_DETAIL_BYTES)
-        {
+        if !is_nonempty_within_bytes(&detail, MAX_SYSTEM_DETAIL_BYTES) {
             return Err(RecordError::InvalidSystemLogBody);
         }
         Ok(Self {
@@ -209,8 +399,10 @@ impl SystemLogBody {
     }
 
     fn is_valid(&self) -> bool {
-        is_nonempty_within_bytes(&self.classification, MAX_SYSTEM_CLASSIFICATION_BYTES)
-            && is_nonempty_within_bytes(&self.detail, MAX_SYSTEM_DETAIL_BYTES)
+        is_nonempty_within_bytes(
+            self.classification.as_str(),
+            MAX_SYSTEM_CLASSIFICATION_BYTES,
+        ) && is_nonempty_within_bytes(&self.detail, MAX_SYSTEM_DETAIL_BYTES)
     }
 }
 
@@ -223,7 +415,7 @@ impl fmt::Debug for SystemLogBody {
 impl SystemLogBody {
     /// Returns the pre-redacted operational classification.
     pub fn classification(&self) -> &str {
-        &self.classification
+        self.classification.as_str()
     }
 
     /// Returns the pre-redacted operational detail.
@@ -235,7 +427,8 @@ impl SystemLogBody {
 /// Typed pre-redacted Audit Log body owned by Audit.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuditLogBody {
-    principal: Box<str>,
+    classification: AuditLogClassification,
+    principal: AuditPrincipal,
     action: Box<str>,
     target: Box<str>,
     detail: Box<str>,
@@ -244,23 +437,23 @@ pub struct AuditLogBody {
 impl AuditLogBody {
     /// Creates a complete pre-redacted Audit Log body.
     pub fn new(
-        principal: impl Into<Box<str>>,
+        classification: AuditLogClassification,
+        principal: AuditPrincipal,
         action: impl Into<Box<str>>,
         target: impl Into<Box<str>>,
         detail: impl Into<Box<str>>,
     ) -> Result<Self, RecordError> {
-        let principal = principal.into();
         let action = action.into();
         let target = target.into();
         let detail = detail.into();
-        if !is_nonempty_within_bytes(&principal, MAX_AUDIT_PRINCIPAL_BYTES)
-            || !is_nonempty_within_bytes(&action, MAX_AUDIT_ACTION_BYTES)
+        if !is_nonempty_within_bytes(&action, MAX_AUDIT_ACTION_BYTES)
             || !is_nonempty_within_bytes(&target, MAX_AUDIT_TARGET_BYTES)
             || !is_nonempty_within_bytes(&detail, MAX_AUDIT_DETAIL_BYTES)
         {
             return Err(RecordError::InvalidAuditLogBody);
         }
         Ok(Self {
+            classification,
             principal,
             action,
             target,
@@ -269,7 +462,8 @@ impl AuditLogBody {
     }
 
     fn is_valid(&self) -> bool {
-        is_nonempty_within_bytes(&self.principal, MAX_AUDIT_PRINCIPAL_BYTES)
+        is_nonempty_within_bytes(self.classification.as_str(), MAX_AUDIT_CLASSIFICATION_BYTES)
+            && self.principal.is_valid()
             && is_nonempty_within_bytes(&self.action, MAX_AUDIT_ACTION_BYTES)
             && is_nonempty_within_bytes(&self.target, MAX_AUDIT_TARGET_BYTES)
             && is_nonempty_within_bytes(&self.detail, MAX_AUDIT_DETAIL_BYTES)
@@ -283,9 +477,24 @@ impl fmt::Debug for AuditLogBody {
 }
 
 impl AuditLogBody {
+    /// Returns the pre-redacted accountability classification.
+    pub fn classification(&self) -> &str {
+        self.classification.as_str()
+    }
+
     /// Returns the pre-redacted accountable principal.
     pub fn principal(&self) -> &str {
-        &self.principal
+        self.principal.as_str()
+    }
+
+    /// Returns the accountable principal type.
+    pub const fn principal_type(&self) -> AuditPrincipalType {
+        self.principal.principal_type()
+    }
+
+    /// Returns the required Responsible Owner for automation principals only.
+    pub fn responsible_owner(&self) -> Option<&str> {
+        self.principal.responsible_owner()
     }
 
     /// Returns the pre-redacted accountable action.
@@ -365,7 +574,10 @@ impl CompleteLogRecord {
         if record_payload_bytes(
             &correlation_id,
             &[
+                body.classification(),
                 body.principal(),
+                body.principal_type().as_str(),
+                body.responsible_owner().unwrap_or_default(),
                 body.action(),
                 body.target(),
                 body.detail(),
@@ -1094,6 +1306,8 @@ pub enum RecordError {
     InvalidCorrelationIdentifier,
     /// A System Log field was empty or exceeded its fixed bound.
     InvalidSystemLogBody,
+    /// An Audit principal was empty, too long, or lacked its required owner.
+    InvalidAuditPrincipal,
     /// An Audit Log field was empty or exceeded its fixed bound.
     InvalidAuditLogBody,
     /// The correlation identifier and record body exceeded their combined fixed bound.
@@ -1256,7 +1470,10 @@ mod tests {
             event_time: u64,
             result: LogResult,
             correlation_id: Box<str>,
+            classification: Box<str>,
             principal: Box<str>,
+            principal_type: Box<str>,
+            responsible_owner: Option<Box<str>>,
             action: Box<str>,
             target: Box<str>,
             detail: Box<str>,
@@ -1285,7 +1502,10 @@ mod tests {
                     event_time: record.event_time().unix_milliseconds(),
                     result: record.result(),
                     correlation_id: record.correlation_id().as_str().into(),
+                    classification: record.body().classification().into(),
                     principal: record.body().principal().into(),
+                    principal_type: record.body().principal_type().as_str().into(),
+                    responsible_owner: record.body().responsible_owner().map(Into::into),
                     action: record.body().action().into(),
                     target: record.body().target().into(),
                     detail: record.body().detail().into(),
@@ -1488,7 +1708,8 @@ mod tests {
             EventTime::from_unix_milliseconds(1_725_000_000_000),
             LogResult::Success,
             CorrelationId::new("correlation-1").expect("valid correlation identifier"),
-            SystemLogBody::new("lifecycle-complete", detail).expect("complete system body"),
+            SystemLogBody::new(SystemLogClassification::LifecycleStartup, detail)
+                .expect("complete system body"),
         )
         .expect("complete system record")
     }
@@ -1499,8 +1720,14 @@ mod tests {
             EventTime::from_unix_milliseconds(1_725_000_000_000),
             LogResult::Success,
             CorrelationId::new("correlation-1").expect("valid correlation identifier"),
-            AuditLogBody::new("administrator", "init", "deployment", "complete")
-                .expect("complete audit body"),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").expect("complete human principal"),
+                "init",
+                "deployment",
+                "complete",
+            )
+            .expect("complete audit body"),
         )
         .expect("complete audit record")
     }
@@ -1510,8 +1737,185 @@ mod tests {
     }
 
     fn assert_rejection_is_payload_free(error: RecordError, rejected: &str) {
-        assert!(!error.to_string().contains(rejected));
-        assert!(!format!("{error:?}").contains(rejected));
+        if !rejected.is_empty() {
+            assert!(!error.to_string().contains(rejected));
+            assert!(!format!("{error:?}").contains(rejected));
+        }
+    }
+
+    #[test]
+    fn classification_catalogs_project_every_registered_canonical_literal() {
+        for (classification, literal) in [
+            (
+                SystemLogClassification::LifecycleStartup,
+                "lifecycle.startup",
+            ),
+            (SystemLogClassification::LifecycleInit, "lifecycle.init"),
+            (
+                SystemLogClassification::LifecycleRestore,
+                "lifecycle.restore",
+            ),
+            (
+                SystemLogClassification::OperationalState,
+                "operational.state",
+            ),
+            (
+                SystemLogClassification::ConfigurationChange,
+                "configuration.change",
+            ),
+            (
+                SystemLogClassification::AuthenticationFailure,
+                "authentication.failure",
+            ),
+            (
+                SystemLogClassification::AuthorizationDenial,
+                "authorization.denial",
+            ),
+            (
+                SystemLogClassification::DependencyFailure,
+                "dependency.failure",
+            ),
+            (SystemLogClassification::ProviderFailure, "provider.failure"),
+            (SystemLogClassification::InternalError, "internal.error"),
+        ] {
+            assert_eq!(classification.as_str(), literal);
+            assert_eq!(
+                SystemLogBody::new(classification, "detail")
+                    .expect("registered System classifications construct")
+                    .classification(),
+                literal
+            );
+        }
+
+        for (classification, literal) in [
+            (
+                AuditLogClassification::LifecycleBackupCreated,
+                "lifecycle.backup.created",
+            ),
+            (
+                AuditLogClassification::AuthenticationUserCreated,
+                "authentication.user.created",
+            ),
+            (
+                AuditLogClassification::AuthenticationUserDisabled,
+                "authentication.user.disabled",
+            ),
+            (
+                AuditLogClassification::AuthenticationPasswordChanged,
+                "authentication.password.changed",
+            ),
+            (
+                AuditLogClassification::AuthenticationPasswordResetStarted,
+                "authentication.password-reset.started",
+            ),
+            (
+                AuditLogClassification::AuthenticationMfaEnrolled,
+                "authentication.mfa.enrolled",
+            ),
+            (
+                AuditLogClassification::AuthenticationMfaReset,
+                "authentication.mfa.reset",
+            ),
+            (
+                AuditLogClassification::AuthenticationMfaRequirementChanged,
+                "authentication.mfa-requirement.changed",
+            ),
+            (
+                AuditLogClassification::AuthenticationMfaModuleEnablementChanged,
+                "authentication.mfa-module-enablement.changed",
+            ),
+            (
+                AuditLogClassification::AuthenticationSessionRevoked,
+                "authentication.session.revoked",
+            ),
+            (
+                AuditLogClassification::AuthorizationGroupCreated,
+                "authorization.group.created",
+            ),
+            (
+                AuditLogClassification::AuthorizationGroupMembershipChanged,
+                "authorization.group-membership.changed",
+            ),
+            (
+                AuditLogClassification::AuthorizationGroupGrantChanged,
+                "authorization.group-grant.changed",
+            ),
+            (
+                AuditLogClassification::AuthorizationAutomationScopeChanged,
+                "authorization.automation-scope.changed",
+            ),
+            (
+                AuditLogClassification::DependencyLogModuleConfigurationChanged,
+                "dependency.log-module-configuration.changed",
+            ),
+            (
+                AuditLogClassification::DependencyServiceConnectionChanged,
+                "dependency.service-connection.changed",
+            ),
+            (
+                AuditLogClassification::ProviderOperationStarted,
+                "provider.operation.started",
+            ),
+            (
+                AuditLogClassification::ProviderOperationCompleted,
+                "provider.operation.completed",
+            ),
+            (
+                AuditLogClassification::InternalServerConfigurationChanged,
+                "internal.server-configuration.changed",
+            ),
+            (
+                AuditLogClassification::InternalUserStatusChanged,
+                "internal.user-status.changed",
+            ),
+            (
+                AuditLogClassification::InternalLogPolicyChanged,
+                "internal.log-policy.changed",
+            ),
+        ] {
+            assert_eq!(classification.as_str(), literal);
+            assert_eq!(
+                AuditLogBody::new(
+                    classification,
+                    AuditPrincipal::human("administrator").expect("bounded human principal"),
+                    "action",
+                    "target",
+                    "detail",
+                )
+                .expect("registered Audit classifications construct")
+                .classification(),
+                literal
+            );
+        }
+    }
+
+    #[test]
+    fn audit_principals_enforce_owner_shape_and_redact_rejections() {
+        let human = AuditPrincipal::human("administrator").expect("bounded human principal");
+        assert_eq!(human.principal_type(), AuditPrincipalType::Human);
+        assert_eq!(human.responsible_owner(), None);
+
+        let automation = AuditPrincipal::automation("restore-worker", "administrator")
+            .expect("bounded automation principal");
+        assert_eq!(automation.principal_type(), AuditPrincipalType::Automation);
+        assert_eq!(automation.responsible_owner(), Some("administrator"));
+        for sensitive in ["restore-worker", "administrator"] {
+            assert!(!format!("{automation:?}").contains(sensitive));
+        }
+
+        for rejected in [String::new(), "p".repeat(MAX_AUDIT_PRINCIPAL_BYTES + 1)] {
+            let error = AuditPrincipal::human(rejected.as_str()).unwrap_err();
+            assert_eq!(error, RecordError::InvalidAuditPrincipal);
+            assert_rejection_is_payload_free(error, &rejected);
+        }
+        for rejected in [
+            String::new(),
+            "o".repeat(MAX_AUDIT_RESPONSIBLE_OWNER_BYTES + 1),
+        ] {
+            let error = AuditPrincipal::automation("automation", rejected.as_str()).unwrap_err();
+            assert_eq!(error, RecordError::InvalidAuditPrincipal);
+            assert_rejection_is_payload_free(error, &rejected);
+        }
     }
 
     fn cargo_json_messages(output: &std::process::Output) -> Vec<Value> {
@@ -1582,12 +1986,25 @@ mod tests {
         let issuer = TrustedRecordIssuer::new();
         let correlation_id = CorrelationId::new("c".repeat(MAX_CORRELATION_ID_BYTES)).unwrap();
         let system_body = SystemLogBody::new(
-            "s".repeat(MAX_SYSTEM_CLASSIFICATION_BYTES),
+            SystemLogClassification::LifecycleStartup,
             "d".repeat(MAX_SYSTEM_DETAIL_BYTES),
         )
         .unwrap();
         let audit_body = AuditLogBody::new(
-            "p".repeat(MAX_AUDIT_PRINCIPAL_BYTES),
+            AuditLogClassification::LifecycleBackupCreated,
+            AuditPrincipal::human("p".repeat(MAX_AUDIT_PRINCIPAL_BYTES)).unwrap(),
+            "a".repeat(MAX_AUDIT_ACTION_BYTES),
+            "t".repeat(MAX_AUDIT_TARGET_BYTES),
+            "d".repeat(MAX_AUDIT_DETAIL_BYTES),
+        )
+        .unwrap();
+        let automation_body = AuditLogBody::new(
+            AuditLogClassification::LifecycleBackupCreated,
+            AuditPrincipal::automation(
+                "p".repeat(MAX_AUDIT_PRINCIPAL_BYTES),
+                "o".repeat(MAX_AUDIT_RESPONSIBLE_OWNER_BYTES),
+            )
+            .unwrap(),
             "a".repeat(MAX_AUDIT_ACTION_BYTES),
             "t".repeat(MAX_AUDIT_TARGET_BYTES),
             "d".repeat(MAX_AUDIT_DETAIL_BYTES),
@@ -1614,6 +2031,16 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            CompleteLogRecord::audit(
+                issuer.issue([3; RECORD_ID_LENGTH]).unwrap(),
+                EventTime::from_unix_milliseconds(1),
+                LogResult::Success,
+                CorrelationId::new("c".repeat(MAX_CORRELATION_ID_BYTES)).unwrap(),
+                automation_body,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1631,7 +2058,9 @@ mod tests {
             "x".repeat(MAX_SYSTEM_DETAIL_BYTES + 1),
             utf8_overflow(MAX_SYSTEM_DETAIL_BYTES),
         ] {
-            let error = SystemLogBody::new("classification", rejected.as_str()).unwrap_err();
+            let error =
+                SystemLogBody::new(SystemLogClassification::LifecycleStartup, rejected.as_str())
+                    .unwrap_err();
             assert_eq!(error, RecordError::InvalidSystemLogBody);
             assert_rejection_is_payload_free(error, &rejected);
         }
@@ -1640,8 +2069,14 @@ mod tests {
             "x".repeat(MAX_AUDIT_TARGET_BYTES + 1),
             utf8_overflow(MAX_AUDIT_TARGET_BYTES),
         ] {
-            let error =
-                AuditLogBody::new("principal", "action", rejected.as_str(), "detail").unwrap_err();
+            let error = AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("principal").unwrap(),
+                "action",
+                rejected.as_str(),
+                "detail",
+            )
+            .unwrap_err();
             assert_eq!(error, RecordError::InvalidAuditLogBody);
             assert_rejection_is_payload_free(error, &rejected);
         }
@@ -1651,7 +2086,7 @@ mod tests {
     fn complete_record_rejects_an_aggregate_overflow_before_delivery() {
         let rejected = "x".repeat(MAX_RECORD_PAYLOAD_BYTES);
         let body = SystemLogBody {
-            classification: "classification".into(),
+            classification: SystemLogClassification::LifecycleStartup,
             detail: rejected.clone().into(),
         };
         let mut deliveries = 0;
