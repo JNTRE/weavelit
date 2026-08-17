@@ -2939,7 +2939,7 @@ pub(crate) mod tests {
         pin::Pin,
         rc::Rc,
         sync::{
-            Arc,
+            Arc, Barrier,
             atomic::{AtomicUsize, Ordering},
         },
         task::{Context, Poll},
@@ -7769,6 +7769,30 @@ pub(crate) mod tests {
         ticket: Option<&str>,
         body: Vec<u8>,
     ) -> BoundedResponse {
+        restore_request_with_timeouts(
+            surface,
+            target,
+            media_type,
+            ticket,
+            body,
+            ConnectionTimeouts {
+                handshake: TLS_HANDSHAKE_TIMEOUT,
+                request_read: REQUEST_READ_TIMEOUT,
+                processing: REQUEST_PROCESSING_TIMEOUT,
+            },
+        )
+        .await
+    }
+
+    /// Drives one Restore request through the listener under an exact budget.
+    async fn restore_request_with_timeouts(
+        surface: MountedSurface,
+        target: &str,
+        media_type: &str,
+        ticket: Option<&str>,
+        body: Vec<u8>,
+        timeouts: ConnectionTimeouts,
+    ) -> BoundedResponse {
         let mut head = format!(
             "PUT {target} HTTP/1.1\r\n\
              Host: {UNBOUND_LISTENER}\r\n\
@@ -7783,22 +7807,14 @@ pub(crate) mod tests {
         }
         head.push_str("\r\n");
 
-        process_over_duplex(
-            surface,
-            ConnectionTimeouts {
-                handshake: TLS_HANDSHAKE_TIMEOUT,
-                request_read: REQUEST_READ_TIMEOUT,
-                processing: REQUEST_PROCESSING_TIMEOUT,
-            },
-            move |stream| {
-                tokio::spawn(async move {
-                    let mut stream = stream;
-                    stream.write_all(head.as_bytes()).await.unwrap();
-                    stream.write_all(&body).await.unwrap();
-                    pending::<()>().await;
-                })
-            },
-        )
+        process_over_duplex(surface, timeouts, move |stream| {
+            tokio::spawn(async move {
+                let mut stream = stream;
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
+                pending::<()>().await;
+            })
+        })
         .await
     }
 
@@ -8657,6 +8673,75 @@ pub(crate) mod tests {
                 "{target}"
             );
         }
+    }
+
+    /// A second recovery-key route cannot issue while a claimed first ticket is
+    /// still in the irreversible region and holds the shared mutation permit.
+    #[tokio::test]
+    async fn a_paused_restore_prevents_a_second_recovery_key_route_from_issuing_a_ticket() {
+        let surface = RestoreSurface::new();
+        let orchestrator = surface.orchestrator();
+        let mounted = surface.restore_routes(&orchestrator);
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+
+        let parked = Arc::clone(&entered);
+        let unpark = Arc::clone(&release);
+        orchestrator.pause_replacement_with(Arc::new(move || {
+            // This pause follows the transition-gate entry and precedes state
+            // replacement, so A can still commit while its route permit is
+            // held by the blocking Restore closure.
+            parked.wait();
+            unpark.wait();
+        }));
+
+        let (restored, rejected) = tokio::join!(
+            surface.restore(
+                &orchestrator,
+                restore_fixture("valid.wlitbackup"),
+                valid_recovery_key(),
+            ),
+            async {
+                let arrived = Arc::clone(&entered);
+                tokio::task::spawn_blocking(move || arrived.wait())
+                    .await
+                    .expect("the pause arrival waiter must not panic");
+
+                // B reaches the same registered key route while A owns the
+                // only permit. Its zero processing budget makes the refused
+                // wait deterministic rather than waiting for the production
+                // listener timeout.
+                let response = restore_request_with_timeouts(
+                    mounted,
+                    RESTORE_ROUTE,
+                    "application/json",
+                    None,
+                    restore_key_body(&valid_recovery_key()),
+                    ConnectionTimeouts {
+                        handshake: TLS_HANDSHAKE_TIMEOUT,
+                        request_read: REQUEST_READ_TIMEOUT,
+                        processing: Duration::ZERO,
+                    },
+                )
+                .await;
+
+                let unpark = Arc::clone(&release);
+                tokio::task::spawn_blocking(move || unpark.wait())
+                    .await
+                    .expect("the pause release waiter must not panic");
+                response
+            },
+        );
+
+        assert!(
+            restored.is_ok(),
+            "A must complete after the test releases it"
+        );
+        assert_eq!(rejected.status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(rejected.body.as_ref(), b"{\"error\":\"gateway_timeout\"}");
+        let rendered = std::str::from_utf8(&rejected.body).expect("the fixed response is UTF-8");
+        assert!(!rendered.contains("restore_ticket"));
+        assert!(!rendered.contains("reconciliation_capability"));
     }
 
     /// Restore is mounted only where it is eligible, so an unselected

@@ -36,23 +36,11 @@ const RECOVERY_KEY_INPUT_ID = "weavelit-restore-recovery-key";
  */
 const INDETERMINATE_RESTORE_CODES = ["gateway_timeout"];
 
-/**
- * Codes a retry reports that an unsettled original attempt could itself cause.
- *
- * `restore_not_allowed` is answered whenever the deployment record has left
- * `Uninitialized`, which is exactly what an original Restore that committed
- * leaves behind. `not_found` is answered by every route of a published normal
- * operation, which no longer mounts Restore at all.
- *
- * Neither proves the original committed, because both also have determinate
- * causes: a lifecycle that is pending some other workflow answers the first,
- * and a Server serving nothing at all answers the second. They are therefore
- * reconciled against the original submitted capability rather than believed,
- * and they are only read this way once an attempt has already reported no
- * outcome. A first attempt answered by either of them was answered about
- * itself.
- */
-const RECONCILED_RETRY_CODES = ["restore_not_allowed", "not_found"];
+/** The one unsettled Restore the browser may retain transiently. */
+interface ActiveRestore {
+  readonly reconciliationCapability: string;
+  readonly recoveryKey: string;
+}
 
 /** Presentation state of a Restore submission. */
 type RestoreViewState =
@@ -62,7 +50,7 @@ type RestoreViewState =
       readonly kind: "indeterminate";
       readonly code: string;
       readonly checking: boolean;
-      readonly reconciliationCapability: string;
+      readonly active: ActiveRestore;
     }
   | { readonly kind: "failed"; readonly code: string }
   | { readonly kind: "completed" };
@@ -103,8 +91,9 @@ export interface RestoreSubmissionFormProps {
  *
  * The selected backup is held as a `File` handle and the recovery key as
  * component state alone. Neither is written to a URL, a cookie, or any browser
- * storage, and the key is cleared as soon as the attempt it drove settles,
- * whether that attempt succeeded or failed.
+ * storage. An unsettled submission keeps its recovery key with its one active
+ * reconciliation capability until that submission settles or a newly issued
+ * ticket authoritatively supersedes it.
  *
  * An outcome is settled only by evidence. A completed Restore is reported to
  * the shell from the completion response this component already holds, so the
@@ -120,14 +109,6 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
   const [artifact, setArtifact] = useState<File | null>(null);
   const [recoveryKey, setRecoveryKey] = useState("");
   const [state, setState] = useState<RestoreViewState>({ kind: "idle" });
-  /**
-   * Whether some attempt has already reported no outcome.
-   *
-   * Once one has, this page can never again read {@link RECONCILED_RETRY_CODES}
-   * as a determinate answer, so this is never cleared: only completion, or
-   * loading the page again, ends it.
-   */
-  const [unsettled, setUnsettled] = useState(false);
 
   const chooseArtifact = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     // Retained as a handle; the file's bytes are never read here.
@@ -139,16 +120,15 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
   }, []);
 
   const reconcile = useCallback(
-    (code: string, reconciliationCapability: string) => {
-      setUnsettled(true);
-      setState({ kind: "indeterminate", code, checking: true, reconciliationCapability });
-      void reconcileLifecycle(reconciliationCapability).then((outcome) => {
+    (code: string, active: ActiveRestore) => {
+      setState({ kind: "indeterminate", code, checking: true, active });
+      void reconcileLifecycle(active.reconciliationCapability).then((outcome) => {
         if (outcome !== "confirmed") {
           // A mismatch or unavailable result distinguishes nothing: the
           // Restore may still be running, or may never have committed. The
           // attempt stays unsettled, the key is kept, and the operator decides
           // when to look again.
-          setState({ kind: "indeterminate", code, checking: false, reconciliationCapability });
+          setState({ kind: "indeterminate", code, checking: false, active });
           return;
         }
         // A matching submission capability proves this Restore committed.
@@ -161,11 +141,13 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
   );
 
   const submit = useCallback(() => {
-    if (artifact === null || recoveryKey === "") {
+    const active = state.kind === "indeterminate" ? state.active : undefined;
+    const submittedRecoveryKey = active?.recoveryKey ?? recoveryKey;
+    if (artifact === null || submittedRecoveryKey === "") {
       return;
     }
     setState({ kind: "submitting" });
-    void submitRestore(recoveryKey, artifact).then(
+    void submitRestore(submittedRecoveryKey, artifact).then(
       () => {
         setRecoveryKey("");
         setState({ kind: "completed" });
@@ -173,36 +155,34 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
       },
       (reason: unknown) => {
         const code = failureCode(reason);
-        const priorCapability =
-          state.kind === "indeterminate" ? state.reconciliationCapability : undefined;
-        const reconciliationCapability =
-          reason instanceof RestoreFailedError
-            ? (reason.reconciliationCapability ?? priorCapability)
-            : priorCapability;
-        // An attempt that reported nothing, and a retry answered by a code an
-        // already unsettled original could itself have caused, are both
-        // reconciled against that submission capability rather than presented.
-        // Neither has settled, so neither releases the key.
-        if (
-          (indeterminateRestore(reason, code) ||
-            (unsettled && RECONCILED_RETRY_CODES.includes(code))) &&
-          reconciliationCapability !== undefined
-        ) {
-          // Deliberately keeps the recovery key: this attempt, or the
-          // unsettled one it retried, may already have restored and sealed
-          // this deployment with it.
-          reconcile(code, reconciliationCapability);
+        const issuedCapability =
+          reason instanceof RestoreFailedError ? reason.reconciliationCapability : undefined;
+        // A retry that never received a valid ticket cannot supersede the
+        // active submission. Its response may be about waiting behind that
+        // submission, so settle the active capability once for this action.
+        if (active !== undefined && reason instanceof RestoreFailedError && !reason.ticketIssued) {
+          reconcile(code, active);
+          return;
+        }
+        if (indeterminateRestore(reason, code) && issuedCapability !== undefined) {
+          // A valid ticket/capability is authoritative succession evidence:
+          // the new issued submission replaces the earlier unsettled one.
+          setRecoveryKey("");
+          reconcile(code, {
+            reconciliationCapability: issuedCapability,
+            recoveryKey: submittedRecoveryKey,
+          });
           return;
         }
         setRecoveryKey("");
         setState({ kind: "failed", code });
       },
     );
-  }, [artifact, onCompleted, reconcile, recoveryKey, state, unsettled]);
+  }, [artifact, onCompleted, reconcile, recoveryKey, state]);
 
   const recheck = useCallback(() => {
     if (state.kind === "indeterminate") {
-      reconcile(state.code, state.reconciliationCapability);
+      reconcile(state.code, state.active);
     }
   }, [reconcile, state]);
 
@@ -213,6 +193,7 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
   // submitted against a deployment that may already have stopped serving this
   // route.
   const busy = state.kind === "submitting" || (state.kind === "indeterminate" && state.checking);
+  const activeRecoveryKey = state.kind === "indeterminate" ? state.active.recoveryKey : recoveryKey;
 
   return (
     <section className="shell__restore" data-restore-state={state.kind}>
@@ -251,7 +232,7 @@ export function RestoreSubmissionForm({ onCompleted }: RestoreSubmissionFormProp
             type="button"
             className="shell__restore-action"
             onClick={submit}
-            disabled={busy || artifact === null || recoveryKey === ""}
+            disabled={busy || artifact === null || activeRecoveryKey === ""}
           >
             {RESTORE_ACTION_LABEL}
           </button>

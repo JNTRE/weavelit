@@ -67,6 +67,15 @@ export class RestoreFailedError extends Error {
   readonly indeterminate: boolean;
 
   /**
+   * Whether this submission had already received a valid ticket envelope.
+   *
+   * This is local control-flow metadata only. It lets the form retain an
+   * earlier unsettled capability when a retry did not reach issuance, without
+   * exposing any response diagnostic or changing the route contract.
+   */
+  readonly ticketIssued: boolean;
+
+  /**
    * The issued capability for an artifact outcome the client could not read.
    *
    * It is absent for every determinate rejection and for failures before the
@@ -74,18 +83,29 @@ export class RestoreFailedError extends Error {
    */
   readonly reconciliationCapability: string | undefined;
 
-  constructor(code: string, indeterminate = false, reconciliationCapability?: string) {
+  constructor(
+    code: string,
+    indeterminate = false,
+    reconciliationCapability?: string,
+    ticketIssued = false,
+  ) {
     super("restore_failed");
     this.name = "RestoreFailedError";
     this.code = code;
     this.indeterminate = indeterminate;
+    this.ticketIssued = ticketIssued;
     this.reconciliationCapability = reconciliationCapability;
   }
 }
 
 /** Builds the failure of a request whose outcome this client never read. */
 function unreported(reconciliationCapability?: string): RestoreFailedError {
-  return new RestoreFailedError(UNREPORTED_FAILURE_CODE, true, reconciliationCapability);
+  return new RestoreFailedError(
+    UNREPORTED_FAILURE_CODE,
+    true,
+    reconciliationCapability,
+    reconciliationCapability !== undefined,
+  );
 }
 
 function objectPayload(payload: unknown): Record<string, unknown> | null {
@@ -165,8 +185,8 @@ async function rejection(
     return unreported(reconciliationCapability);
   }
   return reported === "gateway_timeout" && reconciliationCapability !== undefined
-    ? new RestoreFailedError(reported, true, reconciliationCapability)
-    : new RestoreFailedError(reported);
+    ? new RestoreFailedError(reported, true, reconciliationCapability, true)
+    : new RestoreFailedError(reported, false, undefined, reconciliationCapability !== undefined);
 }
 
 /**

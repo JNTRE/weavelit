@@ -61,7 +61,10 @@ function mockRoutedFetch(routes: {
         ? Promise.reject(new Error("unrouted reconciliation"))
         : routes.reconciliation();
     }
-    return routes.key();
+    if (input === "/api/v1/restore") {
+      return routes.key();
+    }
+    return Promise.reject(new Error(`unrouted Restore request: ${String(input)}`));
   });
 }
 
@@ -332,9 +335,11 @@ describe("RestoreSubmissionForm", () => {
     expect(section().dataset.restoreState).toBe("indeterminate");
     expect(completed).not.toHaveBeenCalled();
     expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(1);
-    // The key stays with the attempt it drove, because that attempt has not
-    // settled and this is the only copy of it.
-    expect(recoveryKeyInput().value).toBe(RECOVERY_KEY);
+    // The key stays with the attempt it drove in component state rather than
+    // in the disabled input's DOM value.
+    expect(recoveryKeyInput().value).toBe("");
+    expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
+    expect(document.body.innerHTML).not.toContain(RECONCILIATION_CAPABILITY);
     expect(artifactInput().disabled).toBe(true);
     expect(recoveryKeyInput().disabled).toBe(true);
     expect(actionButton().disabled).toBe(false);
@@ -374,7 +379,53 @@ describe("RestoreSubmissionForm", () => {
     expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
   });
 
-  it("uses a new capability only after a retry receives a new ticket", async () => {
+  it("preserves A after a pre-ticket retry failure and confirms A once", async () => {
+    const fetchMock = mockRoutedFetch({
+      key: vi
+        .fn<() => Promise<Response>>()
+        .mockImplementationOnce(() => Promise.resolve(ticketResponse()))
+        .mockImplementationOnce(() =>
+          Promise.resolve(jsonResponse({ error: "restore_pending" }, 409)),
+        ),
+      upload: vi
+        .fn<() => Promise<Response>>()
+        .mockImplementationOnce(() => Promise.reject(new Error("ECONNRESET")))
+        .mockImplementationOnce(() => Promise.reject(new Error("unexpected artifact upload"))),
+      reconciliation: vi
+        .fn<() => Promise<Response>>()
+        .mockImplementationOnce(notFoundReconciliation)
+        .mockImplementationOnce(confirmedReconciliation),
+    });
+    const completed = vi.fn();
+
+    renderForm(completed);
+    chooseArtifact();
+    enterRecoveryKey();
+    fireEvent.click(actionButton());
+
+    await screen.findByRole("alert");
+    fireEvent.click(actionButton());
+
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
+    });
+    expect(section().dataset.restoreState).toBe("completed");
+    expect(callsTo(fetchMock, "/api/v1/restore")).toBe(2);
+    expect(callsTo(fetchMock, "/api/v1/restore/artifact")).toBe(1);
+    expect(callsTo(fetchMock, RECONCILIATION_PATH)).toBe(2);
+    for (const call of fetchMock.mock.calls.filter((call) => call[0] === RECONCILIATION_PATH)) {
+      expect(call[1]?.body).toBe(
+        JSON.stringify({ reconciliation_capability: RECONCILIATION_CAPABILITY }),
+      );
+    }
+    expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
+    expect(document.body.innerHTML).not.toContain(RECONCILIATION_CAPABILITY);
+    expect(globalThis.localStorage.length).toBe(0);
+    expect(globalThis.sessionStorage.length).toBe(0);
+    expect(document.cookie).toBe("");
+  });
+
+  it("supersedes A only after B receives a valid ticket and reconciles B", async () => {
     const replacementCapability = "Zyxwvutsrqponmlkjihgfedcba0123456789ABCDE-_";
     const fetchMock = mockRoutedFetch({
       key: vi
@@ -407,6 +458,10 @@ describe("RestoreSubmissionForm", () => {
       JSON.stringify({ reconciliation_capability: replacementCapability }),
     );
     expect(section().dataset.restoreState).toBe("indeterminate");
+    expect(recoveryKeyInput().value).toBe("");
+    expect(document.body.innerHTML).not.toContain(RECOVERY_KEY);
+    expect(document.body.innerHTML).not.toContain(RECONCILIATION_CAPABILITY);
+    expect(document.body.innerHTML).not.toContain(replacementCapability);
     expect(completed).not.toHaveBeenCalled();
   });
 
@@ -477,10 +532,10 @@ describe("RestoreSubmissionForm", () => {
     // still unsettled and is neither completed nor failed.
     expect(section().dataset.restoreState).toBe("indeterminate");
     expect(completed).not.toHaveBeenCalled();
-    expect(recoveryKeyInput().value).toBe(RECOVERY_KEY);
+    expect(recoveryKeyInput().value).toBe("");
   });
 
-  it("still fails determinately, and drops the key, after an unsettled attempt", async () => {
+  it("settles B determinately and clears it after B receives a valid ticket", async () => {
     const fetchMock = mockRoutedFetch({
       key: vi
         .fn<() => Promise<Response>>()

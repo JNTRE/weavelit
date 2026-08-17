@@ -51,11 +51,15 @@ function mockRoutedFetch(routes: {
   key: () => Promise<Response>;
   upload: () => Promise<Response>;
 }) {
-  return vi
-    .spyOn(globalThis, "fetch")
-    .mockImplementation((input: unknown) =>
-      input === RESTORE_ARTIFACT_PATH ? routes.upload() : routes.key(),
-    );
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown) => {
+    if (input === RESTORE_KEY_PATH) {
+      return routes.key();
+    }
+    if (input === RESTORE_ARTIFACT_PATH) {
+      return routes.upload();
+    }
+    return Promise.reject(new Error(`unrouted Restore request: ${String(input)}`));
+  });
 }
 
 describe("parseStableErrorCode", () => {
@@ -248,6 +252,10 @@ describe("submitRestore", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    const reason = await submitRestore(RECOVERY_KEY, artifact()).catch(
+      (failure: unknown) => failure,
+    );
+    expect((reason as RestoreFailedError).ticketIssued).toBe(false);
   });
 
   it.each([
@@ -274,6 +282,7 @@ describe("submitRestore", () => {
     expect((reason as RestoreFailedError).code).toBe(code);
     expect((reason as RestoreFailedError).message).toBe("restore_failed");
     expect((reason as RestoreFailedError).reconciliationCapability).toBeUndefined();
+    expect((reason as RestoreFailedError).ticketIssued).toBe(true);
   });
 
   it.each([
@@ -295,6 +304,7 @@ describe("submitRestore", () => {
     expect(reason).toBeInstanceOf(RestoreFailedError);
     expect((reason as RestoreFailedError).code).toBe(UNREPORTED_FAILURE_CODE);
     expect((reason as RestoreFailedError).reconciliationCapability).toBe(RECONCILIATION_CAPABILITY);
+    expect((reason as RestoreFailedError).ticketIssued).toBe(true);
   });
 
   it("rejects a ticket response that is not the documented envelope", async () => {
@@ -309,6 +319,7 @@ describe("submitRestore", () => {
 
     expect((reason as RestoreFailedError).code).toBe(UNREPORTED_FAILURE_CODE);
     expect((reason as RestoreFailedError).reconciliationCapability).toBeUndefined();
+    expect((reason as RestoreFailedError).ticketIssued).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

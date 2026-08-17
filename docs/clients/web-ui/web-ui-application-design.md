@@ -244,8 +244,8 @@ renders exactly five states:
 | --- | --- | --- |
 | Idle | No submission is in flight and none has failed since the last attempt. | Both inputs are enabled, and the action is enabled once a file is chosen and a key is entered. |
 | Submitting | A Restore submission is in flight. | Both inputs and the action are disabled, so a repeated activation cannot issue a second Restore. |
-| Indeterminate | A submission reported no outcome, or a retry was answered by a code the unsettled attempt could itself have caused, and no probe has settled it. | A fixed message stating that no outcome was reported and that the submitted key is still this backup's key, the reported code, and either a checking notice or a recheck control. |
-| Failed | Either request of the submission was rejected determinately. | The inputs are enabled again and the Server's stable error code is presented in an assertive live region. |
+| Indeterminate | A submission reported no outcome, or a retry for an active unsettled submission failed before it received a valid ticket and reconciliation capability, and no probe has settled it. | A fixed message stating that no outcome was reported and that the submitted key is still this backup's key, the reported code, and either a checking notice or a recheck control. |
+| Failed | A first submission was rejected determinately, or an issued retry's artifact route rejected determinately. | The inputs are enabled again and the Server's stable error code is presented in an assertive live region. |
 | Completed | The Restore completed and the deployment now runs in normal operation. | The inputs and the action are replaced by a fixed completion message in a polite live region. |
 
 The completed state is terminal and momentary: the shell adopts the same
@@ -272,19 +272,25 @@ indeterminate state, so a retry cannot be mistaken for a different Restore;
 the retry action is held disabled while a reconciliation request is in flight,
 so no retry is issued against routes a committed Restore no longer serves.
 
-Once a submission has gone unsettled, a retry answered `restore_not_allowed` or
-`not_found` is reconciled the same way rather than believed. A Restore that
-committed is exactly what leaves this deployment past `Uninitialized` and stops
-it mounting the Restore routes, but a lifecycle pending some other workflow and
-a Server serving nothing at all answer identically, so neither response settles
-anything by itself. A confirmed reconciliation settles the attempt as a
-completed Restore; a non-matching or unavailable reconciliation returns the
-control to the indeterminate state, still holding the submitted key and its
-reconciliation capability. A first submission answered by either code was
-answered about itself and fails determinately as
-the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md#rejections)
-defines. A determinate rejection after an unsettled attempt still fails
-determinately and still drops the key and its reconciliation capability.
+The control retains exactly one active unsettled capability and its recovery
+key. A retry that fails before the recovery-key route returns a valid `202`
+ticket and reconciliation-capability envelope does not replace that active
+pair. Transport loss, unreadable or malformed responses, and every reported
+pre-ticket refusal, rate, admission, or timeout result in one reconciliation
+request for the active capability; a confirmed result reports completion, while
+a non-matching or unavailable result returns to the indeterminate state with the
+same pair. The browser neither keeps a capability list nor retries
+automatically.
+
+A valid ticket and reconciliation capability for B is the sole succession
+event for an active A. The Server's shared Restore mutation lane means B cannot
+be issued while A can still commit: B waits until A has released the lane, at
+which point A either committed and makes B ineligible or failed before its
+checkpoint and cannot later commit. The control then replaces A with B. An
+indeterminate B artifact response is reconciled with B's capability; a
+determinate B artifact rejection settles B and clears its capability and
+recovery key. This preserves the active key through every pre-ticket retry
+outcome without treating a response code as proof that A settled.
 
 A rejection the Server itself reported is never settled that way. Its
 `restore_failed` code is also the code a transport or read failure presents as,
@@ -303,14 +309,15 @@ person can act on, such as an invalid recovery key or an incompatible backup.
 
 The recovery key is held in component state alone and the backup is held only as
 the browser-provided `File` handle. Neither is written to a URL, a cookie, or
-any browser storage, and the key is cleared as soon as the attempt it drove
-settles, whether that attempt succeeded or failed. An attempt that has not
-settled keeps its key, because that key is still the one this backup is
-encrypted with and this page holds no other copy of it. The selected file's
-bytes are never read into a string, an `ArrayBuffer`, or an array; the handle is
-passed to `fetch` as the request body, so the approved 256 MiB artifact bound
-streams from the browser's file-backed storage instead of being copied through
-the JavaScript heap.
+any browser storage, and the key is cleared as soon as the active submission
+settles, whether that attempt succeeded or failed. An unsettled submission keeps
+its key because that key is still the one its backup is encrypted with and this
+page holds no other copy of it. A reconciliation capability is also component
+memory only: it is never rendered into the DOM or written to a URL, cookie, or
+browser storage. The selected file's bytes are never read into a string, an
+`ArrayBuffer`, or an array; the handle is passed to `fetch` as the request body,
+so the approved 256 MiB artifact bound streams from the browser's file-backed
+storage instead of being copied through the JavaScript heap.
 
 The application performs no client-side validation of the artifact or the key
 beyond requiring that both are present. It does not parse, preview, or inspect

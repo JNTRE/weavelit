@@ -175,6 +175,13 @@ defines. It is returned in this one response only and is held only in the
 requesting page's transient memory; it is never written to a URL, a cookie,
 `localStorage`, or `sessionStorage`.
 
+This complete, valid envelope is the issuance boundary for a browser that
+already holds an unsettled Restore capability. A failed or unreadable
+recovery-key response before this envelope proves neither a replacement ticket
+nor a replacement capability was issued, so the browser retains its earlier
+capability. Only a later valid envelope may supersede it; this rule adds no
+ticket persistence, route, schema, or response field.
+
 ## Artifact Route Contract
 
 ```http

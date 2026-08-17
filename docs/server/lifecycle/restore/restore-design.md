@@ -547,6 +547,21 @@ authority. The
 [Web UI Pre-Operational Restore Surface](../../../client-modules/web-ui/pre-operational-restore-design.md)
 owns the routes, schemas, headers, bounds, and rejection contract.
 
+Both routes acquire the same single mutation permit before their admitted
+eligibility re-check. The artifact route claims its ticket before it waits for
+that permit, so cancellation while waiting destroys the claimed recovery key
+and cannot leave that submission able to commit. Once admitted, the artifact
+route moves the permit into one blocking authorize-through-seal closure and
+holds it until that closure finishes; a listener processing timeout stops only
+the response wait and does not cancel the closure. Consequently, a second
+recovery-key route cannot issue a valid ticket and reconciliation capability
+while a first claimed artifact remains capable of commitment. After the first
+permit releases, it either committed or crossed its checkpoint and the second
+eligibility re-check refuses issuance, or it failed before that point and can no
+longer commit. This issuance barrier supports one transient browser capability
+and the singleton durable reconciliation digest without adding server-side
+capability succession state.
+
 ## Concurrency And Errors
 
 The lifecycle crate serializes Init and Restore mutation. Concurrent or stale
