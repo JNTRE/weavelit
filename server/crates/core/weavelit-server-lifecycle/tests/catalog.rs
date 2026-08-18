@@ -44,6 +44,7 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn load_initialized_state(
         &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
         Err(DatabaseError::NotInitialized)
@@ -61,6 +62,22 @@ impl ApplicationDatabase for FakeDatabase {
         &mut self,
         _account: StateIdentifier,
     ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_account_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _account: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::AccountAuditReference>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_group_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _group: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
         Err(DatabaseError::NotInitialized)
     }
 

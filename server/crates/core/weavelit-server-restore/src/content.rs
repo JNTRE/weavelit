@@ -9,9 +9,11 @@ use serde::{
 use weavelit_server_authentication::PasswordPolicy;
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    Account, AccountPasswordVerifier, ConfigurationEntry, ConfigurationKey, Group, GroupGrant,
-    GroupGrantRecord, GroupMembership, LogAssignment, LogModuleConfiguration, LogModuleSetting,
-    LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
+    AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX, Account, AccountAuditReference,
+    AccountPasswordVerifier, AuditReferenceIdentifier, AuditReferencePersistence,
+    ConfigurationEntry, ConfigurationKey, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
+    GroupMembership, LogAssignment, LogModuleConfiguration, LogModuleSetting, LogType,
+    MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
     MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
     MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name, PasswordVerifier, RecoveryPublicKey,
     STATE_IDENTIFIER_LENGTH, StateIdentifier,
@@ -131,8 +133,10 @@ pub struct NormalizedBackup {
     configuration: Vec<ConfigurationEntry>,
     protected_secrets: Vec<BackupProtectedSecret>,
     accounts: Vec<Account>,
+    account_audit_references: Vec<AccountAuditReference>,
     password_verifiers: Vec<AccountPasswordVerifier>,
     groups: Vec<Group>,
+    group_audit_references: Vec<GroupAuditReference>,
     group_memberships: Vec<GroupMembership>,
     group_grants: Vec<GroupGrantRecord>,
     mfa_factors: Vec<BackupMfaFactor>,
@@ -163,6 +167,11 @@ impl NormalizedBackup {
         &self.accounts
     }
 
+    /// Returns the local-account Audit Reference projections.
+    pub fn account_audit_references(&self) -> &[AccountAuditReference] {
+        &self.account_audit_references
+    }
+
     /// Returns the password verifiers.
     pub fn password_verifiers(&self) -> &[AccountPasswordVerifier] {
         &self.password_verifiers
@@ -171,6 +180,11 @@ impl NormalizedBackup {
     /// Returns the Groups.
     pub fn groups(&self) -> &[Group] {
         &self.groups
+    }
+
+    /// Returns the Group Audit Reference projections.
+    pub fn group_audit_references(&self) -> &[GroupAuditReference] {
+        &self.group_audit_references
     }
 
     /// Returns the Group memberships.
@@ -227,6 +241,12 @@ const fn encoded_length(bytes: usize) -> usize {
 const WIRE_IDENTIFIER_LENGTH: usize = encoded_length(STATE_IDENTIFIER_LENGTH);
 
 const _: () = assert!(WIRE_IDENTIFIER_LENGTH == 22);
+
+/// Exact length of the canonical internal Audit Reference representation.
+const WIRE_AUDIT_REFERENCE_LENGTH: usize =
+    AUDIT_REFERENCE_PREFIX.len() + AUDIT_REFERENCE_IDENTIFIER_LENGTH * 2;
+
+const _: () = assert!(WIRE_AUDIT_REFERENCE_LENGTH == 35);
 
 /// Encoded ceiling of one decrypted protected value.
 const WIRE_SENSITIVE_VALUE_LENGTH: usize = encoded_length(MAX_SENSITIVE_VALUE_BYTES);
@@ -386,6 +406,7 @@ impl<'de, const MAX: usize> Deserialize<'de> for WireSecret<MAX> {
 }
 
 type WireBackendIdentifier = WireText<MAX_IDENTIFIER_LENGTH>;
+type WireAuditReference = WireText<WIRE_AUDIT_REFERENCE_LENGTH>;
 type WireConfigurationKey = WireText<MAX_CONFIGURATION_KEY_LENGTH>;
 type WireConfigurationValue = WireText<MAX_CONFIGURATION_VALUE_LENGTH>;
 type WireDescription = WireText<MAX_DESCRIPTION_LENGTH>;
@@ -394,6 +415,15 @@ type WireName = WireText<MAX_NAME_LENGTH>;
 type WirePasswordVerifier = WireText<MAX_PASSWORD_VERIFIER_LENGTH>;
 type WireRecoveryPublicKey = WireText<MAX_RECOVERY_PUBLIC_KEY_LENGTH>;
 type WireSensitiveValue = WireSecret<WIRE_SENSITIVE_VALUE_LENGTH>;
+
+fn deserialize_present_audit_reference<'de, Source>(
+    source: Source,
+) -> Result<Option<WireAuditReference>, Source::Error>
+where
+    Source: Deserializer<'de>,
+{
+    WireAuditReference::deserialize(source).map(Some)
+}
 
 // ---------------------------------------------------------------------------
 // Version 1 wire model
@@ -439,6 +469,9 @@ struct ProtectedSecretV1 {
 #[serde(deny_unknown_fields)]
 struct AccountV1 {
     identifier: WireIdentifier,
+    /// Absent in a compatible document written before Audit References existed.
+    #[serde(default, deserialize_with = "deserialize_present_audit_reference")]
+    audit_reference: Option<WireAuditReference>,
     username: WireName,
     display_name: Option<WireName>,
     active: bool,
@@ -461,6 +494,9 @@ struct PasswordVerifierV1 {
 #[serde(deny_unknown_fields)]
 struct GroupV1 {
     identifier: WireIdentifier,
+    /// Absent in a compatible document written before Audit References existed.
+    #[serde(default, deserialize_with = "deserialize_present_audit_reference")]
+    audit_reference: Option<WireAuditReference>,
     name: WireName,
     description: Option<WireDescription>,
 }
@@ -552,6 +588,7 @@ enum LogTypeV1 {
 pub fn normalize(
     plaintext: &[u8],
     selected_backend: &BackendIdentifier,
+    audit_reference_persistence: &AuditReferencePersistence,
     components: &AvailableComponents,
 ) -> Result<NormalizedBackup, ContentError> {
     let document: BackupDocumentV1 =
@@ -583,15 +620,22 @@ pub fn normalize(
             value: SensitiveBytes::new(decode_bytes(&entry.value)?)?,
         })
     })?;
-    let accounts = map_collection(document.accounts, |entry| {
-        Ok(Account {
-            identifier: identifier(&entry.identifier)?,
-            username: name(entry.username)?,
-            display_name: entry.display_name.map(name).transpose()?,
-            active: entry.active,
-            mfa_required: entry.mfa_required,
-        })
+    let account_entries = map_collection(document.accounts, |entry| {
+        let identifier = identifier(&entry.identifier)?;
+        let audit_reference =
+            resolve_audit_reference(entry.audit_reference, audit_reference_persistence)?;
+        Ok((
+            Account {
+                identifier,
+                username: name(entry.username)?,
+                display_name: entry.display_name.map(name).transpose()?,
+                active: entry.active,
+                mfa_required: entry.mfa_required,
+            },
+            AccountAuditReference::new(identifier, audit_reference),
+        ))
     })?;
+    let (accounts, account_audit_references) = account_entries.into_iter().unzip();
     let password_verifiers = map_collection(document.password_verifiers, |entry| {
         Ok(AccountPasswordVerifier {
             account: identifier(&entry.account)?,
@@ -599,13 +643,20 @@ pub fn normalize(
                 .map_err(|_| ContentError::DomainInvalid)?,
         })
     })?;
-    let groups = map_collection(document.groups, |entry| {
-        Ok(Group {
-            identifier: identifier(&entry.identifier)?,
-            name: name(entry.name)?,
-            description: entry.description.map(bounded).transpose()?,
-        })
+    let group_entries = map_collection(document.groups, |entry| {
+        let identifier = identifier(&entry.identifier)?;
+        let audit_reference =
+            resolve_audit_reference(entry.audit_reference, audit_reference_persistence)?;
+        Ok((
+            Group {
+                identifier,
+                name: name(entry.name)?,
+                description: entry.description.map(bounded).transpose()?,
+            },
+            GroupAuditReference::new(identifier, audit_reference),
+        ))
     })?;
+    let (groups, group_audit_references) = group_entries.into_iter().unzip();
     let group_memberships = map_collection(document.group_memberships, |entry| {
         Ok(GroupMembership {
             group: identifier(&entry.group)?,
@@ -668,8 +719,10 @@ pub fn normalize(
         configuration,
         protected_secrets,
         accounts,
+        account_audit_references,
         password_verifiers,
         groups,
+        group_audit_references,
         group_memberships,
         group_grants,
         mfa_factors,
@@ -694,8 +747,10 @@ fn order(backup: &mut NormalizedBackup) {
     backup.configuration.sort();
     backup.protected_secrets.sort();
     backup.accounts.sort();
+    backup.account_audit_references.sort();
     backup.password_verifiers.sort();
     backup.groups.sort();
+    backup.group_audit_references.sort();
     backup.group_memberships.sort();
     backup.group_grants.sort();
     backup.mfa_factors.sort();
@@ -718,6 +773,9 @@ fn reject_duplicates(backup: &NormalizedBackup) -> Result<(), ContentError> {
         left.identifier == right.identifier
     })?;
     reject_duplicate_keys(&backup.accounts, |account| account.username.clone())?;
+    reject_adjacent(&backup.account_audit_references, |left, right| {
+        left.account() == right.account()
+    })?;
     reject_adjacent(&backup.password_verifiers, |left, right| {
         left.account == right.account
     })?;
@@ -725,6 +783,22 @@ fn reject_duplicates(backup: &NormalizedBackup) -> Result<(), ContentError> {
         left.identifier == right.identifier
     })?;
     reject_duplicate_keys(&backup.groups, |group| group.name.clone())?;
+    reject_adjacent(&backup.group_audit_references, |left, right| {
+        left.group() == right.group()
+    })?;
+    let mut audit_references = backup
+        .account_audit_references
+        .iter()
+        .map(AccountAuditReference::audit_reference)
+        .chain(
+            backup
+                .group_audit_references
+                .iter()
+                .map(GroupAuditReference::audit_reference),
+        )
+        .collect::<Vec<_>>();
+    audit_references.sort_unstable();
+    reject_adjacent(&audit_references, |left, right| left == right)?;
     reject_adjacent(&backup.group_memberships, |left, right| left == right)?;
     reject_adjacent(&backup.group_grants, |left, right| left == right)?;
     reject_adjacent(&backup.mfa_factors, |left, right| {
@@ -771,6 +845,20 @@ fn reject_unresolved_references(backup: &NormalizedBackup) -> Result<(), Content
     }
 
     Ok(())
+}
+
+fn resolve_audit_reference(
+    persisted: Option<WireAuditReference>,
+    persistence: &AuditReferencePersistence,
+) -> Result<AuditReferenceIdentifier, ContentError> {
+    match persisted {
+        Some(value) => persistence
+            .decode(&value)
+            .map_err(|_| ContentError::DomainInvalid),
+        None => {
+            AuditReferenceIdentifier::generate().map_err(|_| ContentError::RandomnessUnavailable)
+        }
+    }
 }
 
 fn reject_invalid_assignments(backup: &NormalizedBackup) -> Result<(), ContentError> {

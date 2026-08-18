@@ -1492,8 +1492,14 @@ dependencies = [
 name = "weavelit-server-database"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "subtle",
+ "weavelit-server-database-authority",
 ]
+
+[[package]]
+name = "weavelit-server-database-authority"
+version = "0.1.0"
 
 [[package]]
 name = "weavelit-server-database-sqlite"
@@ -1504,6 +1510,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
 ]
 
 [[package]]
@@ -1533,6 +1540,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
  "weavelit-server-database-sqlite",
  "zeroize",
 ]
@@ -1598,6 +1606,7 @@ dependencies = [
  "weavelit-server-authentication",
  "weavelit-server-components",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
  "weavelit-server-lifecycle",
  "weavelit-server-recovery-key",
  "x25519-dalek",

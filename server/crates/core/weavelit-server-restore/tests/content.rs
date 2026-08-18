@@ -3,13 +3,27 @@
 mod support;
 
 use base64::Engine as _;
-use support::{FIXTURE_TOTP_SECRET, committed, committed_text, components};
+use support::{FIXTURE_TOTP_SECRET, committed, committed_text, components, persistence};
 use weavelit_server_database::MAX_NAME_LENGTH;
 use weavelit_server_restore::{
     Account, AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
     GroupGrant, LogSettingsFormat, MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS,
-    MAX_SENSITIVE_VALUE_BYTES, Name, NormalizedBackup, RestoreError, SensitiveBytes, normalize,
+    MAX_SENSITIVE_VALUE_BYTES, Name, NormalizedBackup, RestoreError, SensitiveBytes,
+    normalize as normalize_with_persistence,
 };
+
+fn normalize(
+    plaintext: &[u8],
+    selected_backend: &BackendIdentifier,
+    available_components: &AvailableComponents,
+) -> Result<NormalizedBackup, ContentError> {
+    normalize_with_persistence(
+        plaintext,
+        selected_backend,
+        &persistence(),
+        available_components,
+    )
+}
 
 fn sqlite() -> BackendIdentifier {
     BackendIdentifier::new("sqlite").expect("the backend identifier is valid")
@@ -45,8 +59,88 @@ fn accounts(added: &[(&str, &str)]) -> String {
 
 #[test]
 fn the_committed_plaintext_normalizes() {
-    normalize(&committed("valid-plaintext.json"), &sqlite(), &components())
+    let backup = normalize(&committed("valid-plaintext.json"), &sqlite(), &components())
         .expect("the committed plaintext is valid content");
+
+    let account_reference = backup.account_audit_references()[0]
+        .audit_reference()
+        .to_string();
+    let group_reference = backup.group_audit_references()[0]
+        .audit_reference()
+        .to_string();
+    assert!(account_reference.starts_with("ar-"));
+    assert!(group_reference.starts_with("ar-"));
+    assert_ne!(account_reference, group_reference);
+    assert!(!account_reference.contains(backup.accounts()[0].username.as_str()));
+    assert!(!group_reference.contains(backup.groups()[0].name.as_str()));
+}
+
+#[test]
+fn supplied_audit_references_survive_normalization_exactly() {
+    const ACCOUNT_REFERENCE: &str = "ar-11111111111111111111111111111111";
+    const GROUP_REFERENCE: &str = "ar-22222222222222222222222222222222";
+    let document = replaced(
+        "\"username\":\"administrator\"",
+        &format!("\"audit_reference\":\"{ACCOUNT_REFERENCE}\",\"username\":\"administrator\""),
+    );
+    let document = document.replace(
+        "\"name\":\"Administrators\"",
+        &format!("\"audit_reference\":\"{GROUP_REFERENCE}\",\"name\":\"Administrators\""),
+    );
+
+    let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_eq!(
+        backup.account_audit_references()[0]
+            .audit_reference()
+            .to_string(),
+        ACCOUNT_REFERENCE
+    );
+    assert_eq!(
+        backup.group_audit_references()[0]
+            .audit_reference()
+            .to_string(),
+        GROUP_REFERENCE
+    );
+}
+
+#[test]
+fn malformed_or_reused_supplied_audit_references_are_invalid() {
+    let malformed = replaced(
+        "\"username\":\"administrator\"",
+        "\"audit_reference\":\"ar-00000000000000000000000000000000\",\"username\":\"administrator\"",
+    );
+    assert_eq!(reject(&malformed), ContentError::DomainInvalid);
+
+    const SHARED: &str = "ar-33333333333333333333333333333333";
+    let duplicate = replaced(
+        "\"username\":\"administrator\"",
+        &format!("\"audit_reference\":\"{SHARED}\",\"username\":\"administrator\""),
+    );
+    let duplicate = duplicate.replace(
+        "\"name\":\"Administrators\"",
+        &format!("\"audit_reference\":\"{SHARED}\",\"name\":\"Administrators\""),
+    );
+    assert_eq!(reject(&duplicate), ContentError::DuplicateEntry);
+}
+
+#[test]
+fn explicit_null_audit_references_are_rejected_while_legacy_omission_is_accepted() {
+    normalize(plaintext().as_bytes(), &sqlite(), &components())
+        .expect("a legacy omission generates independent references");
+
+    for document in [
+        replaced(
+            "\"username\":\"administrator\"",
+            "\"audit_reference\":null,\"username\":\"administrator\"",
+        ),
+        replaced(
+            "\"name\":\"Administrators\"",
+            "\"audit_reference\":null,\"name\":\"Administrators\"",
+        ),
+    ] {
+        assert_eq!(reject(&document), ContentError::Malformed);
+    }
 }
 
 #[test]
@@ -628,6 +722,7 @@ fn content_failures_render_uniformly() {
         ContentError::AssignmentInvalid,
         ContentError::FactorDataInvalid,
         ContentError::SettingUnsupported,
+        ContentError::RandomnessUnavailable,
     ]
     .iter()
     .map(|error| error.to_string())

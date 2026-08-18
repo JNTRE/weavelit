@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "weavelit-server-lifecycle-forbidden-database-authority-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavelit-server-database = { path = "../../../../../database/weavelit-server-database" }
+weavelit-server-lifecycle = { path = "../../.." }
+
+[[bin]]
+name = "authority-import"
+path = "src/authority_import.rs"
+
+[[bin]]
+name = "selected-database-constructor"
+path = "src/selected_database_constructor.rs"
+
+[[bin]]
+name = "lifecycle-private-constructor"
+path = "src/lifecycle_private_constructor.rs"
+
+[[bin]]
+name = "persistence-issuer"
+path = "src/persistence_issuer.rs"
+
+[[bin]]
+name = "arbitrary-decode"
+path = "src/arbitrary_decode.rs"

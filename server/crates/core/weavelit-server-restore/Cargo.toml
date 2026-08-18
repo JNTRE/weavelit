@@ -45,6 +45,7 @@ zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 bech32 = { version = "=0.11.1", default-features = false, features = ["alloc"] }
 flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 tempfile = "=3.27.0"
+weavelit-server-database-authority = { path = "../../database/weavelit-server-database-authority" }
 x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 
 [[example]]

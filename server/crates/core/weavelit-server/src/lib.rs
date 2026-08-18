@@ -3804,13 +3804,33 @@ pub(crate) mod tests {
             group_grants,
             mfa_factors,
         } = parts;
+        let account_audit_references = accounts
+            .iter()
+            .map(|account| {
+                weavelit_server_database::AccountAuditReference::new(
+                    account.identifier,
+                    test_audit_reference(),
+                )
+            })
+            .collect();
+        let group_audit_references = groups
+            .iter()
+            .map(|group| {
+                weavelit_server_database::GroupAuditReference::new(
+                    group.identifier,
+                    test_audit_reference(),
+                )
+            })
+            .collect();
         let configuration_identifier = StateIdentifier::from_bytes([0x11; 16]).unwrap();
         ApplicationState::new(ApplicationStateInput {
             configuration,
             protected_secrets: vec![],
             accounts,
+            account_audit_references,
             password_verifiers,
             groups,
+            group_audit_references,
             group_memberships,
             group_grants,
             mfa_factors,
@@ -3841,6 +3861,10 @@ pub(crate) mod tests {
             .unwrap(),
         })
         .unwrap()
+    }
+
+    fn test_audit_reference() -> weavelit_server_database::AuditReferenceIdentifier {
+        weavelit_server_database::AuditReferenceIdentifier::generate().unwrap()
     }
 
     #[test]
@@ -7862,6 +7886,8 @@ pub(crate) mod tests {
             state.state().completion_obligation().workflow(),
             WorkflowKind::Restore
         );
+        assert_eq!(state.state().account_audit_references().len(), 1);
+        assert_eq!(state.state().group_audit_references().len(), 1);
 
         // A newly accepted connection serves the operational surface, and every
         // pre-operational route is gone rather than mounted and denied.

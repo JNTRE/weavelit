@@ -226,6 +226,26 @@ fn a_finalized_deployment_has_exactly_one_active_administrator_without_an_mfa_fa
     assert_eq!(state.password_verifiers().len(), 1);
     assert_eq!(state.password_verifiers()[0].account, account.identifier);
     assert!(state.service_connections().is_empty());
+
+    assert_eq!(state.account_audit_references().len(), 1);
+    assert_eq!(state.group_audit_references().len(), 1);
+    let account_reference = state.account_audit_references()[0];
+    let group_reference = state.group_audit_references()[0];
+    assert_eq!(account_reference.account(), account.identifier);
+    assert_eq!(group_reference.group(), state.groups()[0].identifier);
+    assert_ne!(
+        account_reference.audit_reference(),
+        group_reference.audit_reference()
+    );
+    for reference in [
+        account_reference.audit_reference().to_string(),
+        group_reference.audit_reference().to_string(),
+    ] {
+        assert_eq!(reference.len(), 35);
+        assert!(reference.starts_with("ar-"));
+        assert!(!reference.contains(account.username.as_str()));
+        assert!(!reference.contains(state.groups()[0].name.as_str()));
+    }
 }
 
 #[test]

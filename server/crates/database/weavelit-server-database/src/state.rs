@@ -7,10 +7,148 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use weavelit_server_database_authority::ServerDatabaseAuthority;
+
 use crate::{ContractInputError, DeploymentIdentifier, WorkflowKind};
 
 /// Number of bytes in an application-state entity identifier.
 pub const STATE_IDENTIFIER_LENGTH: usize = 16;
+
+/// Number of random bytes in an Audit Reference Identifier.
+pub const AUDIT_REFERENCE_IDENTIFIER_LENGTH: usize = 16;
+
+/// Canonical prefix of a persisted Audit Reference Identifier.
+pub const AUDIT_REFERENCE_PREFIX: &str = "ar-";
+const AUDIT_REFERENCE_HEX_LENGTH: usize = AUDIT_REFERENCE_IDENTIFIER_LENGTH * 2;
+const AUDIT_REFERENCE_GENERATION_ATTEMPTS: usize = 8;
+
+/// Failure to generate or decode an internal Audit Reference Identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditReferenceIdentifierError {
+    /// Operating-system randomness was unavailable.
+    RandomnessUnavailable,
+    /// A persisted identifier was not in the canonical nonzero representation.
+    InvalidPersistedValue,
+}
+
+impl fmt::Display for AuditReferenceIdentifierError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::RandomnessUnavailable => "audit reference identity is unavailable",
+            Self::InvalidPersistedValue => "persisted audit reference identity is invalid",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for AuditReferenceIdentifierError {}
+
+/// Independent pseudonymous identifier used to reference an audited entity.
+///
+/// The private representation prevents conversion from a state identifier,
+/// name, user string, or caller-provided bytes. Only a selected Application
+/// Database binding can issue the capability that decodes persisted values.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AuditReferenceIdentifier([u8; AUDIT_REFERENCE_IDENTIFIER_LENGTH]);
+
+impl AuditReferenceIdentifier {
+    /// Generates an identifier from operating-system randomness without a fallback.
+    pub fn generate() -> Result<Self, AuditReferenceIdentifierError> {
+        Self::generate_with(|bytes| {
+            getrandom::fill(bytes).map_err(|_| AuditReferenceIdentifierError::RandomnessUnavailable)
+        })
+    }
+
+    fn from_persisted_value(value: &str) -> Result<Self, AuditReferenceIdentifierError> {
+        let hexadecimal = value
+            .strip_prefix(AUDIT_REFERENCE_PREFIX)
+            .filter(|value| value.len() == AUDIT_REFERENCE_HEX_LENGTH)
+            .ok_or(AuditReferenceIdentifierError::InvalidPersistedValue)?;
+        let encoded = hexadecimal.as_bytes();
+        let mut bytes = [0_u8; AUDIT_REFERENCE_IDENTIFIER_LENGTH];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let high = hexadecimal_nibble(encoded[index * 2])?;
+            let low = hexadecimal_nibble(encoded[index * 2 + 1])?;
+            *byte = (high << 4) | low;
+        }
+        if bytes == [0; AUDIT_REFERENCE_IDENTIFIER_LENGTH] {
+            return Err(AuditReferenceIdentifierError::InvalidPersistedValue);
+        }
+        Ok(Self(bytes))
+    }
+
+    fn generate_with(
+        mut fill: impl FnMut(
+            &mut [u8; AUDIT_REFERENCE_IDENTIFIER_LENGTH],
+        ) -> Result<(), AuditReferenceIdentifierError>,
+    ) -> Result<Self, AuditReferenceIdentifierError> {
+        for _ in 0..AUDIT_REFERENCE_GENERATION_ATTEMPTS {
+            let mut bytes = [0_u8; AUDIT_REFERENCE_IDENTIFIER_LENGTH];
+            fill(&mut bytes)?;
+            if bytes != [0; AUDIT_REFERENCE_IDENTIFIER_LENGTH] {
+                return Ok(Self(bytes));
+            }
+        }
+
+        Err(AuditReferenceIdentifierError::RandomnessUnavailable)
+    }
+}
+
+/// Capability to decode canonical Audit Reference values from trusted persistence.
+///
+/// The private field prevents ordinary callers from constructing this value. It
+/// is issued only to Server lifecycle code that holds database authority after
+/// selecting or reopening the real Application Database.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct AuditReferencePersistence {
+    _private: (),
+}
+
+impl AuditReferencePersistence {
+    /// Issues a decoder to the Server-owned database selection authority.
+    #[must_use]
+    pub const fn from_server_authority(_authority: &ServerDatabaseAuthority) -> Self {
+        Self { _private: () }
+    }
+
+    /// Decodes the exact canonical nonzero persisted representation.
+    pub fn decode(
+        &self,
+        value: &str,
+    ) -> Result<AuditReferenceIdentifier, AuditReferenceIdentifierError> {
+        AuditReferenceIdentifier::from_persisted_value(value)
+    }
+}
+
+impl fmt::Debug for AuditReferencePersistence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditReferencePersistence(REDACTED)")
+    }
+}
+
+impl fmt::Display for AuditReferenceIdentifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(AUDIT_REFERENCE_PREFIX)?;
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for AuditReferenceIdentifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditReferenceIdentifier(REDACTED)")
+    }
+}
+
+fn hexadecimal_nibble(value: u8) -> Result<u8, AuditReferenceIdentifierError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(AuditReferenceIdentifierError::InvalidPersistedValue),
+    }
+}
 
 /// Maximum UTF-8 bytes in a name, username, module, or component value.
 pub const MAX_NAME_LENGTH: usize = 256;
@@ -259,6 +397,33 @@ pub struct Account {
     pub mfa_required: bool,
 }
 
+/// Typed Audit Reference Identifier assigned to one local account.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct AccountAuditReference {
+    account: StateIdentifier,
+    audit_reference: AuditReferenceIdentifier,
+}
+
+impl AccountAuditReference {
+    /// Associates one account with its independently generated audit reference.
+    pub const fn new(account: StateIdentifier, audit_reference: AuditReferenceIdentifier) -> Self {
+        Self {
+            account,
+            audit_reference,
+        }
+    }
+
+    /// Returns the account this projection references.
+    pub const fn account(&self) -> StateIdentifier {
+        self.account
+    }
+
+    /// Returns the typed Audit Reference Identifier.
+    pub const fn audit_reference(&self) -> AuditReferenceIdentifier {
+        self.audit_reference
+    }
+}
+
 /// Password verifier bound to exactly one account.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct AccountPasswordVerifier {
@@ -277,6 +442,33 @@ pub struct Group {
     pub name: Name,
     /// Optional Group description.
     pub description: Option<Description>,
+}
+
+/// Typed Audit Reference Identifier assigned to one Group.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct GroupAuditReference {
+    group: StateIdentifier,
+    audit_reference: AuditReferenceIdentifier,
+}
+
+impl GroupAuditReference {
+    /// Associates one Group with its independently generated audit reference.
+    pub const fn new(group: StateIdentifier, audit_reference: AuditReferenceIdentifier) -> Self {
+        Self {
+            group,
+            audit_reference,
+        }
+    }
+
+    /// Returns the Group this projection references.
+    pub const fn group(&self) -> StateIdentifier {
+        self.group
+    }
+
+    /// Returns the typed Audit Reference Identifier.
+    pub const fn audit_reference(&self) -> AuditReferenceIdentifier {
+        self.audit_reference
+    }
 }
 
 /// Membership of one account in one Group.
@@ -576,10 +768,14 @@ pub struct ApplicationStateInput {
     pub protected_secrets: Vec<ProtectedSecret>,
     /// Local accounts.
     pub accounts: Vec<Account>,
+    /// Stable Audit Reference Identifiers for local accounts.
+    pub account_audit_references: Vec<AccountAuditReference>,
     /// Password verifiers.
     pub password_verifiers: Vec<AccountPasswordVerifier>,
     /// Groups.
     pub groups: Vec<Group>,
+    /// Stable Audit Reference Identifiers for Groups.
+    pub group_audit_references: Vec<GroupAuditReference>,
     /// Group memberships.
     pub group_memberships: Vec<GroupMembership>,
     /// Group grants.
@@ -607,8 +803,10 @@ pub struct ApplicationState {
     configuration: Vec<ConfigurationEntry>,
     protected_secrets: Vec<ProtectedSecret>,
     accounts: Vec<Account>,
+    account_audit_references: Vec<AccountAuditReference>,
     password_verifiers: Vec<AccountPasswordVerifier>,
     groups: Vec<Group>,
+    group_audit_references: Vec<GroupAuditReference>,
     group_memberships: Vec<GroupMembership>,
     group_grants: Vec<GroupGrantRecord>,
     mfa_factors: Vec<MfaFactor>,
@@ -626,8 +824,10 @@ impl ApplicationState {
             mut configuration,
             mut protected_secrets,
             mut accounts,
+            mut account_audit_references,
             mut password_verifiers,
             mut groups,
+            mut group_audit_references,
             mut group_memberships,
             mut group_grants,
             mut mfa_factors,
@@ -641,8 +841,10 @@ impl ApplicationState {
         configuration.sort();
         protected_secrets.sort();
         accounts.sort();
+        account_audit_references.sort();
         password_verifiers.sort();
         groups.sort();
+        group_audit_references.sort();
         group_memberships.sort();
         group_grants.sort();
         mfa_factors.sort();
@@ -661,11 +863,17 @@ impl ApplicationState {
         })?;
         reject_adjacent_duplicates(&accounts, |left, right| left.identifier == right.identifier)?;
         reject_duplicate_keys(&accounts, |account| account.username.clone())?;
+        reject_adjacent_duplicates(&account_audit_references, |left, right| {
+            left.account == right.account
+        })?;
         reject_adjacent_duplicates(&password_verifiers, |left, right| {
             left.account == right.account
         })?;
         reject_adjacent_duplicates(&groups, |left, right| left.identifier == right.identifier)?;
         reject_duplicate_keys(&groups, |group| group.name.clone())?;
+        reject_adjacent_duplicates(&group_audit_references, |left, right| {
+            left.group == right.group
+        })?;
         reject_adjacent_duplicates(&group_memberships, |left, right| left == right)?;
         reject_adjacent_duplicates(&group_grants, |left, right| left == right)?;
         reject_adjacent_duplicates(&mfa_factors, |left, right| {
@@ -694,6 +902,25 @@ impl ApplicationState {
         let group_identifiers = sorted_identifiers(&groups, |group| group.identifier);
         let log_module_identifiers =
             sorted_identifiers(&log_module_configurations, |entry| entry.identifier);
+
+        let referenced_accounts =
+            sorted_identifiers(&account_audit_references, |entry| entry.account);
+        let referenced_groups = sorted_identifiers(&group_audit_references, |entry| entry.group);
+        if account_identifiers != referenced_accounts || group_identifiers != referenced_groups {
+            return Err(ContractInputError::UnknownReference);
+        }
+
+        let mut audit_references = account_audit_references
+            .iter()
+            .map(|entry| entry.audit_reference)
+            .chain(
+                group_audit_references
+                    .iter()
+                    .map(|entry| entry.audit_reference),
+            )
+            .collect::<Vec<_>>();
+        audit_references.sort_unstable();
+        reject_adjacent_duplicates(&audit_references, |left, right| left == right)?;
 
         for verifier in &password_verifiers {
             require_reference(&account_identifiers, verifier.account)?;
@@ -734,8 +961,10 @@ impl ApplicationState {
             configuration,
             protected_secrets,
             accounts,
+            account_audit_references,
             password_verifiers,
             groups,
+            group_audit_references,
             group_memberships,
             group_grants,
             mfa_factors,
@@ -762,6 +991,11 @@ impl ApplicationState {
         &self.accounts
     }
 
+    /// Returns the local-account Audit Reference projections.
+    pub fn account_audit_references(&self) -> &[AccountAuditReference] {
+        &self.account_audit_references
+    }
+
     /// Returns the password verifiers.
     pub fn password_verifiers(&self) -> &[AccountPasswordVerifier] {
         &self.password_verifiers
@@ -770,6 +1004,11 @@ impl ApplicationState {
     /// Returns the Groups.
     pub fn groups(&self) -> &[Group] {
         &self.groups
+    }
+
+    /// Returns the Group Audit Reference projections.
+    pub fn group_audit_references(&self) -> &[GroupAuditReference] {
+        &self.group_audit_references
     }
 
     /// Returns the Group memberships.
@@ -904,6 +1143,14 @@ mod tests {
         StateIdentifier::from_bytes([byte; STATE_IDENTIFIER_LENGTH]).unwrap()
     }
 
+    fn audit_reference(byte: u8) -> AuditReferenceIdentifier {
+        AuditReferenceIdentifier::from_persisted_value(&format!(
+            "ar-{}",
+            format!("{byte:02x}").repeat(AUDIT_REFERENCE_IDENTIFIER_LENGTH)
+        ))
+        .unwrap()
+    }
+
     fn name(value: &str) -> Name {
         Name::new(value).unwrap()
     }
@@ -943,6 +1190,10 @@ mod tests {
                 active: true,
                 mfa_required: false,
             }],
+            account_audit_references: vec![AccountAuditReference::new(
+                identifier(1),
+                audit_reference(0xA1),
+            )],
             password_verifiers: vec![AccountPasswordVerifier {
                 account: identifier(1),
                 verifier: PasswordVerifier::new(VERIFIER).unwrap(),
@@ -952,6 +1203,10 @@ mod tests {
                 name: name("Administrators"),
                 description: None,
             }],
+            group_audit_references: vec![GroupAuditReference::new(
+                identifier(2),
+                audit_reference(0xB2),
+            )],
             group_memberships: vec![GroupMembership {
                 group: identifier(2),
                 account: identifier(1),
@@ -1012,6 +1267,79 @@ mod tests {
         assert_eq!(
             StateIdentifier::from_bytes([0; STATE_IDENTIFIER_LENGTH]),
             Err(ContractInputError::InvalidStateIdentifier)
+        );
+    }
+
+    #[test]
+    fn audit_reference_identifier_has_one_canonical_redacted_representation() {
+        const VALUE: &str = "ar-0123456789abcdef0123456789abcdef";
+        let identifier = AuditReferenceIdentifier::from_persisted_value(VALUE).unwrap();
+
+        assert_eq!(identifier.to_string(), VALUE);
+        assert_eq!(
+            format!("{identifier:?}"),
+            "AuditReferenceIdentifier(REDACTED)"
+        );
+
+        for invalid in [
+            "",
+            "0123456789abcdef0123456789abcdef",
+            "ar-0123456789ABCDEF0123456789ABCDEF",
+            "ar-0123456789abcdef0123456789abcde",
+            "ar-00000000000000000000000000000000",
+        ] {
+            let error = AuditReferenceIdentifier::from_persisted_value(invalid)
+                .expect_err("a non-canonical identifier must be rejected");
+            assert_eq!(error, AuditReferenceIdentifierError::InvalidPersistedValue);
+            if !invalid.is_empty() {
+                assert!(!error.to_string().contains(invalid));
+                assert!(!format!("{error:?}").contains(invalid));
+            }
+        }
+    }
+
+    #[test]
+    fn audit_reference_generation_retries_zero_and_bounds_exhaustion() {
+        let mut fills = 0;
+        let generated = AuditReferenceIdentifier::generate_with(|bytes| {
+            fills += 1;
+            if fills == 2 {
+                bytes.fill(0xA5);
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(fills, 2);
+        assert_eq!(generated.to_string(), "ar-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5");
+        assert_eq!(
+            AuditReferenceIdentifier::generate_with(|_| {
+                Err(AuditReferenceIdentifierError::RandomnessUnavailable)
+            }),
+            Err(AuditReferenceIdentifierError::RandomnessUnavailable)
+        );
+
+        let mut zero_fills = 0;
+        assert_eq!(
+            AuditReferenceIdentifier::generate_with(|_| {
+                zero_fills += 1;
+                Ok(())
+            }),
+            Err(AuditReferenceIdentifierError::RandomnessUnavailable)
+        );
+        assert_eq!(zero_fills, AUDIT_REFERENCE_GENERATION_ATTEMPTS);
+    }
+
+    #[test]
+    fn operating_system_generation_returns_canonical_nonzero_identifiers() {
+        let generated = AuditReferenceIdentifier::generate()
+            .expect("operating-system randomness must be available");
+        let rendered = generated.to_string();
+
+        assert_eq!(rendered.len(), 35);
+        assert_eq!(
+            AuditReferenceIdentifier::from_persisted_value(&rendered),
+            Ok(generated)
         );
     }
 
@@ -1102,6 +1430,8 @@ mod tests {
 
         assert_eq!(ApplicationState::new(reversed).unwrap(), ordered);
         assert_eq!(ordered.accounts().len(), 1);
+        assert_eq!(ordered.account_audit_references().len(), 1);
+        assert_eq!(ordered.group_audit_references().len(), 1);
         assert_eq!(ordered.group_grants().len(), 2);
         assert_eq!(
             ordered.group_grants()[0].grant,
@@ -1196,6 +1526,25 @@ mod tests {
         ] {
             assert_eq!(reject(input), ContractInputError::DuplicateEntry);
         }
+    }
+
+    #[test]
+    fn every_account_and_group_requires_one_globally_unique_audit_reference() {
+        let mut missing_account = valid_input();
+        missing_account.account_audit_references.clear();
+
+        let mut unknown_group = valid_input();
+        unknown_group.group_audit_references[0] =
+            GroupAuditReference::new(identifier(9), audit_reference(0xB2));
+
+        for input in [missing_account, unknown_group] {
+            assert_eq!(reject(input), ContractInputError::UnknownReference);
+        }
+
+        let mut duplicate = valid_input();
+        duplicate.group_audit_references[0] =
+            GroupAuditReference::new(identifier(2), audit_reference(0xA1));
+        assert_eq!(reject(duplicate), ContractInputError::DuplicateEntry);
     }
 
     #[test]

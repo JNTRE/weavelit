@@ -55,6 +55,12 @@ completion or correction records the authoritative outcome. The
 define this result-set relationship. Init and Restore actions are not Audit
 Logs.
 
+**Audit Reference Identifier** - An internal, pseudonymous, independently
+random identifier that lets Audit Logs refer consistently to an application
+entity without recording its name or Application Database state identifier. It
+is linkable across records and therefore not anonymous, but it is neither a
+secret nor a public API identifier.
+
 **Weavelit CLI** - The separately packaged command-line client for the
 **[Weavelit Server](#applications-and-interfaces)**. It uses the Weavelit CLI
 **[Client Module](#applications-and-interfaces)**, which exposes both a

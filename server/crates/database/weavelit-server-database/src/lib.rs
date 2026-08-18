@@ -19,17 +19,18 @@ pub use session::{
     SessionValidation, StoredSession,
 };
 pub use state::{
-    Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
-    COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
-    ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier, Description,
-    Group, GroupGrant, GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot,
-    InitializedState, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
-    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
-    MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH,
-    MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
-    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier,
-    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
-    StateIdentifier,
+    AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX, Account, AccountAuditReference,
+    AccountPasswordVerifier, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
+    AuditReferenceIdentifierError, AuditReferencePersistence, BoundedText, COMPONENT_ENABLED_VALUE,
+    CompletionObligation, ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey,
+    ConfigurationValue, CorrelationIdentifier, Description, Group, GroupAuditReference, GroupGrant,
+    GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot, InitializedState, LogAssignment,
+    LogClassification, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
+    MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
+    MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH, MAX_LOG_DETAIL_LENGTH,
+    MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
+    MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier, ProtectedSecret,
+    ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier,
 };
 
 use std::{error::Error as StdError, fmt};
@@ -189,6 +190,7 @@ pub trait ApplicationDatabase: Send {
     /// Loads complete initialized state bound to the expected deployment.
     fn load_initialized_state(
         &mut self,
+        persistence: &AuditReferencePersistence,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError>;
 
@@ -211,6 +213,20 @@ pub trait ApplicationDatabase: Send {
         &mut self,
         account: StateIdentifier,
     ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError>;
+
+    /// Loads the typed Audit Reference projection for one local account.
+    fn load_account_audit_reference(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        account: StateIdentifier,
+    ) -> Result<Option<AccountAuditReference>, DatabaseError>;
+
+    /// Loads the typed Audit Reference projection for one Group.
+    fn load_group_audit_reference(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        group: StateIdentifier,
+    ) -> Result<Option<GroupAuditReference>, DatabaseError>;
 
     /// Loads only which components an administrator has disabled.
     ///

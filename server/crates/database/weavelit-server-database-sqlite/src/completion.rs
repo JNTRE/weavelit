@@ -1,7 +1,8 @@
 use rusqlite::{TransactionBehavior, params};
 use weavelit_server_database::{
-    ApplicationState, DatabaseError, DatabaseInspection, DeploymentIdentifier, InitializedState,
-    ReconciliationDigest, StateIdentifier, WorkflowCheckpoint,
+    ApplicationState, AuditReferencePersistence, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, InitializedState, ReconciliationDigest, StateIdentifier,
+    WorkflowCheckpoint,
 };
 
 use crate::SqliteDatabase;
@@ -64,6 +65,7 @@ impl SqliteDatabase {
 
     pub(super) fn load_initialized_state_atomic(
         &mut self,
+        persistence: &AuditReferencePersistence,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
         let transaction = self
@@ -75,7 +77,7 @@ impl SqliteDatabase {
             DatabaseInspection::Initialized {
                 deployment_identifier,
             } => {
-                let (application_state, acknowledged) = state::read(&transaction)?;
+                let (application_state, acknowledged) = state::read(&transaction, persistence)?;
                 Ok(InitializedState::new(
                     deployment_identifier,
                     application_state,

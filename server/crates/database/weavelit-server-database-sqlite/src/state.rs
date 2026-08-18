@@ -1,11 +1,12 @@
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use weavelit_server_database::{
-    Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput, BoundedText,
+    Account, AccountAuditReference, AccountPasswordVerifier, ApplicationState,
+    ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence, BoundedText,
     COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
-    ConfigurationEntry, DatabaseError, Group, GroupGrant, GroupGrantRecord, GroupMembership,
-    HumanAuthorizationSnapshot, LogAssignment, LogModuleConfiguration, LogModuleSetting, LogType,
-    MfaFactor, PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey,
-    STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier, WorkflowKind,
+    ConfigurationEntry, DatabaseError, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
+    GroupMembership, HumanAuthorizationSnapshot, LogAssignment, LogModuleConfiguration,
+    LogModuleSetting, LogType, MfaFactor, PasswordVerifier, ProtectedSecret, ProtectedValue,
+    RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier, WorkflowKind,
 };
 
 use crate::SqliteDatabase;
@@ -17,10 +18,18 @@ const PROTECTED_SECRET_QUERY: &str = "SELECT component, secret_key, protected_va
      FROM weavelit_protected_secret ORDER BY component, secret_key";
 const ACCOUNT_QUERY: &str = "SELECT account_id, username, display_name, active, mfa_required \
      FROM weavelit_account ORDER BY account_id";
+const ACCOUNT_AUDIT_REFERENCE_QUERY: &str = "SELECT account_id, audit_reference \
+    FROM weavelit_account_audit_reference ORDER BY account_id";
+const ACCOUNT_AUDIT_REFERENCE_LOOKUP: &str = "SELECT audit_reference \
+    FROM weavelit_account_audit_reference WHERE account_id = ?1";
 const PASSWORD_VERIFIER_QUERY: &str = "SELECT account_id, encoded_verifier \
      FROM weavelit_password_verifier ORDER BY account_id";
 const GROUP_QUERY: &str =
     "SELECT group_id, name, description FROM weavelit_group ORDER BY group_id";
+const GROUP_AUDIT_REFERENCE_QUERY: &str = "SELECT group_id, audit_reference \
+    FROM weavelit_group_audit_reference ORDER BY group_id";
+const GROUP_AUDIT_REFERENCE_LOOKUP: &str = "SELECT audit_reference \
+    FROM weavelit_group_audit_reference WHERE group_id = ?1";
 const GROUP_MEMBERSHIP_QUERY: &str = "SELECT group_id, account_id \
      FROM weavelit_group_membership ORDER BY group_id, account_id";
 const GROUP_GRANT_QUERY: &str = "SELECT group_id, grant_kind, grant_value \
@@ -67,6 +76,7 @@ const DISABLED_COMPONENT_QUERY: &str = "SELECT component, setting_key \
 type ConfigurationRow = (String, String, String);
 type ProtectedSecretRow = (String, String, Vec<u8>);
 type AccountRow = (Vec<u8>, String, Option<String>, i64, i64);
+type AuditReferenceRow = (Vec<u8>, String);
 type PasswordVerifierRow = (Vec<u8>, String);
 type GroupRow = (Vec<u8>, String, Option<String>);
 type GroupMembershipRow = (Vec<u8>, Vec<u8>);
@@ -103,6 +113,51 @@ impl SqliteDatabase {
     ) -> Result<ComponentEnablement, DatabaseError> {
         read_component_enablement(&self.connection)
     }
+
+    pub(super) fn load_account_audit_reference_atomic(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        account: StateIdentifier,
+    ) -> Result<Option<AccountAuditReference>, DatabaseError> {
+        read_audit_reference(
+            &self.connection,
+            persistence,
+            ACCOUNT_AUDIT_REFERENCE_LOOKUP,
+            account,
+        )
+        .map(|reference| reference.map(|value| AccountAuditReference::new(account, value)))
+    }
+
+    pub(super) fn load_group_audit_reference_atomic(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        group: StateIdentifier,
+    ) -> Result<Option<GroupAuditReference>, DatabaseError> {
+        read_audit_reference(
+            &self.connection,
+            persistence,
+            GROUP_AUDIT_REFERENCE_LOOKUP,
+            group,
+        )
+        .map(|reference| reference.map(|value| GroupAuditReference::new(group, value)))
+    }
+}
+
+fn read_audit_reference(
+    connection: &Connection,
+    persistence: &AuditReferencePersistence,
+    query: &str,
+    entity: StateIdentifier,
+) -> Result<Option<AuditReferenceIdentifier>, DatabaseError> {
+    let value = connection
+        .query_row(query, params![entity.as_bytes().as_slice()], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+    value
+        .map(|value| audit_reference(persistence, &value))
+        .transpose()
 }
 
 fn read_component_enablement(
@@ -235,6 +290,28 @@ pub(super) fn write(
             ],
         )?;
     }
+    for reference in state.account_audit_references() {
+        execute(
+            connection,
+            "INSERT INTO weavelit_account_audit_reference \
+             (account_id, audit_reference) VALUES (?1, ?2)",
+            params![
+                reference.account().as_bytes().as_slice(),
+                reference.audit_reference().to_string()
+            ],
+        )?;
+    }
+    for reference in state.group_audit_references() {
+        execute(
+            connection,
+            "INSERT INTO weavelit_group_audit_reference \
+             (group_id, audit_reference) VALUES (?1, ?2)",
+            params![
+                reference.group().as_bytes().as_slice(),
+                reference.audit_reference().to_string()
+            ],
+        )?;
+    }
     for membership in state.group_memberships() {
         execute(
             connection,
@@ -338,7 +415,10 @@ pub(super) fn write(
     )
 }
 
-pub(super) fn read(connection: &Connection) -> Result<(ApplicationState, bool), DatabaseError> {
+pub(super) fn read(
+    connection: &Connection,
+    persistence: &AuditReferencePersistence,
+) -> Result<(ApplicationState, bool), DatabaseError> {
     let configuration = rows::<ConfigurationRow>(connection, CONFIGURATION_QUERY, three_columns)?
         .into_iter()
         .map(|(component, key, value)| {
@@ -377,6 +457,17 @@ pub(super) fn read(connection: &Connection) -> Result<(ApplicationState, bool), 
         )
         .collect::<Result<Vec<_>, DatabaseError>>()?;
 
+    let account_audit_references =
+        rows::<AuditReferenceRow>(connection, ACCOUNT_AUDIT_REFERENCE_QUERY, two_columns)?
+            .into_iter()
+            .map(|(account_id, value)| {
+                Ok(AccountAuditReference::new(
+                    identifier(&account_id)?,
+                    audit_reference(persistence, &value)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
+
     let password_verifiers =
         rows::<PasswordVerifierRow>(connection, PASSWORD_VERIFIER_QUERY, two_columns)?
             .into_iter()
@@ -399,6 +490,17 @@ pub(super) fn read(connection: &Connection) -> Result<(ApplicationState, bool), 
             })
         })
         .collect::<Result<Vec<_>, DatabaseError>>()?;
+
+    let group_audit_references =
+        rows::<AuditReferenceRow>(connection, GROUP_AUDIT_REFERENCE_QUERY, two_columns)?
+            .into_iter()
+            .map(|(group_id, value)| {
+                Ok(GroupAuditReference::new(
+                    identifier(&group_id)?,
+                    audit_reference(persistence, &value)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
 
     let group_memberships =
         rows::<GroupMembershipRow>(connection, GROUP_MEMBERSHIP_QUERY, two_columns)?
@@ -523,8 +625,10 @@ pub(super) fn read(connection: &Connection) -> Result<(ApplicationState, bool), 
         configuration,
         protected_secrets,
         accounts,
+        account_audit_references,
         password_verifiers,
         groups,
+        group_audit_references,
         group_memberships,
         group_grants,
         mfa_factors,
@@ -684,6 +788,15 @@ fn identifier(bytes: &[u8]) -> Result<StateIdentifier, DatabaseError> {
         .try_into()
         .map_err(|_| DatabaseError::IntegrityFailure)?;
     StateIdentifier::from_bytes(bytes).map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+fn audit_reference(
+    persistence: &AuditReferencePersistence,
+    value: &str,
+) -> Result<AuditReferenceIdentifier, DatabaseError> {
+    persistence
+        .decode(value)
+        .map_err(|_| DatabaseError::IntegrityFailure)
 }
 
 fn text<const MAX_BYTES: usize>(value: String) -> Result<BoundedText<MAX_BYTES>, DatabaseError> {

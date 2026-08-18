@@ -8,8 +8,9 @@
 
 use weavelit_server_authentication::PasswordVerifierFactory;
 use weavelit_server_database::{
-    Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput,
-    CompletionObligation, Group, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
+    Account, AccountAuditReference, AccountPasswordVerifier, ApplicationState,
+    ApplicationStateInput, AuditReferenceIdentifier, CompletionObligation, Group,
+    GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
     LogModuleConfiguration, LogType, Name, PasswordVerifier, ProtectedSecret,
     STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
@@ -47,6 +48,10 @@ pub(crate) fn build_initial_state(
 
     let account_identifier = state_identifier()?;
     let group_identifier = state_identifier()?;
+    let account_audit_reference =
+        AuditReferenceIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
+    let group_audit_reference =
+        AuditReferenceIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
 
     let account = Account {
         identifier: account_identifier,
@@ -125,11 +130,19 @@ pub(crate) fn build_initial_state(
         configuration: Vec::new(),
         protected_secrets,
         accounts: vec![account],
+        account_audit_references: vec![AccountAuditReference::new(
+            account_identifier,
+            account_audit_reference,
+        )],
         password_verifiers: vec![AccountPasswordVerifier {
             account: account_identifier,
             verifier,
         }],
         groups: vec![group],
+        group_audit_references: vec![GroupAuditReference::new(
+            group_identifier,
+            group_audit_reference,
+        )],
         group_memberships: vec![GroupMembership {
             group: group_identifier,
             account: account_identifier,

@@ -371,6 +371,15 @@ display and diagnostic representations must not include rejected values, and a
 logging-required workflow must fail closed when a pre-redacted bounded record
 cannot be constructed.
 
+An **[Audit Reference Identifier](glossary.md#applications-and-interfaces)** is
+internal pseudonymous data. It is safe to carry in a pre-redacted Audit Log but
+remains linkable across records, so it must not be presented as anonymous or
+secret and must not become a public account, Group, or other application API
+identifier. Diagnostic formatting and validation errors must not reveal its
+payload. The Application Database owns its independent generation and durable
+association through its shared contract; a backend path, name, user input,
+public identifier, or internal state identifier must never determine it.
+
 ## Component Security Ownership
 
 - The [Authentication Design](server/authentication/authentication-design.md)

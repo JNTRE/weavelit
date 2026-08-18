@@ -33,6 +33,11 @@ operation.
 - `tests/fixtures/forbidden-lifecycle/`: External compile-fail crate proving a
   released Init checkpoint cannot be forged, completed, or sealed outside this
   crate.
+- `tests/fixtures/forbidden-database-authority/`: External compile-fail crate
+  proving an ordinary Application Database implementor cannot import database
+  authority, construct a selected binding, call its lifecycle-private
+  constructor, issue a persistence decoder, or decode persisted text without
+  one.
 
 ## Usage Guidance
 

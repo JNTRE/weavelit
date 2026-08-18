@@ -163,6 +163,7 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn load_initialized_state(
         &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
         Err(DatabaseError::NotInitialized)
@@ -180,6 +181,22 @@ impl ApplicationDatabase for FakeDatabase {
         &mut self,
         _account: StateIdentifier,
     ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_account_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _account: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::AccountAuditReference>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_group_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _group: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
         Err(DatabaseError::NotInitialized)
     }
 
@@ -336,7 +353,8 @@ fn uninitialized_record_with_init_checkpoint_is_interrupted_without_record_mutat
         .unwrap();
 
     let checkpoint = fake_checkpoint(store.record().deployment_identifier(), WorkflowKind::Init);
-    db.create_checkpoint(&checkpoint).unwrap();
+    db.with(|database| database.create_checkpoint(&checkpoint))
+        .unwrap();
     drop(db);
     let record_bytes = fs::read(path.join("deployment-record.json")).unwrap();
 
@@ -371,7 +389,8 @@ fn uninitialized_record_with_restore_checkpoint_is_interrupted() {
         store.record().deployment_identifier(),
         WorkflowKind::Restore,
     );
-    db.create_checkpoint(&checkpoint).unwrap();
+    db.with(|database| database.create_checkpoint(&checkpoint))
+        .unwrap();
     drop(db);
 
     let classification = store
@@ -597,6 +616,7 @@ fn deployment_mismatch_on_database_fails_closed() {
 
         fn load_initialized_state(
             &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
             _: DeploymentIdentifier,
         ) -> Result<InitializedState, DatabaseError> {
             Err(DatabaseError::DeploymentMismatch)
@@ -615,6 +635,23 @@ fn deployment_mismatch_on_database_fails_closed() {
             _: StateIdentifier,
         ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError>
         {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_account_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::AccountAuditReference>, DatabaseError>
+        {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_group_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
             Err(DatabaseError::DeploymentMismatch)
         }
 
@@ -796,7 +833,9 @@ fn retained_wal_mode_database_without_sidecars_preserves_state_and_classifies_ch
         drop(connection);
 
         let checkpoint = fake_checkpoint(store.record().deployment_identifier(), workflow);
-        database.create_checkpoint(&checkpoint).unwrap();
+        database
+            .with(|database| database.create_checkpoint(&checkpoint))
+            .unwrap();
         drop(database);
         assert!(!path.join("application.sqlite3-wal").exists());
         assert!(!path.join("application.sqlite3-shm").exists());

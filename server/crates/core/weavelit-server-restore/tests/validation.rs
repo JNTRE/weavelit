@@ -4,7 +4,7 @@ mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use support::{committed, committed_text, components, validate};
+use support::{committed, committed_text, components, persistence, validate};
 use weavelit_server_restore::{
     LogType, RequestBudget, RequestDeadline, RestoreError, RestoreRequest, RestoreValidator,
     TransferBounds,
@@ -43,14 +43,31 @@ fn a_valid_backup_normalizes_to_the_replacement_deployment() {
 #[test]
 fn the_decrypted_plaintext_matches_the_committed_expectation() {
     let artifact = committed("valid.wlitbackup");
-    let expected = committed("valid-plaintext.json");
+    let expected = committed_text("valid-plaintext.json");
 
     // Normalization only succeeds when decryption produced exactly this
-    // plaintext, so an independent parse of the expectation must agree.
+    // plaintext, so an independent parse of the expectation must agree. The
+    // fixture predates Audit References, so supply the independently generated
+    // values from the first normalization before comparing the complete state.
     let validated = validate(&artifact, &identity()).expect("the fixture backup is valid");
+    let expected = expected.replace(
+        "\"username\":\"administrator\"",
+        &format!(
+            "\"audit_reference\":\"{}\",\"username\":\"administrator\"",
+            validated.backup().account_audit_references()[0].audit_reference()
+        ),
+    );
+    let expected = expected.replace(
+        "\"name\":\"Administrators\"",
+        &format!(
+            "\"audit_reference\":\"{}\",\"name\":\"Administrators\"",
+            validated.backup().group_audit_references()[0].audit_reference()
+        ),
+    );
     let direct = weavelit_server_restore::normalize(
-        &expected,
+        expected.as_bytes(),
         validated.backup().source_backend(),
+        &persistence(),
         &components(),
     )
     .expect("the committed plaintext is the decrypted plaintext");

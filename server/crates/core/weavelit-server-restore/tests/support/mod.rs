@@ -27,12 +27,19 @@ use sha2::{Digest, Sha256};
 use weavelit_server_authentication::{
     Argon2Engine as _, CURRENT_ARGON2_PROFILE, PasswordPolicy, RustCryptoArgon2,
 };
+use weavelit_server_database::AuditReferencePersistence;
+use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_restore::{
     AvailableComponents, BackendIdentifier, DeploymentIdentifier, LogSettingsFormat,
     MfaFactorFormat, Name, RequestBudget, RestoreAuthority, RestoreError, RestoreRequest,
     RestoreTarget, RestoreValidator,
 };
 use x25519_dalek::{PublicKey, StaticSecret};
+
+/// Returns a decoder issued through test-only Server database authority.
+pub fn persistence() -> AuditReferencePersistence {
+    AuditReferencePersistence::from_server_authority(&ServerDatabaseAuthority::new())
+}
 
 /// Fixed backup recovery secret used by every valid fixture.
 const RECOVERY_SECRET: [u8; 32] = [
@@ -797,6 +804,7 @@ impl TestAuthority {
             target: Ok(RestoreTarget::new(
                 deployment(),
                 BackendIdentifier::new(backend).expect("the backend identifier is valid"),
+                persistence(),
             )),
         }
     }

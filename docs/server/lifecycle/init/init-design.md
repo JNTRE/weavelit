@@ -158,6 +158,11 @@ initialized before the requesting client proves possession of the private key:
    [Technical Specification](../../../spec.md#logging-and-accountability) for
    each assigned log type, and atomically replaces the checkpoint with complete
    initialized application state bound to the deployment identifier. The
+   replacement assigns the first account and the system-defined Administrators
+   Group distinct, independently random
+   **[Audit Reference Identifiers](../../../glossary.md#applications-and-interfaces)**;
+   neither value is derived from the submitted username, Group name, or either
+   entity's internal state identifier. The
    committed state includes the non-secret Init completion-event fields as a
    pending obligation. That same atomic replacement also writes the
    reconciliation digest minted during preparation into the Application

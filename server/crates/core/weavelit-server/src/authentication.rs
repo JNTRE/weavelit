@@ -1208,8 +1208,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     /// Loads the deployment's initialized application state.
     fn initialized_state(&self) -> Result<InitializedState, AuthenticationRejection> {
         self.database
-            .with(|database| database.load_initialized_state(self.deployment))
-            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?
+            .load_initialized_state(self.deployment)
             .map_err(|_| AuthenticationRejection::ServiceUnavailable)
     }
 

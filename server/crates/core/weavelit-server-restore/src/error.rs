@@ -119,8 +119,9 @@ impl From<EnvelopeError> for RestoreError {
 /// Invalid authenticated backup plaintext rejected before application-state mutation.
 ///
 /// Variants exist for validation-order attribution inside the workspace. Their
-/// display representation is uniform, and every variant maps to one of the two
-/// public categories through [`RestoreError`].
+/// display representation is uniform. Invalid or incompatible content maps to
+/// the matching backup category, while unavailable operating-system randomness
+/// maps to the fixed Restore failure category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentError {
     /// The authenticated plaintext exceeded its configured bound.
@@ -149,6 +150,8 @@ pub enum ContentError {
     FactorDataInvalid,
     /// A configuration named a known Log Module but carried a setting it does not accept.
     SettingUnsupported,
+    /// Operating-system randomness needed to normalize legacy content was unavailable.
+    RandomnessUnavailable,
 }
 
 impl fmt::Display for ContentError {
@@ -165,6 +168,7 @@ impl From<ContentError> for RestoreError {
             ContentError::UnsupportedFormatVersion
             | ContentError::BackendMismatch
             | ContentError::ComponentUnavailable => Self::BackupIncompatible,
+            ContentError::RandomnessUnavailable => Self::RestoreFailed,
             _ => Self::BackupInvalid,
         }
     }

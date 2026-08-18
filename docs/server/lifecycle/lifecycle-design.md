@@ -559,7 +559,13 @@ accepts an Administrator password or Log Module credential and before Restore
 accepts a backup or private recovery key.
 
 After successful preflight, the lifecycle crate writes the protected locator
-and opens the selected database without a process restart. The client may
+and opens the selected database without a process restart. Only after that
+selection succeeds does lifecycle use its direct
+`weavelit-server-database-authority` dependency to construct `SelectedDatabase`,
+whose private fields hold the opened backend and its
+`AuditReferencePersistence` decoder together. The constructor is crate-private,
+the authority type is not reexported through lifecycle, and neither the wrapper
+nor any stage implements `Deref` or returns the raw backend box. The client may
 replace the selection with another eligible database before either workflow
 creates a pending checkpoint. Replacement is fully preflighted before atomic
 locator replacement and does not delete artifacts at the previous destination.
@@ -638,12 +644,14 @@ authorize_workflow -> create_checkpoint -> complete_checkpoint
 
 Each stage consumes the previous one and carries the exclusive permit forward,
 so the whole workflow runs under one uninterrupted permit and no other mutation
-can interleave. Authorization performs every check that can be made before a
-durable change, including opening the selected database and confirming it is
-uninitialized, so a caller that fails during preparation leaves nothing
-retained. Creating the checkpoint is the point of no return. Sealing is
-reachable only from an acknowledged workflow, so an unacknowledged deployment
-cannot be sealed by construction.
+can interleave. Every database-selected stage carries `SelectedDatabase`, never
+a raw backend box. Authorization performs every check that can be made before a
+durable change, including opening the selected database, confirming it is
+uninitialized, and only then binding its decoder, so a caller that fails during
+preparation leaves nothing retained and receives no selected capability.
+Creating the checkpoint is the point of no return. Sealing is reachable only
+from an acknowledged workflow, so an unacknowledged deployment cannot be sealed
+by construction.
 
 Sealing does not trust the calls that appeared to succeed. It re-reads the
 deployment record and the database, requires the record to be
@@ -655,13 +663,14 @@ known to be complete, acknowledged, and loadable. A backend that misreports its
 own durable state fails closed rather than producing a sealed deployment.
 
 Sealing returns the sealed deployment: the loaded application state and the
-database the workflow held open. Retaining that handle rather than dropping it
-lets an in-process activation continue on the database the workflow committed
-through instead of reopening the target, so a running deployment never holds two
-open handles to one Application Database file. The sealed deployment is a single
-value that hands both halves to the runtime together, so a caller cannot take
-the state and leave the database behind. A later startup that classifies a
-sealed deployment loads it through the same path and receives the same pair.
+`SelectedDatabase` the workflow held open. Retaining that wrapper rather than
+dropping it lets an in-process activation continue on the database and decoder
+the workflow committed through instead of reopening the target, so a running
+deployment never holds two open handles to one Application Database file. The
+sealed deployment is a single value that hands both halves to the runtime
+together, and operational ownership keeps the wrapper intact behind its
+exclusive lane. A later startup that classifies a sealed deployment loads it
+through the same path and receives the same pair.
 
 If database state commits but sealing or in-process activation fails, the
 runtime exposes no routes and fails closed. On restart, the lifecycle crate

@@ -16,6 +16,7 @@ use crate::{
         generate_key, generate_locator_generation, generate_nonce, locator_file_name, parse_key,
         serialize_key,
     },
+    selected::selected_database,
 };
 
 /// How the current anchor set was obtained.
@@ -156,7 +157,7 @@ impl LifecycleStore {
         context: &TrustedBackendContext,
         backend: &BackendIdentifier,
         inputs: Vec<ConnectionFieldInput>,
-    ) -> Result<Box<dyn weavelit_server_database::ApplicationDatabase>, SelectionError> {
+    ) -> Result<crate::SelectedDatabase, SelectionError> {
         if self.record.state() != LifecycleState::Uninitialized {
             return Err(SelectionError::NotAllowed);
         }
@@ -195,7 +196,7 @@ impl LifecycleStore {
         if let Some(locator) = &self.locator
             && settings_match(locator.settings(), &settings)
         {
-            return Ok(new_db);
+            return Ok(selected_database(new_db));
         }
 
         // Persist the new locator atomically.
@@ -206,7 +207,7 @@ impl LifecycleStore {
         self.replace_locator(&permit, locator)
             .map_err(SelectionError::Lifecycle)?;
 
-        Ok(new_db)
+        Ok(selected_database(new_db))
     }
 
     /// Reopens the selected Application Database from the persisted locator.
@@ -217,13 +218,13 @@ impl LifecycleStore {
         &self,
         catalog: &BackendCatalog,
         context: &TrustedBackendContext,
-    ) -> Result<Box<dyn weavelit_server_database::ApplicationDatabase>, LifecycleError> {
+    ) -> Result<crate::SelectedDatabase, LifecycleError> {
         let locator = self.locator.as_ref().ok_or(LifecycleError::InvalidState)?;
         let mut database = catalog.reopen(locator.settings(), context)?;
         database
             .inspect(self.record.deployment_identifier())
             .map_err(map_database_error_to_lifecycle)?;
-        Ok(database)
+        Ok(selected_database(database))
     }
 
     /// Classifies startup state from the current anchor set without mutating retained state.

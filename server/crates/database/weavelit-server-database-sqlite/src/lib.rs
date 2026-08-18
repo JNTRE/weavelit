@@ -16,8 +16,9 @@ mod state;
 pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
-    ApplicationDatabase, ApplicationState, ComponentEnablement, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, HumanAuthorizationSnapshot, InitializedState, MfaStore,
+    AccountAuditReference, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
+    ComponentEnablement, DatabaseError, DatabaseInspection, DeploymentIdentifier,
+    GroupAuditReference, HumanAuthorizationSnapshot, InitializedState, MfaStore,
     ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
 };
 
@@ -44,9 +45,10 @@ impl ApplicationDatabase for SqliteDatabase {
 
     fn load_initialized_state(
         &mut self,
+        persistence: &AuditReferencePersistence,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
-        self.load_initialized_state_atomic(expected_deployment_identifier)
+        self.load_initialized_state_atomic(persistence, expected_deployment_identifier)
     }
 
     fn acknowledge_completion(
@@ -62,6 +64,22 @@ impl ApplicationDatabase for SqliteDatabase {
         account: StateIdentifier,
     ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError> {
         self.load_human_authorization_atomic(account)
+    }
+
+    fn load_account_audit_reference(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        account: StateIdentifier,
+    ) -> Result<Option<AccountAuditReference>, DatabaseError> {
+        self.load_account_audit_reference_atomic(persistence, account)
+    }
+
+    fn load_group_audit_reference(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        group: StateIdentifier,
+    ) -> Result<Option<GroupAuditReference>, DatabaseError> {
+        self.load_group_audit_reference_atomic(persistence, group)
     }
 
     fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError> {

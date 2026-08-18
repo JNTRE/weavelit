@@ -456,6 +456,7 @@ impl RestoreOrchestrator {
         let authority = AuthorizedTarget(RestoreTarget::new(
             permit.deployment_identifier(),
             permit.selected_backend().clone(),
+            permit.audit_reference_persistence(),
         ));
 
         let validated = self.validator.validate(

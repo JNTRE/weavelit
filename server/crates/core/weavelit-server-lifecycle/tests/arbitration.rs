@@ -209,8 +209,10 @@ fn workflow_application_state(workflow: WorkflowKind) -> ApplicationState {
         configuration: vec![],
         protected_secrets: vec![],
         accounts: vec![],
+        account_audit_references: vec![],
         password_verifiers: vec![],
         groups: vec![],
+        group_audit_references: vec![],
         group_memberships: vec![],
         group_grants: vec![],
         mfa_factors: vec![],
@@ -296,6 +298,7 @@ impl ApplicationDatabase for LyingDatabase {
 
     fn load_initialized_state(
         &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, weavelit_server_database::DatabaseError> {
         let state = self
@@ -323,6 +326,28 @@ impl ApplicationDatabase for LyingDatabase {
         _account: StateIdentifier,
     ) -> Result<
         Option<weavelit_server_database::HumanAuthorizationSnapshot>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
+    }
+
+    fn load_account_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _account: StateIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::AccountAuditReference>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
+    }
+
+    fn load_group_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _group: StateIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::GroupAuditReference>,
         weavelit_server_database::DatabaseError,
     > {
         Ok(None)
@@ -446,6 +471,22 @@ fn begin_workflow(
 // ---------------------------------------------------------------------------
 
 #[test]
+fn a_real_sqlite_workflow_permit_carries_the_selected_persistence_decoder() {
+    let (_directory, path) = state_root();
+    let (arbiter, catalog, context) = setup(&path);
+
+    let permit = arbiter
+        .authorize_workflow(&catalog, &context)
+        .expect("real SQLite selection must authorize the workflow");
+    let decoded = permit
+        .audit_reference_persistence()
+        .decode("ar-0123456789abcdef0123456789abcdef")
+        .expect("the selected database binding must carry its decoder");
+
+    assert_eq!(decoded.to_string(), "ar-0123456789abcdef0123456789abcdef");
+}
+
+#[test]
 fn begin_init_creates_checkpoint_and_advances_record() {
     let (_dir, path) = state_root();
     let (arbiter, catalog, context) = setup(&path);
@@ -473,7 +514,10 @@ fn begin_init_creates_checkpoint_and_advances_record() {
     let mut db = store
         .reopen_selected_database(&sqlite_catalog(), &sqlite_context(&path))
         .unwrap();
-    match db.inspect(store.record().deployment_identifier()).unwrap() {
+    match db
+        .with(|database| database.inspect(store.record().deployment_identifier()))
+        .unwrap()
+    {
         DatabaseInspection::Pending(checkpoint) => {
             assert_eq!(checkpoint.workflow(), WorkflowKind::Init);
             assert_eq!(
@@ -510,7 +554,10 @@ fn begin_restore_creates_checkpoint_and_advances_record() {
     let mut db = store
         .reopen_selected_database(&sqlite_catalog(), &sqlite_context(&path))
         .unwrap();
-    match db.inspect(store.record().deployment_identifier()).unwrap() {
+    match db
+        .with(|database| database.inspect(store.record().deployment_identifier()))
+        .unwrap()
+    {
         DatabaseInspection::Pending(checkpoint) => {
             assert_eq!(checkpoint.workflow(), WorkflowKind::Restore);
         }
@@ -607,11 +654,13 @@ fn crash_after_checkpoint_before_record_requires_redeploy_at_startup() {
             .unwrap();
         let dep_id = store.record().deployment_identifier();
         let mut db = store.reopen_selected_database(&catalog, &context).unwrap();
-        db.create_checkpoint(&WorkflowCheckpoint::new(
-            dep_id,
-            WorkflowKind::Init,
-            init_metadata(),
-        ))
+        db.with(|database| {
+            database.create_checkpoint(&WorkflowCheckpoint::new(
+                dep_id,
+                WorkflowKind::Init,
+                init_metadata(),
+            ))
+        })
         .unwrap();
         drop(db);
         drop(store); // Lock released; record is still Uninitialized.
@@ -703,7 +752,8 @@ fn at_most_one_workflow_checkpoint_becomes_durable_under_contention() {
         .unwrap();
     assert!(
         matches!(
-            db.inspect(store.record().deployment_identifier()).unwrap(),
+            db.with(|database| database.inspect(store.record().deployment_identifier()))
+                .unwrap(),
             DatabaseInspection::Pending(_)
         ),
         "exactly one checkpoint must be durable"
@@ -1061,7 +1111,9 @@ fn a_workflow_seals_the_deployment_only_after_the_full_ordered_path() {
     // Sealing hands back the database the workflow committed through rather
     // than dropping it, so the sealed deployment is usable without reopening.
     assert_eq!(
-        sealed.database().inspect(deployment_identifier).unwrap(),
+        sealed
+            .with_database(|database| database.inspect(deployment_identifier))
+            .unwrap(),
         DatabaseInspection::Initialized {
             deployment_identifier
         }
@@ -1144,7 +1196,9 @@ fn a_sealed_deployment_reloads_its_state_and_open_database_on_a_later_startup() 
     assert!(sealed.state().completion_acknowledged());
     assert_eq!(sealed.state().state(), &state);
     assert_eq!(
-        sealed.database().inspect(deployment_identifier).unwrap(),
+        sealed
+            .with_database(|database| database.inspect(deployment_identifier))
+            .unwrap(),
         DatabaseInspection::Initialized {
             deployment_identifier
         }
@@ -1156,7 +1210,9 @@ fn a_sealed_deployment_reloads_its_state_and_open_database_on_a_later_startup() 
     let (loaded, mut database) = sealed.into_parts();
     assert_eq!(loaded.deployment_identifier(), deployment_identifier);
     assert_eq!(
-        database.inspect(deployment_identifier).unwrap(),
+        database
+            .with(|database| database.inspect(deployment_identifier))
+            .unwrap(),
         DatabaseInspection::Initialized {
             deployment_identifier
         }
@@ -1426,6 +1482,7 @@ impl ApplicationDatabase for DriftingDatabase {
 
     fn load_initialized_state(
         &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, weavelit_server_database::DatabaseError> {
         Err(weavelit_server_database::DatabaseError::InvalidState)
@@ -1444,6 +1501,28 @@ impl ApplicationDatabase for DriftingDatabase {
         _account: StateIdentifier,
     ) -> Result<
         Option<weavelit_server_database::HumanAuthorizationSnapshot>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
+    }
+
+    fn load_account_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _account: StateIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::AccountAuditReference>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
+    }
+
+    fn load_group_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _group: StateIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::GroupAuditReference>,
         weavelit_server_database::DatabaseError,
     > {
         Ok(None)

@@ -45,6 +45,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0006_add_lifecycle_reconciliation",
         sql: include_str!("../migrations/0006_add_lifecycle_reconciliation.sql"),
     },
+    Migration {
+        sequence: 7,
+        identifier: "0007_add_audit_references",
+        sql: include_str!("../migrations/0007_add_audit_references.sql"),
+    },
 ];
 
 struct AppliedMigration {
@@ -303,6 +308,146 @@ mod tests {
     }
 
     #[test]
+    fn audit_reference_migration_backfills_independent_values_without_changing_entities() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..6]).unwrap();
+        let account_id = [0x11_u8; 16];
+        let group_id = [0x22_u8; 16];
+        connection
+            .execute(
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (?1, '管理者-équipe', '運用担当', 1, 0)",
+                [account_id.as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_group (group_id, name, description) \
+                 VALUES (?1, '運用-équipe', 'broad Unicode survives')",
+                [group_id.as_slice()],
+            )
+            .unwrap();
+
+        apply_migrations(&mut connection, MIGRATIONS).unwrap();
+
+        let rows = connection
+            .prepare(
+                "SELECT audit_reference, 'account' AS entity_kind, account_id AS entity_id \
+                 FROM weavelit_account_audit_reference \
+                 UNION ALL \
+                 SELECT audit_reference, 'group', group_id \
+                 FROM weavelit_group_audit_reference \
+                 ORDER BY entity_kind",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].0, rows[1].0);
+        for (reference, _, _) in &rows {
+            assert_eq!(reference.len(), 35);
+            assert!(reference.starts_with("ar-"));
+            assert!(
+                reference[3..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            );
+            assert_ne!(reference, "ar-00000000000000000000000000000000");
+            assert_ne!(reference, &format!("ar-{}", hex(&account_id)));
+            assert_ne!(reference, &format!("ar-{}", hex(&group_id)));
+            assert!(!reference.contains("équipe"));
+            assert!(!reference.contains("管理者"));
+        }
+        assert_eq!(rows[0].1, "account");
+        assert_eq!(rows[0].2, account_id);
+        assert_eq!(rows[1].1, "group");
+        assert_eq!(rows[1].2, group_id);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT username FROM weavelit_account WHERE account_id = ?1",
+                    [account_id.as_slice()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "管理者-équipe"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT name FROM weavelit_group WHERE group_id = ?1",
+                    [group_id.as_slice()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "運用-équipe"
+        );
+    }
+
+    #[test]
+    fn failed_audit_reference_backfill_rolls_back_schema_data_and_ledger() {
+        const FAILING_MIGRATION: &str = concat!(
+            include_str!("../migrations/0007_add_audit_references.sql"),
+            "INSERT INTO missing_table VALUES (1);"
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..6]).unwrap();
+        let account_id = [0x33_u8; 16];
+        connection
+            .execute(
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (?1, 'rollback-user', NULL, 1, 0)",
+                [account_id.as_slice()],
+            )
+            .unwrap();
+        let mut migrations = MIGRATIONS.to_vec();
+        migrations[6].sql = FAILING_MIGRATION;
+
+        assert_eq!(
+            apply_migrations(&mut connection, &migrations),
+            Err(DatabaseError::IntegrityFailure)
+        );
+        assert!(!table_exists_for_test(
+            &connection,
+            "weavelit_account_audit_reference"
+        ));
+        assert!(!table_exists_for_test(
+            &connection,
+            "weavelit_group_audit_reference"
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_migration_ledger",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            6
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT username FROM weavelit_account", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "rollback-user"
+        );
+    }
+
+    #[test]
     fn tampered_applied_prefix_is_rejected_before_pending_migration() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(MIGRATIONS[0].sql).unwrap();
@@ -343,5 +488,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 }

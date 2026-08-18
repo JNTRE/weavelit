@@ -1,18 +1,24 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
-    Account, AccountPasswordVerifier, ApplicationDatabase, ApplicationState, ApplicationStateInput,
+    Account, AccountAuditReference, AccountPasswordVerifier, ApplicationDatabase, ApplicationState,
+    ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
     COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation, ComponentEnablement,
     ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
-    DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupGrant, GroupGrantRecord,
-    GroupMembership, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
-    LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
-    PasswordVerifier, ProtectedSecret, ProtectedValue, ReconciliationDigest, ReconciliationStore,
-    RecoveryPublicKey, SESSION_DIGEST_LENGTH, ServiceConnection, SessionCsrfHash, SessionInstant,
-    SessionStore, SessionTokenHash, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
+    DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference,
+    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogClassification, LogDetail,
+    LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore,
+    MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
+    ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
+    ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
+    StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
+use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_database_sqlite::SqliteDatabase;
 
 const PROTECTED_SECRET_BYTES: &[u8] = b"protected-component-secret";
@@ -25,11 +31,13 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 19] = [
+const EXPECTED_TABLES: [&str; 21] = [
     "weavelit_account",
+    "weavelit_account_audit_reference",
     "weavelit_completion_obligation",
     "weavelit_configuration",
     "weavelit_group",
+    "weavelit_group_audit_reference",
     "weavelit_group_grant",
     "weavelit_group_membership",
     "weavelit_lifecycle_state",
@@ -73,6 +81,20 @@ fn deployment(byte: u8) -> DeploymentIdentifier {
 
 fn identifier(byte: u8) -> StateIdentifier {
     StateIdentifier::from_bytes([byte; 16]).unwrap()
+}
+
+fn audit_reference(byte: u8) -> AuditReferenceIdentifier {
+    audit_reference_persistence()
+        .decode(&format!("ar-{}", format!("{byte:02x}").repeat(16)))
+        .unwrap()
+}
+
+fn audit_reference_persistence() -> AuditReferencePersistence {
+    static PERSISTENCE: OnceLock<AuditReferencePersistence> = OnceLock::new();
+
+    *PERSISTENCE.get_or_init(|| {
+        AuditReferencePersistence::from_server_authority(&ServerDatabaseAuthority::new())
+    })
 }
 
 fn reconciliation_digest(byte: u8) -> ReconciliationDigest {
@@ -162,11 +184,15 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
             },
             Account {
                 identifier: identifier(2),
-                username: name("disabled-user"),
-                display_name: None,
+                username: name("管理者-équipe"),
+                display_name: Some(name("運用担当")),
                 active: false,
                 mfa_required: false,
             },
+        ],
+        account_audit_references: vec![
+            AccountAuditReference::new(identifier(1), audit_reference(0xA1)),
+            AccountAuditReference::new(identifier(2), audit_reference(0xA2)),
         ],
         password_verifiers: vec![AccountPasswordVerifier {
             account: identifier(1),
@@ -182,9 +208,13 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
             },
             Group {
                 identifier: identifier(7),
-                name: name("Ticket Operators"),
+                name: name("運用-équipe"),
                 description: None,
             },
+        ],
+        group_audit_references: vec![
+            GroupAuditReference::new(identifier(3), audit_reference(0xB3)),
+            GroupAuditReference::new(identifier(7), audit_reference(0xB7)),
         ],
         group_memberships: vec![
             GroupMembership {
@@ -498,7 +528,7 @@ fn the_authorization_projection_renders_without_revealing_what_it_carries() {
         RECOVERY_KEY.to_string(),
         USERNAME.to_string(),
         String::from("Administrators"),
-        String::from("Ticket Operators"),
+        String::from("運用-équipe"),
         String::from("log-sqlite"),
         String::from("primary"),
         // The grants the projection genuinely does carry are redacted too, so a
@@ -634,7 +664,7 @@ fn a_restore_clears_every_live_session_inside_the_state_replacement() {
     assert_eq!(session_count(&path), 0);
     assert_eq!(
         database
-            .load_initialized_state(deployment_identifier)
+            .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
             .unwrap()
             .state(),
         &application_state(WorkflowKind::Restore)
@@ -734,7 +764,7 @@ fn normalized_state_and_backup_content_carry_no_session_data() {
     database.create(&session(0x29, 0x2A)).unwrap();
 
     let loaded = database
-        .load_initialized_state(deployment_identifier)
+        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
         .unwrap();
     let rendered = format!("{:?}", loaded.state());
 
@@ -763,13 +793,20 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
 
     let mut database = SqliteDatabase::open(&path).unwrap();
     let loaded = database
-        .load_initialized_state(deployment_identifier)
+        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
         .unwrap();
 
     assert_eq!(loaded.deployment_identifier(), deployment_identifier);
     assert!(!loaded.completion_acknowledged());
     assert_eq!(loaded.state(), &expected);
     assert_eq!(loaded.state().accounts().len(), 2);
+    assert_eq!(
+        loaded.state().accounts()[1].username.as_str(),
+        "管理者-équipe"
+    );
+    assert_eq!(loaded.state().groups()[1].name.as_str(), "運用-équipe");
+    assert_eq!(loaded.state().account_audit_references().len(), 2);
+    assert_eq!(loaded.state().group_audit_references().len(), 2);
     assert_eq!(loaded.state().group_grants().len(), 8);
     assert_eq!(
         loaded.state().password_verifiers()[0].verifier.as_str(),
@@ -798,6 +835,220 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
         DatabaseInspection::Initialized {
             deployment_identifier
         }
+    );
+}
+
+#[test]
+fn typed_audit_reference_projections_are_unique_persistent_and_indexed() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = restored_database(&path, deployment(25));
+
+    let account = database
+        .load_account_audit_reference(&audit_reference_persistence(), identifier(1))
+        .unwrap()
+        .expect("the account has an audit reference");
+    let group = database
+        .load_group_audit_reference(&audit_reference_persistence(), identifier(3))
+        .unwrap()
+        .expect("the Group has an audit reference");
+
+    assert_eq!(account.account(), identifier(1));
+    assert_eq!(account.audit_reference(), audit_reference(0xA1));
+    assert_eq!(group.group(), identifier(3));
+    assert_eq!(group.audit_reference(), audit_reference(0xB3));
+    assert_ne!(account.audit_reference(), group.audit_reference());
+    assert_eq!(
+        database.load_account_audit_reference(&audit_reference_persistence(), identifier(9)),
+        Ok(None)
+    );
+    assert_eq!(
+        database.load_group_audit_reference(&audit_reference_persistence(), identifier(9)),
+        Ok(None)
+    );
+
+    let connection = Connection::open(&path).unwrap();
+    let account_index_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema \
+             WHERE type = 'index' AND name = 'weavelit_account_audit_reference_value'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    let group_index_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema \
+             WHERE type = 'index' AND name = 'weavelit_group_audit_reference_value'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert!(account_index_sql.contains("audit_reference"));
+    assert!(group_index_sql.contains("audit_reference"));
+
+    for (table, reference) in [
+        (
+            "weavelit_account_audit_reference",
+            account.audit_reference(),
+        ),
+        ("weavelit_group_audit_reference", group.audit_reference()),
+    ] {
+        let plan = connection
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT * FROM {table} WHERE audit_reference = ?1"
+            ))
+            .unwrap()
+            .query_map([reference.to_string()], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join(" ");
+        assert!(
+            plan.contains("INDEX"),
+            "lookup plan must use an index: {plan}"
+        );
+    }
+}
+
+#[test]
+fn audit_reference_tables_enforce_typed_ownership_uniqueness_and_immutability() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    drop(SqliteDatabase::open(&path).unwrap());
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+
+    for (identifier, username) in [([1_u8; 16], "first"), ([2_u8; 16], "second")] {
+        connection
+            .execute(
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (?1, ?2, NULL, 1, 0)",
+                rusqlite::params![identifier.as_slice(), username],
+            )
+            .unwrap();
+    }
+    for (identifier, name) in [([3_u8; 16], "first-group"), ([4_u8; 16], "second-group")] {
+        connection
+            .execute(
+                "INSERT INTO weavelit_group (group_id, name, description) \
+                 VALUES (?1, ?2, NULL)",
+                rusqlite::params![identifier.as_slice(), name],
+            )
+            .unwrap();
+    }
+
+    let account_reference = "ar-11111111111111111111111111111111";
+    let group_reference = "ar-22222222222222222222222222222222";
+    connection
+        .execute(
+            "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
+             VALUES (?1, ?2)",
+            rusqlite::params![[1_u8; 16].as_slice(), account_reference],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_group_audit_reference (group_id, audit_reference) \
+             VALUES (?1, ?2)",
+            rusqlite::params![[3_u8; 16].as_slice(), group_reference],
+        )
+        .unwrap();
+
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
+                 VALUES (?1, 'ar-33333333333333333333333333333333')",
+                [[9_u8; 16].as_slice()],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_audit_reference (group_id, audit_reference) \
+                 VALUES (?1, 'ar-44444444444444444444444444444444')",
+                [[9_u8; 16].as_slice()],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
+                 VALUES (?1, ?2)",
+                rusqlite::params![[2_u8; 16].as_slice(), account_reference],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_audit_reference (group_id, audit_reference) \
+                 VALUES (?1, ?2)",
+                rusqlite::params![[4_u8; 16].as_slice(), group_reference],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_audit_reference (group_id, audit_reference) \
+                 VALUES (?1, ?2)",
+                rusqlite::params![[4_u8; 16].as_slice(), account_reference],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
+                 VALUES (?1, ?2)",
+                rusqlite::params![[2_u8; 16].as_slice(), group_reference],
+            )
+            .is_err()
+    );
+
+    for malformed in [
+        "ar-00000000000000000000000000000000",
+        "ar-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "ar-1111111111111111111111111111111g",
+        "ar-1111111111111111111111111111111",
+        "11111111111111111111111111111111111",
+    ] {
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO weavelit_account_audit_reference \
+                     (account_id, audit_reference) VALUES (?1, ?2)",
+                    rusqlite::params![[2_u8; 16].as_slice(), malformed],
+                )
+                .is_err(),
+            "malformed value must fail its CHECK: {malformed}"
+        );
+    }
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE weavelit_account_audit_reference \
+                 SET audit_reference = 'ar-55555555555555555555555555555555' \
+                 WHERE account_id = ?1",
+                [[1_u8; 16].as_slice()],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE weavelit_group_audit_reference SET group_id = ?1 WHERE group_id = ?2",
+                rusqlite::params![[4_u8; 16].as_slice(), [3_u8; 16].as_slice()],
+            )
+            .is_err()
     );
 }
 
@@ -895,7 +1146,9 @@ fn deployment_mismatch_is_rejected_for_completion_load_and_acknowledgement() {
             &reconciliation_digest(0xA0),
         )
         .unwrap_err();
-    let load_error = database.load_initialized_state(other).unwrap_err();
+    let load_error = database
+        .load_initialized_state(&audit_reference_persistence(), other)
+        .unwrap_err();
     let acknowledgement_error = database
         .acknowledge_completion(other, identifier(RECORD_IDENTIFIER_BYTE))
         .unwrap_err();
@@ -975,7 +1228,7 @@ fn transaction_failure_rolls_back_every_persisted_state_row() {
         DatabaseInspection::Pending(restore_checkpoint(deployment_identifier))
     );
     assert_eq!(
-        reopened.load_initialized_state(deployment_identifier),
+        reopened.load_initialized_state(&audit_reference_persistence(), deployment_identifier),
         Err(DatabaseError::NotInitialized)
     );
 }
@@ -987,11 +1240,13 @@ fn loading_uninitialized_or_pending_state_is_rejected() {
     let deployment_identifier = deployment(8);
     let mut database = SqliteDatabase::open(&path).unwrap();
 
-    let uninitialized = database.load_initialized_state(deployment_identifier);
+    let uninitialized =
+        database.load_initialized_state(&audit_reference_persistence(), deployment_identifier);
     database
         .create_checkpoint(&restore_checkpoint(deployment_identifier))
         .unwrap();
-    let pending = database.load_initialized_state(deployment_identifier);
+    let pending =
+        database.load_initialized_state(&audit_reference_persistence(), deployment_identifier);
 
     assert_eq!(uninitialized, Err(DatabaseError::NotInitialized));
     assert_eq!(pending, Err(DatabaseError::NotInitialized));
@@ -1000,6 +1255,15 @@ fn loading_uninitialized_or_pending_state_is_rejected() {
 #[test]
 fn malformed_persisted_state_fails_integrity_validation() {
     let mutations = [
+        "DELETE FROM weavelit_account_audit_reference",
+        "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
+         VALUES (x'99999999999999999999999999999999', \
+         'ar-99999999999999999999999999999999')",
+        "DELETE FROM weavelit_account_audit_reference WHERE account_id = \
+         x'01010101010101010101010101010101'; \
+         INSERT INTO weavelit_group_audit_reference (group_id, audit_reference) \
+         VALUES (x'01010101010101010101010101010101', \
+         'ar-a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1')",
         "DELETE FROM weavelit_recovery_public_key",
         "DELETE FROM weavelit_log_assignment WHERE log_type = 'audit'",
         "DELETE FROM weavelit_completion_obligation",
@@ -1012,12 +1276,15 @@ fn malformed_persisted_state_fails_integrity_validation() {
         let deployment_identifier = deployment(9);
         drop(restored_database(&path, deployment_identifier));
         let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
         connection.execute_batch(mutation).unwrap();
         drop(connection);
 
         let error = SqliteDatabase::open(&path)
             .unwrap()
-            .load_initialized_state(deployment_identifier)
+            .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
             .unwrap_err();
 
         assert_eq!(error, DatabaseError::IntegrityFailure, "for {mutation}");
@@ -1037,7 +1304,7 @@ fn completion_obligation_is_acknowledged_exactly_once() {
     let first = database.acknowledge_completion(deployment_identifier, record_identifier);
     let second = database.acknowledge_completion(deployment_identifier, record_identifier);
     let loaded = database
-        .load_initialized_state(deployment_identifier)
+        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
         .unwrap();
 
     assert_eq!(unknown_record, Err(DatabaseError::InvalidState));

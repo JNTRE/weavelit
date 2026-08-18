@@ -8,4 +8,6 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+getrandom = { version = "=0.4.3", default-features = false }
 subtle.workspace = true
+weavelit-server-database-authority = { path = "../weavelit-server-database-authority" }

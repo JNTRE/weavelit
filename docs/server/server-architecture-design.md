@@ -70,11 +70,13 @@ crates are:
 
 ```text
 weavelit-server-database
+weavelit-server-database-authority
 weavelit-server-database-sqlite
 ```
 
 The first crate owns the shared Application Database contract; the second owns
-the SQLite implementation. This convention also permits a future dedicated
+the Server database-selection capability; the third owns the SQLite
+implementation. This convention also permits a future dedicated
 **[Log Module](../glossary.md#applications-and-interfaces)** implementation crate
 such as `weavelit-module-log-sqlite`, without requiring a shared Log Module
 crate before it has meaningful shared code or a shared contract.
@@ -161,6 +163,18 @@ compile fixtures prove that an external consumer can register a module but
 cannot mint an issuer, trusted context, acknowledgement, dispatch, or the
 capability itself.
 
+`weavelit-server-database-authority` carries the capability that separates
+Server-owned selected-database decoding authority from an ordinary Application
+Database implementor. The dependency-free crate's privately represented
+`ServerDatabaseAuthority` is not reexported by the database contract or
+lifecycle crate. The database contract requires it at the sole
+`AuditReferencePersistence` issuer, lifecycle declares the direct production
+dependency that constructs a selected binding only after selection or reopening
+succeeds, and direct SQLite or Restore tests declare only dev dependencies. A
+JSON-diagnostic external fixture proves that a crate which can implement
+`ApplicationDatabase` still cannot import the authority, construct
+`SelectedDatabase`, issue the decoder, or decode persisted text without one.
+
 `weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
 shared by **[Init](../glossary.md#states-and-requests)** and
 **[Restore](../glossary.md#states-and-requests)**. The two workflow crates own
@@ -180,17 +194,21 @@ result to choose which routes may exist. The lifecycle crate does not create
 new application state, interpret backup contents, handle a private recovery
 key, reconcile or seal retained partial state, or implement client presentation.
 
-The initial delivered lifecycle contract depends only on
-`weavelit-server-database`. It reuses that crate's deployment identifier and
-Application Database trait while defining lifecycle record and locator values,
+The initial delivered lifecycle contract depends directly on
+`weavelit-server-database` and `weavelit-server-database-authority`. It reuses
+the contract crate's deployment identifier and Application Database trait and
+uses the authority crate only after successful selection or reopening to bind
+the raw backend and persistence decoder into private-field `SelectedDatabase`,
+while defining lifecycle record and locator values,
 canonical backend and field identifiers, bounded scalar connection values,
 trusted secret classifications, capability classifications, and payload-free
 errors. `BackendCatalog` validates runtime registrations and submitted fields
 before invoking an `ApplicationDatabaseFactory`. The factory receives a trusted
 Server-derived local context separately from canonically ordered validated
-settings and returns only the backend-neutral Application Database contract.
-This initial boundary contains no persistence, serialization, cryptography,
-SQLite implementation, Client Module, or runtime-composition dependency.
+settings and returns only the raw backend-neutral Application Database contract;
+the selected wrapper is lifecycle-owned and has no raw-box or `Deref` escape.
+This initial boundary contains no SQLite implementation, Client Module, or
+runtime-composition dependency.
 
 `weavelit-server-components` owns the neutral compiled-in component inventory
 that **[Init](../glossary.md#states-and-requests)** and
@@ -342,7 +360,8 @@ those routes require.
 ### Operational Composer
 
 One operational composer owns the whole operational surface. It accepts the
-Application Database handle a sealed workflow hands over, mounts the Client
+`SelectedDatabase` a sealed workflow hands over, keeps its backend and
+persistence decoder together behind one exclusive operational lane, mounts the Client
 Module operational declaration over the shared not-found fallback, and attaches
 every operational transport registration to that same mounted value. The
 publisher accepts only what the composer produced, so an operational route
@@ -1135,7 +1154,9 @@ every dependency-resolution change.
 #### `getrandom`
 
 - **Source and version:** crates.io `=0.4.3`.
-- **Owner and behavior:** `weavelit-server-lifecycle` obtains operating-system
+- **Owner and behavior:** `weavelit-server-database` obtains operating-system
+  randomness for backend-neutral Audit Reference Identifier construction.
+  `weavelit-server-lifecycle` obtains operating-system
   randomness for the deployment key, deployment identifier, locator generation,
   temporary-file uniqueness, and AEAD nonces. `weavelit-server` obtains the same
   randomness for the Restore-result System Log record identifier and its

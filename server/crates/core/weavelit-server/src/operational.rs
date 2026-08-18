@@ -30,6 +30,7 @@ use weavelit_module_client::{
 use weavelit_server_authentication::RustCryptoArgon2;
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
+    SelectedDatabase,
 };
 use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::Name;
@@ -165,20 +166,38 @@ impl fmt::Debug for ActiveDatabase {
 /// later operation unavailable rather than racing a closing backend.
 #[derive(Clone)]
 pub struct OperationalDatabase {
-    database: Arc<Mutex<Option<Box<dyn ApplicationDatabase>>>>,
+    database: Arc<Mutex<Option<OperationalDatabaseHandle>>>,
+}
+
+enum OperationalDatabaseHandle {
+    Selected(SelectedDatabase),
+    #[cfg(test)]
+    UnselectedTest(Box<dyn ApplicationDatabase>),
 }
 
 impl OperationalDatabase {
     /// Takes ownership of a sealed deployment's loaded state and open database.
     pub(crate) fn from_sealed(sealed: SealedDeployment) -> (InitializedState, Self) {
         let (state, database) = sealed.into_parts();
-        (state, Self::from_open(database))
+        (state, Self::from_selected(database))
     }
 
     /// Takes ownership of an already-open database.
+    #[cfg(test)]
     pub(crate) fn from_open(database: Box<dyn ApplicationDatabase>) -> Self {
         Self {
-            database: Arc::new(Mutex::new(Some(database))),
+            database: Arc::new(Mutex::new(Some(OperationalDatabaseHandle::UnselectedTest(
+                database,
+            )))),
+        }
+    }
+
+    /// Takes ownership of a lifecycle-selected database and its decoder.
+    fn from_selected(database: SelectedDatabase) -> Self {
+        Self {
+            database: Arc::new(Mutex::new(Some(OperationalDatabaseHandle::Selected(
+                database,
+            )))),
         }
     }
 
@@ -197,7 +216,29 @@ impl OperationalDatabase {
             .lock()
             .map_err(|_| DatabaseError::Unavailable)?;
         let database = database.as_mut().ok_or(DatabaseError::Unavailable)?;
-        Ok(operation(&mut **database))
+        Ok(match database {
+            OperationalDatabaseHandle::Selected(database) => database.with(operation),
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest(database) => operation(&mut **database),
+        })
+    }
+
+    /// Loads initialized state through the selected database's decoder.
+    pub fn load_initialized_state(
+        &self,
+        expected_deployment_identifier: weavelit_server_database::DeploymentIdentifier,
+    ) -> Result<InitializedState, DatabaseError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| DatabaseError::Unavailable)?;
+        match database.as_mut().ok_or(DatabaseError::Unavailable)? {
+            OperationalDatabaseHandle::Selected(database) => {
+                database.load_initialized_state(expected_deployment_identifier)
+            }
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest(_) => Err(DatabaseError::Unavailable),
+        }
     }
 
     /// Takes the database out of every clone at once and closes it.
@@ -212,7 +253,11 @@ impl OperationalDatabase {
             Ok(mut database) => (database.take(), false),
             Err(poisoned) => (poisoned.into_inner().take(), true),
         };
-        let closed = taken.map_or(Ok(()), ApplicationDatabase::close);
+        let closed = taken.map_or(Ok(()), |database| match database {
+            OperationalDatabaseHandle::Selected(database) => database.close(),
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest(database) => database.close(),
+        });
 
         closed.and(if poisoned {
             Err(DatabaseError::Unavailable)
@@ -473,6 +518,7 @@ pub(crate) mod test_support {
 
         fn load_initialized_state(
             &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
             _expected_deployment_identifier: DeploymentIdentifier,
         ) -> Result<InitializedState, DatabaseError> {
             Err(DatabaseError::Unavailable)
@@ -491,6 +537,23 @@ pub(crate) mod test_support {
             _account: StateIdentifier,
         ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError>
         {
+            Err(DatabaseError::Unavailable)
+        }
+
+        fn load_account_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _account: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::AccountAuditReference>, DatabaseError>
+        {
+            Err(DatabaseError::Unavailable)
+        }
+
+        fn load_group_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _group: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
             Err(DatabaseError::Unavailable)
         }
 

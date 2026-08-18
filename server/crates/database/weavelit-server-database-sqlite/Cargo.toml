@@ -12,3 +12,4 @@ weavelit-server-database = { path = "../weavelit-server-database" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+weavelit-server-database-authority = { path = "../weavelit-server-database-authority" }

@@ -60,7 +60,9 @@ the backend changes nothing and refuses to report readiness.
 The registry contains `0001_create_migration_ledger.sql`,
 `0002_create_lifecycle_state.sql`, `0003_create_application_state.sql`,
 `0004_create_session_store.sql`, and
-`0005_add_mfa_policy_and_replay_watermark.sql`. Each
+`0005_add_mfa_policy_and_replay_watermark.sql`,
+`0006_add_lifecycle_reconciliation.sql`, and
+`0007_add_audit_references.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -135,6 +137,33 @@ log settings, and log assignments to their owning rows. The recovery public key
 and the completion obligation each use a singleton row. Protected values and
 protected credentials are stored as opaque BLOBs; the backend never inspects,
 derives, or transforms them.
+
+`0007_add_audit_references.sql` creates separate `STRICT`
+`weavelit_account_audit_reference` and
+`weavelit_group_audit_reference` tables. Each owner column is both the primary
+key and a foreign key to its typed owning table, so each existing account or
+Group can carry at most one association and an orphan or wrong-kind owner is
+rejected. Each table checks the exact nonzero `ar-` plus
+32-lowercase-hexadecimal representation and has a named unique index on the
+reference value. Reciprocal insert triggers reject reuse across the two entity
+kinds, and per-table update triggers reject every association update. Future
+entity types receive their own typed table only when their owning application
+state exists. Names and state identifiers remain in their owning tables and
+are never used as reference values.
+
+The migration backfills every existing account and Group with a fresh
+independent 16-byte SQLite `randomblob` value rendered canonically. This
+migration-only backfill does not derive values from identifiers or names and
+does not change the Application Database contract's ownership of runtime
+generation. Both table creations, both backfills, and migration-ledger
+insertion share the migration's single immediate transaction. A zero value,
+per-table or cross-table collision, or later statement failure violates the
+schema and rolls the entire migration back, preserving all prior entity fields
+and the six-entry ledger prefix. State reads use the persistence decoder
+supplied by lifecycle's selected database wrapper and rebuild typed account and
+Group projections through the backend-neutral checked constructor; a missing,
+extra, malformed, reused, orphaned, or wrongly associated reference is an
+`IntegrityFailure`.
 
 ## Live Session Schema
 
@@ -401,6 +430,16 @@ and WAL sidecar files automatically. They cover successful and idempotent
 migrations, restart persistence, migration and write rollback, invalid
 configuration, unavailable storage, incompatible migration history, and error
 and diagnostic redaction.
+
+Migration tests apply the six-migration prefix to populated account and Group
+tables, then prove `0007` preserves broad Unicode names and state identifiers,
+assigns distinct canonical values derived from neither, installs the indexed
+lookup, and rolls schema, data, and ledger changes back together after an
+injected later failure. Application-state tests prove typed account and Group
+lookups, foreign-key ownership, per-kind and cross-kind uniqueness, exact text
+checks, immutable associations, indexed reference lookup, exact round trips
+across reopen, and integrity failure for missing, extra, or wrong-kind
+associations.
 
 Close tests build a real database whose committed write is still held only in a
 non-empty WAL. They prove that a clean close leaves neither the WAL nor the

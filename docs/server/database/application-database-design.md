@@ -12,6 +12,15 @@ contract: Server domain types, the persistence operations available to the
 Server, and storage-neutral typed errors. It contains no backend selection,
 driver, connection, query, transaction, migration, or backup implementation.
 
+`weavelit-server-database-authority` is the dependency-free, unpublished
+capability crate that gates persisted Audit Reference decoding. Its privately
+represented `ServerDatabaseAuthority` is not reexported by the database
+contract or lifecycle crate. Lifecycle is the sole production authority that
+constructs a selected database binding. The database contract declares the
+capability only as the decoder factory's input, and direct persistence test
+support declares its own reviewable dev dependency rather than obtaining
+authority through the public backend-neutral contract.
+
 Each supported backend is a dedicated compiled-in implementation crate. The
 MVP SQLite implementation is `weavelit-server-database-sqlite`. It implements
 the shared contract and owns all SQLite-specific behavior. An Application
@@ -70,6 +79,10 @@ lifecycle boundary serializes workflow mutation and decides where blocking
 storage calls execute when it composes the backend. This keeps runtime and
 executor dependencies out of the persistence contract while allowing a future
 backend to implement the same operations with its own connection model.
+Implementing the trait grants no decoder-issuance method. Persisted reads that
+can decode an Audit Reference instead require an explicit borrowed
+`AuditReferencePersistence`, while backend factories continue to create only a
+raw backend-neutral trait object.
 
 `DeploymentIdentifier` is an opaque 16-byte value. The lifecycle boundary
 generates it cryptographically, and the contract rejects the reserved all-zero
@@ -211,6 +224,51 @@ identifier is an opaque 16-byte value that rejects the reserved all-zero
 representation. A password verifier is a bounded ASCII PHC string, and the
 recovery public key is the canonical lowercase `age1` recipient encoding
 defined by the [Server Restore Design](../lifecycle/restore/restore-design.md).
+
+Every account and Group carries exactly one
+**[Audit Reference Identifier](../../glossary.md#applications-and-interfaces)**
+in normalized application state. This identifier is an independent random,
+nonzero 128-bit value rendered only as `ar-` followed by 32 lowercase
+hexadecimal characters. Its representation is private, with no conversion from
+a `StateIdentifier`, name, user string, or caller-provided bytes and no raw-byte
+accessor. Diagnostic formatting and validation errors are payload-free. The
+identifier is internal pseudonymous data: it is linkable and not secret, but it
+is not a public API identifier.
+
+The Application Database contract generates each new value from operating-
+system randomness through exact-pinned `getrandom = "=0.4.3"`, with default
+features disabled. An unavailable random source stops construction without a
+device-path read, deterministic derivation, or lower-quality fallback. This
+remains backend-neutral domain construction: the contract chooses only the
+identifier's entropy and representation, while each backend still owns its
+storage, transaction, locator, and path policy.
+
+The reserved all-zero output is retried through the same operating-system
+source at most eight times. Eight consecutive reserved values stop generation
+as randomness unavailable rather than looping without a bound or substituting
+a fallback.
+
+Canonical persisted-value decoding stays private to the identifier type. An
+opaque private-field `AuditReferencePersistence` capability has one issuer,
+`AuditReferencePersistence::from_server_authority`, which requires a borrowed
+`ServerDatabaseAuthority`. `ApplicationDatabase` has no required, default, or
+hidden issuance method. After successful selection or reopening, lifecycle
+uses a crate-private constructor to build `SelectedDatabase` with private fields
+containing the raw backend and that decoder. SQLite's initialized-state and
+typed Audit Reference reads require a borrowed decoder; lifecycle supplies the
+selected value and carries it to Restore. Ordinary callers receive no selected
+binding constructor, arbitrary-string constructor, `From`, `TryFrom`,
+`FromStr`, or raw-byte accessor. The capability exposes only canonical nonzero
+decoding and keeps its `Debug` representation redacted.
+
+The checked aggregate requires exact account and Group coverage and rejects an
+Audit Reference Identifier reused by either entity kind. The database contract
+exposes typed `AccountAuditReference` and `GroupAuditReference` projections,
+looked up by the entity's `StateIdentifier`, so later Audit construction never
+accepts an arbitrary reference string. Service Connections, Log Module
+configurations, and Automation Identities use the same identifier type when
+their owning state and audit integration are implemented; this contract does
+not create placeholder entities or references for absent state.
 
 Reversibly encrypted values are modeled as opaque protected byte payloads. The
 Application Database stores and returns those bytes exactly. It never accepts
@@ -408,6 +466,17 @@ backup content. For Log Modules, it includes only
 non-secret configuration and assignments. System Logs and Audit Logs, other Log
 Module destination data, and Log Module authentication or connection credentials
 are outside this Application Database backup contract.
+
+Account and Group Audit Reference Identifiers are restorable application state.
+The current forward contract for a future backup writer carries their canonical
+rendered values. The Restore reader preserves each valid supplied value exactly
+through the lifecycle-selected Application Database's persistence decoder. A compatible
+version-1 backup written before these fields existed remains accepted when the
+field is omitted; an explicitly present JSON `null` is malformed rather than a
+legacy omission. Restore assigns fresh independent random values to omitted
+fields during normalization, before the state can be used or persisted, and
+never derives them from names or `StateIdentifier` values. This reader
+compatibility does not change the backup format version.
 
 **[Restore](../../glossary.md#states-and-requests)** is exposed through a
 Restore-capable Client Module after the shared lifecycle contract selects and

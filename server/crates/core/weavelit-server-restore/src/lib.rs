@@ -38,9 +38,11 @@ pub use ticket::{
 };
 pub use weavelit_server_components::{AvailableComponents, LogSettingsFormat, MfaFactorFormat};
 pub use weavelit_server_database::{
-    Account, AccountPasswordVerifier, ConfigurationEntry, ConfigurationKey, DeploymentIdentifier,
-    Group, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogModuleConfiguration,
-    LogModuleSetting, LogType, Name, PasswordVerifier, RecoveryPublicKey, StateIdentifier,
+    Account, AccountAuditReference, AccountPasswordVerifier, AuditReferenceIdentifier,
+    AuditReferencePersistence, ConfigurationEntry, ConfigurationKey, DeploymentIdentifier, Group,
+    GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
+    LogModuleConfiguration, LogModuleSetting, LogType, Name, PasswordVerifier, RecoveryPublicKey,
+    StateIdentifier,
 };
 pub use weavelit_server_lifecycle::{BackendIdentifier, LifecycleError};
 pub use weavelit_server_recovery_key::{
@@ -65,6 +67,7 @@ pub trait RestoreAuthority {
 pub struct RestoreTarget {
     deployment_identifier: DeploymentIdentifier,
     selected_backend: BackendIdentifier,
+    audit_reference_persistence: AuditReferencePersistence,
 }
 
 impl RestoreTarget {
@@ -72,10 +75,12 @@ impl RestoreTarget {
     pub const fn new(
         deployment_identifier: DeploymentIdentifier,
         selected_backend: BackendIdentifier,
+        audit_reference_persistence: AuditReferencePersistence,
     ) -> Self {
         Self {
             deployment_identifier,
             selected_backend,
+            audit_reference_persistence,
         }
     }
 
@@ -87,6 +92,11 @@ impl RestoreTarget {
     /// Returns the selected Application Database backend.
     pub const fn selected_backend(&self) -> &BackendIdentifier {
         &self.selected_backend
+    }
+
+    /// Returns the selected Application Database's persistence decoder.
+    pub const fn audit_reference_persistence(&self) -> &AuditReferencePersistence {
+        &self.audit_reference_persistence
     }
 }
 
@@ -195,7 +205,12 @@ impl RestoreValidator {
         // 8-9. Compatibility, references, components, domain semantics, and the
         // recipient binding below.
         budget.check()?;
-        let backup = normalize(&plaintext, target.selected_backend(), &self.components)?;
+        let backup = normalize(
+            &plaintext,
+            target.selected_backend(),
+            target.audit_reference_persistence(),
+            &self.components,
+        )?;
 
         // The retained recovery public key must be the submitted identity's own
         // recipient. Without this the backup could declare any syntactically
