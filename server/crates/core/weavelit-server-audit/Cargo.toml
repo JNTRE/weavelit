@@ -1,0 +1,20 @@
+[package]
+name = "weavelit-server-audit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+getrandom = { version = "=0.4.3", default-features = false }
+weavelit-server-database = { path = "../../database/weavelit-server-database" }
+weavelit-server-log = { path = "../weavelit-server-log" }
+
+[dev-dependencies]
+rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+tempfile = "=3.27.0"
+weavelit-module-log-sqlite = { path = "../../modules/log/weavelit-module-log-sqlite" }
+weavelit-server-log-authority = { path = "../weavelit-server-log-authority" }

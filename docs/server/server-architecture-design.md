@@ -94,14 +94,9 @@ weavelit-server-restore
 The implemented Server-owned logging authority and producer crates are:
 
 ```text
+weavelit-server-audit
 weavelit-server-log-authority
 weavelit-server-observability
-```
-
-The approved future Audit producer crate is:
-
-```text
-weavelit-server-audit
 ```
 
 The Server-owned authentication crate is:
@@ -138,12 +133,25 @@ delivery, destination configuration, workflow orchestration, or Application
 Database access. A workflow crate asks Observability for a prepared record
 rather than constructing one.
 
-The future `weavelit-server-audit` crate is the only producer of complete, pre-redacted
+`weavelit-server-audit` is the only producer of complete, pre-redacted
 **[Audit Logs](../glossary.md#applications-and-interfaces)**. It accepts
-closed typed facts and a Server-supplied workflow
-correlation identifier, constructs bounded attempt, completion, and correction
-records with each terminal record directly linked to its precise Attempt, and
-delivers them synchronously through the supplied configured Audit destination.
+database-owned account and Group Audit projections, other closed typed facts,
+and a Server-supplied workflow correlation identifier. It depends on the shared
+Application Database contract only for those projection types and never reads a
+backend, lifecycle binding, entity name, or state identifier. It constructs
+bounded attempt, completion, and correction records with each terminal record
+directly linked to its precise Attempt. Exhaustive event-specific terminal
+details derive the result and carry committed state only through closed typed
+facts. It mints fresh record identifiers internally, retains an Attempt through
+a non-forgeable reference, and returns the shared delivery error without
+mapping.
+
+Attempt delivery is consuming and yields the retained reference only after
+acknowledgement. Terminal delivery borrows one immutable record and supports
+deliberate exact idempotent re-delivery, but performs only one synchronous
+dispatch per call. The producer never loops, schedules, replaces, or chooses to
+recover a terminal record.
+
 It owns no authorization, mutation sequencing, decision to create a correction,
 client-error mapping, System Log construction, retry or queue behavior, or
 post-commit obligation persistence and execution. The owning Server workflow

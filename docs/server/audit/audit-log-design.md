@@ -10,10 +10,9 @@ catalog implementation, and destination storage remain defined by the
 This document does not define Audit Log retrieval, query, export, client
 presentation, destination-specific storage, or destination redaction.
 
-**Future design.** This document defines the approved producer boundary for
-future implementation work; it does not claim that `weavelit-server-audit` or
-the **[Administration Plane](../../glossary.md#applications-and-interfaces)**
-workflows already exist.
+`weavelit-server-audit` implements this producer boundary. The
+**[Administration Plane](../../glossary.md#applications-and-interfaces)**
+workflows that consume it remain future work.
 
 ## Ownership And Invariants
 
@@ -68,10 +67,14 @@ The record's debug and error representations are payload-free. A record
 identifier is not a replacement for valid body content and must not be reused
 with different content. Related records reuse the owning workflow's correlation
 identifier while retaining distinct record identifiers. Audit construction does
-not accept, derive from, or serialize Application Database `StateIdentifier`
-values. A future producer renders a safe target from its closed typed input
-without exposing a database identifier. The shared envelope remains the schema
-authority for the typed phase, terminal result, and Attempt link invariant.
+not accept a standalone Application Database `StateIdentifier`, name, or raw
+account or Group string. Account and Group fields consume the database
+contract's typed persisted Audit projections and render only their
+`audit_reference()` value as `account:ar-...` or `group:ar-...`; they never read
+or serialize the projection's state identifier. The producer renders every
+other safe target from its closed typed input. The shared envelope remains the
+schema authority for the typed phase, terminal result, and Attempt link
+invariant.
 
 `AttemptRecordId` is an opaque typed capability. Only a complete Audit Attempt
 can mint it; callers cannot convert or clone an arbitrary `RecordId` into an
@@ -101,6 +104,48 @@ following values must never appear in an Audit Log, including inside a summary:
   connection material; and
 - secret values, unbounded identifiers, or source text retained solely for
   possible later redaction.
+
+The implemented producer accepts a typed `AuditActor`, one closed `AuditEvent`,
+an existing bounded workflow `CorrelationId`, and a Server-generated
+`EventTime`. Human principals, Responsible Owners, and all account and Group
+event fields directly consume `AccountAuditReference` or `GroupAuditReference`
+from the Application Database contract. Automation, backup, component, grant,
+configuration, module, policy, Operation, and Service Connection references
+accept only a bounded lowercase identifier grammar and reject raw 32-hex and
+UUID-shaped database identifiers. These inputs accept neither credential-bearing
+source types nor raw request values.
+
+Terminal construction accepts an exhaustive `AuditOutcomeDetail` whose variant
+must match the retained `AuditEvent`. Result-only variants use a closed
+succeeded, denied, or failed outcome. State-mutating variants carry a committed
+typed fact only on success: account status is active or disabled; MFA
+requirement is required or optional; component and MFA Module state is enabled
+or disabled; MFA reset requires re-enrollment; and the MFA Module change carries
+an affected count as `u64`. Denied and failed variants have no fact payload, so
+they cannot claim committed state. A mismatched detail or an impossible
+successful fact is rejected with the same payload-free `InvalidOutcome`.
+`LogResult` is derived from this detail rather than accepted separately.
+Completion detail states the authoritative outcome and typed fact. Correction
+detail begins with `corrected outcome:` and states the corrected typed fact.
+No terminal input accepts a reason, previous value, provider response, raw
+string, or untyped count.
+
+`prepare_attempt` returns a `PreparedAuditAttempt` with a result-less Attempt.
+Its `deliver` operation consumes the prepared value, borrows a
+`ConfiguredLogDestination`, and returns a non-forgeable
+`AuditAttemptReference` only after durable acknowledgement. Delivery failure
+returns the shared `LogDeliveryError` unchanged and no Attempt reference.
+`prepare_completion` and `prepare_correction` require that reference, derive
+the original correlation identifier from it, bind the exhaustive typed outcome
+detail, and mint a fresh record identifier. Terminal preparation does not accept
+a second correlation identifier or a caller-selected record identifier.
+`PreparedAuditTerminal::deliver(&self)` deliberately permits exact idempotent
+re-delivery of the same immutable record identifier and content. It performs one
+synchronous delivery per call; the producer never loops, schedules, queues,
+replaces, or independently retries the record. The producer stores no
+destination, catalog, authority, queue, or post-commit obligation. A future
+Administration Plane workflow decides whether and how a retained terminal
+record participates in durable post-commit recovery.
 
 An Administrator-initiated password reset must not reveal the temporary
 password to the Administrator. This design records only the reset action and
@@ -136,10 +181,11 @@ post-commit obligations:
 6. Apply the atomic application-state mutation.
 7. After the mutation outcome is authoritative, ask the producer to construct
   and synchronously deliver a correlated `completion` record. Its `result`
-  and detail represent the committed success or the known rejected/failed
-  outcome, and its `attempt_record_id` directly identifies the acknowledged
-  Attempt. Final state, affected count, and other outcome-derived details may
-  appear only here or in a later correction record.
+  is derived from the matching typed detail, whose safe fact represents the
+  committed success or whose payload-free denied or failed variant represents
+  the known non-commit outcome. Its `attempt_record_id` directly identifies the
+  acknowledged Attempt. Final state and affected count may appear only in a
+  matching typed completion detail or a later matching correction detail.
 8. If completion delivery cannot finish after commit, the owning workflow
   triggers and durably manages the future normal-operation recovery contract.
   That contract is separate from the Init and Restore lifecycle obligations and
@@ -197,13 +243,19 @@ context.
 | `provider.operation.started` | Consequential supported Operation start | operation-start; typed Operation and safe target; accepted | Provider request/response bodies or credentials |
 | `provider.operation.completed` | Consequential supported Operation completion | operation-complete; typed Operation and safe target; result summary | Provider payloads, responses, or returned sensitive data |
 
+Both provider rows come from one `ProviderOperation` producer event. Its
+Attempt is classified as `provider.operation.started` with `operation-start`;
+its linked completion or correction is classified as
+`provider.operation.completed` with `operation-complete`. The shared typed
+classification catalog and persisted Log schema remain unchanged.
+
 The producer may also use the remaining approved catalog entries
 `lifecycle.backup.created`, `authentication.password.changed`, and
 `authentication.mfa.enrolled` where their owning Server contract makes the
 action consequential. It must not invent a new identifier to avoid a taxonomy
 decision. The canonical full catalog remains in [Log Module Design](../../log-modules/log-module-design.md#event-classification-taxonomy).
 
-Future producer implementation owns typed, bounded attempt, completion, and
+The implemented producer owns typed, bounded attempt, completion, and
 correction construction, including direct Attempt linkage, and synchronous
 delivery to a supplied configured Audit destination. Future Administration
 Plane workflow work decides when a correction is required and owns assignment
@@ -220,7 +272,7 @@ durability, backup, recovery, and compatibility remain owned by the Log Module
 design and its destination; this document does not promise indefinite survival
 or add a Server-wide retention mechanism.
 
-Focused validation for the producer and its future administration contracts
+Focused validation for the producer and future administration contracts
 must prove:
 
 - every field rejects empty or over-bound UTF-8 input, including the 8 KiB
@@ -233,13 +285,25 @@ must prove:
   reset and MFA reset remain separate;
 - forbidden values cannot enter action, target, or detail through fixed,
   allowlisted, or structured summaries;
+- account and Group principal or target values contain only the persisted typed
+  `ar-...` projection even when the source entity has a broad Unicode name or a
+  distinct internal state identifier;
+- every event accepts only its matching exhaustive outcome-detail variant,
+  successful state details require their typed committed fact, denied and
+  failed details carry none, and completion and correction summaries derive the
+  expected result and fact;
+- one provider event maps its Attempt and terminal phases to the paired started
+  and completed classifications and actions;
 - construction and destination failure prevent a consequential state commit,
   return the stable redacted error, and leave the process alive while the
   owning workflow records `dependency.audit-log-unavailable`; and
 - the attempt is acknowledged before the corresponding mutation commit, the
   completion follows the authoritative outcome, and a post-commit delivery
   failure remains with the owning workflow's future normal-operation recovery
-  contract without reusing an Init or Restore lifecycle obligation; and
+  contract without reusing an Init or Restore lifecycle obligation;
+- exact repeated delivery of one immutable prepared terminal record is
+  idempotent at the SQLite destination while the producer performs no delivery
+  loop, schedule, replacement, or recovery decision; and
 - no retrieval or export behavior is implied by the producer contract.
 
 ## Related Documents

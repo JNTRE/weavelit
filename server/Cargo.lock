@@ -1462,6 +1462,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "weavelit-server-audit"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "weavelit-module-log-sqlite",
+ "weavelit-server-database",
+ "weavelit-server-log",
+ "weavelit-server-log-authority",
+]
+
+[[package]]
 name = "weavelit-server-authentication"
 version = "0.1.0"
 dependencies = [

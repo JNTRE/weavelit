@@ -85,13 +85,21 @@ that Attempt, whose record identifier reuses the Attempt identifier, or whose
 event time precedes the Attempt. Each record receives a fresh nonzero identifier,
 while related records reuse the owning request or workflow correlation
 identifier. Exact replay matching includes the Audit phase, phase-bound result,
-and Attempt link. The future Audit producer constructs and delivers attempts,
+and Attempt link. The Audit producer constructs and delivers attempts,
 linked completions, and linked corrections; the owning
 **[Administration Plane](../glossary.md#applications-and-interfaces)** workflow
 sequences the mutation, decides when correction evidence is required, emits any
 System Log, and owns future durable normal-operation recovery when completion
 delivery cannot finish after commit. That recovery does not reuse the Init or
 Restore lifecycle obligation contract.
+
+The producer's prepared terminal delivery borrows the immutable record so a
+caller may deliberately re-deliver its exact identifier and content. Each call
+performs one synchronous dispatch. The producer does not loop, schedule,
+replace, or decide to recover that record; future Administration Plane workflow
+design decides whether and how the retained value enters post-commit recovery.
+The SQLite destination confirms an exact existing record as one persisted row
+and still rejects the same identifier with different content.
 
 Delivery is synchronous and succeeds only when the assigned destination
 completes its configured supported storage interface's commit path for the
@@ -350,8 +358,8 @@ parses its event time, and rejects a target whose event time is later than the
 terminal record. This application check covers malformed historical time text
 without relying on SQLite integer conversion for the unsigned timestamp range.
 The trigger enforces existing-row phase and correlation for direct new inserts,
-but SQLite does not prove that an opaque capability originated in the future
-Audit producer, and the schema does not use a self-referential foreign key.
+but SQLite does not prove that an opaque capability originated in the Audit
+producer, and the schema does not use a self-referential foreign key.
 Exact replay matching compares the canonical phase literal, phase-bound result,
 and nullable link. Legacy unlinked completions remain readable but cannot be
 used to invent or infer Attempt history.
