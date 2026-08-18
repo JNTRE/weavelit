@@ -360,6 +360,11 @@ actions and results MUST be System Logs and MUST NOT be attributed to an
 authenticated principal or written as Audit Logs. Audit Logs MUST capture the
 caller, Responsible Owner when applicable, action or Operation, target, time,
 result, and correlation identifier.
+A correlated Audit record set for a consequential action MUST include its final
+result. A pre-commit Attempt record MAY omit the result, provided a correlated
+Completion or Correction record records the authoritative outcome. An Attempt
+MUST NOT be the sole accountability evidence, and this exception MUST NOT
+permit an unbounded or unredacted record.
 
 After Init or Restore commits application state, the Server MUST receive a
 durable acknowledgement for that workflow's successful completion through the
@@ -729,4 +734,5 @@ automation interfaces.
 - [Server Lifecycle Design](server/lifecycle/lifecycle-design.md)
 - [Server Init Design](server/lifecycle/init/init-design.md)
 - [Server Restore Design](server/lifecycle/restore/restore-design.md)
+- [Server Audit Log Design](server/audit/audit-log-design.md)
 - [Testing and Validation Policy](testing.md)

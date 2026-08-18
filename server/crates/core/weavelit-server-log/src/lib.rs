@@ -100,6 +100,27 @@ impl RecordId {
     }
 }
 
+/// Opaque capability linking a terminal Audit record to its precise Attempt.
+#[derive(Eq, PartialEq)]
+pub struct AttemptRecordId {
+    record_id: [u8; RECORD_ID_LENGTH],
+    event_time: EventTime,
+    correlation_id: CorrelationId,
+}
+
+impl fmt::Debug for AttemptRecordId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AttemptRecordId(REDACTED)")
+    }
+}
+
+impl AttemptRecordId {
+    /// Returns the opaque Attempt record identifier for persistence.
+    pub const fn as_bytes(&self) -> &[u8; RECORD_ID_LENGTH] {
+        &self.record_id
+    }
+}
+
 /// Server-internal issuer for opaque record identifiers.
 pub struct TrustedRecordIssuer {
     _private: (),
@@ -184,6 +205,57 @@ pub enum LogResult {
     Failure,
 }
 
+/// Closed phase, Attempt linkage, and outcome contract for an Audit Log record.
+#[derive(Debug, Eq, PartialEq)]
+pub enum AuditRecordPhase {
+    /// Accepted intent recorded before a consequential mutation.
+    Attempt,
+    /// Authoritative outcome recorded after the mutation decision.
+    #[non_exhaustive]
+    Completion {
+        attempt_record_id: AttemptRecordId,
+        result: LogResult,
+    },
+    /// Authoritative correction to prior Audit evidence.
+    #[non_exhaustive]
+    Correction {
+        attempt_record_id: AttemptRecordId,
+        result: LogResult,
+    },
+}
+
+impl AuditRecordPhase {
+    /// Returns the canonical phase literal persisted by a destination.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Attempt => "attempt",
+            Self::Completion { .. } => "completion",
+            Self::Correction { .. } => "correction",
+        }
+    }
+
+    /// Returns an outcome only for completion and correction records.
+    pub const fn result(&self) -> Option<LogResult> {
+        match self {
+            Self::Attempt => None,
+            Self::Completion { result, .. } | Self::Correction { result, .. } => Some(*result),
+        }
+    }
+
+    /// Returns the precise Attempt link required by terminal records.
+    pub const fn attempt_record_id(&self) -> Option<&AttemptRecordId> {
+        match self {
+            Self::Attempt => None,
+            Self::Completion {
+                attempt_record_id, ..
+            }
+            | Self::Correction {
+                attempt_record_id, ..
+            } => Some(attempt_record_id),
+        }
+    }
+}
+
 /// Closed catalog of System Log classifications selected by Observability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemLogClassification {
@@ -195,6 +267,7 @@ pub enum SystemLogClassification {
     AuthenticationFailure,
     AuthorizationDenial,
     DependencyFailure,
+    DependencyAuditLogUnavailable,
     ProviderFailure,
     InternalError,
 }
@@ -211,6 +284,7 @@ impl SystemLogClassification {
             Self::AuthenticationFailure => "authentication.failure",
             Self::AuthorizationDenial => "authorization.denial",
             Self::DependencyFailure => "dependency.failure",
+            Self::DependencyAuditLogUnavailable => "dependency.audit-log-unavailable",
             Self::ProviderFailure => "provider.failure",
             Self::InternalError => "internal.error",
         }
@@ -233,6 +307,7 @@ pub enum AuditLogClassification {
     AuthorizationGroupCreated,
     AuthorizationGroupMembershipChanged,
     AuthorizationGroupGrantChanged,
+    AuthorizationGroupGrantRemovalDenied,
     AuthorizationAutomationScopeChanged,
     DependencyLogModuleConfigurationChanged,
     DependencyServiceConnectionChanged,
@@ -262,6 +337,9 @@ impl AuditLogClassification {
             Self::AuthorizationGroupCreated => "authorization.group.created",
             Self::AuthorizationGroupMembershipChanged => "authorization.group-membership.changed",
             Self::AuthorizationGroupGrantChanged => "authorization.group-grant.changed",
+            Self::AuthorizationGroupGrantRemovalDenied => {
+                "authorization.group-grant.removal-denied"
+            }
             Self::AuthorizationAutomationScopeChanged => "authorization.automation-scope.changed",
             Self::DependencyLogModuleConfigurationChanged => {
                 "dependency.log-module-configuration.changed"
@@ -525,10 +603,11 @@ pub enum CompleteLogRecord {
         body: SystemLogBody,
     },
     /// An Audit Log record constructed by Audit.
+    #[non_exhaustive]
     Audit {
         record_id: RecordId,
         event_time: EventTime,
-        result: LogResult,
+        phase: AuditRecordPhase,
         correlation_id: CorrelationId,
         body: AuditLogBody,
     },
@@ -563,11 +642,87 @@ impl CompleteLogRecord {
         })
     }
 
-    /// Constructs a complete pre-redacted Audit Log record.
-    pub fn audit(
+    /// Constructs a complete pre-redacted Audit Attempt record.
+    pub fn audit_attempt(
         record_id: RecordId,
         event_time: EventTime,
+        correlation_id: CorrelationId,
+        body: AuditLogBody,
+    ) -> Result<Self, RecordError> {
+        Self::audit(
+            record_id,
+            event_time,
+            AuditRecordPhase::Attempt,
+            correlation_id,
+            body,
+        )
+    }
+
+    /// Constructs a complete pre-redacted Audit Completion linked to its Attempt.
+    pub fn audit_completion(
+        record_id: RecordId,
+        event_time: EventTime,
+        attempt_record_id: AttemptRecordId,
         result: LogResult,
+        correlation_id: CorrelationId,
+        body: AuditLogBody,
+    ) -> Result<Self, RecordError> {
+        Self::validate_attempt_link(&record_id, event_time, &attempt_record_id, &correlation_id)?;
+        Self::audit(
+            record_id,
+            event_time,
+            AuditRecordPhase::Completion {
+                attempt_record_id,
+                result,
+            },
+            correlation_id,
+            body,
+        )
+    }
+
+    /// Constructs a complete pre-redacted Audit Correction linked to its Attempt.
+    pub fn audit_correction(
+        record_id: RecordId,
+        event_time: EventTime,
+        attempt_record_id: AttemptRecordId,
+        result: LogResult,
+        correlation_id: CorrelationId,
+        body: AuditLogBody,
+    ) -> Result<Self, RecordError> {
+        Self::validate_attempt_link(&record_id, event_time, &attempt_record_id, &correlation_id)?;
+        Self::audit(
+            record_id,
+            event_time,
+            AuditRecordPhase::Correction {
+                attempt_record_id,
+                result,
+            },
+            correlation_id,
+            body,
+        )
+    }
+
+    fn validate_attempt_link(
+        record_id: &RecordId,
+        event_time: EventTime,
+        attempt_record_id: &AttemptRecordId,
+        correlation_id: &CorrelationId,
+    ) -> Result<(), RecordError> {
+        if attempt_record_id.correlation_id != *correlation_id {
+            return Err(RecordError::MismatchedAttemptCorrelation);
+        }
+        if attempt_record_id.record_id == *record_id.as_bytes()
+            || attempt_record_id.event_time.unix_milliseconds() > event_time.unix_milliseconds()
+        {
+            return Err(RecordError::InvalidAttemptLink);
+        }
+        Ok(())
+    }
+
+    fn audit(
+        record_id: RecordId,
+        event_time: EventTime,
+        phase: AuditRecordPhase,
         correlation_id: CorrelationId,
         body: AuditLogBody,
     ) -> Result<Self, RecordError> {
@@ -595,10 +750,32 @@ impl CompleteLogRecord {
         Ok(Self::Audit {
             record_id,
             event_time,
-            result,
+            phase,
             correlation_id,
             body,
         })
+    }
+
+    /// Mints the typed linkage capability only for an Audit Attempt.
+    pub fn attempt_record_id(&self) -> Option<AttemptRecordId> {
+        match self {
+            Self::Audit {
+                record_id,
+                event_time,
+                phase: AuditRecordPhase::Attempt,
+                correlation_id,
+                ..
+            } => Some(AttemptRecordId {
+                record_id: *record_id.as_bytes(),
+                event_time: *event_time,
+                correlation_id: correlation_id.clone(),
+            }),
+            Self::System { .. }
+            | Self::Audit {
+                phase: AuditRecordPhase::Completion { .. } | AuditRecordPhase::Correction { .. },
+                ..
+            } => None,
+        }
     }
 
     /// Returns the immutable opaque record identifier.
@@ -635,13 +812,13 @@ impl CompleteLogRecord {
             Self::Audit {
                 record_id,
                 event_time,
-                result,
+                phase,
                 correlation_id,
                 body,
             } => LogRecordPersistenceView::Audit(AuditLogPersistenceView {
                 record_id,
                 event_time: *event_time,
-                result: *result,
+                phase,
                 correlation_id,
                 body,
             }),
@@ -703,7 +880,7 @@ impl SystemLogPersistenceView<'_> {
 pub struct AuditLogPersistenceView<'a> {
     record_id: &'a RecordId,
     event_time: EventTime,
-    result: LogResult,
+    phase: &'a AuditRecordPhase,
     correlation_id: &'a CorrelationId,
     body: &'a AuditLogBody,
 }
@@ -719,9 +896,9 @@ impl AuditLogPersistenceView<'_> {
         self.event_time
     }
 
-    /// Returns the immutable result classification.
-    pub const fn result(&self) -> LogResult {
-        self.result
+    /// Returns the immutable Audit phase, result, and terminal Attempt link.
+    pub const fn phase(&self) -> &AuditRecordPhase {
+        self.phase
     }
 
     /// Returns the immutable correlation identifier.
@@ -1304,6 +1481,10 @@ pub enum RecordError {
     InvalidRecordIdentifier,
     /// The correlation identifier was empty or exceeded its fixed bound.
     InvalidCorrelationIdentifier,
+    /// A terminal Audit record did not reuse its Attempt's correlation identifier.
+    MismatchedAttemptCorrelation,
+    /// A terminal Audit record reused its Attempt identifier or preceded its Attempt time.
+    InvalidAttemptLink,
     /// A System Log field was empty or exceeded its fixed bound.
     InvalidSystemLogBody,
     /// An Audit principal was empty, too long, or lacked its required owner.
@@ -1468,7 +1649,9 @@ mod tests {
         Audit {
             record_id: [u8; RECORD_ID_LENGTH],
             event_time: u64,
-            result: LogResult,
+            phase: Box<str>,
+            result: Option<LogResult>,
+            attempt_record_id: Option<[u8; RECORD_ID_LENGTH]>,
             correlation_id: Box<str>,
             classification: Box<str>,
             principal: Box<str>,
@@ -1500,7 +1683,12 @@ mod tests {
                 LogRecordPersistenceView::Audit(record) => Self::Audit {
                     record_id: *record.record_id().as_bytes(),
                     event_time: record.event_time().unix_milliseconds(),
-                    result: record.result(),
+                    phase: record.phase().as_str().into(),
+                    result: record.phase().result(),
+                    attempt_record_id: record
+                        .phase()
+                        .attempt_record_id()
+                        .map(|record_id| *record_id.as_bytes()),
                     correlation_id: record.correlation_id().as_str().into(),
                     classification: record.body().classification().into(),
                     principal: record.body().principal().into(),
@@ -1715,9 +1903,25 @@ mod tests {
     }
 
     fn audit_record(record_id: RecordId) -> CompleteLogRecord {
-        CompleteLogRecord::audit(
+        let issuer = TrustedRecordIssuer::new();
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([0xa0; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1_724_999_999_999),
+            CorrelationId::new("correlation-1").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "init",
+                "deployment",
+                "attempt",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        CompleteLogRecord::audit_completion(
             record_id,
             EventTime::from_unix_milliseconds(1_725_000_000_000),
+            attempt.attempt_record_id().unwrap(),
             LogResult::Success,
             CorrelationId::new("correlation-1").expect("valid correlation identifier"),
             AuditLogBody::new(
@@ -1774,6 +1978,10 @@ mod tests {
             (
                 SystemLogClassification::DependencyFailure,
                 "dependency.failure",
+            ),
+            (
+                SystemLogClassification::DependencyAuditLogUnavailable,
+                "dependency.audit-log-unavailable",
             ),
             (SystemLogClassification::ProviderFailure, "provider.failure"),
             (SystemLogClassification::InternalError, "internal.error"),
@@ -1839,6 +2047,10 @@ mod tests {
             (
                 AuditLogClassification::AuthorizationGroupGrantChanged,
                 "authorization.group-grant.changed",
+            ),
+            (
+                AuditLogClassification::AuthorizationGroupGrantRemovalDenied,
+                "authorization.group-grant.removal-denied",
             ),
             (
                 AuditLogClassification::AuthorizationAutomationScopeChanged,
@@ -1915,6 +2127,139 @@ mod tests {
             let error = AuditPrincipal::automation("automation", rejected.as_str()).unwrap_err();
             assert_eq!(error, RecordError::InvalidAuditPrincipal);
             assert_rejection_is_payload_free(error, &rejected);
+        }
+    }
+
+    #[test]
+    fn audit_phases_expose_only_their_valid_result_combinations() {
+        let issuer = TrustedRecordIssuer::new();
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([0xa1; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            CorrelationId::new("correlation-1").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "attempt",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let valid = [
+            (AuditRecordPhase::Attempt, "attempt", None, false),
+            (
+                AuditRecordPhase::Completion {
+                    attempt_record_id: attempt.attempt_record_id().unwrap(),
+                    result: LogResult::Success,
+                },
+                "completion",
+                Some(LogResult::Success),
+                true,
+            ),
+            (
+                AuditRecordPhase::Completion {
+                    attempt_record_id: attempt.attempt_record_id().unwrap(),
+                    result: LogResult::Failure,
+                },
+                "completion",
+                Some(LogResult::Failure),
+                true,
+            ),
+            (
+                AuditRecordPhase::Correction {
+                    attempt_record_id: attempt.attempt_record_id().unwrap(),
+                    result: LogResult::Success,
+                },
+                "correction",
+                Some(LogResult::Success),
+                true,
+            ),
+            (
+                AuditRecordPhase::Correction {
+                    attempt_record_id: attempt.attempt_record_id().unwrap(),
+                    result: LogResult::Failure,
+                },
+                "correction",
+                Some(LogResult::Failure),
+                true,
+            ),
+        ];
+
+        for (phase, literal, result, has_attempt_link) in valid {
+            assert_eq!(phase.as_str(), literal);
+            assert_eq!(phase.result(), result);
+            assert_eq!(phase.attempt_record_id().is_some(), has_attempt_link);
+        }
+    }
+
+    #[test]
+    fn only_attempts_mint_redacted_linkage_capabilities_for_matching_correlations() {
+        let issuer = TrustedRecordIssuer::new();
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([0xa2; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            CorrelationId::new("correlation-1").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "attempt",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let attempt_record_id = attempt.attempt_record_id().unwrap();
+        assert_eq!(attempt_record_id.as_bytes(), &[0xa2; RECORD_ID_LENGTH]);
+        assert_eq!(
+            format!("{attempt_record_id:?}"),
+            "AttemptRecordId(REDACTED)"
+        );
+
+        let error = CompleteLogRecord::audit_completion(
+            issuer.issue([0xa3; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(2),
+            attempt_record_id,
+            LogResult::Success,
+            CorrelationId::new("different-correlation").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "complete",
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(error, RecordError::MismatchedAttemptCorrelation);
+        assert!(!format!("{error:?}").contains("correlation-1"));
+        assert!(!error.to_string().contains("different-correlation"));
+        assert!(attempt.attempt_record_id().is_some());
+
+        for (record_id, event_time) in
+            [([0xa2; RECORD_ID_LENGTH], 2), ([0xa4; RECORD_ID_LENGTH], 0)]
+        {
+            let error = CompleteLogRecord::audit_correction(
+                issuer.issue(record_id).unwrap(),
+                EventTime::from_unix_milliseconds(event_time),
+                attempt.attempt_record_id().unwrap(),
+                LogResult::Failure,
+                CorrelationId::new("correlation-1").unwrap(),
+                AuditLogBody::new(
+                    AuditLogClassification::LifecycleBackupCreated,
+                    AuditPrincipal::human("administrator").unwrap(),
+                    "backup",
+                    "deployment",
+                    "corrected",
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+            assert_eq!(error, RecordError::InvalidAttemptLink);
+            assert_eq!(error.to_string(), "log record is invalid");
         }
     }
 
@@ -2021,21 +2366,19 @@ mod tests {
             )
             .is_ok()
         );
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([2; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            correlation_id,
+            audit_body,
+        )
+        .unwrap();
         assert!(
-            CompleteLogRecord::audit(
-                issuer.issue([2; RECORD_ID_LENGTH]).unwrap(),
-                EventTime::from_unix_milliseconds(1),
-                LogResult::Success,
-                correlation_id,
-                audit_body,
-            )
-            .is_ok()
-        );
-        assert!(
-            CompleteLogRecord::audit(
+            CompleteLogRecord::audit_correction(
                 issuer.issue([3; RECORD_ID_LENGTH]).unwrap(),
                 EventTime::from_unix_milliseconds(1),
-                LogResult::Success,
+                attempt.attempt_record_id().unwrap(),
+                LogResult::Failure,
                 CorrelationId::new("c".repeat(MAX_CORRELATION_ID_BYTES)).unwrap(),
                 automation_body,
             )
@@ -2046,6 +2389,7 @@ mod tests {
     #[test]
     fn record_constructors_reject_byte_and_utf8_overflows_without_payloads() {
         for rejected in [
+            String::new(),
             "x".repeat(MAX_CORRELATION_ID_BYTES + 1),
             utf8_overflow(MAX_CORRELATION_ID_BYTES),
         ] {
@@ -2055,6 +2399,7 @@ mod tests {
         }
 
         for rejected in [
+            String::new(),
             "x".repeat(MAX_SYSTEM_DETAIL_BYTES + 1),
             utf8_overflow(MAX_SYSTEM_DETAIL_BYTES),
         ] {
@@ -2065,29 +2410,42 @@ mod tests {
             assert_rejection_is_payload_free(error, &rejected);
         }
 
-        for rejected in [
-            "x".repeat(MAX_AUDIT_TARGET_BYTES + 1),
-            utf8_overflow(MAX_AUDIT_TARGET_BYTES),
+        for (field, maximum_bytes) in [
+            ("action", MAX_AUDIT_ACTION_BYTES),
+            ("target", MAX_AUDIT_TARGET_BYTES),
+            ("detail", MAX_AUDIT_DETAIL_BYTES),
         ] {
-            let error = AuditLogBody::new(
-                AuditLogClassification::LifecycleBackupCreated,
-                AuditPrincipal::human("principal").unwrap(),
-                "action",
-                rejected.as_str(),
-                "detail",
-            )
-            .unwrap_err();
-            assert_eq!(error, RecordError::InvalidAuditLogBody);
-            assert_rejection_is_payload_free(error, &rejected);
+            for rejected in [
+                String::new(),
+                "x".repeat(maximum_bytes + 1),
+                utf8_overflow(maximum_bytes),
+            ] {
+                let (action, target, detail) = match field {
+                    "action" => (rejected.as_str(), "target", "detail"),
+                    "target" => ("action", rejected.as_str(), "detail"),
+                    "detail" => ("action", "target", rejected.as_str()),
+                    _ => unreachable!("the test enumerates every Audit body field"),
+                };
+                let error = AuditLogBody::new(
+                    AuditLogClassification::LifecycleBackupCreated,
+                    AuditPrincipal::human("principal").unwrap(),
+                    action,
+                    target,
+                    detail,
+                )
+                .unwrap_err();
+                assert_eq!(error, RecordError::InvalidAuditLogBody);
+                assert_rejection_is_payload_free(error, &rejected);
+            }
         }
     }
 
     #[test]
-    fn complete_record_rejects_an_aggregate_overflow_before_delivery() {
-        let rejected = "x".repeat(MAX_RECORD_PAYLOAD_BYTES);
+    fn complete_records_reject_aggregate_overflows_before_delivery() {
+        let system_rejected = "x".repeat(MAX_RECORD_PAYLOAD_BYTES);
         let body = SystemLogBody {
             classification: SystemLogClassification::LifecycleStartup,
-            detail: rejected.clone().into(),
+            detail: system_rejected.clone().into(),
         };
         let mut deliveries = 0;
         let result = (|| -> Result<(), RecordError> {
@@ -2105,7 +2463,27 @@ mod tests {
 
         assert_eq!(result, Err(RecordError::RecordSizeLimitExceeded));
         assert_eq!(deliveries, 0);
-        assert_rejection_is_payload_free(RecordError::RecordSizeLimitExceeded, &rejected);
+        assert_rejection_is_payload_free(RecordError::RecordSizeLimitExceeded, &system_rejected);
+
+        let audit_rejected = "y".repeat(MAX_RECORD_PAYLOAD_BYTES);
+        let audit_body = AuditLogBody {
+            classification: AuditLogClassification::LifecycleBackupCreated,
+            principal: AuditPrincipal::human("principal").unwrap(),
+            action: "action".into(),
+            target: "target".into(),
+            detail: audit_rejected.clone().into(),
+        };
+        let error = CompleteLogRecord::audit_attempt(
+            TrustedRecordIssuer::new()
+                .issue([2; RECORD_ID_LENGTH])
+                .unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            CorrelationId::new("correlation").unwrap(),
+            audit_body,
+        )
+        .unwrap_err();
+        assert_eq!(error, RecordError::RecordSizeLimitExceeded);
+        assert_rejection_is_payload_free(error, &audit_rejected);
     }
 
     fn catalog(
@@ -2252,6 +2630,138 @@ mod tests {
             .expect("valid record ID");
         let original = system_record(record_id.duplicate(), "complete");
         let changed = system_record(record_id, "different-complete-record");
+
+        assert_eq!(destination.deliver(&original), Ok(()));
+        assert_eq!(
+            destination.deliver(&changed),
+            Err(LogDeliveryError::Destination(
+                LogDestinationError::IntegrityFailure
+            ))
+        );
+    }
+
+    #[test]
+    fn changed_audit_phase_for_the_same_identifier_is_an_integrity_failure() {
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
+        let catalog = catalog(
+            LogCapabilities::new(vec![LogRecordType::Audit]).expect("valid capability declaration"),
+            records,
+        );
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let destination = catalog
+            .create_destination(&identifier, &trusted_context())
+            .expect("registered destination is configured");
+        let issuer = TrustedRecordIssuer::new();
+        let attempt_record_id = issuer
+            .issue([6; RECORD_ID_LENGTH])
+            .expect("valid record ID");
+        let terminal_record_id = issuer
+            .issue([7; RECORD_ID_LENGTH])
+            .expect("valid record ID");
+        let correlation_id = CorrelationId::new("correlation-1").unwrap();
+        let body = || {
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "pre-redacted",
+            )
+            .unwrap()
+        };
+        let attempt = CompleteLogRecord::audit_attempt(
+            attempt_record_id,
+            EventTime::from_unix_milliseconds(1_725_000_000_000),
+            correlation_id.clone(),
+            body(),
+        )
+        .unwrap();
+        let original = CompleteLogRecord::audit_completion(
+            terminal_record_id.duplicate(),
+            EventTime::from_unix_milliseconds(1_725_000_000_001),
+            attempt.attempt_record_id().unwrap(),
+            LogResult::Success,
+            correlation_id.clone(),
+            body(),
+        )
+        .unwrap();
+        let changed = CompleteLogRecord::audit_correction(
+            terminal_record_id,
+            EventTime::from_unix_milliseconds(1_725_000_000_001),
+            attempt.attempt_record_id().unwrap(),
+            LogResult::Success,
+            correlation_id,
+            body(),
+        )
+        .unwrap();
+
+        assert_eq!(destination.deliver(&attempt), Ok(()));
+        assert_eq!(destination.deliver(&original), Ok(()));
+        assert_eq!(
+            destination.deliver(&changed),
+            Err(LogDeliveryError::Destination(
+                LogDestinationError::IntegrityFailure
+            ))
+        );
+    }
+
+    #[test]
+    fn changed_audit_result_with_the_same_phase_is_an_integrity_failure() {
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
+        let catalog = catalog(
+            LogCapabilities::new(vec![LogRecordType::Audit]).expect("valid capability declaration"),
+            records,
+        );
+        let destination = catalog
+            .create_destination(
+                &LogModuleIdentifier::new("sqlite").unwrap(),
+                &trusted_context(),
+            )
+            .unwrap();
+        let issuer = TrustedRecordIssuer::new();
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([0xa4; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            CorrelationId::new("correlation-1").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "attempt",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let body = || {
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "complete",
+            )
+            .unwrap()
+        };
+        let record_id = issuer.issue([0xa5; RECORD_ID_LENGTH]).unwrap();
+        let original = CompleteLogRecord::audit_completion(
+            record_id.duplicate(),
+            EventTime::from_unix_milliseconds(2),
+            attempt.attempt_record_id().unwrap(),
+            LogResult::Success,
+            CorrelationId::new("correlation-1").unwrap(),
+            body(),
+        )
+        .unwrap();
+        let changed = CompleteLogRecord::audit_completion(
+            record_id,
+            EventTime::from_unix_milliseconds(2),
+            attempt.attempt_record_id().unwrap(),
+            LogResult::Failure,
+            CorrelationId::new("correlation-1").unwrap(),
+            body(),
+        )
+        .unwrap();
 
         assert_eq!(destination.deliver(&original), Ok(()));
         assert_eq!(
@@ -2677,6 +3187,10 @@ mod tests {
         for (binary, expected_code) in [
             ("issuer", "E0624"),
             ("record-identity", "E0308"),
+            ("attempt-record-identity", "E0308"),
+            ("audit-record", "E0639"),
+            ("audit-completion-phase", "E0639"),
+            ("audit-correction-phase", "E0639"),
             ("context", "E0624"),
             ("acknowledgement", "E0624"),
             ("dispatch", "E0451"),

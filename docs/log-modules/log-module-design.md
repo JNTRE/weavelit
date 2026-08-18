@@ -14,17 +14,23 @@ variants, declared module capabilities, trusted registration and factory
 inputs, process-level durable-delivery acknowledgement, and payload-free typed
 errors. The
 common envelope includes a Server-generated opaque record identifier, event
-time, result, and correlation identifier. It contains no SQLite, filesystem,
-Application Database, client-wire serialization, query, retention, backup,
-recovery, purge, or remote-credential behavior.
+time, and correlation identifier. A System record carries an independent
+result. An Audit record instead carries a typed phase that structurally binds
+its terminal result and direct Attempt link. The Audit persistence view exposes
+that single phase value rather than a separate result accessor. The envelope
+contains no SQLite, filesystem, Application Database, client-wire serialization,
+query, retention, backup, recovery, purge, or remote-credential behavior.
 
-The contract enforces UTF-8 byte limits before it constructs a complete
-record. Every record carries a nonzero 16-byte random `record_id`, a UTC
-Unix-millisecond `event_time`, a `success` or `failure` `result`, a
-`correlation_id` of 1–64 bytes, and a `classification` selected from its
-closed typed catalog of lowercase dotted identifiers. A System record adds a
-`detail` of 1–4096 bytes; an Audit record adds a typed `principal` of 1–256
-bytes that is structurally either human with no
+The contract enforces UTF-8 byte limits before it constructs a complete record.
+Every record carries a nonzero 16-byte random `record_id`, a UTC
+Unix-millisecond `event_time`, a `correlation_id` of 1–64 bytes, and a
+`classification` selected from its closed typed catalog of lowercase dotted
+identifiers. A System record carries a `success` or `failure` result and a
+`detail` of 1–4096 bytes. An Audit record carries `phase: attempt` with no
+result or link, `phase: completion` with a `success` or `failure` result and
+one opaque 16-byte `attempt_record_id`, or `phase: correction` with the same
+required result and link shape. It adds a typed
+`principal` of 1–256 bytes that is structurally either human with no
 **[Responsible Owner](../glossary.md#identities-and-access)** or automation
 with its required 1–256-byte `responsible_owner`, plus an `action` of 1–128
 bytes, a `target` of 1–1024 bytes, and its own `detail` of 1–4096 bytes. Every
@@ -58,16 +64,34 @@ or inject a configured dispatch. A validated catalog without the Server-retained
 trusted context has no configured destination or delivery authority. Isolated
 SQLite destination tests construct only private SQLite-owned persistence inputs;
 normal module dependency graphs contain no authority-minting test feature and do
-not depend on Server or lifecycle crates. External-consumer compile fixtures prove
-provide stable boundary evidence for both the permitted registration surface and rejection of issuer, context,
-acknowledgement, direct dispatch, and catalog-mediated destination-configuration
-attempts.
+not depend on Server or lifecycle crates. External-consumer compile fixtures
+provide stable boundary evidence for both the permitted registration surface
+and rejection of issuer, context, acknowledgement, direct dispatch, and
+catalog-mediated destination-configuration attempts, record-identity
+duplication, Attempt-link cloning, direct Audit-record construction, and direct
+terminal-phase variant construction.
 
 Server Audit constructs and pre-redacts Audit records; Server Observability
 constructs and pre-redacts System records, including Init and Restore completion
 results. A Log Module accepts only these complete typed records. It may validate
 its declared capability and persist or deliver a record, but it must not redact,
 enrich, reinterpret, or access Application Database state.
+
+An Audit attempt records accepted intent before mutation and carries no outcome.
+Each newly constructed completion or correction carries the authoritative result
+and the opaque identifier capability minted only by its precise prior Attempt.
+The shared constructor rejects a terminal record whose correlation differs from
+that Attempt, whose record identifier reuses the Attempt identifier, or whose
+event time precedes the Attempt. Each record receives a fresh nonzero identifier,
+while related records reuse the owning request or workflow correlation
+identifier. Exact replay matching includes the Audit phase, phase-bound result,
+and Attempt link. The future Audit producer constructs and delivers attempts,
+linked completions, and linked corrections; the owning
+**[Administration Plane](../glossary.md#applications-and-interfaces)** workflow
+sequences the mutation, decides when correction evidence is required, emits any
+System Log, and owns future durable normal-operation recovery when completion
+delivery cannot finish after commit. That recovery does not reuse the Init or
+Restore lifecycle obligation contract.
 
 Delivery is synchronous and succeeds only when the assigned destination
 completes its configured supported storage interface's commit path for the
@@ -172,8 +196,9 @@ from its closed typed catalog; a destination stores its canonical string
 opaquely and does not enforce the taxonomy. The initial System Log taxonomy is
 `lifecycle.startup`, `lifecycle.init`, `lifecycle.restore`,
 `operational.state`, `configuration.change`, `authentication.failure`,
-`authorization.denial`, `dependency.failure`, `provider.failure`, and
-`internal.error`. The initial Audit Log taxonomy is `lifecycle.backup.created`;
+`authorization.denial`, `dependency.failure`,
+`dependency.audit-log-unavailable`, `provider.failure`, and `internal.error`.
+The initial Audit Log taxonomy is `lifecycle.backup.created`;
 `authentication.user.created`, `authentication.user.disabled`,
 `authentication.password.changed`, `authentication.password-reset.started`,
 `authentication.mfa.enrolled`, `authentication.mfa.reset`,
@@ -181,7 +206,8 @@ opaquely and does not enforce the taxonomy. The initial System Log taxonomy is
 `authentication.mfa-module-enablement.changed`, and
 `authentication.session.revoked`; `authorization.group.created`,
 `authorization.group-membership.changed`, `authorization.group-grant.changed`,
-and `authorization.automation-scope.changed`;
+`authorization.group-grant.removal-denied`, and
+`authorization.automation-scope.changed`;
 `dependency.log-module-configuration.changed` and
 `dependency.service-connection.changed`; `provider.operation.started` and
 `provider.operation.completed`; and `internal.server-configuration.changed`,
@@ -292,7 +318,7 @@ only when they satisfy the new schema. An existing oversized row makes the
 migration fail closed without dropping, altering, or replacing any destination
 record; this MVP defines no data-recovery exception for that incompatibility.
 
-The migration ledger's existing checksummed migrations 1 and 2 remain
+The migration ledger's existing checksummed migrations 1 through 3 remain
 unchanged. Migration 3 transactionally adds nullable `classification`,
 `principal_type`, and `responsible_owner` columns to the Audit table. Existing
 rows remain unchanged with all three new fields `NULL`. A newly written Audit
@@ -301,6 +327,34 @@ typed principal supplies no `responsible_owner` for a human and the required
 one for automation. The shared record contract enforces that structural rule
 before construction; SQLite stores the resulting canonical strings without
 enforcing the classification taxonomy.
+
+Append-only migration 4 transactionally rebuilds the Audit table with a
+non-null `phase`, nullable `result`, and nullable `attempt_record_id` BLOB. Its
+CHECK requires an `attempt` to have neither result nor link, a `completion` to
+have result `0` or `1` and either a `NULL` or 16-byte link, and every
+`correction` to have result `0` or `1` and a non-null 16-byte link. The nullable
+completion link is permitted only to retain legacy backfilled completion rows.
+Migration 4 maps every earlier Audit row to `phase = 'completion'`, preserves
+its existing result and all other fields, and sets its link to `NULL`; no
+Attempt history is invented. The terminal-insert trigger is created after that
+copy and, rather than the CHECK, requires every newly inserted completion or
+correction to link an already-persisted Audit Attempt with the same correlation
+identifier. The
+`weavelit_log_audit_attempt_record_id_idx` partial index supports
+Attempt-to-terminal joins. A failed copy rolls back the table replacement,
+index, trigger, and migration-ledger entry together.
+
+Before insertion, the SQLite destination also resolves the referenced row,
+requires its Audit phase to be `attempt`, compares the correlation identifier,
+parses its event time, and rejects a target whose event time is later than the
+terminal record. This application check covers malformed historical time text
+without relying on SQLite integer conversion for the unsigned timestamp range.
+The trigger enforces existing-row phase and correlation for direct new inserts,
+but SQLite does not prove that an opaque capability originated in the future
+Audit producer, and the schema does not use a self-referential foreign key.
+Exact replay matching compares the canonical phase literal, phase-bound result,
+and nullable link. Legacy unlinked completions remain readable but cannot be
+used to invent or infer Attempt history.
 
 ### Descriptor-Relative Candidate Evidence
 

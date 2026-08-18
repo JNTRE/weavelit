@@ -89,11 +89,17 @@ weavelit-server-init
 weavelit-server-restore
 ```
 
-The Server-owned logging producer crates are:
+The implemented Server-owned logging authority and producer crates are:
 
 ```text
 weavelit-server-log-authority
 weavelit-server-observability
+```
+
+The approved future Audit producer crate is:
+
+```text
+weavelit-server-audit
 ```
 
 The Server-owned authentication crate is:
@@ -129,6 +135,19 @@ it, so a post-commit record cannot drift from committed state. It owns no
 delivery, destination configuration, workflow orchestration, or Application
 Database access. A workflow crate asks Observability for a prepared record
 rather than constructing one.
+
+The future `weavelit-server-audit` crate is the only producer of complete, pre-redacted
+**[Audit Logs](../glossary.md#applications-and-interfaces)**. It accepts
+closed typed facts and a Server-supplied workflow
+correlation identifier, constructs bounded attempt, completion, and correction
+records with each terminal record directly linked to its precise Attempt, and
+delivers them synchronously through the supplied configured Audit destination.
+It owns no authorization, mutation sequencing, decision to create a correction,
+client-error mapping, System Log construction, retry or queue behavior, or
+post-commit obligation persistence and execution. The owning Server workflow
+supplies those boundaries, triggers and durably owns normal-operation recovery,
+and remains responsible for ensuring that a completion or correction record
+reflects an authoritative mutation outcome.
 
 `weavelit-server-log-authority` carries the capability that separates
 Server-owned logging authority from an ordinary Log Module. Rust has no

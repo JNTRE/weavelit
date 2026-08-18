@@ -2,38 +2,53 @@
 
 This document owns the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**
 producer contract for **[Audit Logs](../../glossary.md#applications-and-interfaces)**.
-It defines how a consequential authenticated action becomes one bounded,
-pre-redacted accountability record before delivery. The shared complete-record
-envelope, destination acknowledgement, classification catalog implementation,
-and destination storage remain defined by the [Log Module Design](../../log-modules/log-module-design.md).
+It defines how a consequential authenticated action becomes bounded,
+pre-redacted attempt, completion, or correction records before delivery. The
+shared complete-record envelope, destination acknowledgement, classification
+catalog implementation, and destination storage remain defined by the
+[Log Module Design](../../log-modules/log-module-design.md).
 This document does not define Audit Log retrieval, query, export, client
 presentation, destination-specific storage, or destination redaction.
 
+**Future design.** This document defines the approved producer boundary for
+future implementation work; it does not claim that `weavelit-server-audit` or
+the **[Administration Plane](../../glossary.md#applications-and-interfaces)**
+workflows already exist.
+
 ## Ownership And Invariants
 
-The Server owns authorization, Audit producer construction, pre-redaction, and
-the decision to commit a consequential mutation. The `weavelit-server-audit`
-component constructs the Audit body and supplies it to the
+The Server owns authorization, mutation sequencing, and the decision to commit
+a consequential mutation. The `weavelit-server-audit` component constructs and
+pre-redacts the Audit body, using only closed typed facts and the
+Server-supplied workflow correlation identifier, then supplies it to the
 `weavelit-server-log` contract. A Log Module receives only the complete
 immutable record; it must not redact, enrich, reinterpret, or read Application
 Database state.
 
 Every consequential authenticated application action must be attributable to
-the authenticated principal and must produce an Audit Log record. Init and
-Restore are pre-operational lifecycle actions and produce System Logs, not
-Audit Logs. Operational diagnosis remains in the Server Observability boundary.
+the authenticated principal and must produce the accountability records
+defined below. Init and Restore are pre-operational lifecycle actions and
+produce System Logs, not Audit Logs. Operational diagnosis remains in the
+Server Observability boundary.
 
 ## Bounded Record Contract
 
-The Server generates the opaque `record_id`, UTC Unix-millisecond
-`event_time`, and `correlation_id` in trusted Server context. The producer
-constructs the following pre-redacted Audit body and complete record:
+The **[Weavelit Server](../../glossary.md#applications-and-interfaces)**
+generates the opaque `record_id` and UTC Unix-millisecond
+`event_time` in trusted Server context. The owning request workflow already
+has the Server-generated `correlation_id` used by the API response and any
+related System Log; it supplies that value to the producer. Audit construction
+does not create a new correlation identifier. A non-request workflow supplies
+its owning workflow-generated correlation identifier. The producer constructs
+the following pre-redacted Audit body and complete record:
 
 | Field | Required contract |
 | --- | --- |
-| `record_id` | Server-generated, opaque, nonzero 16-byte identifier. A caller, producer input, or destination must not choose it. |
+| `record_id` | Server-generated, opaque, nonzero 16-byte identifier. Each attempt, completion, or correction receives a fresh identifier; a caller, producer input, or destination must not choose or reuse it. |
 | `event_time` | Server-generated UTC Unix time in milliseconds. |
-| `result` | Exactly `success` or `failure`. |
+| `phase` | Exactly `attempt`, `completion`, or `correction`. An attempt records accepted intent before mutation; a completion or correction records an authoritative outcome. |
+| `result` | Absent for `attempt`. Exactly `success` or `failure` for `completion` and `correction`. |
+| `attempt_record_id` | Absent for `attempt`. Every newly constructed `completion` or `correction` requires the immutable opaque 16-byte `record_id` capability minted from its precise prior Attempt. |
 | `correlation_id` | Non-empty UTF-8 value bounded by `MAX_CORRELATION_ID_BYTES` (64 bytes). |
 | `classification` | One value from the closed typed Audit catalog, bounded by `MAX_AUDIT_CLASSIFICATION_BYTES` (128 bytes). |
 | `principal` | Structured human or automation principal, non-empty and bounded by `MAX_AUDIT_PRINCIPAL_BYTES` (256 bytes). |
@@ -51,11 +66,27 @@ partial or replacement record, or pass rejected input to a destination.
 
 The record's debug and error representations are payload-free. A record
 identifier is not a replacement for valid body content and must not be reused
-with different content.
+with different content. Related records reuse the owning workflow's correlation
+identifier while retaining distinct record identifiers. Audit construction does
+not accept, derive from, or serialize Application Database `StateIdentifier`
+values. A future producer renders a safe target from its closed typed input
+without exposing a database identifier. The shared envelope remains the schema
+authority for the typed phase, terminal result, and Attempt link invariant.
+
+`AttemptRecordId` is an opaque typed capability. Only a complete Audit Attempt
+can mint it; callers cannot convert or clone an arbitrary `RecordId` into an
+Attempt link. Public completion and correction constructors consume this
+capability together with a `LogResult` and reject a different correlation
+identifier, reuse of the Attempt record identifier, or an event time before the
+Attempt, so a newly constructed terminal record without one precise prior
+same-correlation Attempt is unrepresentable. The destination separately proves
+that the referenced Attempt was already persisted before accepting the terminal
+record.
 
 ## Construction, Redaction, And Delivery
 
-The producer receives only the validated facts needed to describe the action.
+The **[Audit Log](../../glossary.md#applications-and-interfaces)** producer
+receives only the validated facts needed to describe the action.
 It creates fixed or allowlisted summaries for `classification`, `action`,
 `target`, and `detail`; it does not serialize a request, response, database
 row, exception, or arbitrary user-provided value into an Audit record. The
@@ -76,46 +107,69 @@ password to the Administrator. This design records only the reset action and
 its safe result; it does not select or document a delivery channel for the
 temporary password.
 
-Password reset and MFA reset are independent actions. A password reset record
-must not imply an MFA reset, and an MFA reset record must not imply a password
-reset. Disabling an MFA Module terminates sessions that depend on that method,
-but preserves existing enrollments, MFA requirement state, Audit history, and
-other persisted data. This session effect is recorded as the safe enablement
-change result; it is not a data purge.
+Password reset and MFA reset are independent actions. Their behavior and
+protected-data requirements are authoritative in the [Authentication Design](../authentication/authentication-design.md)
+and [Security Model](../../security-model.md#multifactor-authentication-security-profile);
+this document does not restate their session or enrollment semantics.
 
-The route or owning Server workflow delivers the complete record synchronously
-through the configured Audit Log assignment. For an Administration Plane
-mutation, the sequence is:
+The owning **[Administration Plane](../../glossary.md#applications-and-interfaces)**
+workflow sequences construction and delivery as follows. The producer does
+not authorize, mutate state, map client errors, construct System Logs, or own
+post-commit obligations:
 
 1. Authenticate and authorize the principal.
-2. Validate the requested mutation and derive safe record fields.
-3. Construct and bounds-validate the complete Audit record.
-4. Deliver it and wait for the Log Module's durable acknowledgement.
-5. Commit the application-state mutation only after successful delivery.
+2. Validate the requested mutation and derive only safe intent, target, and
+  action facts.
+3. Ask the producer to construct and bounds-validate a pre-commit `attempt`
+  record. Its content describes intent and safe target/action context only;
+  it contains no final state, affected count, or other outcome-derived detail.
+  It has no `result`; durable delivery acknowledgement is a separate Log Module
+  contract and is not Audit record content. The complete Attempt is the only
+  source of the typed `AttemptRecordId` capability used by its terminal records.
+4. Deliver the attempt synchronously and wait for the Log Module's durable
+  acknowledgement.
+5. If construction or delivery fails, prevent the mutation and return the
+  stable redacted error `Audit Log unavailable; operation rejected.` The
+  workflow does not retry, enqueue, or create a substitute record. The normal
+  Server process remains alive. The owning workflow records the corresponding
+  System Log classification and timing under the [Log Module taxonomy](../../log-modules/log-module-design.md#event-classification-taxonomy).
+6. Apply the atomic application-state mutation.
+7. After the mutation outcome is authoritative, ask the producer to construct
+  and synchronously deliver a correlated `completion` record. Its `result`
+  and detail represent the committed success or the known rejected/failed
+  outcome, and its `attempt_record_id` directly identifies the acknowledged
+  Attempt. Final state, affected count, and other outcome-derived details may
+  appear only here or in a later correction record.
+8. If completion delivery cannot finish after commit, the owning workflow
+  triggers and durably manages the future normal-operation recovery contract.
+  That contract is separate from the Init and Restore lifecycle obligations and
+  remains future Administration Plane workflow design. When the workflow asks
+  for correction evidence, the producer constructs the bounded correlated
+  `correction` with a direct link to the same Attempt; it does not decide when
+  one is required or make it durable.
 
-Construction or delivery failure rejects or rolls back the mutation. The
-caller receives the stable redacted error `Audit Log unavailable; operation
-rejected.` A failed attempt does not create a substitute record and does not
-leave the mutation committed. The normal Server process remains alive after a
-destination becomes unavailable.
-
-If the application-state commit fails after the Audit record is durably
-acknowledged, the workflow emits a failure Audit correction using the same
-correlation identifier and safe target and action context. It also records a
-best-effort System Log, then returns a stable redacted failure without
-reporting success. The acknowledged success record must not be treated as
-proof that the mutation committed.
-
-The Server records destination failures as the System Log classification
-`dependency.audit-log-unavailable`, with only safe destination and operation
-context. It does not add an outbox, retry queue, background delivery path, or
-destination-side enrichment. Non-consequential operations may absorb an
-Audit-delivery failure only where the owning route permits it; the failure must
-still be visible through the System Log.
+The same correlation identifier relates the attempt, completion or correction,
+API response, and any related System Log for a request workflow, while each
+terminal record's `attempt_record_id` directly identifies its precise Attempt.
+Taken together, this correlated record set fulfills the
+[Technical Specification's result accountability requirement](../../spec.md#logging-and-accountability),
+and its before-and-after sequence fulfills the
+[Operation Processing Contract](../../spec.md#operation-processing-contract).
+The result-less Attempt is never sole accountability evidence: an acknowledged
+Attempt proves only that intent was durably accepted, and the linked completion
+or correction supplies the authoritative result. Attempt, completion, and
+correction records each use a fresh record identifier.
+The producer does not own the `dependency.audit-log-unavailable` System Log
+record; its classification, safe context, and timing belong to the owning
+workflow and Server Observability boundary. The catalog names that future
+System entry, and the Audit catalog separately names
+`authorization.group-grant.removal-denied`; neither catalog entry causes the
+producer to emit a System Log or orchestrate a mutation.
 
 ## Administrative Event Taxonomy
 
-Classifications are lowercase dotted typed identifiers selected by the Audit
+**[Audit Logs](../../glossary.md#applications-and-interfaces)** use lowercase
+dotted typed identifiers selected by the Audit
 producer. The deprecated prose labels `admin password-reset` and `admin
 MFA-reset` are not identifiers. A generic `action` value may distinguish an
 administrative activity when the classification alone does not express that
@@ -149,12 +203,22 @@ The producer may also use the remaining approved catalog entries
 action consequential. It must not invent a new identifier to avoid a taxonomy
 decision. The canonical full catalog remains in [Log Module Design](../../log-modules/log-module-design.md#event-classification-taxonomy).
 
+Future producer implementation owns typed, bounded attempt, completion, and
+correction construction, including direct Attempt linkage, and synchronous
+delivery to a supplied configured Audit destination. Future Administration
+Plane workflow work decides when a correction is required and owns assignment
+resolution, mutation sequencing, client-error mapping, System Log emission, and
+the durable normal-operation recovery contract for a completion that cannot be
+delivered after commit. This producer design does not select that recovery
+mechanism.
+
 ## Retention And Validation Implications
 
-Audit destination retention is indefinite in Milestone 1: no automatic Audit
-Log purge occurs. Destination retention, backup, recovery, and storage
-compatibility remain owned by the Log Module design and its destination; this
-document does not add a Server-wide retention mechanism.
+**[Audit Logs](../../glossary.md#applications-and-interfaces)** must not be
+automatically purged. Destination retention, storage
+durability, backup, recovery, and compatibility remain owned by the Log Module
+design and its destination; this document does not promise indefinite survival
+or add a Server-wide retention mechanism.
 
 Focused validation for the producer and its future administration contracts
 must prove:
@@ -162,23 +226,29 @@ must prove:
 - every field rejects empty or over-bound UTF-8 input, including the 8 KiB
   aggregate limit, without truncation, hashing, or source retention;
 - human and automation principal shapes enforce the Responsible Owner rule;
+- only an Attempt can mint an opaque link capability; every new completion and
+  correction requires that link and matching correlation; and terminal links
+  cannot target an absent, later, non-Attempt, or differently correlated record;
 - every taxonomy value is the exact canonical dotted identifier, and password
   reset and MFA reset remain separate;
 - forbidden values cannot enter action, target, or detail through fixed,
   allowlisted, or structured summaries;
 - construction and destination failure prevent a consequential state commit,
-  return the stable redacted error, emit
-  `dependency.audit-log-unavailable`, and leave the process alive; and
-- successful delivery precedes the corresponding mutation commit, and a
-  post-acknowledgement commit failure emits the failure Audit correction and
-  best-effort System Log without reporting success; and
+  return the stable redacted error, and leave the process alive while the
+  owning workflow records `dependency.audit-log-unavailable`; and
+- the attempt is acknowledged before the corresponding mutation commit, the
+  completion follows the authoritative outcome, and a post-commit delivery
+  failure remains with the owning workflow's future normal-operation recovery
+  contract without reusing an Init or Restore lifecycle obligation; and
 - no retrieval or export behavior is implied by the producer contract.
 
 ## Related Documents
 
 - [Technical Specification](../../spec.md)
 - [Security Model](../../security-model.md)
+- [Server Architecture Design](../server-architecture-design.md)
 - [Log Module Design](../../log-modules/log-module-design.md)
+- [Server API Contract](../api/api-contract-design.md)
 - [Authentication Design](../authentication/authentication-design.md)
 - [Authorization Design](../authorization/authorization-design.md)
 - [Glossary](../../glossary.md)

@@ -1,12 +1,12 @@
 # Server Audit Agent Guide
 
-This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** **[Audit Log](../../glossary.md#applications-and-interfaces)** design for consequential authenticated application actions, including **[Operations](../../glossary.md#applications-and-interfaces)**. It preserves accountability for the authenticated principal and, for automations, the **[Responsible Owner](../../glossary.md#identities-and-access)** without treating Audit Logs as operational observability data.
+This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** **[Audit Log](../../glossary.md#applications-and-interfaces)** design for consequential authenticated application actions, including **[Operations](../../glossary.md#applications-and-interfaces)**. It preserves accountability for the authenticated principal, direct Attempt-to-outcome linkage, and, for automations, the **[Responsible Owner](../../glossary.md#identities-and-access)** without treating Audit Logs as operational observability data.
 
 ## Purpose and Scope
 
 Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
 
-- This directory owns Audit Log construction and pre-redaction design for authenticated application accountability, including the authenticated principal, action or **[Operation](../../glossary.md#applications-and-interfaces)**, target, result, and correlation identifier, before records reach a Log Module.
+- This directory owns Audit Log construction and pre-redaction design for authenticated application accountability, including the authenticated principal, action or **[Operation](../../glossary.md#applications-and-interfaces)**, target, phase-bound result, direct Attempt linkage, and correlation identifier, before records reach a Log Module.
 - It does not own Init or Restore lifecycle-result logging; that belongs in the sibling `../observability/` directory.
 - It does not own operational diagnosis, metrics, or tracing; those belong in the sibling `../observability/` directory.
 - Audit destination retention and backup decisions that remain unsettled belong in `../../open-questions.md`; required pre-redaction follows `../../security-model.md`.
