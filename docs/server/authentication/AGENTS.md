@@ -16,6 +16,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server authentication.
 - `authentication-design.md`: Canonical implementation design for Server authentication.
+- `temporary-password-disclosure-decision.md`: Accepted ADR preserving the temporary-password one-response disclosure decision.
 
 ## Usage Guidance
 

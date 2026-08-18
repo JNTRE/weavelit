@@ -162,23 +162,43 @@ transport these workflows, but they must not persist passwords or password
 verifiers or implement independent password hashing or verification. Browser
 sessions must use secure, Server-managed session handling.
 
-#### Administrator-Initiated Password Reset
+### Administrator-Initiated Password Reset
 
 Password reset initiated by an Administrator is distinct from user-initiated
-password change. Reset operations:
+password change. The Server-generated temporary password is emitted as
+plaintext only in the originating successful account-create or password-reset
+response. An authorized **[Administrator](glossary.md#identities-and-access)** may receive it once there; the
+Server has no later retrieval or re-disclosure path. This is a non-recoverable
+server property, not a promise that a client or Administrator cannot copy or
+retain the value.
 
-1. Generate a temporary password via the Server's password-generation logic
-   (never stored as a normal credential).
-2. Require the user to change the temporary password at the next sign-in before
-   performing any other action.
-3. Revoke all active sessions for the user (forcing re-authentication with the
-   temporary password).
+The temporary password is never persisted, plaintext or reversibly encrypted:
+the Server retains only its approved password verifier. It must never appear in
+System Logs, Audit Logs, errors, debug output, a URL, cookie, redirect, browser
+storage, or an ordinary account read. The secret-bearing response is
+`Cache-Control: no-store`. Weavelit cannot prove that a human viewed or handled
+the value, so custody and any sharing outside Weavelit remain the
+Administrator's responsibility.
 
-Temporary passwords MUST NOT be revealed to the Administrator; the Server
-handles delivery to the user through the configured Administration Plane
-channel. Forced-change semantics ensure the temporary password is discarded
-after first use, preventing password-reuse attacks and limiting the window
-during which an Administrator holds a valid credential for a user account.
+The originating response is the only disclosure opportunity. A lost or
+indeterminate response requires a new reset; automatic retry is prohibited, and
+each repeated reset supersedes the prior temporary credential. The temporary
+credential has a fixed 24-hour absolute expiry. Account creation creates no
+sessions; reset revokes the target's active sessions. Each issuance increments
+or replaces the credential revision, so stale authentication cannot issue a
+session. The temporary credential then expires or becomes unusable, and the
+forced password-change requirement remains in force until the user completes
+the password change.
+
+Issuing a temporary password requires fresh exact-session credential
+reauthentication by the Administrator and TOTP verification when that
+Administrator is enrolled in MFA. This issuance gate is separate from ordinary
+account operations. Password change clears the temporary metadata and flag,
+increments or replaces the credential revision, and issues a fresh session
+after required MFA. A self-reset whose lost or expired result locks the last
+Administrator can make the deployment inaccessible through supported interfaces;
+this accepted fail-closed risk is the operator's responsibility. Init is
+unchanged and does not use this operational disclosure flow.
 
 ## Multifactor Authentication Security Profile
 
@@ -419,6 +439,7 @@ requests.
 
 - [Technical Specification](spec.md)
 - [Glossary](glossary.md)
+- [Temporary Password Disclosure Decision](server/authentication/temporary-password-disclosure-decision.md)
 - [Lifecycle Anchor Protection And Serialization Profile](server/lifecycle/lifecycle-anchor-profile-decision.md)
 - [Authentication Design](server/authentication/authentication-design.md)
 - [Authorization Design](server/authorization/authorization-design.md)

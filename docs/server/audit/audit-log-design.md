@@ -147,10 +147,13 @@ destination, catalog, authority, queue, or post-commit obligation. A future
 Administration Plane workflow decides whether and how a retained terminal
 record participates in durable post-commit recovery.
 
-An Administrator-initiated password reset must not reveal the temporary
-password to the Administrator. This design records only the reset action and
-its safe result; it does not select or document a delivery channel for the
-temporary password.
+The future account-create and password-reset workflows may disclose a generated
+temporary password only in their originating successful response. Audit records
+record issuance or reset acceptance and safe outcomes only; they must never
+contain the password, verifier, response or delivery content, or whether a
+human viewed or handled the response. The [Security Model](../../security-model.md#administrator-initiated-password-reset)
+and [Authentication Design](../authentication/authentication-design.md#future-account-credential-issuance)
+own the disclosure and credential lifecycle policy.
 
 Password reset and MFA reset are independent actions. Their behavior and
 protected-data requirements are authoritative in the [Authentication Design](../authentication/authentication-design.md)
@@ -223,9 +226,9 @@ context.
 
 | Classification | Administrative coverage | Safe `action`, `target`, and `detail` content | Forbidden source values |
 | --- | --- | --- | --- |
-| `authentication.user.created` | Account creation | create; stable account reference; result | Passwords, verifiers, invitation or recovery material |
+| `authentication.user.created` | Account creation | create; stable account reference; result | Passwords, verifiers, invitation or recovery material, response or delivery content, viewed state |
 | `authentication.user.disabled` | Account disablement | disable; stable account reference; resulting status | Credentials, sessions, or request payloads |
-| `authentication.password-reset.started` | Administrator-initiated password reset | reset-password; target account; reset accepted or rejected | Temporary password, verifier, delivery contents, tokens |
+| `authentication.password-reset.started` | Administrator-initiated password reset | reset-password; target account; issuance or reset accepted or rejected | Temporary password, verifier, response or delivery content, viewed state, tokens |
 | `authentication.mfa.reset` | MFA enrollment reset | reset-mfa; target account; re-enrollment required | Provisioning value, secret, code, factor data |
 | `authentication.mfa-requirement.changed` | MFA requirement changes | change-mfa-requirement; target account; new safe state | MFA secrets or authentication codes |
 | `authentication.mfa-module-enablement.changed` | MFA Module enablement or disablement, including dependent-session termination | change-mfa-module; module identifier; enabled state and affected-count summary | Factor data, session identifiers, or arbitrary account data |
@@ -317,4 +320,5 @@ must prove:
 - [Authorization Design](../authorization/authorization-design.md)
 - [Audit Log Unavailability System Log Record](../observability/audit-log-unavailability-record-design.md)
 - [Glossary](../../glossary.md)
+- [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)
 - [Testing and Validation Policy](../../testing.md)

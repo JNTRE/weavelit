@@ -164,6 +164,30 @@ ordinary restart, they never appear in normalized state or in a backup, and a
 Restore clears them. A backend has no schema in which to record log records, Log
 Module destination data, or Log Module credentials at all.
 
+### Future Temporary-Credential State
+
+The future account-create, password-reset, and password-change contract must
+keep temporary-credential state backend-neutral and plaintext-free. An account
+record carries a monotonically increasing credential revision, a bounded
+temporary-credential expiry instant, and the `must_change_password` flag; it
+carries no temporary password, response content, delivery content, or
+continuation bearer. Creation and reset must atomically compare the expected
+revision, write only the new verifier and temporary metadata, revoke target
+sessions, and increment or replace the revision. Password change must
+atomically verify the expected revision, replace the verifier, clear temporary
+metadata and the flag, and increment or replace the revision. Refer to
+[Authentication Design](../authentication/authentication-design.md#future-account-credential-issuance)
+for the approved expiry, revision, session, and reauthentication policy.
+
+The Application Database transaction covers credential metadata and session
+revocation only. Audit attempt, terminal outcome, and any future post-commit
+recovery sequencing remain owned by the Audit design and the owning workflow;
+the Application Database does not store Audit artifacts or participate in
+temporary credential issuance. A compare-and-set conflict commits neither a
+new credential nor plaintext and returns a stable secret-free result. The
+fixed temporary-credential expiry is 24 hours. These are future contract
+obligations; they do not alter Init or permit a password-retrieval operation.
+
 ## Live Session Storage
 
 `SessionStore` is a separate backend-neutral contract from `ApplicationState`,
@@ -513,3 +537,5 @@ backend.
 - [SQLite Application Database Design](sqlite/sqlite-application-database-design.md)
 - [Log Module Design](../../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../../testing.md)
+- [Authentication Design](../authentication/authentication-design.md)
+- [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)

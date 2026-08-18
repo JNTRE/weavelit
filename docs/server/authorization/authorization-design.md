@@ -234,6 +234,20 @@ weaker rule.
 | `GrantMutation` | Required, scoped to `GrantMutation` | Covers future Group membership and grant mutations. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
 
+Credential issuance is future policy, not an existing accepted
+`AdministrationAction` descriptor or type. Future account-create and
+password-reset workflows use the `Account` family for authorization and must
+add a separate exact-session credential-issuance check before returning a
+temporary password. That check is a distinct reauthentication gate that
+reverifies the current Administrator's password and TOTP enrollment status
+within the same session; it does not consume or extend `MfaStepUpProof` and is
+independent of the `MfaPolicy` action's step-up requirement. The issuance check
+is specific to credential delivery and does not create a reusable action
+family in this foundation. The Server must not treat an ordinary `Account`
+authorization as sufficient for returning a temporary password, and it must
+not make ordinary account reads or status operations pay this
+issuance-specific gate.
+
 `ComponentOperation` means an administration action performed through an
 already enabled target. It is not the future enablement mutation itself. A
 future enable/disable workflow must add its own closed action descriptor and
@@ -289,6 +303,7 @@ proof.
 Inventory membership and enablement are keyed by the compound
 `(ComponentKind, Name)` identity. A valid name under the wrong kind is unknown,
 and disabling one kind leaves the same name under every other kind enabled.
+
 `Account` and `MfaPolicy` actions do not read component enablement. Rejecting an
 unknown target before the enablement read is an accepted stable-value ordering
 that avoids unnecessary database work and pins observable dependency calls; it
@@ -395,3 +410,4 @@ with the module starting disabled after Init as described in
 - [Security Model](../../security-model.md)
 - [Technical Specification](../../spec.md)
 - [Glossary](../../glossary.md)
+- [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)

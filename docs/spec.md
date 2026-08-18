@@ -262,8 +262,11 @@ or unauthenticated account-recovery interface.
 An Administrator MAY initiate a **password reset** for any local Human User,
 including themselves. Password reset is a Server-owned operation that generates
 a temporary password and requires the user to change their password at the next
-sign-in. Password reset does NOT affect MFA enrollment; users retain their MFA
-factors unless an Administrator separately resets their MFA.
+sign-in. The Server-generated temporary password is not recoverable after the
+originating successful account-create or password-reset workflow, but an
+authorized Administrator MAY receive it once in that originating workflow.
+Password reset does NOT affect MFA enrollment; users retain their MFA factors
+unless an Administrator separately resets their MFA.
 
 An Administrator MAY initiate an **MFA reset** for any local Human User,
 including themselves, to clear and re-enroll an MFA factor. MFA reset does NOT

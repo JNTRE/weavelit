@@ -187,45 +187,83 @@ which compares stored digests rather than bearer values, and the decision to
 accept that row as the presented session is a constant-time comparison of the
 two digests.
 
-#### Password Reset Workflow
+## Future Account Credential Issuance
 
-Administrator-initiated password reset follows this contract:
+Future account creation and password reset workflows will own temporary
+credential issuance. No account-create or password-reset route exists in the
+current API. Ordinary Account authorization and a separate exact-session
+credential-issuance check will both be required before a workflow returns a
+temporary password.
 
-1. **Reset Request:** An authenticated Administrator with ServerAdministration
-   permission requests a password reset for a user account.
-2. **Temporary Password Generation:** The Server generates a temporary password
-   using the same `PasswordVerifierFactory` as account creation, producing a
-   hashed, salted credential. The temporary password is ephemeral and never
-   persisted; only its hash is retained for validation.
-3. **Forced-Change State:** The Server sets the account's
-   `must_change_password` flag to `true` and revokes all active sessions for
-   the user.
-4. **User Authentication with Temporary Password:** When the user attempts to
-   sign in with their username and the temporary password, the Server:
-   - Verifies the temporary password against the retained hash.
-   - Checks the `must_change_password` flag.
-   - If the flag is set, requires the user to change their password before
-     admitting them to any other operation (including MFA enrollment).
-5. **Forced-Change Gate:** All routes (except logout and password-change
-   routes) check the `must_change_password` flag AFTER MFA step-up validation.
-   If the flag is set, the Server rejects the request with a stable error and
-   directs the user to the password-change route.
-6. **Password Change:** When the user changes their password (using their
-   current temporary password for verification), the Server:
-   - Clears the `must_change_password` flag.
-   - Generates a normal session credential and admits the user to subsequent
-     operations.
+Future account creation will create the account's first verifier and temporary
+credential metadata in the same atomic state mutation that makes the account
+available. It has no prior target sessions to revoke. The successful originating
+response will disclose the generated temporary password under the same one-time
+wire contract as password reset; a lost response requires a new explicit
+administrative action and does not trigger automatic re-disclosure.
+
+### Future Password Reset
+
+1. **Issuance authorization:** An authenticated **[Administrator](../../glossary.md#identities-and-access)** with
+   **[Server Administration Permission](../../glossary.md#identities-and-access)**
+   passes Account authorization and the separate exact-session
+   credential-issuance check: the current session reauthenticates with the
+   Administrator's current password and, when enrolled, a TOTP code. Init is
+   outside this flow.
+2. **Generate and prepare:** The Server generates a temporary password using
+   the same `PasswordVerifierFactory` as account creation, creates its Argon2
+   verifier, and prepares the typed secret-bearing response before any
+   single-use state mutation. The plaintext and response buffer use zeroizing,
+   non-rendering owners; only the verifier is eligible for persistence.
+3. **Atomic mutation:** One compare-and-set transaction checks the expected
+   account credential revision, writes or replaces the verifier, increments or
+   replaces the revision, sets `must_change_password`, records the fixed
+   24-hour absolute expiry, and revokes the target's active sessions. A stale
+   concurrent request commits no credential and returns one stable,
+   secret-free conflict result.
+4. **One-response disclosure:** Only after the mutation succeeds does the
+   Server return the plaintext temporary password in the originating successful
+   response. The response is `Cache-Control: no-store`, has no redirect, URL,
+   cookie, or browser-storage effect, and is never reconstructed or returned by
+   a later lookup. An indeterminate or lost response is not automatically
+   retried; a new reset creates a new credential and supersedes the old one.
+5. **Temporary-password sign-in:** Before expiry, the Server verifies the
+   temporary password against the retained verifier, checks the credential
+   revision and `must_change_password`, and refuses the session if the fixed
+   24-hour expiry has passed. The user must change the password before any
+   other operation, including MFA enrollment.
+6. **Forced-change gate:** All routes except logout and password-change routes
+   check `must_change_password` after the existing MFA step-up validation. If
+   it is set, the Server rejects the request with a stable error and directs
+   the user to the password-change route.
+7. **Password change:** The user changes the password using the current
+   temporary credential. In one transaction the Server verifies the current
+   credential revision, writes or replaces a new normal verifier, increments
+   or replaces the revision, clears the temporary metadata and
+   `must_change_password`, and issues a fresh session after required MFA.
+
+If a future design adds a password-change continuation ticket, it must be
+specified as a separate future contract. It must not be confused with the
+existing in-memory MFA continuation, and this design does not authorize
+persisting a password-change continuation.
 
 **MFA-Ordering Invariant:** The forced-change gate MUST sit AFTER the MFA
 step-up gate in an atomic transaction. This ensures that if MFA is required, the
 user must complete MFA before reaching the password-change route, preventing
 unauthorized password changes by actors with only the temporary password.
 
-**Continuation Semantics:** The forced-change state is represented by the
-`must_change_password: bool` field in the Account record (Application Database)
-and MUST survive Server restarts. Forced-change is NOT a per-session
-continuation; it is a stable account property until explicitly cleared by a
-password change.
+**State Semantics:** The future `must_change_password` flag, temporary expiry,
+and credential revision are stable Account properties and must survive Server
+restarts through the future Application Database migration. Creation creates no
+prior sessions; reset revokes existing sessions. Any stale pre-reset password
+verification or future password-change continuation cannot issue a session.
+Changing the password clears the temporary metadata and flag and produces a
+fresh session after required MFA. A missing or lost originating response has no
+automatic retry or re-disclosure path; it requires a new reset. A self-reset
+whose result is lost or expires can lock the Administrator out and, if that is
+the last Administrator, make the deployment inaccessible through supported
+interfaces. This is an accepted fail-closed risk; expiry recovery requires a
+new Administrator reset and remains an operator responsibility.
 
 ## Session Storage And Lifetime
 
@@ -616,5 +654,6 @@ route.
 - [Server API Contract](../api/api-contract-design.md)
 - [Server Restore Design](../lifecycle/restore/restore-design.md)
 - [Authentication-Failure System Log Record](../observability/authentication-failure-record-design.md)
+- [Temporary Password Disclosure Decision](temporary-password-disclosure-decision.md)
 - [TOTP Module Design](../../mfa-modules/totp-module-design.md)
 - [Glossary](../../glossary.md)

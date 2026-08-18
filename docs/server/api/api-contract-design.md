@@ -325,6 +325,24 @@ the allocator, URI parsing, or a consumer after it copies a value. It also does
 not extend to bodies and leaves the encrypted Restore-artifact exclusion in
 [Secret Request-Body Handling](#secret-request-body-handling) unchanged.
 
+#### Future Credential-Issuance Response
+
+Future account-create and password-reset contracts may return a typed
+credential-issuance response containing a bounded temporary-password field of
+24 unpadded Base64url characters and the existing bounded `correlation_id`.
+This is a future wire-boundary contract only; it does not create a route or
+imply that either contract is implemented. The response is constructed and
+accepted into its bounded, zeroizing response buffer before the account
+mutation commits, and plaintext is returned only after that pre-mutation
+construction succeeds and the mutation succeeds. It carries
+`Cache-Control: no-store` and must not create a redirect, URL, cookie, or
+browser-storage entry. The response has no later retrieval or view operation.
+
+Credential issuance is deliberately non-retryable under the generic
+[Idempotency](#idempotency) policy. A lost or indeterminate response receives
+no automatic retry or repeated plaintext; it requires a new reset. Stable
+payload-free errors remain dependency-neutral.
+
 #### Producer Obligations
 
 Failing closed is the envelope's last defence, not a route's error-handling
@@ -348,7 +366,7 @@ The one-time MFA provisioning result is the worked example of both: its
 accepted into its bounded type before the confirming enrollment continuation is
 issued. The bound itself is unchanged, and no account name can make an
 enrollment unopenable. The
-[Server Authentication Design](../authentication/authentication-design.md#provisioning-uri-construction)
+[TOTP Module Design](../../mfa-modules/totp-module-design.md#provisioning-uri-construction)
 owns how the URI is fitted.
 
 ## Secret Request-Body Handling
@@ -428,3 +446,4 @@ for this purpose.
 - [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md)
 - [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md)
 - [Glossary](../../glossary.md)
+- [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)

@@ -165,6 +165,29 @@ Group projections through the backend-neutral checked constructor; a missing,
 extra, malformed, reused, orphaned, or wrongly associated reference is an
 `IntegrityFailure`.
 
+### Future Temporary-Credential Migration
+
+The future migration for temporary account credentials must be forward-only and
+transactional. It adds, rather than preserves, `must_change_password`, a
+credential revision, and fixed 24-hour expiry metadata to the account-owned
+schema. It stores only the Argon2 verifier and bounded metadata; plaintext
+temporary passwords, response buffers, delivery content, and continuation
+bearer values have no SQLite column. No password-change ticket is authorized
+by this design; if a future design adds one, its exact state and storage
+requirements must be approved separately.
+
+Future account creation, reset, and password change use one `BEGIN IMMEDIATE`
+compare-and-set transaction over the expected credential revision. The
+transaction writes or replaces the verifier and temporary metadata, increments
+or replaces the revision, and revokes target sessions where applicable. It
+does not store Audit records or participate in Audit sequencing; post-commit
+recovery remains with the Audit design and owning workflow. A
+stale revision rolls back all credential and session writes and returns a
+stable secret-free conflict. The migration and transaction design do not
+create a retrieval endpoint and do not change Init semantics. Refer to
+[Authentication Design](../../authentication/authentication-design.md#future-account-credential-issuance)
+for the approved expiry, revision, session, and reauthentication policy.
+
 ## Live Session Schema
 
 `0004_create_session_store.sql` creates the single `STRICT` table
@@ -480,3 +503,5 @@ from the outset.
 - [Security Model](../../../security-model.md)
 - [Testing and Validation Policy](../../../testing.md)
 - [Log Module Design](../../../log-modules/log-module-design.md)
+- [Authentication Design](../../authentication/authentication-design.md)
+- [Temporary Password Disclosure Decision](../../authentication/temporary-password-disclosure-decision.md)
