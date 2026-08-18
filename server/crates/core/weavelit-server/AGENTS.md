@@ -46,10 +46,11 @@ Use this section as the source of truth for what assets belong in this directory
 - `src/authorization.rs`: `AuthorizationRuntime`, the live composition point for
   both authorization decisions: the compiled-in served-component inventory, the
   catalog built from one live component-enablement read, the `ValidatedSession`
-  gate that makes skipping session validation a compile failure, the live,
-  uncached reads of the account's grants and component enablement on every
-  call, and best-effort authorization-denial System Log dispatch before a
-  denial is returned.
+  gate that makes skipping session validation a compile failure, atomic binding
+  of a successful Administration Plane proof to that session's actor, exact
+  digest, and Client Module, the live uncached reads of the account's grants and
+  component enablement on every call, and best-effort authorization-denial
+  System Log dispatch before a denial is returned.
 - `src/init.rs`: Server-owned Init orchestration and its two-request submission
   protocol: the delivery stage that prepares the recovery-key checkpoint and
   releases the lifecycle mutex, database handle, and mutation-lane permit

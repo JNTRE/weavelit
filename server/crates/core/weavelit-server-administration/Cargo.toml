@@ -1,0 +1,22 @@
+[package]
+name = "weavelit-server-administration"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# The contract consumes the existing administration authorization proof and
+# the Application Database's bounded identity, session, and component
+# enablement projections. It deliberately takes no transport, Client Module,
+# mutation-workflow, Audit producer, or database-backend dependency.
+[dependencies]
+weavelit-server-administration-authority = { path = "../weavelit-server-administration-authority" }
+weavelit-server-authorization = { path = "../weavelit-server-authorization" }
+weavelit-server-components = { path = "../weavelit-server-components" }
+weavelit-server-database = { path = "../../database/weavelit-server-database" }
+
+# The external boundary fixture is driven through Cargo's JSON diagnostics.
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }

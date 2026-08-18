@@ -24,6 +24,8 @@ tokio.workspace = true
 tokio-rustls = { version = "=0.26.4", default-features = false }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+weavelit-server-administration = { path = "../weavelit-server-administration" }
+weavelit-server-administration-authority = { path = "../weavelit-server-administration-authority" }
 weavelit-server-authentication = { path = "../weavelit-server-authentication" }
 weavelit-server-authorization = { path = "../weavelit-server-authorization" }
 weavelit-server-components = { path = "../weavelit-server-components" }

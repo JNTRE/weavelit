@@ -1,0 +1,36 @@
+[workspace]
+
+[package]
+name = "weavelit-server-administration-forbidden-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavelit-server-administration = { path = "../../.." }
+weavelit-server-authorization = { path = "../../../../weavelit-server-authorization" }
+weavelit-server-database = { path = "../../../../../database/weavelit-server-database" }
+
+[[bin]]
+name = "admission-literal"
+path = "src/admission_literal.rs"
+
+[[bin]]
+name = "authority-reexport"
+path = "src/authority_reexport.rs"
+
+[[bin]]
+name = "authorized-action-literal"
+path = "src/authorized_action_literal.rs"
+
+[[bin]]
+name = "invoke-without-authorization"
+path = "src/invoke_without_authorization.rs"
+
+[[bin]]
+name = "session-literal"
+path = "src/session_literal.rs"
+
+[[bin]]
+name = "step-up-literal"
+path = "src/step_up_literal.rs"

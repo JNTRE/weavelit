@@ -105,6 +105,13 @@ The Server-owned authentication crate is:
 weavelit-server-authentication
 ```
 
+The Server-owned Administration Plane foundation crates are:
+
+```text
+weavelit-server-administration
+weavelit-server-administration-authority
+```
+
 `weavelit-server-authentication` owns the local password authentication core:
 the current Argon2id profile, the closed allowlist of profiles a stored
 verifier may be attempted against, the equal-work password decision, and
@@ -117,6 +124,27 @@ the replacement verifier and token digests the crate returns; the crate itself
 neither reads nor writes storage and issues no cookie. The
 [Authentication Design](authentication/authentication-design.md) owns the
 profile, the allowlist policy, and the session representation it implements.
+
+`weavelit-server-administration` owns the transport-independent action gate
+after an Administration Plane decision: its closed action families, bounded
+component target, exact-session-bound compound admission, current-session MFA
+step-up proof and policy, live component enablement source, and authorized-action
+result. Trusted Server composition consumes the existing neutral
+`AuthorizedAdministration` proof and binds it atomically to the same validated
+session's actor and exact digest; the action gate accepts only that compound
+admission. The crate reuses the neutral `AvailableComponents` inventory for
+compiled-in membership and depends on the Application Database only for bounded
+identity, session-digest, and `ComponentEnablement` projection types. It owns no
+transport, Client Module, database mutation, Audit producer, or concrete
+administration workflow.
+
+`weavelit-server-administration-authority` carries the capability that permits
+trusted Server composition to bind one successful Administration Plane proof to
+the exact session used by that authorization and mint a step-up proof only after
+current-session MFA verification. The administration contract does not reexport
+it. As with the logging and database authorities, a consumer must declare the
+direct dependency explicitly, so the privilege is visible in its manifest and
+reviewable in isolation.
 
 The shared Log Module contract is `weavelit-server-log`. It owns the Server
 core's typed record and dispatch boundary, not log-record construction or a

@@ -1162,7 +1162,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         csrf_token: &str,
     ) -> Result<ValidatedSession, AuthenticationRejection> {
         self.authorized_session(session_token, csrf_token)
-            .map(|(_token_hash, session)| ValidatedSession::established(&session))
+            .map(|(token_hash, session)| ValidatedSession::established(token_hash, &session))
     }
 
     // -----------------------------------------------------------------------
@@ -1376,20 +1376,23 @@ impl ContinuationStore {
 /// this value. An authorization decision that takes one therefore cannot be
 /// reached before session validation.
 ///
-/// It carries the account and the issuing Client Module and nothing else. No
-/// Group, grant, or component enablement is captured here, because
-/// authorization reads all of those live on every request.
+/// It carries the account, the issuing Client Module, and the redacted stored
+/// session digest needed to bind current-session proof. No Group, grant, or
+/// component enablement is captured here, because authorization reads all of
+/// those live on every request.
 #[derive(Debug)]
 pub struct ValidatedSession {
     account: StateIdentifier,
     client_module: Name,
+    session_token_hash: SessionTokenHash,
 }
 
 impl ValidatedSession {
-    fn established(session: &StoredSession) -> Self {
+    fn established(session_token_hash: SessionTokenHash, session: &StoredSession) -> Self {
         Self {
             account: session.account(),
             client_module: session.client_module().clone(),
+            session_token_hash,
         }
     }
 
@@ -1403,6 +1406,15 @@ impl ValidatedSession {
     #[must_use]
     pub const fn client_module(&self) -> &Name {
         &self.client_module
+    }
+
+    /// Returns the stored digest that identifies this exact validated session.
+    ///
+    /// This is not the bearer token and its type permits only constant-time
+    /// comparison and a fixed redacted diagnostic representation.
+    #[must_use]
+    pub(crate) const fn session_token_hash(&self) -> SessionTokenHash {
+        self.session_token_hash
     }
 }
 

@@ -30,6 +30,12 @@ successful decision is spent exactly once, enforced by
 execution themselves belong to `weavelit-server-operation`, not to this
 document.
 
+It also owns the transport-independent administration authorization contract
+that consumes an exact-session-bound `AuthorizedAdministrationAdmission`
+before a future Server-owned administration workflow may begin. It does not own
+those workflows, their transport routes, Application Database mutations, or
+Audit Log sequencing.
+
 ## Grant Model
 
 A Group confers exactly four kinds of grant:
@@ -174,6 +180,15 @@ Client Module other than the one the session was established for, so two
 Client Modules that share an API surface cannot be interchanged by a caller
 naming the other one in the request.
 
+On Administration Plane success, the same runtime call consumes the neutral
+`AuthorizedAdministration` proof and binds it to the same `ValidatedSession`'s
+authenticated actor and exact stored session digest. The resulting private-field,
+non-clonable `AuthorizedAdministrationAdmission` derives its Client Module from
+the consumed proof. No later action-gate API accepts an independently supplied
+session or actor, so a successful decision for one session cannot be
+reattributed to another account or session that uses the same Client Module.
+The lower-level authorization proof remains identity- and session-neutral.
+
 ## Live Inputs And Why Caching Is Prohibited
 
 `AuthorizationRuntime::live_inputs` reads `load_human_authorization` and
@@ -192,6 +207,102 @@ past the moment an administrator changed it, in both cases until whatever
 invalidated the cache caught up. Reading live on every call removes that window
 entirely, so a Group change or a component enablement change takes effect on
 the very next request, with no re-login and no cache invalidation to race.
+
+## Administration Action Gate
+
+`weavelit-server-administration` owns the typed, transport-independent gate
+between the existing **[Administration Plane](../../glossary.md#applications-and-interfaces)**
+decision and future administration workflows. Its one action entry point,
+`AdministrationPlane::authorize`, takes `AuthorizedAdministrationAdmission` by
+value and returns a private-field `AuthorizedAdministrationAction` by value.
+The gate therefore cannot be called without the runtime-bound actor, exact
+session digest, and Client Module, and a future workflow cannot receive its
+authorized-action result unless that admission was spent at the gate. Neither
+value is clonable or default-constructible. The result retains the admission
+and derives its actor and Client Module from it rather than accepting either as
+a separate input.
+
+The gate accepts only the following closed action descriptors. The descriptor
+states policy; a transport or future workflow cannot supply an independent
+"step-up required" flag or implement another action family that selects a
+weaker rule.
+
+| Action | Current-session MFA step-up | Additional decision |
+| --- | --- | --- |
+| `Account` | Not required | None in this foundation. Ordinary account creation, status, and password-reset contracts consume this family when implemented. |
+| `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
+| `GrantMutation` | Required, scoped to `GrantMutation` | Covers future Group membership and grant mutations. |
+| `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
+
+`ComponentOperation` means an administration action performed through an
+already enabled target. It is not the future enablement mutation itself. A
+future enable/disable workflow must add its own closed action descriptor and
+preserve the [MFA re-enable exception](#mfa-re-enablement-exception), so a
+disabled target cannot prevent the authorized action that re-enables it.
+
+### Current-Session Step-Up Proof
+
+`MfaStepUpProof` is a private-field, non-clonable capability containing the
+authenticated account, the stored digest of the current session bearer, exactly
+one of the two bounded step-up action families, its issuer-observed monotonic
+time, and an expiry derived exactly five minutes later. No public API accepts a
+boolean, actor, session, issuance time, or expiry from a caller when minting the
+proof. The proof is borrowed so matching actions may reuse it during that fixed
+window. The gate compares its actor and digest with the compound admission, not
+with a separately supplied current session. A different actor, session, or
+family, a monotonic clock rollback, and the exact expiry instant all deny.
+
+`CurrentAdministrationSession` binds the account and `SessionTokenHash` retained
+from successful session validation only for trusted step-up issuance; the
+action gate never accepts it. Constructing that value, binding an
+`AuthorizedAdministrationAdmission`, or minting the step-up proof requires
+`ServerAdministrationAuthority` from the separate, dependency-free
+`weavelit-server-administration-authority` crate. The administration crate does
+not reexport that capability. A component that may exercise this privilege must
+therefore declare a direct manifest dependency that is visible in review;
+ordinary contract consumers and compiled-in Modules do not receive that
+dependency.
+
+The foundation does not verify a TOTP code and does not add a route, session
+field, or continuation. Server runtime integration must bind the account and
+session digest only after `ValidatedSession` succeeds and call
+`issue_step_up` only after the MFA Module verifies a code for that same live
+session. The future MFA-policy and grant-mutation contracts then borrow the
+returned proof through `AdministrationRequest`; ordinary account contracts do
+not request one.
+
+### Live Component Enablement And Denial
+
+A `ComponentOperation` carries `ComponentKind` and the Application Database
+contract's bounded `Name`; empty, control-character, or over-bound input is
+rejected before a request exists. The gate first requires that exact kind and
+name in the build's neutral `AvailableComponents` inventory, so an unknown
+target denies rather than inheriting the projection's enabled-by-default
+meaning for compiled-in components. It then asks its
+`ComponentEnablementSource` for the persisted `ComponentEnablement` projection
+inside every targeted check and retains no projection on the gate, session,
+request, or result. An enabled target may proceed. A disabled target or an
+unavailable projection read returns the same `AuthorizationDenied` as every
+unknown target and every missing, mismatched, rolled-back, or expired step-up
+proof.
+
+Inventory membership and enablement are keyed by the compound
+`(ComponentKind, Name)` identity. A valid name under the wrong kind is unknown,
+and disabling one kind leaves the same name under every other kind enabled.
+`Account` and `MfaPolicy` actions do not read component enablement. Rejecting an
+unknown target before the enablement read is an accepted stable-value ordering
+that avoids unnecessary database work and pins observable dependency calls; it
+does not promise constant-time behavior between unknown, disabled, unavailable,
+or otherwise denied targets.
+
+The contract adds no reason-bearing error. Input construction has one stable,
+payload-free `AdministrationInputRejected`; every policy and enablement refusal
+uses the existing payload-free `AuthorizationDenied`. An external compile
+fixture pins that the action gate rejects a value other than
+`AuthorizedAdministrationAdmission`, that neither the admission nor its
+authorized-action result can be forged through struct literals, and that
+neither the current-session value nor the step-up proof can be constructed
+through a struct literal.
 
 ## Proof Consumption Is Spent Exactly Once
 

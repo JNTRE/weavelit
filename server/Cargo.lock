@@ -1446,6 +1446,8 @@ dependencies = [
  "weavelit-module-client-webui",
  "weavelit-module-log-sqlite",
  "weavelit-module-mfa-totp",
+ "weavelit-server-administration",
+ "weavelit-server-administration-authority",
  "weavelit-server-authentication",
  "weavelit-server-authorization",
  "weavelit-server-components",
@@ -1460,6 +1462,21 @@ dependencies = [
  "weavelit-server-restore",
  "zeroize",
 ]
+
+[[package]]
+name = "weavelit-server-administration"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "weavelit-server-administration-authority",
+ "weavelit-server-authorization",
+ "weavelit-server-components",
+ "weavelit-server-database",
+]
+
+[[package]]
+name = "weavelit-server-administration-authority"
+version = "0.1.0"
 
 [[package]]
 name = "weavelit-server-audit"

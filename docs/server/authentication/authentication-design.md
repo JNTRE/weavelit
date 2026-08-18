@@ -169,6 +169,13 @@ The stored hash is domain-separated, so a session hash and a CSRF hash of the
 same bytes are different values. Neither a token nor a stored hash renders
 through `Debug` or `Display`; both produce a fixed redacted string instead.
 
+After successful validation, the Server's internal `ValidatedSession` retains
+that stored session hash with the account and issuing Client Module so a
+current-session authorization proof can bind to the exact session. This value
+is not the bearer token, is not added to the Client Module's session-identity
+response, and remains limited to constant-time comparison and fixed redacted
+diagnostics.
+
 The session cookie carries no `Max-Age` or `Expires` attribute, so it is a
 browser-session cookie rather than a persistently stored one. The only place
 an expiry attribute appears anywhere in the cookie contract is the logout

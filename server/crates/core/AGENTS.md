@@ -20,6 +20,8 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and Server core crate-boundary rules.
 - `weavelit-server/`: Weavelit Server executable crate.
+- `weavelit-server-administration/`: Typed, transport-independent Administration Plane action gate, current-session MFA step-up policy, and live component-enablement decision.
+- `weavelit-server-administration-authority/`: Server-owned capability key for binding validated administration sessions and minting verified step-up proofs.
 - `weavelit-server-audit/`: Server-owned construction, pre-redaction, and synchronous delivery of Audit Log records.
 - `weavelit-server-authentication/`: Local password authentication core, the closed Argon2 profile allowlist, and session and CSRF secret material.
 - `weavelit-server-authorization/`: Group-based authorization decision, the additive effective-grant union, and the unforgeable decision proofs.
