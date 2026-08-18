@@ -207,8 +207,8 @@ or correction supplies the authoritative result. Attempt, completion, and
 correction records each use a fresh record identifier.
 The producer does not own the `dependency.audit-log-unavailable` System Log
 record; its classification, safe context, and timing belong to the owning
-workflow and Server Observability boundary. The catalog names that future
-System entry, and the Audit catalog separately names
+workflow and [Server Observability boundary](../observability/audit-log-unavailability-record-design.md).
+The Audit catalog separately names
 `authorization.group-grant.removal-denied`; neither catalog entry causes the
 producer to emit a System Log or orchestrate a mutation.
 
@@ -315,5 +315,6 @@ must prove:
 - [Server API Contract](../api/api-contract-design.md)
 - [Authentication Design](../authentication/authentication-design.md)
 - [Authorization Design](../authorization/authorization-design.md)
+- [Audit Log Unavailability System Log Record](../observability/audit-log-unavailability-record-design.md)
 - [Glossary](../../glossary.md)
 - [Testing and Validation Policy](../../testing.md)

@@ -227,8 +227,11 @@ The initial Audit Log taxonomy is `lifecycle.backup.created`;
     was unavailable.
   - Recorded when a non-consequential operation absorbs an audit-delivery
     failure.
-  - Context: timestamp, destination module name, reason for failure (if
-    available), affected operation (if applicable).
+  - Context: timestamp, validated destination module identifier, and the closed
+    typed Audit classification for the affected operation. Destination error
+    text and arbitrary operation or payload text are excluded.
+  - Construction and normal-operation failure mapping follow the
+    [Audit Log Unavailability System Log Record design](../server/observability/audit-log-unavailability-record-design.md).
 
 - **`authorization.group-grant.removal-denied`** (Audit Log)
   - Recorded when an Administrator attempts to remove the last
@@ -496,9 +499,14 @@ into the replacement Server; it does not prove the Audit Log destination can
 complete its commit path, because Restore never opens or delivers to it. This
 is a documented limitation of the Restore path rather than a defect: an
 imported Audit Log assignment that cannot commit surfaces only when Audit
-logging is first attempted after Restore completes. A failure remains non-operational and follows the retained-state interruption boundary in the
-[Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored
-Log Module never reads backup contents or Application Database state directly.
+logging is first attempted after Restore completes. At that normal-operation
+boundary, a consequential operation is rejected while the Server remains alive;
+the Restore lifecycle is not reopened and no retained-state interruption is
+created. Failure to deliver the required Restore-result System Log after the
+checkpoint remains fail-closed under the
+[Server Restore Design](../server/lifecycle/restore/restore-design.md). A
+restored Log Module never reads backup contents or Application Database state
+directly.
 
 ## Related Documents
 
@@ -508,3 +516,4 @@ Log Module never reads backup contents or Application Database state directly.
 - [Glossary](../glossary.md)
 - [Application Database Design](../server/database/application-database-design.md)
 - [Server Restore Design](../server/lifecycle/restore/restore-design.md)
+- [Audit Log Unavailability System Log Record](../server/observability/audit-log-unavailability-record-design.md)

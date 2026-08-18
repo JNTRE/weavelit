@@ -1294,7 +1294,7 @@ mod tests {
         InitRejection, InitRequestSubmission, RESTORE_ROUTE, SESSION_COOKIE_NAME, STATUS_ROUTE,
         SelectedBackend as SubmittedBackend,
     };
-    use weavelit_server_database::Name;
+    use weavelit_server_database::{LogType, Name};
     use weavelit_server_lifecycle::{
         BackendIdentifier, LifecycleError, LifecycleState, LifecycleStore, TrustedBackendContext,
         WorkflowError,
@@ -3637,6 +3637,30 @@ mod tests {
         let startup =
             classify_restricted_startup(&state_root).expect("the sealed deployment reopens");
         assert_eq!(startup.outcome(), StartupOutcome::Initialized);
+
+        let reopened = startup
+            .initialized_state()
+            .expect("an initialized startup must load application state")
+            .state();
+        assert_eq!(reopened.log_assignments().len(), 2);
+        for (log_type, expected_name) in [
+            (LogType::System, SYSTEM_ASSIGNMENT),
+            (LogType::Audit, AUDIT_ASSIGNMENT),
+        ] {
+            let assignment = reopened
+                .log_assignments()
+                .iter()
+                .find(|assignment| assignment.log_type == log_type)
+                .expect("both explicit Log assignments must reopen");
+            let configuration = reopened
+                .log_module_configurations()
+                .iter()
+                .find(|configuration| configuration.identifier == assignment.configuration)
+                .expect("an assignment must retain its configured destination");
+            assert_eq!(configuration.name.as_str(), expected_name);
+            assert_eq!(configuration.module.as_str(), "sqlite");
+            assert!(configuration.enabled);
+        }
 
         let (switch, modes) = ServingModeSwitch::new(ServingMode::FailClosed(
             MountedSurface::without_registrations(fallback_router()),

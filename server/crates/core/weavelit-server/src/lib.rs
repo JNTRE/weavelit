@@ -66,6 +66,7 @@ pub mod authentication;
 pub mod authorization;
 pub mod init;
 pub mod operational;
+pub mod operational_logging;
 pub mod reconciliation;
 pub mod restore;
 pub mod transport;

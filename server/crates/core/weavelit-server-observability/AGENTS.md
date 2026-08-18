@@ -1,9 +1,10 @@
 # Server Observability Crate Agent Guide
 
 This crate is Server Observability: the only producer of complete, pre-redacted
-System Log records. It currently produces the Restore completion result, the
-Init completion result, and the local authentication-failure result; it is the
-long-term home for Server-produced operational telemetry.
+System Log records. It currently produces the Restore and Init completion
+results, local authentication and authorization denials, and Audit Log
+destination unavailability; it is the long-term home for Server-produced
+operational telemetry.
 
 ## Purpose and Scope
 
@@ -25,6 +26,9 @@ Use this section as the source of truth for what assets belong in this directory
 - `src/authentication.rs`: The fixed local authentication-failure System Log
   result, carrying only a fresh record identifier, the event time, the
   response's correlation identifier, and a constant classification and detail.
+- `src/authorization.rs`: The fixed authorization-denial System Log result.
+- `src/dependency.rs`: The Audit Log destination-unavailability System Log
+  result with typed destination-module and operation context.
 - `tests/`: Behavior tests for completion construction, field binding, rejection, and redaction.
 
 ## Usage Guidance

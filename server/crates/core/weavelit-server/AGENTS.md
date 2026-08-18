@@ -64,6 +64,9 @@ Use this section as the source of truth for what assets belong in this directory
   composer that mounts the Web UI operational surface and the authentication
   routes together with their transport registrations, and the mounted surface
   value the serving-mode switch accepts.
+- `src/operational_logging.rs`: Normal-operation support that best-effort
+  records typed Audit Log destination failures in the System Log and maps them
+  to the stable payload-free consequential-operation rejection.
 - `src/restore.rs`: Server-owned Restore orchestration that joins backup
   validation to the lifecycle typestate chain, the one-time ticket store and
   admission registrations behind the two-step submission protocol, the System
