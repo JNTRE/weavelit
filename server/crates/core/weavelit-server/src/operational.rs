@@ -28,6 +28,9 @@ use weavelit_module_client::{
     ReconciliationRejection, validate_reconciliation_request,
 };
 use weavelit_server_authentication::RustCryptoArgon2;
+#[cfg(test)]
+use weavelit_server_database::AuditReferencePersistence;
+use weavelit_server_database::{AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
     SelectedDatabase,
@@ -39,6 +42,7 @@ use zeroize::Zeroizing;
 use crate::{
     authentication::AuthenticationRuntime,
     fallback_router,
+    operational_audit::{OperationalAuditRecovery, OperationalAuditRecoveryState},
     transport::{
         MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection, TransportCapability,
         TransportProfile, TransportRegistration,
@@ -172,7 +176,11 @@ pub struct OperationalDatabase {
 enum OperationalDatabaseHandle {
     Selected(SelectedDatabase),
     #[cfg(test)]
-    UnselectedTest(Box<dyn ApplicationDatabase>),
+    UnselectedTest {
+        database: Box<dyn ApplicationDatabase>,
+        audit_reference_persistence: AuditReferencePersistence,
+        audit_terminal_recovery_persistence: AuditTerminalRecoveryPersistence,
+    },
 }
 
 impl OperationalDatabase {
@@ -185,10 +193,18 @@ impl OperationalDatabase {
     /// Takes ownership of an already-open database.
     #[cfg(test)]
     pub(crate) fn from_open(database: Box<dyn ApplicationDatabase>) -> Self {
+        let authority = weavelit_server_database_authority::ServerDatabaseAuthority::new();
         Self {
-            database: Arc::new(Mutex::new(Some(OperationalDatabaseHandle::UnselectedTest(
-                database,
-            )))),
+            database: Arc::new(Mutex::new(Some(
+                OperationalDatabaseHandle::UnselectedTest {
+                    database,
+                    audit_reference_persistence: AuditReferencePersistence::from_server_authority(
+                        &authority,
+                    ),
+                    audit_terminal_recovery_persistence:
+                        AuditTerminalRecoveryPersistence::from_server_authority(&authority),
+                },
+            ))),
         }
     }
 
@@ -219,8 +235,42 @@ impl OperationalDatabase {
         Ok(match database {
             OperationalDatabaseHandle::Selected(database) => database.with(operation),
             #[cfg(test)]
-            OperationalDatabaseHandle::UnselectedTest(database) => operation(&mut **database),
+            OperationalDatabaseHandle::UnselectedTest { database, .. } => {
+                operation(&mut **database)
+            }
         })
+    }
+
+    /// Runs one operation against terminal recovery storage and its bound decoder.
+    pub(crate) fn with_audit_terminal_recovery<R>(
+        &self,
+        operation: impl FnOnce(
+            &AuditTerminalRecoveryPersistence,
+            &mut dyn AuditTerminalRecoveryStore,
+        ) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| DatabaseError::Unavailable)?;
+        match database.as_mut().ok_or(DatabaseError::Unavailable)? {
+            OperationalDatabaseHandle::Selected(database) => {
+                database.with_audit_terminal_recovery(|persistence, store| {
+                    operation(persistence, store.ok_or(DatabaseError::Unavailable)?)
+                })
+            }
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest {
+                database,
+                audit_terminal_recovery_persistence,
+                ..
+            } => operation(
+                audit_terminal_recovery_persistence,
+                database
+                    .audit_terminal_recovery()
+                    .ok_or(DatabaseError::Unavailable)?,
+            ),
+        }
     }
 
     /// Loads initialized state through the selected database's decoder.
@@ -237,7 +287,14 @@ impl OperationalDatabase {
                 database.load_initialized_state(expected_deployment_identifier)
             }
             #[cfg(test)]
-            OperationalDatabaseHandle::UnselectedTest(_) => Err(DatabaseError::Unavailable),
+            OperationalDatabaseHandle::UnselectedTest {
+                database,
+                audit_reference_persistence,
+                ..
+            } => database.load_initialized_state(
+                audit_reference_persistence,
+                expected_deployment_identifier,
+            ),
         }
     }
 
@@ -256,7 +313,7 @@ impl OperationalDatabase {
         let closed = taken.map_or(Ok(()), |database| match database {
             OperationalDatabaseHandle::Selected(database) => database.close(),
             #[cfg(test)]
-            OperationalDatabaseHandle::UnselectedTest(database) => database.close(),
+            OperationalDatabaseHandle::UnselectedTest { database, .. } => database.close(),
         });
 
         closed.and(if poisoned {
@@ -343,6 +400,9 @@ impl PreBodyCheck for ReconciliationPreconditions {
 pub struct OperationalComposer {
     runtime: Arc<OperationalRuntime>,
     database: OperationalDatabase,
+    audit_recovery: OperationalAuditRecovery,
+    #[cfg(test)]
+    activation_audit_recovery_state: OperationalAuditRecoveryState,
     /// The authentication runtime, when one could be composed.
     ///
     /// Its absence is the declaration that this deployment serves no
@@ -363,6 +423,7 @@ impl OperationalComposer {
         database: OperationalDatabase,
     ) -> Self {
         runtime.active_database.activate(database.clone());
+        let audit_recovery = OperationalAuditRecovery::new(&runtime, state, database.clone());
         let authentication = AuthenticationRuntime::new(
             database.clone(),
             state,
@@ -371,10 +432,16 @@ impl OperationalComposer {
             &runtime.log_catalog,
             Arc::clone(&runtime.protection),
         );
+        let activation_audit_recovery_state = audit_recovery.drain_for_activation();
+        #[cfg(not(test))]
+        let _ = activation_audit_recovery_state;
 
         Self {
             runtime,
             database,
+            audit_recovery,
+            #[cfg(test)]
+            activation_audit_recovery_state,
             authentication,
         }
     }
@@ -389,6 +456,18 @@ impl OperationalComposer {
     /// Returns the single open database every operational route shares.
     pub(crate) const fn database(&self) -> &OperationalDatabase {
         &self.database
+    }
+
+    /// Drains recovery before a consequential workflow decides whether it may mutate.
+    #[allow(dead_code)]
+    pub(crate) fn pre_consequential_audit_recovery(&self) -> OperationalAuditRecoveryState {
+        self.audit_recovery.drain_before_consequential_operation()
+    }
+
+    /// Returns the activation drain result only for composition tests.
+    #[cfg(test)]
+    pub(crate) const fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
+        self.activation_audit_recovery_state
     }
 
     /// Composes the sealed deployment's operational surface.

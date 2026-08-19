@@ -155,12 +155,13 @@ choose record fields or invent a destination identity.
 
 The producer stores no destination, catalog, queue, or retry schedule. The
 Application Database recovery contract defines the opaque obligation as live
-operational data outside `ApplicationState` and every backup; backend storage
-and runtime draining remain future work. On import, Server Audit revalidates
-every field through the shared complete-record constructors and requires the
-obligation identity to equal the embedded record identifier. A malformed,
-oversized, unsupported, mismatched, or arbitrary secret-bearing document cannot
-become a replayable record merely because it was persisted.
+operational data outside `ApplicationState` and every backup. The operational
+runtime owns bounded event-driven draining through that contract; concrete
+SQLite storage remains a separate backend responsibility. On import, Server
+Audit revalidates every field through the shared complete-record constructors
+and requires the obligation identity to equal the embedded record identifier.
+A malformed, oversized, unsupported, mismatched, or arbitrary secret-bearing
+document cannot become a replayable record merely because it was persisted.
 
 Server Audit also binds a constrained supersession disposition to that exact
 imported obligation. The resulting trusted transaction value retains the exact
@@ -227,15 +228,18 @@ post-commit obligations:
   database obligation. If delivery or database acknowledgement cannot finish,
   leave the obligation pending. This is a post-commit failure and must not map
   to the pre-commit `Audit Log unavailable; operation rejected.` result or
-  claim that the mutation was rejected. The future runtime recovery path must
+  claim that the mutation was rejected. The runtime recovery path must
   replay obligations oldest first and refuse a changed current destination
   identity or binding version before delivery. It must resolve the binding and
-  destination together through the trusted structural pair; binding equality
-  alone does not prove an unrelated handle's identity. The contract is separate
-  from Init and Restore lifecycle obligations. When the workflow asks for
-  correction evidence, the producer constructs the bounded correlated
-  `correction` with a direct link to the same Attempt; it does not decide when
-  one is required.
+  destination together through the trusted structural pair on every drain;
+  binding equality alone does not prove an unrelated handle's identity, and a
+  failed resolution is not latched across later drains. Resolution, list,
+  import, delivery, and acknowledgement failures each cause one best-effort
+  safe System Log attempt without changing pending or recovery-required state.
+  The contract is separate from Init and Restore lifecycle obligations. When
+  the workflow asks for correction evidence, the producer constructs the
+  bounded correlated `correction` with a direct link to the same Attempt; it
+  does not decide when one is required.
 9. An ordinary Audit destination change retains the old identity, version, and
   resolved handle while an obligation references it. If repair later proves
   that exact destination permanently unavailable, the Administration Plane may
@@ -315,11 +319,14 @@ correction construction, including direct Attempt linkage, and synchronous
 delivery to a supplied configured Audit destination. It also owns trusted
 export and import of the immutable normal-operation terminal recovery
 projection. Administration Plane workflow work decides when a correction is
-required and owns assignment resolution, mutation sequencing, client-error
-mapping, System Log emission, credential verification, confirmation
-presentation, configuration generations, and runtime drain policy. The
-producer owns only the typed supersession event and exact imported-obligation
-disposition boundary; it does not select or execute those policies.
+required and owns mutation sequencing, request-time client-error mapping and
+System Log emission, credential verification, confirmation presentation,
+mutable configuration generations, and supersession execution. The operational
+runtime owns per-drain immutable version-1 assignment resolution, bounded
+activation and pre-consequential drains, and best-effort recovery-failure
+System Log reporting. The producer owns only the typed supersession event and
+exact imported-obligation disposition boundary; it does not select or execute
+those policies.
 
 ## Retention And Validation Implications
 
@@ -360,8 +367,14 @@ must prove:
   delivery failure remains pending without reusing an Init or Restore lifecycle
   obligation or returning the pre-commit rejection;
 - projection import revalidates every immutable field and matching identity,
-  changed current bindings prevent destination calls, replay is oldest first,
-  and database acknowledgement follows only exact destination acknowledgement;
+  every drain re-resolves the current trusted binding-and-destination pair,
+  failed resolution is not process-latched, changed current bindings prevent
+  destination calls, replay is oldest first, and database acknowledgement
+  follows only exact destination acknowledgement;
+- resolution, listing, import, delivery, and acknowledgement failures each
+  attempt one safe `dependency.audit-log-unavailable` System Log without raw
+  errors, settings, projections, recursion, or client mapping, while reads and
+  authentication remain available;
 - ordinary binding transitions retain the exact prior identity and version;
   supersession accepts only matching authority, confirmation, and preflight
   evidence for the exact oldest valid active obligation; a stored original with
@@ -369,9 +382,10 @@ must prove:
   rejected before mutation; its fixed disposition remains secret-free and
   degraded; and exact late delivery through the old binding remains possible
   after the replacement becomes active;
-- exact repeated delivery of one immutable prepared terminal record is
-  idempotent at the SQLite destination while the producer performs no delivery
-  loop, schedule, replacement, or recovery decision; and
+- the runtime makes no destination-level durable idempotence claim for an
+  interruption after destination acknowledgement but before Application
+  Database acknowledgement; duplicate-delivery handling remains pending and
+  this recovery work does not change Log Module writer behavior; and
 - no retrieval or export behavior is implied by the producer contract.
 
 ## Related Documents

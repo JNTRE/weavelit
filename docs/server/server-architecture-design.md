@@ -403,7 +403,7 @@ those routes require.
 
 One operational composer owns the whole operational surface. It accepts the
 `SelectedDatabase` a sealed workflow hands over, keeps its backend and
-persistence decoder together behind one exclusive operational lane, mounts the Client
+persistence decoders together behind one exclusive operational lane, mounts the Client
 Module operational declaration over the shared not-found fallback, and attaches
 every operational transport registration to that same mounted value. The
 publisher accepts only what the composer produced, so an operational route
@@ -416,6 +416,43 @@ startup and a completed in-process Restore each hand it the database they hold
 open and publish the surface it returns. The two paths therefore cannot drift in
 what they mount, in what registrations they carry, or in which database handle
 their routes read.
+
+The composer also owns normal-operation Audit terminal recovery. Every drain
+reloads the trusted initialized state and resolves the current Audit assignment,
+immutable binding version `1`, enabled Log Module configuration, committed
+non-secret settings, and destination as one authority-gated
+`ResolvedAuditDestination` pair. Resolution failure affects only that drain; it
+is not cached or latched for the process lifetime, and a later drain can observe
+repaired trusted state. A caller cannot supply a binding independently from a
+destination handle. Mutable configuration generations, prior-binding
+retention, and supersession execution remain with future Administration Plane
+configuration work.
+
+Activation performs one bounded event-driven drain but does not make the
+operational surface depend on a successful drain: authentication and read
+interfaces remain available when the recovery store, import, destination, or
+acknowledgement requires repair. The same coordinator exposes an internal
+pre-consequential drain whose active-sequence state is `ready`, `pending`, or
+`recovery required`; it does not map that state to a client error and cannot
+reinterpret a committed mutation as rejected. Active obligations and
+superseded late-delivery originals drain as separate oldest-first sequences.
+Each bounded read and exact acknowledgement holds the Application Database
+lane only for that operation; obligation import, binding resolution, and Log
+Module delivery run after the lane is released. A failure stops only its
+current sequence and leaves the failed oldest obligation durable. The
+coordinator owns no background loop, timer, queue, or automatic retry.
+
+Assignment resolution, obligation listing or import, destination delivery, and
+database acknowledgement failures each trigger one best-effort
+`dependency.audit-log-unavailable` System Log attempt through the independently
+resolved System assignment. Reporting accepts only the validated destination
+module plus the closed `internal.log-policy.changed` recovery activity context;
+it receives no raw error, setting, obligation projection, or client response
+mapping. Reporting failure is absorbed and never recursively enters Audit
+recovery. Destination-level durable duplicate suppression across an
+acknowledged delivery followed by an interrupted database acknowledgement
+remains an unresolved integration decision; this runtime drain does not claim
+or add that behavior.
 
 The runtime composes every mounted pre-operational route over one shared
 lifecycle authority. Startup constructs a single workflow arbiter over the

@@ -6,8 +6,8 @@ when an **[Audit Log](../../glossary.md#applications-and-interfaces)**
 destination cannot accept a required record. The **[Log Module](../../glossary.md#applications-and-interfaces)** [Design](../../log-modules/log-module-design.md)
 owns the shared record envelope, destination contract, and classification
 taxonomy. The [Audit Log Design](../audit/audit-log-design.md) owns Audit record
-construction and synchronous delivery; this document does not authorize or
-sequence an application mutation.
+construction, synchronous delivery, and terminal recovery behavior; this
+document does not authorize or sequence an application mutation.
 
 ## Construction And Safe Context
 
@@ -17,7 +17,8 @@ context is limited to two already validated values:
 
 - the lowercase kebab-case Log Module identifier for the assigned destination;
   and
-- the closed typed Audit classification for the affected operation.
+- the closed typed Audit classification for the affected operation, or the
+  fixed `internal.log-policy.changed` activity context for terminal recovery.
 
 The detail has the fixed form `audit destination module <module> unavailable
 for <audit-classification>`. The Server-issued record identifier, event time,
@@ -51,6 +52,15 @@ is consequential. It neither authorizes nor mutates state. It does not decide
 whether a nonconsequential operation may absorb an Audit failure, and it does
 not imply that such an operation was audited; each future route must make that
 choice under the Technical Specification.
+
+The operational terminal-recovery coordinator uses the same construction and
+one-attempt delivery core for assignment resolution, obligation listing or
+import, Audit delivery, and database acknowledgement failures. It generates a
+fresh record identifier and event time, uses the fixed correlation identifier
+`audit-terminal-recovery`, and returns no client mapping. It invokes reporting
+once for each encountered failure, absorbs construction or System destination
+failure, and never re-enters Audit recovery. Raw dependency errors, committed
+settings, and obligation projections do not enter this path.
 
 ## Related Documents
 

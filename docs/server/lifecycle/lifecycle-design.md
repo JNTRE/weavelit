@@ -535,12 +535,17 @@ database: it reopens the database read-write, so SQLite recovers any retained
 write-ahead log, and it fails startup closed before binding rather than serving
 anything if recovery, integrity, deployment binding, or completeness fails.
 The normal-operation Audit terminal recovery contract defines obligations as
-live operational data outside `ApplicationState`. A conforming future backend
-store must preserve them across ordinary restart, while backup and normalized
-Restore input must never carry them. They do not alter sealed startup
-classification or reopen Init or Restore. The future normal-operation runtime
-owns their ordered startup and pre-mutation drain; the shared pre-operational
-lifecycle owns neither replay nor acknowledgement. An append-only terminal
+live operational data outside `ApplicationState`. A conforming backend store
+preserves them across ordinary restart, while backup and normalized Restore
+input never carries them. They do not alter sealed startup classification or
+reopen Init or Restore. The normal-operation runtime owns their ordered
+activation and pre-consequential drain. Each drain reloads trusted initialized
+state and resolves the current Audit assignment and destination; resolution
+failure is not retained as a process-lifetime lifecycle result. The runtime
+reports resolution, list, import, delivery, or acknowledgement failure once
+through best-effort safe System Log support without changing lifecycle
+classification. The shared pre-operational lifecycle owns neither replay,
+reporting, nor acknowledgement. An append-only terminal
 supersession disposition and degraded Audit-completeness state are also live
 normal-operation data: they do not create a lifecycle state, make Restore
 eligible, enter a backup, or permit a Restore or System Log result to substitute
@@ -575,7 +580,10 @@ and opens the selected database without a process restart. Only after that
 selection succeeds does lifecycle use its direct
 `weavelit-server-database-authority` dependency to construct `SelectedDatabase`,
 whose private fields hold the opened backend and its
-`AuditReferencePersistence` decoder together. The constructor is crate-private,
+`AuditReferencePersistence` and `AuditTerminalRecoveryPersistence` decoders
+together. Runtime can access terminal recovery storage only through that
+selected wrapper with its matching decoder; it does not import database
+authority or accept a caller-supplied decoder. The constructor is crate-private,
 the authority type is not reexported through lifecycle, and neither the wrapper
 nor any stage implements `Deref` or returns the raw backend box. The client may
 replace the selection with another eligible database before either workflow

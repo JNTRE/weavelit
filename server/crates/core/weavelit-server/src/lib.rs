@@ -66,6 +66,7 @@ pub mod authentication;
 pub mod authorization;
 pub mod init;
 pub mod operational;
+pub mod operational_audit;
 pub mod operational_logging;
 pub mod reconciliation;
 pub mod restore;
@@ -3008,6 +3009,7 @@ pub(crate) mod tests {
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
+        operational_audit::AuditRecoverySequenceState,
         parse_http_request, processing_response, raw_header_section_bytes,
         read_default_profile_request, read_request_head_until, redacted_response,
         request_timeout_response,
@@ -3094,6 +3096,46 @@ pub(crate) mod tests {
         })
     }
 
+    struct UnrelatedLogFactory;
+
+    impl weavelit_server_log::LogDestinationFactory for UnrelatedLogFactory {
+        fn accepted_settings(&self) -> weavelit_server_log::LogSettingsContract {
+            weavelit_server_log::LogSettingsContract::none()
+        }
+
+        fn create(
+            &self,
+            _context: &weavelit_server_log::LogModuleFactoryContext<'_>,
+        ) -> Result<
+            Box<dyn weavelit_server_log::LogDestination>,
+            weavelit_server_log::LogDestinationError,
+        > {
+            Ok(Box::new(UnrelatedLogDestination))
+        }
+    }
+
+    struct UnrelatedLogDestination;
+
+    impl weavelit_server_log::LogDestination for UnrelatedLogDestination {
+        fn deliver(
+            &self,
+            _record: &weavelit_server_log::CompleteLogRecord,
+            acknowledgement: weavelit_server_log::DurableAcknowledgement,
+        ) -> Result<
+            weavelit_server_log::DurableAcknowledgement,
+            weavelit_server_log::LogDestinationError,
+        > {
+            Ok(acknowledgement)
+        }
+
+        fn preflight(
+            &self,
+            _record_type: weavelit_server_log::LogRecordType,
+        ) -> Result<(), weavelit_server_log::LogDestinationError> {
+            Ok(())
+        }
+    }
+
     /// Composes the operational surface a sealed startup hands over.
     fn operational_composer(
         startup: &RestrictedStartup,
@@ -3109,6 +3151,58 @@ pub(crate) mod tests {
                 .expect("a sealed startup hands over its open Application Database")
                 .clone(),
         )
+    }
+
+    #[test]
+    fn operational_composer_invokes_activation_drain_and_tolerates_unresolved_assignment() {
+        let surface = Surface::new(StartupOutcome::Initialized);
+        let startup = &surface.startup;
+        let unrelated_catalog = weavelit_server_log::LogModuleCatalog::new(vec![
+            weavelit_server_log::LogModuleRegistration::new(
+                "unrelated",
+                weavelit_server_log::LogCapabilities::new(vec![
+                    weavelit_server_log::LogRecordType::System,
+                    weavelit_server_log::LogRecordType::Audit,
+                ])
+                .expect("the capabilities are valid"),
+                Box::new(UnrelatedLogFactory),
+            ),
+        ])
+        .expect("the unrelated catalog is valid");
+        let runtime = Arc::new(OperationalRuntime {
+            listener: UNBOUND_LISTENER.parse().unwrap(),
+            state_root: startup.state_root().to_path_buf(),
+            log_catalog: Arc::new(unrelated_catalog),
+            client_modules: std::collections::BTreeSet::new(),
+            active_database: startup.active_database().clone(),
+            protection: startup.protection(),
+        });
+
+        let composer = OperationalComposer::new(
+            runtime,
+            startup
+                .initialized_state()
+                .expect("the sealed startup has initialized state"),
+            startup
+                .application_database()
+                .expect("the sealed startup has an open database")
+                .clone(),
+        )
+        .without_authentication();
+
+        let recovery = composer.activation_audit_recovery_state();
+        assert_eq!(
+            recovery.active(),
+            AuditRecoverySequenceState::RecoveryRequired
+        );
+        assert_eq!(
+            recovery.late_delivery(),
+            AuditRecoverySequenceState::RecoveryRequired
+        );
+        assert_eq!(
+            composer.mount().surface().registry().registered_routes(),
+            vec![(Method::PUT, LIFECYCLE_RECONCILIATION_ROUTE)]
+        );
     }
 
     const SELECTED_STATUS: &str = "{\"lifecycle\":\"uninitialized\",\"database_selected\":true}";

@@ -1346,6 +1346,8 @@ mod tests {
     /// The classification every Init completion record carries.
     const INIT_CLASSIFICATION: &str = "lifecycle.init";
 
+    const AUDIT_LOG_UNAVAILABLE_CLASSIFICATION: &str = "dependency.audit-log-unavailable";
+
     /// The username the seeded first Administrator is created with.
     const ADMINISTRATOR: &str = "administrator";
 
@@ -1555,7 +1557,7 @@ mod tests {
     #[derive(Default)]
     struct LogRecorder {
         preflighted: Mutex<Vec<LogRecordType>>,
-        delivered: AtomicUsize,
+        delivered: Mutex<Vec<String>>,
     }
 
     impl LogRecorder {
@@ -1567,7 +1569,19 @@ mod tests {
         }
 
         fn delivered(&self) -> usize {
-            self.delivered.load(AtomicOrdering::SeqCst)
+            self.delivered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+        }
+
+        fn delivered_with_classification(&self, classification: &str) -> usize {
+            self.delivered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .filter(|delivered| delivered.as_str() == classification)
+                .count()
         }
     }
 
@@ -1622,7 +1636,15 @@ mod tests {
             record: &CompleteLogRecord,
             acknowledgement: DurableAcknowledgement,
         ) -> Result<DurableAcknowledgement, LogDestinationError> {
-            self.recorder.delivered.fetch_add(1, AtomicOrdering::SeqCst);
+            let classification = match record {
+                CompleteLogRecord::System { body, .. } => body.classification(),
+                CompleteLogRecord::Audit { body, .. } => body.classification(),
+            };
+            self.recorder
+                .delivered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(classification.to_owned());
             self.inner.deliver(record, acknowledgement)
         }
 
@@ -2543,7 +2565,8 @@ mod tests {
             .await;
         assert_eq!(served.status, StatusCode::OK, "{}", served.body);
 
-        let records = system_log_records(&surface.state_root);
+        let records =
+            system_log_records_for_classification(&surface.state_root, INIT_CLASSIFICATION);
         assert_eq!(records.len(), 1, "exactly one Init completion record");
         let (classification, event_time) = &records[0];
         assert_eq!(classification, INIT_CLASSIFICATION);
@@ -2581,6 +2604,16 @@ mod tests {
         rows.map(Result::unwrap).collect()
     }
 
+    fn system_log_records_for_classification(
+        state_root: &Path,
+        classification: &str,
+    ) -> Vec<(String, i64)> {
+        system_log_records(state_root)
+            .into_iter()
+            .filter(|(record_classification, _)| record_classification == classification)
+            .collect()
+    }
+
     // -----------------------------------------------------------------------
     // Log Module preflight
     // -----------------------------------------------------------------------
@@ -2598,7 +2631,14 @@ mod tests {
         let mut proven = recorder.preflighted();
         proven.sort_unstable();
         assert_eq!(proven, vec![LogRecordType::System, LogRecordType::Audit]);
-        assert_eq!(recorder.delivered(), 1);
+        assert_eq!(
+            recorder.delivered_with_classification(INIT_CLASSIFICATION),
+            1
+        );
+        assert_eq!(
+            recorder.delivered_with_classification(AUDIT_LOG_UNAVAILABLE_CLASSIFICATION),
+            2
+        );
         assert_eq!(surface.record_state(), LifecycleState::Initialized);
     }
 
@@ -2925,7 +2965,14 @@ mod tests {
         let mut proven = recorder.preflighted();
         proven.sort_unstable();
         assert_eq!(proven, vec![LogRecordType::System, LogRecordType::Audit]);
-        assert_eq!(recorder.delivered(), 1);
+        assert_eq!(
+            recorder.delivered_with_classification(INIT_CLASSIFICATION),
+            1
+        );
+        assert_eq!(
+            recorder.delivered_with_classification(AUDIT_LOG_UNAVAILABLE_CLASSIFICATION),
+            2
+        );
         assert_eq!(surface.record_state(), LifecycleState::Initialized);
     }
 
@@ -3011,7 +3058,14 @@ mod tests {
             .await;
         assert_eq!(retried.status, StatusCode::OK, "{}", retried.body);
         assert_eq!(surface.record_state(), LifecycleState::Initialized);
-        assert_eq!(recorder.delivered(), 1);
+        assert_eq!(
+            recorder.delivered_with_classification(INIT_CLASSIFICATION),
+            1
+        );
+        assert_eq!(
+            recorder.delivered_with_classification(AUDIT_LOG_UNAVAILABLE_CLASSIFICATION),
+            2
+        );
     }
 
     /// The route reads the deadline the listener attached, so an admitted
@@ -3260,7 +3314,10 @@ mod tests {
         assert_eq!(second.status, InitRejection::AlreadyInitialized.status());
         assert_eq!(surface.record_state(), LifecycleState::Initialized);
         assert_eq!(surface.anchor_snapshot(), anchors);
-        assert_eq!(system_log_records(&surface.state_root).len(), 1);
+        assert_eq!(
+            system_log_records_for_classification(&surface.state_root, INIT_CLASSIFICATION).len(),
+            1
+        );
         assert!(matches!(
             *surface.modes.borrow(),
             ServingMode::Operational(_)
@@ -3308,7 +3365,10 @@ mod tests {
         let delivered = surface.complete().await;
         let anchors = surface.anchor_snapshot();
         let records = system_log_records(&surface.state_root);
-        assert_eq!(records.len(), 1);
+        assert_eq!(
+            system_log_records_for_classification(&surface.state_root, INIT_CLASSIFICATION).len(),
+            1
+        );
 
         let after = surface.served();
         assert!(!serves(&after, INIT_ROUTE).await);
@@ -3612,7 +3672,8 @@ mod tests {
         let surface = InitSurface::production();
         surface.complete().await;
 
-        let records = system_log_records(&surface.state_root);
+        let records =
+            system_log_records_for_classification(&surface.state_root, INIT_CLASSIFICATION);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].0, INIT_CLASSIFICATION);
         assert!(
@@ -3631,7 +3692,13 @@ mod tests {
         let surface = InitSurface::production();
         surface.complete().await;
         let anchors = surface.anchor_snapshot();
-        let records = system_log_records(&surface.state_root);
+        let init_records =
+            system_log_records_for_classification(&surface.state_root, INIT_CLASSIFICATION);
+        let unavailable_records = system_log_records_for_classification(
+            &surface.state_root,
+            AUDIT_LOG_UNAVAILABLE_CLASSIFICATION,
+        );
+        assert_eq!(unavailable_records.len(), 2);
 
         let (_root, state_root) = surface.release();
         let startup =
@@ -3680,7 +3747,18 @@ mod tests {
         // before signing in, because signing in legitimately appends records of
         // its own and would mask a restart that had rewritten what it found.
         assert_eq!(crate::tests::anchor_snapshot(&state_root), anchors);
-        assert_eq!(system_log_records(&state_root), records);
+        assert_eq!(
+            system_log_records_for_classification(&state_root, INIT_CLASSIFICATION),
+            init_records
+        );
+        assert_eq!(
+            system_log_records_for_classification(
+                &state_root,
+                AUDIT_LOG_UNAVAILABLE_CLASSIFICATION,
+            )
+            .len(),
+            unavailable_records.len() + 2
+        );
 
         assert_signs_in(&served).await;
     }

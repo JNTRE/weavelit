@@ -1,19 +1,21 @@
 use std::fmt;
 
 use weavelit_server_database::{
-    AccountAuditReference, ApplicationDatabase, AuditReferencePersistence, DatabaseError,
+    AccountAuditReference, ApplicationDatabase, AuditReferencePersistence,
+    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, DatabaseError,
     DeploymentIdentifier, GroupAuditReference, InitializedState, StateIdentifier,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
-/// An opened Application Database and its Server-issued persistence decoder.
+/// An opened Application Database and its Server-issued persistence decoders.
 ///
 /// Lifecycle constructs this only after database selection or reopening has
-/// succeeded. Its private fields keep the decoder inseparable from that
-/// selected handle and prevent callers from replacing either half.
+/// succeeded. Its private fields keep terminal recovery decoding inseparable
+/// from that selected handle and prevent callers from replacing either member.
 pub struct SelectedDatabase {
     database: Box<dyn ApplicationDatabase>,
     persistence: AuditReferencePersistence,
+    audit_terminal_recovery_persistence: AuditTerminalRecoveryPersistence,
 }
 
 pub(crate) fn selected_database(database: Box<dyn ApplicationDatabase>) -> SelectedDatabase {
@@ -34,6 +36,8 @@ impl SelectedDatabase {
         Self {
             database,
             persistence: AuditReferencePersistence::from_server_authority(authority),
+            audit_terminal_recovery_persistence:
+                AuditTerminalRecoveryPersistence::from_server_authority(authority),
         }
     }
 
@@ -46,6 +50,20 @@ impl SelectedDatabase {
     #[must_use]
     pub const fn audit_reference_persistence(&self) -> AuditReferencePersistence {
         self.persistence
+    }
+
+    /// Runs one operation against live terminal recovery storage and its bound decoder.
+    pub fn with_audit_terminal_recovery<R>(
+        &mut self,
+        operation: impl FnOnce(
+            &AuditTerminalRecoveryPersistence,
+            Option<&mut dyn AuditTerminalRecoveryStore>,
+        ) -> R,
+    ) -> R {
+        operation(
+            &self.audit_terminal_recovery_persistence,
+            self.database.audit_terminal_recovery(),
+        )
     }
 
     /// Loads initialized state through this selected database's decoder.

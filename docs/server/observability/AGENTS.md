@@ -22,8 +22,8 @@ Use this section as the source of truth for what assets belong in this directory
 - `authorization-denial-record-design.md`: Fixed classification, detail, and
   delivery-timing design for the authorization-denial System Log record.
 - `audit-log-unavailability-record-design.md`: Typed safe context, delivery
-  timing, and stable consequential-operation rejection for an unavailable
-  Audit Log destination.
+  timing, terminal-recovery reporting, and stable consequential-operation
+  rejection for an unavailable Audit Log destination.
 
 ## Usage Guidance
 
