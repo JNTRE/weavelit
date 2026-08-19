@@ -16,10 +16,18 @@ project:
   number: 1
   title: Weavelit
   url: https://github.com/orgs/JNTRE/projects/1
-  allowed_issue_types:
-    - task
-    - bug
-    - feature
-    - epic
-    - decision
-    - risk
+  issue_templates:
+    directory: /docs/project/issue_templates
+    allowed_types:
+      - name: task
+        template: task-template.md
+      - name: bug
+        template: bug-template.md
+      - name: feature
+        template: feature-template.md
+      - name: epic
+        template: epic-template.md
+      - name: decision
+        template: decision-template.md
+      - name: risk
+        template: risk-template.md
