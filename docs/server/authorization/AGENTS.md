@@ -2,9 +2,15 @@
 
 This folder documents the **[Weavelit Server](../../glossary.md#applications-and-interfaces)** authorization design that makes the final default-deny decision for each requested **[Operation](../../glossary.md#applications-and-interfaces)**. It separates permission and policy evaluation from caller authentication and service-specific behavior.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns Server authorization design for named **[Operation](../../glossary.md#applications-and-interfaces)** permissions and policy evaluation, including the grant model, effective-grant union, requirement precedence, and structural default-deny.
 - This directory owns the Administration Action Gate, closed action families for Administration and Operation requests, and current-session MFA step-up policy.
@@ -15,28 +21,17 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
-
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server authorization.
 - `authorization-design.md`: Canonical implementation design for Server authorization.
 
-## Usage Guidance
+## Working Rules
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
+- MUST read the nearest `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository root `AGENTS.md` before editing.
+- MUST follow [Contribution Guidelines](../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- Documentation changes under `docs/` MUST comply with the [Documentation Standards](../../documentation-standards.md).
+- MUST use the exact canonical names in [the glossary](../../glossary.md) and format a term as a bold glossary link on its first substantive use.
+- MUST update this inventory when local assets or routing directories are added, removed, renamed, or moved.
+- MUST read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
+- MUST keep authorization design aligned with `../../security-model.md` and record only settled commitments in `../../spec.md`.
+- MUST keep credential validation in `../authentication/` and service-specific **[Operation](../../glossary.md#applications-and-interfaces)** behavior in `../../service-modules/`.
 
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
-- Keep authorization design aligned with `../../security-model.md` and record only settled commitments in `../../spec.md`.
-- Keep credential validation in `../authentication/` and service-specific **[Operation](../../glossary.md#applications-and-interfaces)** behavior in `../../service-modules/`.
-- Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
-
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Preserve the required heading order and keep this guide under 100 lines.
-- Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
-- Preserve the Server's final, default-deny, per-**[Operation](../../glossary.md#applications-and-interfaces)** authorization boundary; do not grant broad provider-integration access.
+- MUST preserve the Server's final, default-deny, per-**[Operation](../../glossary.md#applications-and-interfaces)** authorization boundary; do not grant broad provider-integration access.

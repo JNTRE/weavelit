@@ -2,9 +2,15 @@
 
 This folder documents the Zendesk **[Service Module](../../glossary.md#applications-and-interfaces)**, including its supported Operations and service-specific design. It is the dedicated provider-integration boundary beneath the shared Service Module documentation.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns documentation specific to the Zendesk Service Module.
 - It does not own documentation shared by Service Modules; that belongs in the parent `../` directory.
@@ -12,27 +18,16 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for the Zendesk Service Module.
+## Working Rules
 
-## Usage Guidance
-
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
-
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
-- Keep Zendesk-specific material directly in this folder; move shared Service Module material to the parent `../` directory.
+- MUST read the nearest `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository root `AGENTS.md` before editing.
+- MUST follow [Contribution Guidelines](../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- Documentation changes under `docs/` MUST comply with the [Documentation Standards](../../documentation-standards.md).
+- MUST use the exact canonical names in [the glossary](../../glossary.md) and format a term as a bold glossary link on its first substantive use.
+- MUST update this inventory when local assets or routing directories are added, removed, renamed, or moved.
+- MUST read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
+- MUST keep Zendesk-specific material directly in this folder; move shared Service Module material to the parent `../` directory.
 - Use `../../glossary.md` for canonical terminology and link to its owning category rather than restating canonical definitions.
-- Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.
 
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Preserve the required heading order and keep this guide under 100 lines.
-- Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
-- Keep shared provider-integration guidance in the parent `../` directory and client documentation in `../../clients/`.
+- MUST keep shared provider-integration guidance in the parent `../` directory and client documentation in `../../clients/`.

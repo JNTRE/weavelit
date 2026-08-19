@@ -39,7 +39,5 @@ Apply instructions in this order:
 - Follow [Contribution Guidelines](CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
 - For changes under `docs/`, application documentation MUST comply with the [Documentation Standards](docs/documentation-standards.md), which govern document creation, document edits, file naming, and document organization.
 - Use the exact canonical names in `docs/glossary.md` when a term is used and format terms as bold links on first substantive use in the text.
-- For every implementation behavior change, add or update focused automated tests in the same change and run the applicable validation required by [the Testing and Validation Policy](docs/testing.md). Document any unavoidable manual verification in the owning documentation.
 - Update this inventory when repository-level assets, primary folders, or compatibility shims are added, removed, renamed, or moved.
-- Make minimal, targeted edits and MUST NOT perform broad rewrites unless explicitly requested.
 - Record settled product, security, or technical commitments in `spec.md`, remove resolved items from `open-questions.md`, and place each decision in its appropriate canonical or design document.
