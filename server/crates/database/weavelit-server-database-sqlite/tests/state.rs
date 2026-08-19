@@ -1340,3 +1340,243 @@ fn acknowledgement_requires_initialized_state() {
     assert_eq!(uninitialized, Err(DatabaseError::NotInitialized));
     assert_eq!(pending, Err(DatabaseError::NotInitialized));
 }
+
+/// Proves that live audit terminal obligations and supersessions (recovery
+/// outbox rows) neither enter normalized restorable state nor are cleared by
+/// checkpoint replacement. Obligations remain queryable after Restore and are
+/// never imported from backup because they are live operational records, not
+/// restorable application state.
+#[test]
+fn recovery_obligations_and_supersessions_are_live_operational_data_excluded_from_state() {
+    type SupersessionRow = (
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    );
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(26);
+    let mut database = pending_database(&path, deployment_identifier);
+
+    // Seed the live operational recovery tables before checkpoint completion.
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+
+    let obligation_record_id: [u8; 16] = [0x0A; 16];
+    let obligation_binding_id: [u8; 16] = [0x0B; 16];
+    let obligation_binding_version: [u8; 8] = [0x0C; 8];
+    let supersession_replacement_record_id: [u8; 16] = [0x0D; 16];
+    let supersession_replacement_binding_id: [u8; 16] = [0x0E; 16];
+    let supersession_replacement_binding_version: [u8; 8] = [0x0F; 8];
+
+    // Insert a replacement obligation first to satisfy the foreign key constraint.
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_obligation \
+             (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            rusqlite::params![
+                supersession_replacement_record_id.as_slice(),
+                b"replacement-obligation-projection",
+                supersession_replacement_binding_id.as_slice(),
+                supersession_replacement_binding_version.as_slice(),
+            ],
+        )
+        .unwrap();
+
+    // Insert the original obligation: live operational recovery data that WILL NOT be
+    // imported from backup and MUST NOT be cleared by state replacement.
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_obligation \
+             (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            rusqlite::params![
+                obligation_record_id.as_slice(),
+                b"obligation-projection-data",
+                obligation_binding_id.as_slice(),
+                obligation_binding_version.as_slice(),
+            ],
+        )
+        .unwrap();
+
+    // Insert a supersession: immutable disposition record linking original to
+    // replacement obligation. Also live operational data excluded from state.
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_supersession \
+             (original_record_identifier, disposition, \
+              original_binding_identifier, original_binding_version, \
+              replacement_record_identifier, \
+              replacement_binding_identifier, replacement_binding_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                obligation_record_id.as_slice(),
+                b"supersession-disposition",
+                obligation_binding_id.as_slice(),
+                obligation_binding_version.as_slice(),
+                supersession_replacement_record_id.as_slice(),
+                supersession_replacement_binding_id.as_slice(),
+                supersession_replacement_binding_version.as_slice(),
+            ],
+        )
+        .unwrap();
+
+    // Verify obligations and supersessions exist before state replacement.
+    let obligation_count_before: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM weavelit_audit_terminal_obligation",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let supersession_count_before: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM weavelit_audit_terminal_supersession",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    assert_eq!(obligation_count_before, 2);
+    assert_eq!(supersession_count_before, 1);
+
+    // Complete the checkpoint: state replacement that atomically restores
+    // application state from backup and seals the deployment. This MUST NOT
+    // clear obligations/supersessions; they remain live operational data.
+    database
+        .complete_checkpoint(
+            &restore_checkpoint(deployment_identifier),
+            &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
+        )
+        .unwrap();
+
+    // Verify obligations and supersessions are STILL present after restoration.
+    let connection = Connection::open(&path).unwrap();
+    let obligation_count_after: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM weavelit_audit_terminal_obligation",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let supersession_count_after: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM weavelit_audit_terminal_supersession",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    assert_eq!(
+        obligation_count_after, 2,
+        "restoration must not clear recovery obligations"
+    );
+    assert_eq!(
+        supersession_count_after, 1,
+        "restoration must not clear recovery supersessions"
+    );
+
+    // Load current application state: excludes audit terminal obligations and
+    // supersessions because they are live operational data. The existing guard
+    // `normalized_state_and_backup_paths_do_not_reference_recovery_tables` proves
+    // that backup excludes recovery tables; this test verifies live persistence.
+    let loaded = database
+        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+        .unwrap();
+
+    // Verify the normalized state matches expected application state.
+    assert_eq!(
+        loaded.state(),
+        &application_state(WorkflowKind::Restore),
+        "normalized restorable state must match restored aggregate"
+    );
+
+    // Directly verify obligation records persist with exact identifiers and binding.
+    let connection = Connection::open(&path).unwrap();
+    let obligations = {
+        let mut stmt = connection
+            .prepare(
+                "SELECT record_identifier, binding_identifier, binding_version, acknowledged \
+                 FROM weavelit_audit_terminal_obligation \
+                 ORDER BY record_identifier",
+            )
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i32>(3)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect::<Vec<_>>()
+    };
+
+    assert_eq!(obligations.len(), 2);
+    // Verify original obligation unchanged.
+    assert_eq!(obligations[0].0, obligation_record_id.to_vec());
+    assert_eq!(obligations[0].1, obligation_binding_id.to_vec());
+    assert_eq!(obligations[0].2, obligation_binding_version.to_vec());
+    assert_eq!(obligations[0].3, 0, "acknowledged must remain 0");
+    // Verify replacement obligation unchanged.
+    assert_eq!(
+        obligations[1].0,
+        supersession_replacement_record_id.to_vec()
+    );
+    assert_eq!(
+        obligations[1].1,
+        supersession_replacement_binding_id.to_vec()
+    );
+    assert_eq!(
+        obligations[1].2,
+        supersession_replacement_binding_version.to_vec()
+    );
+    assert_eq!(obligations[1].3, 0, "acknowledged must remain 0");
+
+    // Directly verify supersession disposition record unchanged.
+    let supersession: SupersessionRow = connection
+        .query_row(
+            "SELECT original_record_identifier, disposition, \
+             original_binding_identifier, original_binding_version, \
+             replacement_record_identifier, \
+             replacement_binding_identifier, replacement_binding_version \
+             FROM weavelit_audit_terminal_supersession",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(supersession.0, obligation_record_id.to_vec());
+    assert_eq!(supersession.1, b"supersession-disposition");
+    assert_eq!(supersession.2, obligation_binding_id.to_vec());
+    assert_eq!(supersession.3, obligation_binding_version.to_vec());
+    assert_eq!(supersession.4, supersession_replacement_record_id.to_vec());
+    assert_eq!(supersession.5, supersession_replacement_binding_id.to_vec());
+    assert_eq!(
+        supersession.6,
+        supersession_replacement_binding_version.to_vec()
+    );
+    drop(connection);
+}
