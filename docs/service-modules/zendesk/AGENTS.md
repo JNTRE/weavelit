@@ -33,9 +33,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
 - Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
 - Keep shared provider-integration guidance in the parent `../` directory and client documentation in `../../clients/`.
