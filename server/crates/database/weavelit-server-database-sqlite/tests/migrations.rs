@@ -415,3 +415,177 @@ fn added_trigger_on_migrated_table_is_rejected_on_reopen() {
 
     assert_integrity_failure_is_redacted(open_error(&path), &path);
 }
+
+#[test]
+fn audit_terminal_recovery_check_constraints_match_public_bounds() {
+    // Recovery bounds consistency hardening: verify SQLite migration 0008 CHECK
+    // constraint numeric literals match the public shared bounds constants
+    // and enforce correct bounds on actual data insertion. This test runs
+    // the actual migration and confirms both the SQL constants and runtime
+    // enforcement are coherent across Log, Database, and SQLite contracts.
+
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    bootstrap(&path);
+    let connection = direct_connection(&path);
+
+    // Extract numeric bounds from migration 0008 SQL to verify they match constants.
+    let migration_sql = std::str::from_utf8(include_bytes!(
+        "../migrations/0008_add_audit_terminal_recovery.sql"
+    ))
+    .expect("migration SQL is valid UTF-8");
+
+    const EXPECTED_PROJECTION_MAX: usize =
+        weavelit_server_database::MAX_AUDIT_TERMINAL_OBLIGATION_BYTES;
+    const EXPECTED_DISPOSITION_MAX: usize =
+        weavelit_server_database::MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES;
+
+    // Verify projection bound is present in migration SQL
+    let projection_bound_str = format!("AND {}", EXPECTED_PROJECTION_MAX);
+    assert!(
+        migration_sql.contains(&projection_bound_str),
+        "Migration 0008 SQL must contain projection bound literal {} in CHECK constraint",
+        EXPECTED_PROJECTION_MAX
+    );
+
+    // Verify disposition bound is present in migration SQL
+    let disposition_bound_str = format!("AND {}", EXPECTED_DISPOSITION_MAX);
+    assert!(
+        migration_sql.contains(&disposition_bound_str),
+        "Migration 0008 SQL must contain disposition bound literal {} in CHECK constraint",
+        EXPECTED_DISPOSITION_MAX
+    );
+
+    // Behavioral test: exactly MAX bytes should be accepted for projection
+    let max_projection = vec![0u8; EXPECTED_PROJECTION_MAX];
+    let result = connection.execute(
+        "INSERT INTO weavelit_audit_terminal_obligation \
+         (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+         VALUES (?, ?, ?, ?, 0)",
+        params![vec![1u8; 16], max_projection, vec![2u8; 16], vec![3u8; 8],],
+    );
+    assert!(
+        result.is_ok(),
+        "INSERT with exactly MAX projection bytes must succeed"
+    );
+
+    // Behavioral test: MAX+1 bytes should be rejected for projection
+    let oversized_projection = vec![0u8; EXPECTED_PROJECTION_MAX + 1];
+    let result = connection.execute(
+        "INSERT INTO weavelit_audit_terminal_obligation \
+         (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+         VALUES (?, ?, ?, ?, 0)",
+        params![
+            vec![11u8; 16],
+            oversized_projection,
+            vec![12u8; 16],
+            vec![13u8; 8],
+        ],
+    );
+    assert!(
+        result.is_err(),
+        "INSERT with MAX+1 projection bytes must fail CHECK constraint"
+    );
+
+    // Behavioral test: exactly MAX bytes should be accepted for disposition
+    // First insert valid obligations to reference in supersession
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_obligation \
+             (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+             VALUES (?, ?, ?, ?, 0)",
+            params![
+                vec![20u8; 16],
+                vec![5u8; 128],
+                vec![21u8; 16],
+                vec![22u8; 8]
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_obligation \
+             (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+             VALUES (?, ?, ?, ?, 0)",
+            params![
+                vec![25u8; 16],
+                vec![6u8; 128],
+                vec![26u8; 16],
+                vec![27u8; 8]
+            ],
+        )
+        .unwrap();
+
+    let max_disposition = vec![0u8; EXPECTED_DISPOSITION_MAX];
+    let result = connection.execute(
+        "INSERT INTO weavelit_audit_terminal_supersession \
+         (original_record_identifier, disposition, original_binding_identifier, \
+          original_binding_version, replacement_record_identifier, \
+          replacement_binding_identifier, replacement_binding_version) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params![
+            vec![20u8; 16],
+            max_disposition,
+            vec![23u8; 16],
+            vec![24u8; 8],
+            vec![25u8; 16],
+            vec![28u8; 16],
+            vec![29u8; 8],
+        ],
+    );
+    assert!(
+        result.is_ok(),
+        "INSERT with exactly MAX disposition bytes must succeed"
+    );
+
+    // Behavioral test: MAX+1 bytes should be rejected for disposition
+    // Insert more valid obligations for the oversized disposition test
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_obligation \
+             (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+             VALUES (?, ?, ?, ?, 0)",
+            params![
+                vec![30u8; 16],
+                vec![7u8; 128],
+                vec![31u8; 16],
+                vec![32u8; 8]
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_obligation \
+             (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+             VALUES (?, ?, ?, ?, 0)",
+            params![
+                vec![35u8; 16],
+                vec![8u8; 128],
+                vec![36u8; 16],
+                vec![37u8; 8]
+            ],
+        )
+        .unwrap();
+
+    let oversized_disposition = vec![0u8; EXPECTED_DISPOSITION_MAX + 1];
+    let result = connection.execute(
+        "INSERT INTO weavelit_audit_terminal_supersession \
+         (original_record_identifier, disposition, original_binding_identifier, \
+          original_binding_version, replacement_record_identifier, \
+          replacement_binding_identifier, replacement_binding_version) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params![
+            vec![30u8; 16],
+            oversized_disposition,
+            vec![33u8; 16],
+            vec![34u8; 8],
+            vec![35u8; 16],
+            vec![38u8; 16],
+            vec![39u8; 8],
+        ],
+    );
+    assert!(
+        result.is_err(),
+        "INSERT with MAX+1 disposition bytes must fail CHECK constraint"
+    );
+}
