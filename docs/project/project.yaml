@@ -3,6 +3,7 @@ repository:
   owner: JNTRE
   name: weavelit
   url: https://github.com/JNTRE/weavelit
+  milestones_url: https://github.com/JNTRE/weavelit/milestones
   allowed_labels:
     - documentation
     - question
