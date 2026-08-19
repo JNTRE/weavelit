@@ -62,7 +62,8 @@ The registry contains `0001_create_migration_ledger.sql`,
 `0004_create_session_store.sql`, and
 `0005_add_mfa_policy_and_replay_watermark.sql`,
 `0006_add_lifecycle_reconciliation.sql`, and
-`0007_add_audit_references.sql`. Each
+`0007_add_audit_references.sql`, and
+`0008_add_audit_terminal_recovery.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -244,6 +245,59 @@ rebuild the aggregate through `ApplicationState`. Any invalid identifier,
 out-of-bounds text, unknown discriminator, missing singleton, duplicate row,
 dangling reference, or disabled log assignment returns `IntegrityFailure`
 without returning the offending value.
+
+## Live Audit Terminal Recovery Schema
+
+`0008_add_audit_terminal_recovery.sql` creates private `STRICT`
+`weavelit_audit_terminal_obligation` and
+`weavelit_audit_terminal_supersession` tables. They are live operational
+storage, not normalized application state, Log Module destination tables, or
+backup content. `ApplicationState` reads and writes never reference either
+table, Restore imports neither table, and the SQLite backend returns its private
+store through `ApplicationDatabase::audit_terminal_recovery`.
+
+An obligation row stores an insertion sequence, nonzero 16-byte identity,
+1 to 50,176 byte opaque projection, separately stored nonzero 16-byte binding
+identity, separately stored nonzero eight-byte big-endian binding version, and
+an acknowledgement tombstone. The backend never interprets the projection as
+JSON or extracts an Audit field from it. The big-endian version representation
+preserves the complete nonzero `u64` contract range without a signed SQLite
+integer narrowing.
+
+A supersession row stores the original and replacement obligation identities,
+1 to 1,024 opaque disposition bytes, and separate exact original and replacement
+binding columns. Foreign keys require both retained obligations, while unique
+identity constraints prevent one original or replacement from participating in
+conflicting dispositions. Triggers reject obligation deletion, immutable-field
+rewrites, acknowledgement reversal or repetition, and every disposition update
+or deletion. Acknowledged rows remain as tombstones so an exact write or
+supersession retry is idempotent and cannot resurrect completed recovery.
+
+The private SQLite transaction adapter implements
+`AuditTerminalRecoveryTransaction` only for an owning serialized mutation. It
+does not expose standalone enqueue. A new write first compares any existing row
+by exact identity, projection bytes, binding identity, and binding version. An
+exact match succeeds without writing; any difference returns `InvalidState`.
+Supersession requires the exact oldest active original, compares its complete
+opaque bytes and separate binding columns, inserts the replacement, and appends
+the disposition in that same caller-owned transaction. An injected failure at
+either insert rolls back both. An exact completed supersession retry succeeds;
+partial or byte-different retained state fails without mutation.
+
+Active replay selects unacknowledged rows without a disposition by insertion
+sequence. Late delivery selects unacknowledged disposition originals by their
+original insertion sequence. Reads decode only storage shape and bounds; late
+reads additionally require the disposition's separate bindings to equal the
+stored original and replacement bindings. They never parse the projection or
+disposition. Malformed storage shape returns `IntegrityFailure`; a bounded but
+semantically malformed projection is returned opaquely for Server Audit to
+reject through the runtime recovery-required path.
+
+Acknowledgement runs in one immediate transaction. It requires exact identity
+and binding proof, validates the retained row and any disposition relationship,
+requires the row to be oldest in its active or late sequence, and changes only
+its acknowledgement tombstone. Wrong-binding, absent, repeated, and
+out-of-order acknowledgement returns `InvalidState` without mutation.
 
 ## MFA Policy And Replay Watermark Schema
 

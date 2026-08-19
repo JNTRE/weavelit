@@ -39,7 +39,7 @@ fn terminal_recovery_authority_and_obligations_cannot_be_forged_externally() {
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(errors.len(), 2, "every private-field forgery must fail");
+    assert_eq!(errors.len(), 6, "every private construction must fail");
     assert!(
         errors.iter().all(|message| {
             let diagnostic = &message["message"];
@@ -52,28 +52,21 @@ fn terminal_recovery_authority_and_obligations_cannot_be_forged_externally() {
         }),
         "only private recovery fields may reject the fixture"
     );
-    assert!(
-        errors.iter().any(|message| {
-            message["message"]["spans"].as_array().is_some_and(|spans| {
-                spans.iter().any(|span| {
-                    span["is_primary"] == true
-                        && span["file_name"] == "src/main.rs"
-                        && (span["line_start"] == 8 || span["line_start"] == 9)
-                        && span["line_start"] == span["line_end"]
+    for expected_line in [11_u64, 22, 29, 37, 50, 59] {
+        assert!(
+            errors.iter().any(|message| {
+                message["message"]["spans"].as_array().is_some_and(|spans| {
+                    spans.iter().any(|span| {
+                        span["is_primary"] == true
+                            && span["file_name"] == "src/main.rs"
+                            && span["line_start"] == expected_line
+                            && span["line_end"] == expected_line
+                    })
                 })
-            })
-        }) && errors.iter().any(|message| {
-            message["message"]["spans"].as_array().is_some_and(|spans| {
-                spans.iter().any(|span| {
-                    span["is_primary"] == true
-                        && span["file_name"] == "src/main.rs"
-                        && span["line_start"] == 14
-                        && span["line_end"] == 14
-                })
-            })
-        }),
-        "the diagnostics must identify obligation and authority forging lines"
-    );
+            }),
+            "the diagnostics must identify every private recovery construction"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(target_root);
     let _ = std::fs::remove_file(fixture_root.join("Cargo.lock"));

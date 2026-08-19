@@ -145,22 +145,31 @@ synchronous delivery per call; the producer never loops, schedules, queues,
 replaces, or independently retries the record. Before the owning mutation
 transaction commits, `PreparedAuditTerminal::recovery_obligation` captures the
 same complete terminal record and the exact Audit destination binding as one
-bounded, versioned opaque projection. The projection includes the original
-record identifier, event time, phase, result, Attempt link, correlation
-identifier, complete pre-redacted body, and destination configuration identity
-and binding version. It contains no delivery failure, setting, path, or
-credential. Only Server logging authority can create a binding, and only Server
-Audit exports or imports the database obligation, so ordinary callers cannot
-choose record fields or invent a destination identity.
+bounded, versioned Log-owned projection. Server Audit semantically validates
+that projection, converts it and the binding's separate identity and version
+into the Application Database contract's private-field opaque validated-write
+wrapper, and passes no Log-owned type across the database boundary. The
+projection includes the original record identifier, event time, phase, result,
+Attempt link, correlation identifier, complete pre-redacted body, and
+destination configuration identity and binding version. It contains no
+delivery failure, setting, path, or credential. Only Server logging authority
+can create a binding, and only Server Audit can perform this semantic export,
+so ordinary callers cannot choose record fields or invent a destination
+identity.
 
 The producer stores no destination, catalog, queue, or retry schedule. The
 Application Database recovery contract defines the opaque obligation as live
 operational data outside `ApplicationState` and every backup; backend storage
-and runtime draining remain future work. On import, Server Audit revalidates
-every field through the shared complete-record constructors and requires the
-obligation identity to equal the embedded record identifier. A malformed,
-oversized, unsupported, mismatched, or arbitrary secret-bearing document cannot
-become a replayable record merely because it was persisted.
+does not depend on the Log contract or logging authority and does not parse or
+materialize an Audit field. On import, Server Audit obtains the opaque bytes
+through database persistence authority, revalidates every field through the
+shared complete-record constructors, requires the separately stored obligation
+identity to equal the embedded record identifier, and requires the separately
+stored binding identity and version to equal the validated embedded binding. A
+malformed, oversized, unsupported, identity-mismatched, binding-mismatched, or
+arbitrary secret-bearing document cannot become a replayable record merely
+because it was persisted. Runtime orchestration maps such an import failure to
+its recovery-required state before destination access.
 
 Server Audit also binds a constrained supersession disposition to that exact
 imported obligation. The resulting trusted transaction value retains the exact
@@ -170,10 +179,13 @@ proofs for fresh exact-session password reauthentication with TOTP when
 enrolled and for explicit confirmation of the exact original and replacement.
 It additionally requires a replacement binding-and-destination pair that has
 passed Audit preflight. No proof accepts a boolean credential, confirmation, or
-preflight flag. The producer then exports only the fixed bounded disposition
-and opaque original already accepted through the bounded recovery contract; it
-does not expose record fields, verify credentials, present confirmation, retain
-a destination, or execute the configuration change.
+preflight flag. The producer validates the fixed Log-owned disposition, then
+converts its opaque bytes, exact original and replacement bindings, validated
+original, and replacement terminal into the Application Database contract's
+private-field supersession wrapper. The database receives no Log-owned
+disposition and cannot mint one. Server Audit does not expose record fields,
+verify credentials, present confirmation, retain a destination, or execute the
+configuration change.
 
 The future account-create and password-reset workflows may disclose a generated
 temporary password only in their originating successful response. Audit records
@@ -224,11 +236,14 @@ post-commit obligations:
   commit both, or commit neither. Then synchronously deliver the exact retained
   terminal record.
 8. Exact destination acknowledgement authorizes acknowledgement of the oldest
-  database obligation. If delivery or database acknowledgement cannot finish,
-  leave the obligation pending. This is a post-commit failure and must not map
-  to the pre-commit `Audit Log unavailable; operation rejected.` result or
-  claim that the mutation was rejected. The future runtime recovery path must
-  replay obligations oldest first and refuse a changed current destination
+  database obligation. Server Audit converts that successful Log-owned
+  acknowledgement into the Application Database contract's opaque proof
+  containing only the exact identity and binding; the database never receives
+  destination authority. If delivery or database acknowledgement cannot
+  finish, leave the obligation pending. This is a post-commit failure and must
+  not map to the pre-commit `Audit Log unavailable; operation rejected.` result
+  or claim that the mutation was rejected. The future runtime recovery path
+  must replay obligations oldest first and refuse a changed current destination
   identity or binding version before delivery. It must resolve the binding and
   destination together through the trusted structural pair; binding equality
   alone does not prove an unrelated handle's identity. The contract is separate

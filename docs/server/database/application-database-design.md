@@ -170,48 +170,66 @@ which to act as a Log Module destination or store Log Module credentials.
 ### Live Audit Terminal Recovery
 
 The **[Application Database](../../glossary.md#applications-and-interfaces)**
-recovery contract permits a backend to retain only the opaque immutable
-normal-operation terminal recovery obligation exported by Server Audit. A
-backend implementation must not parse Audit fields, become an Audit Log
-destination, or store queryable Audit records. Each obligation has a nonzero
-16-byte identity equal to the terminal record identity and at most the shared
-derived 49 KiB projection bound. That projection carries the exact pre-redacted
-terminal record and exact Audit destination binding; destination failure detail,
-credentials, settings, request bodies, temporary credentials, and verifiers are
-absent.
+recovery contract owns only bounded opaque storage values. It has no dependency
+on the Log contract, logging authority, a Log Module, or any Log-owned recovery,
+binding, disposition, or acknowledgement type. A backend implementation must
+not parse or materialize Audit fields, mint logging authority, become an Audit
+Log destination, or store queryable Audit records.
+
+Each stored obligation has a nonzero 16-byte opaque identity, a projection of
+1 to 50,176 uninterpreted bytes, and a separately stored binding made of a nonzero
+16-byte opaque identity and nonzero `u64` version. An append-only supersession
+has a disposition of 1 to 1,024 uninterpreted bytes plus separately stored exact
+original and replacement bindings. The projection and disposition types expose
+no field or semantic accessors. Diagnostic representations and contract errors
+are payload-free.
+
+`AuditTerminalRecoveryPersistence` is issued only from
+`ServerDatabaseAuthority`. It gates persisted-row decoding and the private-field
+validated write, supersession, and acknowledgement-proof wrappers. Server Audit
+uses that capability to convert its already validated terminal projection and
+binding into a database write, to import opaque database rows for semantic
+validation, to convert its validated fixed disposition into a supersession
+write, and to convert exact destination acknowledgement into database proof.
+The database contract cannot construct any of those facts from Log authority
+and never accepts a Log-owned value.
 
 `AuditTerminalRecoveryTransaction` is available only inside a consequential
 application-state mutation transaction. That transaction persists the
-authoritative mutation and its previously absent immutable obligation together,
-or commits neither. The backend-neutral contract deliberately exposes no
+authoritative mutation and its immutable validated-write wrapper together, or
+commits neither. The backend-neutral contract deliberately exposes no
 standalone enqueue operation that could add an obligation after a mutation had
-already become durable.
+already become durable. Repeating the exact identity, projection bytes, and
+binding is idempotent; reusing an identity with any byte or binding difference
+returns `InvalidState` without mutation.
 
 `AuditTerminalRecoveryStore` exposes separate bounded oldest-first sequences for
 active pending obligations and superseded originals retained for late delivery.
 It acknowledges only the exact oldest eligible identity in the applicable
 sequence; an absent, repeated, or out-of-order acknowledgement returns
-`InvalidState`. The Audit and Log contracts make this call reachable only after
-the exact retained record receives durable acknowledgement through its trusted
-resolved binding-and-destination pair. A changed binding, delivery failure,
-import failure, or acknowledgement failure leaves the obligation pending.
+`InvalidState`. Server Audit first imports and semantically validates the opaque
+projection, requires its embedded identity and binding to equal the separately
+stored columns, resolves the trusted binding-and-destination pair, and converts
+the destination's exact acknowledgement into the private database proof. A
+malformed projection, changed binding, delivery failure, import failure, or
+acknowledgement failure leaves the obligation pending. A runtime encountering
+an opaque bounded row that Server Audit cannot import enters the owning
+`RecoveryRequired` failure path rather than asking the backend to interpret or
+repair it.
 
 `AuditTerminalSupersession` retains the exact Server Audit-validated original
-obligation, including its identity and immutable opaque projection, together
-with the validated append-only disposition and a distinct replacement Audit
-terminal obligation. The transaction accepts it only when the stored original
-is the oldest valid active obligation, its identity and projection bytes equal
-the carried original exactly, its retained binding equals the disposition's
-original binding, retained-binding repair has failed permanently, and no
-disposition already exists. Matching identity alone is insufficient. It
-atomically appends the disposition and replacement obligation in the same
-transaction where the owning configuration workflow applies the replacement
-assignment. It never updates, removes, or acknowledges the original; that
-obligation moves only from the active sequence to the late-delivery sequence. A
-malformed projection or disposition, identity, projection, or binding mismatch,
-duplicate, non-oldest request, or partial write returns `InvalidState` and
-changes nothing. Concrete storage, runtime drain, and configuration-change
-execution remain future backend and Server work.
+obligation bytes and separately stored binding together with the opaque
+Server Audit-validated disposition, exact original and replacement bindings,
+and distinct replacement validated write. The backend compares only those
+opaque bytes and separate columns. It accepts the write only when the exact
+stored original is the oldest active obligation and no disposition exists;
+matching identity alone is insufficient. It atomically appends the disposition
+and replacement obligation in the same transaction where the owning
+configuration workflow applies the replacement assignment. An exact repeat is
+idempotent. Any byte or binding mismatch, partial prior state, duplicate with
+different content, or non-oldest request returns `InvalidState` without
+mutation. The original remains immutable and moves only to the late-delivery
+sequence.
 
 These obligations are defined as live operational data that a conforming store
 must preserve across ordinary restart. They are not members of
