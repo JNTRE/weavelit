@@ -7,9 +7,15 @@ administration workflows, while the Web UI Client Module owns its Server
 connection surface and final lifecycle and authorization enforcement stays with
 the Server.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns Web UI application source and its production asset bundle.
 - It does not own browser route authentication or Server authorization policy; those belong in the Web UI Client Module and Server boundaries.
@@ -17,11 +23,6 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
-
-- `AGENTS.md`: Local routing, inventory, and Server Web UI source-boundary rules.
-- `.node-version`: Pinned Node.js release used by local development, the development container, and CI.
-- `.npmrc`: npm client settings that force exact version pinning and engine enforcement.
 - `browser-tests/`: Playwright browser tests, covering the pre-operational status smoke test, the Application Database selection restart-persistence test, the two-request Restore submission test, the first-launch Init workflow test, the sign-in and restart-persisted-session test, the second-factor and enrollment sign-in tests, and the shared fixture that runs them against the release Server binary.
 - `index.html`: Vite entry document for the single-page application.
 - `package.json`: Web UI manifest, exact dependency pins, and build, test, and validation scripts.
@@ -32,27 +33,19 @@ Use this section as the source of truth for what assets belong in this directory
 - `tsconfig.json`: TypeScript compiler configuration for the application and its tests.
 - `vite.config.ts`: Vite build, deterministic output-naming, and Vitest configuration.
 
-## Usage Guidance
+## Working Rules
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
+- MUST follow [Contribution Guidelines](../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../docs/), application documentation MUST comply with the [Documentation Standards](../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../docs/glossary.md), formatting them as bold links on first substantive use.
 
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../docs/clients/web-ui/` for Web UI behavior and `../../docs/client-modules/web-ui/` for its Server connection boundary before changing a workflow.
-- Keep presentation and client-side usability behavior here; rely on the Server
+- Before editing, agents MUST read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
+- MUST read `../../docs/clients/web-ui/` for Web UI behavior and `../../docs/client-modules/web-ui/` for its Server connection boundary before changing a workflow.
+- MUST keep presentation and client-side usability behavior here; rely on the Server
   for lifecycle, Init and Restore availability, identity derivation, and
   authorization decisions.
-- Add focused end-to-end or smoke tests for user workflows and likely release failures, following `../../docs/testing.md`.
+- MUST add focused end-to-end or smoke tests for user workflows and likely release failures, following `../../docs/testing.md`.
 
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Build production Web UI assets as part of the Weavelit Server package; do not create a separate Web UI release.
-- Do not treat client-side navigation or validation as authorization controls.
-- Never expose provider credentials, automation credentials, or internal error traces in the browser.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- MUST build production Web UI assets as part of the Weavelit Server package; do not create a separate Web UI release.
+- Agents MUST NOT treat client-side navigation or validation as authorization controls.
+- Agents MUST NOT expose provider credentials, automation credentials, or internal error traces in the browser.

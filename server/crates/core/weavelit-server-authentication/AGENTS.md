@@ -6,6 +6,14 @@ attempted against, the equal-work password decision, preparation of temporary
 password credentials, and generation and hashing of session and CSRF bearer
 values.
 
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
 ## Purpose and Scope
 
 - This crate owns the current Argon2id profile, the closed accepted-profile
@@ -26,7 +34,6 @@ values.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local routing, inventory, and authentication-boundary rules.
 - `Cargo.toml`: Package metadata and the approved password-hashing, encoding,
   digest, randomness, constant-time, and zeroization dependencies with their
   excluded feature surface.
@@ -44,30 +51,26 @@ values.
 - `src/error.rs`: Payload-free authentication errors.
 - `src/random.rs`: Operating-system randomness with no fallback.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then each parent `AGENTS.md` through the
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then each parent `AGENTS.md` through the
   repository root.
-- Read the Server Authentication Design, Security Model, Server Architecture
+- MUST read the Server Authentication Design, Security Model, Server Architecture
   Design, and Testing and Validation Policy before changing behavior here.
-- Treat `ACCEPTED_ARGON2_PROFILES` as policy: adding an entry accepts stored
+- MUST treat `ACCEPTED_ARGON2_PROFILES` as policy: adding an entry accepts stored
   verifiers at that profile forever, and removing one immediately refuses them.
   Every entry must stay within `MAX_VERIFICATION_MEMORY_KIB`, and the same
   change must update the Server Authentication Design.
-- Never verify a password against a stored profile that the allowlist did not
+- Agents MUST NOT verify a password against a stored profile that the allowlist did not
   resolve; the hashing library takes its cost parameters from the encoded value
   it is given.
-- Prove equal-work denial by counting operations through an injected
+- MUST prove equal-work denial by counting operations through an injected
   `Argon2Engine`, never by comparing elapsed time.
-- Run the package tests during development and `make -C server check` before
+- MUST run the package tests during development and `make -C server check` before
   handoff.
 
-## Standards and Conventions
-
-- Update this inventory whenever crate assets are added, removed, renamed, or
+- MUST update this inventory whenever crate assets are added, removed, renamed, or
   moved.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.

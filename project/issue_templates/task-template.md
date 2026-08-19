@@ -1,30 +1,25 @@
-# Feature Issue Template
+# Task Issue Template
 
 <!--
-Native type: feature
+Native type: task
 Copy the sections beginning with `##` into a temporary body file and replace every
 bracketed placeholder. Choose a title in `<type>(<scope>): <description>` format
 as required by `CONTRIBUTING.md`. Create the issue with
-`gh issue create --title "<title>" --body-file <completed-file> --type feature`,
-then assign the component labels, Priority, milestone, Project status, and parent
-epic.
+`gh issue create --title "<title>" --body-file <completed-file> --type task`, then
+assign the component labels, Priority, milestone, Project status, and parent epic.
 -->
 
 ## Outcome
 
-[Describe the capability and why it is needed.]
-
-## Context
-
-[Explain the user, operational, architectural, or product need that motivates this feature.]
+[State the concrete result this work must produce.]
 
 ## Scope
 
-- [List expected behavior, affected interfaces, and explicit non-goals.]
+- [List the affected packages, modules, interfaces, and important exclusions.]
 
 ## Acceptance Criteria
 
-- [ ] [List observable conditions that must hold for the feature to be complete.]
+- [ ] [List the observable conditions that must hold when the task is complete.]
 
 ## Test Evidence
 
@@ -40,4 +35,5 @@ epic.
 
 ## Related Documents
 
-- [GitHub Planning Compatibility Index](../project-standards.md)
+- [Contributing](../../CONTRIBUTING.md)
+- [Project Planning Guide](../AGENTS.md)

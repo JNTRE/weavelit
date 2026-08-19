@@ -5,6 +5,14 @@ pre-operational Weavelit Server workflow judges submitted or requested state
 against: the Client, MFA, Service, and Log Modules and the named Operations a
 build actually compiles in.
 
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
 ## Purpose and Scope
 
 - This crate owns the `AvailableComponents` representation and its membership
@@ -24,39 +32,34 @@ build actually compiles in.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local component-inventory contract and boundary rules.
 - `Cargo.toml`: Package metadata and its single Application Database contract
   dependency.
 - `src/lib.rs`: The `AvailableComponents` value, the `MfaFactorFormat` and
   `LogSettingsFormat` it carries, its membership queries, and their unit tests.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then each parent `AGENTS.md` through the
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then each parent `AGENTS.md` through the
   repository root.
-- Read the Server Architecture Design, Server Init Design, and Server Restore
+- MUST read the Server Architecture Design, Server Init Design, and Server Restore
   Design before changing what the inventory represents.
-- Never restate a module identifier as a string literal in production code here
+- Agents MUST NOT restate a module identifier as a string literal in production code here
   or in a consumer; the runtime derivation reads each module crate's
   `MODULE_IDENTIFIER` so a compiled-in module and the inventory it is judged by
   cannot drift apart.
-- Prefer the runtime's production inventory constructor in an end-to-end test.
+- MUST prefer the runtime's production inventory constructor in an end-to-end test.
   A test that supplies its own inventory proves only what that inventory
   contains, not what the shipped binary serves.
-- Run the package tests during development and `make -C server check` before
+- MUST run the package tests during development and `make -C server check` before
   handoff.
 
-## Standards and Conventions
-
-- Update this inventory whenever crate assets are added, removed, renamed, or
+- MUST update this inventory whenever crate assets are added, removed, renamed, or
   moved.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep the crate free of workflow, transport, persistence, and presentation
+- MUST keep the crate free of workflow, transport, persistence, and presentation
   behavior; it carries a value, not a policy.
-- Keep every dependency exactly pinned with `default-features = false` and the
+- MUST keep every dependency exactly pinned with `default-features = false` and the
   minimum feature set the crate requires.
-- Forbid `unsafe` code.
+- MUST forbid `unsafe` code.

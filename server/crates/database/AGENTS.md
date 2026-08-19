@@ -5,9 +5,15 @@ Server's internal Application Database contract. The Server core selects,
 configures, and manages these compiled-in backends; they are separate from Log
 Module destinations and do not operate as runtime plugins.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns the shared Application Database contract and backend
   crate boundaries.
@@ -16,33 +22,22 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
-
-- `AGENTS.md`: Local routing, inventory, and Application Database crate-boundary rules.
 - `weavelit-server-database/`: Backend-neutral Application Database contract crate.
 - `weavelit-server-database-authority/`: Server-owned capability key that gates persisted Audit Reference and opaque Audit terminal recovery decoding.
 - `weavelit-server-database-sqlite/`: MVP SQLite Application Database backend crate boundary.
 
-## Usage Guidance
+## Working Rules
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
+- MUST follow [Contribution Guidelines](../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../docs/glossary.md), formatting them as bold links on first substantive use.
 
-- Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../../docs/server/database/` for the shared backend contract and the matching backend guide before changing persistence behavior.
-- Keep backend-specific concerns in their named child path and shared Server lifecycle behavior in the Server executable boundary.
-- Add isolated integration tests for database, filesystem, configuration, serialization, or process behavior as required by `../../../docs/testing.md`.
+- Before editing, agents MUST read the nearest `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- MUST read `../../../docs/server/database/` for the shared backend contract and the matching backend guide before changing persistence behavior.
+- MUST keep backend-specific concerns in their named child path and shared Server lifecycle behavior in the Server executable boundary.
+- MUST add isolated integration tests for database, filesystem, configuration, serialization, or process behavior as required by `../../../docs/testing.md`.
 
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep Application Database backends compiled into the Server package and inaccessible as runtime-installable plugins.
-- Keep this grouping directory free of a Cargo manifest; each contract or backend package belongs in its named child directory.
-- Keep Application Database state separate from every Log Module destination.
-- Preserve backend contract decisions in `../../../docs/server/database/` rather than duplicating them here.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- MUST keep Application Database backends compiled into the Server package and inaccessible as runtime-installable plugins.
+- MUST keep this grouping directory free of a Cargo manifest; each contract or backend package belongs in its named child directory.
+- MUST keep Application Database state separate from every Log Module destination.
+- MUST preserve backend contract decisions in `../../../docs/server/database/` rather than duplicating them here.

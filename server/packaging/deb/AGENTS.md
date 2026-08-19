@@ -5,9 +5,15 @@ Weavelit Server on Ubuntu 26.04 LTS `amd64`. The resulting versioned package
 includes the Server and Web UI assets without requiring Rust, source code, or
 development tooling on the host.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns Debian-specific Server package files and installation behavior.
 - It does not own Server source, Web UI source, runtime initialization, or Service Connection configuration.
@@ -15,30 +21,18 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
+## Working Rules
 
-- `AGENTS.md`: Local routing, inventory, and Debian Server packaging-boundary rules.
+- MUST follow [Contribution Guidelines](../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../docs/glossary.md), formatting them as bold links on first substantive use.
 
-## Usage Guidance
+- Before editing, agents MUST read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- MUST read the authoritative [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8) and the relevant Server requirements before changing Debian package behavior.
+- MUST keep package installation, service definition, non-secret configuration, persistent-state, and log-location behavior here.
+- MUST verify release artifacts in a clean, production-like Ubuntu environment when this packaging workflow is introduced.
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
-
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read the authoritative [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8) and the relevant Server requirements before changing Debian package behavior.
-- Keep package installation, service definition, non-secret configuration, persistent-state, and log-location behavior here.
-- Verify release artifacts in a clean, production-like Ubuntu environment when this packaging workflow is introduced.
-
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Install the Server package's service definition and its required non-secret configuration, persistent-state, and log locations.
-- Stop the Server with `SIGTERM`, which the Server handles as a request to shut down, and set `TimeoutStopSec=infinity` so an admitted irreversible lifecycle transition and any Application Database close it begins can finish before the supervisor kills the process. Any finite force-kill timeout weakens this no-interruption guarantee.
-- Do not create application users, configure Service Connections, complete Init, or start normal operation during package installation.
-- Keep Debian packaging behavior aligned with the documented Ubuntu 26.04 LTS `amd64` support requirement.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- MUST install the Server package's service definition and its required non-secret configuration, persistent-state, and log locations.
+- MUST stop the Server with `SIGTERM`, which the Server handles as a request to shut down, and set `TimeoutStopSec=infinity` so an admitted irreversible lifecycle transition and any Application Database close it begins can finish before the supervisor kills the process. Any finite force-kill timeout weakens this no-interruption guarantee.
+- Agents MUST NOT create application users, configure Service Connections, complete Init, or start normal operation during package installation.
+- MUST keep Debian packaging behavior aligned with the documented Ubuntu 26.04 LTS `amd64` support requirement.
