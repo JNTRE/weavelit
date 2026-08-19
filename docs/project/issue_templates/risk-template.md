@@ -40,4 +40,5 @@ when applicable.
 
 ## Related Documents
 
-- [GitHub Planning Compatibility Index](../project-standards.md)
+- [Contributing](../../../CONTRIBUTING.md)
+- [Project Planning Guide](../AGENTS.md)

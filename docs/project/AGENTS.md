@@ -19,7 +19,6 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and planning-documentation boundary rules.
-- `project-standards.md`: Deprecated compatibility index that routes existing links to current GitHub and repository authorities.
 - `project.yaml`: Minimal tracked repository and GitHub Project binding for JNTRE workflow operations; it does not duplicate live GitHub configuration.
 - `issue_templates/`: Agent-authored GitHub Issue body templates; follow `issue_templates/AGENTS.md` before editing.
 
@@ -33,7 +32,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
   authority, document-type, structure, and writing rules.
 - Read the authoritative GitHub Issue directly before changing an issue.
 - Read GitHub directly before changing Issue, Pull Request, milestone, or
-  Project state. Use `project-standards.md` only to route legacy references to current authorities.
+  Project state.
 - Select issue templates from the `issue_templates/` directory in this directory; follow `issue_templates/AGENTS.md` for creation instructions.
 - Keep planning outcomes aligned with canonical documents for settled product, security, and technical decisions instead of redefining those decisions.
 - Keep GitHub Issues as the only issue navigation and metadata record; do not

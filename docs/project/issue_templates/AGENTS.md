@@ -12,9 +12,7 @@ Use this section to understand what this directory owns, what it does not own, a
 
 - This directory owns the Markdown body structure and native-type instructions for agent-created GitHub issues.
 - It does not own live issue metadata such as labels, `Priority`, milestones,
-  Project status, or issue relationships. GitHub owns those values, and the
-  [GitHub Planning Compatibility Index](../project-standards.md)
-  routes legacy references to current authorities.
+  Project status, or issue relationships. GitHub owns those values.
 - This guide applies only to the template files in this directory. Use GitHub
   directly to discover or inspect the issues created from them.
 
@@ -56,10 +54,11 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep issue titles out of template bodies; the active issue lifecycle workflow
   validates and passes the title separately at creation time.
 - Keep the `## Related Documents` section at the end of each template and link
-  it to [GitHub Planning Compatibility Index](../project-standards.md).
+  it to [Contributing](../../../CONTRIBUTING.md).
 - Do not place live issue assignments or Project values in a template body; apply them after issue creation through the documented GitHub workflow.
 - Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
 - Every change must include an update to its relevant documentation under `docs/` in the same change.
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
+- End Markdown files with a single trailing newline.
