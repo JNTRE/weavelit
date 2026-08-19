@@ -59,10 +59,11 @@ the backend changes nothing and refuses to report readiness.
 
 The registry contains `0001_create_migration_ledger.sql`,
 `0002_create_lifecycle_state.sql`, `0003_create_application_state.sql`,
-`0004_create_session_store.sql`, and
+`0004_create_session_store.sql`,
 `0005_add_mfa_policy_and_replay_watermark.sql`,
-`0006_add_lifecycle_reconciliation.sql`, and
-`0007_add_audit_references.sql`. Each
+`0006_add_lifecycle_reconciliation.sql`,
+`0007_add_audit_references.sql`, and
+`0008_add_audit_terminal_outbox.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -292,6 +293,72 @@ that installs the replacement state, alongside the live session rows, so a
 Restore cannot judge a newly presented code against a history belonging to the
 replaced state.
 
+## Live Audit Terminal Recovery Schema
+
+`0008_add_audit_terminal_outbox.sql` creates the separate `STRICT` tables
+`weavelit_audit_terminal_outbox` and
+`weavelit_audit_terminal_supersession`. They implement the shared live
+**[Audit Log](../../../glossary.md#applications-and-interfaces)** terminal
+recovery contract and are not Log Module destination storage.
+
+The outbox stores a monotonic SQLite insertion sequence, the nonzero 16-byte
+obligation identity, the exact opaque bounded projection, and the retained
+binding's nonzero 16-byte identity and nonzero unsigned 64-bit version. The
+version is an eight-byte big-endian BLOB so SQLite does not narrow the shared
+unsigned range. The sequence, rather than record event time or identity,
+defines first-in, first-out delivery. A uniqueness constraint rejects duplicate
+obligation identities, and an update trigger keeps every retained obligation
+immutable. Acknowledgement is the only deletion path.
+
+The supersession table stores the exact original identity, the bounded opaque
+disposition, and the distinct replacement-obligation identity. The SQLite
+transaction adapter verifies their relationship before insertion rather than
+foreign-keying either live table to restorable application state. Update and
+delete triggers make each disposition append-only. A late-delivery
+acknowledgement deletes only the original outbox row; its historical disposition
+remains unchanged.
+
+Active reads left-join obligations with dispositions and return only originals
+without one. Late-delivery reads inner-join the same tables and return only
+superseded originals still present in the outbox. Both order by insertion
+sequence and apply the shared bounded batch size. The replacement receives its
+own later insertion sequence, so an already pending follower remains ahead of
+it in the active sequence. The two sequences advance independently.
+
+Before insertion or return, SQLite passes the opaque projection to the owning
+Log contract's trusted persistence decoder. The backend does not deserialize or
+store individual Audit fields. It verifies only that the decoded immutable
+record identity equals the obligation identity and that its retained binding
+equals the separately stored binding bytes and version. Persisted malformed,
+mismatched, or unsupported values produce `IntegrityFailure`; invalid
+transaction input, duplicate identity, non-oldest original, changed original
+bytes or binding, repeated disposition, or replacement-binding mismatch
+produces `InvalidState`. Both errors remain payload-free.
+
+The private transaction adapter borrows a caller-owned SQLite transaction and
+never commits it. A future authoritative business-state store can therefore
+write its mutation and call `AuditTerminalRecoveryTransaction` through the same
+`BEGIN IMMEDIATE` transaction. Supersession likewise inserts the replacement
+obligation and disposition within the owning configuration transaction. Any
+supersession write uses a private savepoint, so failure of either insert removes
+both recovery writes before the error returns even while the caller's broader
+transaction remains usable. The caller still propagates every adapter error to
+roll back its authoritative business mutation and recovery write together;
+there is no standalone enqueue operation.
+
+Acknowledgement starts its own `BEGIN IMMEDIATE` transaction, loads and validates
+the oldest active and oldest late-delivery candidates, and accepts only a
+destination acknowledgement whose record identity and retained binding match
+the oldest member of its applicable sequence. It deletes exactly that outbox
+row. An absent, repeated, non-oldest, or changed-binding acknowledgement returns
+`InvalidState` without mutation.
+
+Both tables survive ordinary database close and reopen. They remain outside
+`ApplicationState`, normalized backup content, and Restore input. Checkpoint
+replacement neither imports source-deployment obligations nor clears the
+current deployment's live outbox; the shared contract defines no in-place
+Restore clearing operation.
+
 ## Checkpoint Transactions
 
 `SqliteDatabase` implements the complete `ApplicationDatabase` contract after
@@ -464,6 +531,15 @@ checks, immutable associations, indexed reference lookup, exact round trips
 across reopen, and integrity failure for missing, extra, or wrong-kind
 associations.
 
+Audit terminal recovery tests prove `0008` migration rollback, strict identity,
+projection, binding, and disposition bounds, insertion ordering, immutable
+obligations, append-only dispositions, and absence of a foreign-key dependency
+on restorable state. Real transaction tests cover exact opaque-byte and binding
+persistence, restart, independent active and late-delivery order, bounded reads,
+duplicate and non-oldest rejection, exact acknowledgement, supersession and
+replacement mismatch, disposition retention after late acknowledgement,
+forced partial-write rollback, corruption handling, and payload-free errors.
+
 Close tests build a real database whose committed write is still held only in a
 non-empty WAL. They prove that a clean close leaves neither the WAL nor the
 shared-memory sidecar behind while the committed write survives in the main
@@ -475,12 +551,15 @@ across reopen, one-time checkpoint replacement, mismatched-checkpoint and
 mismatched-deployment rejection without writing state, complete rollback of a
 partially written replacement, malformed persisted state, one-time obligation
 acknowledgement, and an explicit assertion over the installed `weavelit_*`
-tables and columns that no log-record or Log Module credential storage exists
-and that `weavelit_session` is the only table naming session, token, or CSRF
-data and holds exactly its seven expected columns. Further tests prove that
+tables and columns that only the exact live Audit terminal tables hold recovery
+metadata, no Log Module destination-record or credential storage exists, and
+`weavelit_session` is the only table naming session, token, or CSRF data and
+holds exactly its seven expected columns. Further tests prove that
 completing a checkpoint clears every stored session, that a rejected completion
 leaves stored sessions untouched, and that stored sessions do not change the
-normalized aggregate a backup is built from.
+normalized aggregate a backup is built from. Loading that aggregate likewise
+leaves a live Audit terminal obligation stored while excluding its projection
+from the state a backup uses.
 
 Session tests inject every instant, so no assertion depends on wall-clock timing
 or on a sleep. They cover survival across reopen, the exact idle and absolute

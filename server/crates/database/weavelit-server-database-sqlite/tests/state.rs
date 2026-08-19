@@ -31,9 +31,11 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 21] = [
+const EXPECTED_TABLES: [&str; 23] = [
     "weavelit_account",
     "weavelit_account_audit_reference",
+    "weavelit_audit_terminal_outbox",
+    "weavelit_audit_terminal_supersession",
     "weavelit_completion_obligation",
     "weavelit_configuration",
     "weavelit_group",
@@ -66,6 +68,19 @@ const EXPECTED_SESSION_COLUMNS: [&str; 7] = [
     "weavelit_session.last_seen_at_milliseconds",
     "weavelit_session.token_hash",
 ];
+
+const EXPECTED_AUDIT_TERMINAL_COLUMNS: [&str; 8] = [
+    "weavelit_audit_terminal_outbox.binding_identifier",
+    "weavelit_audit_terminal_outbox.binding_version",
+    "weavelit_audit_terminal_outbox.obligation_identifier",
+    "weavelit_audit_terminal_outbox.projection",
+    "weavelit_audit_terminal_outbox.sequence_number",
+    "weavelit_audit_terminal_supersession.disposition",
+    "weavelit_audit_terminal_supersession.original_obligation_identifier",
+    "weavelit_audit_terminal_supersession.replacement_obligation_identifier",
+];
+
+type AuditTerminalOutboxRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
 
 fn database_path(temporary_directory: &TempDir) -> PathBuf {
     temporary_directory
@@ -133,6 +148,40 @@ fn watermark_count(path: &Path) -> i64 {
             |row| row.get(0),
         )
         .unwrap()
+}
+
+fn audit_terminal_outbox_rows(path: &Path) -> Vec<AuditTerminalOutboxRow> {
+    let connection = Connection::open(path).unwrap();
+    let mut statement = connection
+        .prepare(
+            "SELECT obligation_identifier, projection, binding_identifier, binding_version \
+             FROM weavelit_audit_terminal_outbox ORDER BY sequence_number",
+        )
+        .unwrap();
+    statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+fn insert_audit_terminal_outbox_row(path: &Path, identity: u8, projection: &[u8]) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_outbox \
+             (obligation_identifier, projection, binding_identifier, binding_version) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                [identity; 16].as_slice(),
+                projection,
+                [identity.wrapping_add(1); 16].as_slice(),
+                1_u64.to_be_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
 }
 
 fn restore_checkpoint(deployment_identifier: DeploymentIdentifier) -> WorkflowCheckpoint {
@@ -405,13 +454,11 @@ fn assert_redacted(error: DatabaseError) {
     assert!(message.starts_with("application database"));
 }
 
-/// Proves the same intent the previous exact-column-name test carried: that
-/// sessions, log records, and Log Module credentials are not part of restorable
-/// state and cannot ride in a backup. It no longer conflates that intent with
-/// "no session table exists", because the specification requires the Server to
-/// store live sessions in the Application Database.
+/// Proves that live sessions and opaque Audit terminal recovery stay in their
+/// exact live schemas while Log Module destination records and credentials
+/// remain absent from the Application Database.
 #[test]
-fn only_the_live_session_table_may_name_session_data_and_no_table_stores_log_records() {
+fn live_operational_tables_are_exact_and_no_table_stores_log_destination_records() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     drop(SqliteDatabase::open(&path).unwrap());
@@ -431,10 +478,19 @@ fn only_the_live_session_table_may_name_session_data_and_no_table_stores_log_rec
     session_columns.sort();
     assert_eq!(session_columns, EXPECTED_SESSION_COLUMNS);
 
+    let mut audit_terminal_columns = column_names(&path)
+        .into_iter()
+        .filter(|column| column.starts_with("weavelit_audit_terminal_"))
+        .collect::<Vec<_>>();
+    audit_terminal_columns.sort();
+    assert_eq!(audit_terminal_columns, EXPECTED_AUDIT_TERMINAL_COLUMNS);
+
     for column in column_names(&path) {
         let lower_column = column.to_ascii_lowercase();
         assert!(!lower_column.contains("log_record"));
-        if lower_column.starts_with("weavelit_session.") {
+        if lower_column.starts_with("weavelit_session.")
+            || lower_column.starts_with("weavelit_audit_terminal_")
+        {
             continue;
         }
         assert!(!lower_column.contains("session"));
@@ -727,6 +783,59 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
 }
 
 #[test]
+fn checkpoint_replacement_preserves_its_outbox_and_does_not_import_the_source_outbox() {
+    let source_directory = tempfile::tempdir().unwrap();
+    let source_path = database_path(&source_directory);
+    let source_deployment = deployment(15);
+    let mut source = restored_database(&source_path, source_deployment);
+    insert_audit_terminal_outbox_row(
+        &source_path,
+        0x61,
+        b"source-obligation-must-not-be-restored",
+    );
+    let source_state = source
+        .load_initialized_state(&audit_reference_persistence(), source_deployment)
+        .unwrap()
+        .state()
+        .clone();
+    drop(source);
+
+    let replacement_directory = tempfile::tempdir().unwrap();
+    let replacement_path = database_path(&replacement_directory);
+    let replacement_deployment = deployment(16);
+    let mut replacement = pending_database(&replacement_path, replacement_deployment);
+    insert_audit_terminal_outbox_row(
+        &replacement_path,
+        0x71,
+        b"replacement-live-obligation-must-survive",
+    );
+    let replacement_outbox = audit_terminal_outbox_rows(&replacement_path);
+
+    replacement
+        .complete_checkpoint(
+            &restore_checkpoint(replacement_deployment),
+            &source_state,
+            &reconciliation_digest(0xA0),
+        )
+        .unwrap();
+
+    assert_eq!(
+        audit_terminal_outbox_rows(&replacement_path),
+        replacement_outbox,
+        "checkpoint replacement must not clear or rewrite live recovery obligations"
+    );
+    assert!(
+        audit_terminal_outbox_rows(&replacement_path).iter().all(
+            |(identifier, projection, _, _)| {
+                identifier.as_slice() != [0x61_u8; 16]
+                    && projection.as_slice() != b"source-obligation-must-not-be-restored"
+            }
+        ),
+        "the source aggregate must not import its live recovery obligations"
+    );
+}
+
+#[test]
 fn a_rejected_state_replacement_leaves_live_sessions_untouched() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
@@ -755,13 +864,27 @@ fn a_rejected_state_replacement_leaves_live_sessions_untouched() {
 }
 
 #[test]
-fn normalized_state_and_backup_content_carry_no_session_data() {
+fn normalized_state_and_backup_content_carry_no_live_operational_data() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     let deployment_identifier = deployment(14);
     let mut database = restored_database(&path, deployment_identifier);
     database.create(&session(0x27, 0x28)).unwrap();
     database.create(&session(0x29, 0x2A)).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_outbox \
+             (obligation_identifier, projection, binding_identifier, binding_version) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                [0x51_u8; 16].as_slice(),
+                b"terminal-recovery-must-not-enter-backup".as_slice(),
+                [0x52_u8; 16].as_slice(),
+                1_u64.to_be_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
 
     let loaded = database
         .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
@@ -781,6 +904,19 @@ fn normalized_state_and_backup_content_carry_no_session_data() {
     assert!(!rendered.contains(SESSION_CLIENT_MODULE));
     assert!(!rendered.to_ascii_lowercase().contains("session"));
     assert!(!rendered.to_ascii_lowercase().contains("csrf"));
+    assert!(!rendered.contains("terminal-recovery-must-not-enter-backup"));
+    assert_eq!(
+        Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM weavelit_audit_terminal_outbox",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "loading normalized state must leave live recovery storage untouched"
+    );
 }
 
 #[test]

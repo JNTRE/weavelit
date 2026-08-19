@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use weavelit_server_database::DatabaseError;
+use weavelit_server_database::{
+    DatabaseError, MAX_AUDIT_TERMINAL_OBLIGATION_BYTES,
+    MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES,
+};
 use weavelit_server_database_sqlite::SqliteDatabase;
 
 const LEDGER_TABLE: &str = "weavelit_migration_ledger";
@@ -11,8 +14,18 @@ const LIFECYCLE_TABLE: &str = "weavelit_lifecycle_state";
 const ACCOUNT_TABLE: &str = "weavelit_account";
 const RECONCILIATION_TABLE: &str = "weavelit_lifecycle_reconciliation";
 const SESSION_TABLE: &str = "weavelit_session";
+const AUDIT_TERMINAL_OUTBOX_TABLE: &str = "weavelit_audit_terminal_outbox";
+const AUDIT_TERMINAL_SUPERSESSION_TABLE: &str = "weavelit_audit_terminal_supersession";
 const UPDATE_TRIGGER: &str = "weavelit_migration_ledger_reject_update";
 const DELETE_TRIGGER: &str = "weavelit_migration_ledger_reject_delete";
+const AUDIT_TERMINAL_MIGRATION: &str =
+    include_str!("../migrations/0008_add_audit_terminal_outbox.sql");
+const MIGRATION_MAX_AUDIT_TERMINAL_OBLIGATION_BYTES: usize = 50_176;
+const MIGRATION_MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES: usize = 1_024;
+const _: [(); MIGRATION_MAX_AUDIT_TERMINAL_OBLIGATION_BYTES] =
+    [(); MAX_AUDIT_TERMINAL_OBLIGATION_BYTES];
+const _: [(); MIGRATION_MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES] =
+    [(); MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES];
 
 fn database_path(temporary_directory: &TempDir) -> PathBuf {
     temporary_directory
@@ -93,7 +106,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     let first_schema = schema_rows(&connection);
     drop(connection);
 
-    assert_eq!(first_ledger.len(), 7);
+    assert_eq!(first_ledger.len(), 8);
     assert_eq!(first_ledger[0].0, 1);
     assert_eq!(first_ledger[0].1, "0001_create_migration_ledger");
     assert_eq!(first_ledger[1].0, 2);
@@ -111,6 +124,8 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[5].1, "0006_add_lifecycle_reconciliation");
     assert_eq!(first_ledger[6].0, 7);
     assert_eq!(first_ledger[6].1, "0007_add_audit_references");
+    assert_eq!(first_ledger[7].0, 8);
+    assert_eq!(first_ledger[7].1, "0008_add_audit_terminal_outbox");
     assert_eq!(first_ledger[0].2.len(), 32);
     assert_eq!(first_ledger[1].2.len(), 32);
     assert_eq!(first_ledger[2].2.len(), 32);
@@ -118,6 +133,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[4].2.len(), 32);
     assert_eq!(first_ledger[5].2.len(), 32);
     assert_eq!(first_ledger[6].2.len(), 32);
+    assert_eq!(first_ledger[7].2.len(), 32);
     assert_eq!(
         first_ledger[0].2,
         Sha256::digest(include_bytes!(
@@ -167,6 +183,13 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         ))
         .to_vec()
     );
+    assert_eq!(
+        first_ledger[7].2,
+        Sha256::digest(include_bytes!(
+            "../migrations/0008_add_audit_terminal_outbox.sql"
+        ))
+        .to_vec()
+    );
     assert!(first_schema.iter().any(|(_, name, _)| name == LEDGER_TABLE));
     assert!(
         first_schema
@@ -187,6 +210,16 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         first_schema
             .iter()
             .any(|(_, name, _)| name == SESSION_TABLE)
+    );
+    assert!(
+        first_schema
+            .iter()
+            .any(|(_, name, _)| name == AUDIT_TERMINAL_OUTBOX_TABLE)
+    );
+    assert!(
+        first_schema
+            .iter()
+            .any(|(_, name, _)| name == AUDIT_TERMINAL_SUPERSESSION_TABLE)
     );
 
     bootstrap(&path);
@@ -226,7 +259,7 @@ fn unknown_extra_history_is_rejected() {
     connection
         .execute(
             "INSERT INTO weavelit_migration_ledger \
-            (sequence_number, identifier, checksum) VALUES (8, '0008_unknown', ?1)",
+            (sequence_number, identifier, checksum) VALUES (9, '0009_unknown', ?1)",
             [vec![0_u8; 32]],
         )
         .unwrap();
@@ -251,7 +284,7 @@ fn missing_applied_history_is_rejected_without_new_ledger_row() {
     drop(connection);
 
     assert_integrity_failure_is_redacted(open_error(&path), &path);
-    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 6);
+    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 7);
 }
 
 #[test]
@@ -340,6 +373,204 @@ fn lifecycle_schema_represents_valid_states_and_rejects_invalid_shapes() {
     assert!(invalid_identifier.is_err());
     assert!(invalid_initialized_shape.is_err());
     assert!(oversized_metadata.is_err());
+}
+
+#[test]
+fn audit_terminal_schema_enforces_bounds_ordering_and_append_only_dispositions() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    bootstrap(&path);
+    let connection = direct_connection(&path);
+    let first_identifier = [0x31_u8; 16];
+    let second_identifier = [0x32_u8; 16];
+    let binding_identifier = [0x41_u8; 16];
+    let binding_version = 3_u64.to_be_bytes();
+
+    for identifier in [first_identifier, second_identifier] {
+        connection
+            .execute(
+                "INSERT INTO weavelit_audit_terminal_outbox \
+                 (obligation_identifier, projection, binding_identifier, binding_version) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    identifier.as_slice(),
+                    b"opaque-bounded-projection".as_slice(),
+                    binding_identifier.as_slice(),
+                    binding_version.as_slice(),
+                ],
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        connection
+            .prepare(
+                "SELECT obligation_identifier FROM weavelit_audit_terminal_outbox \
+                 ORDER BY sequence_number"
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        vec![first_identifier.to_vec(), second_identifier.to_vec()]
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_audit_terminal_outbox \
+                 (obligation_identifier, projection, binding_identifier, binding_version) \
+                 VALUES (zeroblob(16), x'01', ?1, ?2)",
+                params![binding_identifier.as_slice(), binding_version.as_slice()],
+            )
+            .is_err()
+    );
+    for (identifier, projection, binding, version) in [
+        (
+            [0x51_u8; 16],
+            Vec::new(),
+            binding_identifier.to_vec(),
+            binding_version.to_vec(),
+        ),
+        (
+            [0x52_u8; 16],
+            vec![0_u8; MIGRATION_MAX_AUDIT_TERMINAL_OBLIGATION_BYTES + 1],
+            binding_identifier.to_vec(),
+            binding_version.to_vec(),
+        ),
+        (
+            [0x53_u8; 16],
+            vec![1_u8],
+            vec![0_u8; 16],
+            binding_version.to_vec(),
+        ),
+        (
+            [0x54_u8; 16],
+            vec![1_u8],
+            binding_identifier.to_vec(),
+            vec![0_u8; 8],
+        ),
+    ] {
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO weavelit_audit_terminal_outbox \
+                     (obligation_identifier, projection, binding_identifier, binding_version) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![identifier.as_slice(), projection, binding, version],
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_audit_terminal_outbox \
+                 (obligation_identifier, projection, binding_identifier, binding_version) \
+                 VALUES (?1, x'01', ?2, ?3)",
+                params![
+                    first_identifier.as_slice(),
+                    binding_identifier.as_slice(),
+                    binding_version.as_slice(),
+                ],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE weavelit_audit_terminal_outbox SET projection = x'02' \
+                 WHERE obligation_identifier = ?1",
+                [first_identifier.as_slice()],
+            )
+            .is_err()
+    );
+
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_supersession \
+             (original_obligation_identifier, disposition, replacement_obligation_identifier) \
+             VALUES (?1, x'01', ?2)",
+            params![first_identifier.as_slice(), second_identifier.as_slice()],
+        )
+        .unwrap();
+    for (original, disposition, replacement) in [
+        ([0x61_u8; 16], Vec::new(), [0x62_u8; 16]),
+        (
+            [0x63_u8; 16],
+            vec![0_u8; MIGRATION_MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES + 1],
+            [0x64_u8; 16],
+        ),
+        ([0x65_u8; 16], vec![1_u8], [0x65_u8; 16]),
+    ] {
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO weavelit_audit_terminal_supersession \
+                     (original_obligation_identifier, disposition, \
+                      replacement_obligation_identifier) \
+                     VALUES (?1, ?2, ?3)",
+                    params![original.as_slice(), disposition, replacement.as_slice()],
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        connection
+            .execute(
+                "UPDATE weavelit_audit_terminal_supersession SET disposition = x'02'",
+                [],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM weavelit_audit_terminal_supersession", [])
+            .is_err()
+    );
+    connection
+        .execute(
+            "DELETE FROM weavelit_audit_terminal_outbox \
+             WHERE obligation_identifier = ?1",
+            [first_identifier.as_slice()],
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_audit_terminal_supersession",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "acknowledgement deletion must not delete append-only disposition history"
+    );
+    for table in [
+        AUDIT_TERMINAL_OUTBOX_TABLE,
+        AUDIT_TERMINAL_SUPERSESSION_TABLE,
+    ] {
+        let foreign_key_count = connection
+            .prepare(&format!("PRAGMA foreign_key_list('{table}')"))
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .count();
+        assert_eq!(
+            foreign_key_count, 0,
+            "live Audit recovery must not depend on restorable application-state rows"
+        );
+    }
+}
+
+#[test]
+fn audit_terminal_migration_bounds_match_the_public_contract() {
+    assert!(AUDIT_TERMINAL_MIGRATION.contains(&format!(
+        "length(projection) BETWEEN 1 AND {MIGRATION_MAX_AUDIT_TERMINAL_OBLIGATION_BYTES}"
+    )));
+    assert!(AUDIT_TERMINAL_MIGRATION.contains(&format!(
+        "length(disposition) BETWEEN 1 AND \
+         {MIGRATION_MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES}"
+    )));
 }
 
 #[test]

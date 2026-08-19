@@ -1545,6 +1545,8 @@ dependencies = [
  "tempfile",
  "weavelit-server-database",
  "weavelit-server-database-authority",
+ "weavelit-server-log",
+ "weavelit-server-log-authority",
 ]
 
 [[package]]
