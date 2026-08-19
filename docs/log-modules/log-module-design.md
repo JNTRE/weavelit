@@ -47,10 +47,19 @@ immutable `CompleteLogRecord`; no public delivery operation accepts a raw
 source payload or a caller-created record identifier. The destination must
 acknowledge the same identifier and type synchronously after completing its
 configured supported storage interface's commit path during a valid process run
-or confirming an exact prior-record match. A capability mismatch, malformed
-registration,
-unavailable destination, or conflicting replay returns a stable payload-free
-error.
+or confirming an exact prior-record match. Every destination must use the record
+identifier as a mandatory idempotency key inside the same atomic delivery
+operation that commits a new record. It must compare the record type and every
+immutable field exposed by the complete record's persistence view. An exact
+match returns durable acknowledgement without writing a second record. A proven
+type or field mismatch returns top-level `LogDeliveryError::IntegrityFailure`
+without overwrite, deletion, replacement, supersession, or acknowledgement. A
+lock, query, decode, or other failure that prevents the destination from proving
+equality returns `LogDeliveryError::Destination(LogDestinationError::Unavailable)`
+and leaves delivery pending without acknowledgement. This behavior is required
+for every destination and is not an optional or weaker declared capability. A
+capability mismatch or malformed registration also returns its stable
+payload-free error.
 
 The Server-owned contract and dispatch boundary retains the trusted context
 that configures a catalog destination and creates record issuers, read-only
@@ -125,25 +134,21 @@ selecting generation order. The future configuration workflow must preserve a
 resolvable old binding handle while any terminal obligation references that
 version; identifying a replacement never changes the original projection.
 
-The SQLite destination confirms an exact existing record as one persisted row
-and still rejects the same identifier with different content.
-
 Delivery is synchronous and succeeds only when the assigned destination
 completes its configured supported storage interface's commit path for the
-complete record or confirms an exact existing record with the same type and
-record identifier. Before an Init or Restore application-state commit, the
-Server creates the opaque identifier and persists it with immutable
-completion-record fields in the post-commit obligation. During a valid
-uninterrupted workflow run, the Server delivers that identical record until it
-receives a durable acknowledgement. That acknowledgement does not guarantee
-record survival across host power loss, filesystem loss or corruption, abrupt
-process termination, or an operator-broken environment. An interruption before
-acknowledgement leaves the workflow non-operational; the lifecycle does not
-retry delivery, construct a replacement record, or seal on restart. A matching
-identifier with different content is an integrity failure. This provides
-at-least-once attempts and one persisted completion record per identifier for
-the MVP SQLite destination; it does not claim distributed exactly-once delivery
-or select a fan-out policy.
+complete record or confirms an existing record with the same type and every
+immutable field. Before an Init or Restore application-state commit, the Server
+creates the opaque identifier and persists it with immutable completion-record
+fields in the post-commit obligation. During a valid uninterrupted workflow
+run, the Server delivers that identical record until it receives a durable
+acknowledgement. That acknowledgement does not guarantee record survival across
+host power loss, filesystem loss or corruption, abrupt process termination, or
+an operator-broken environment. An interruption before acknowledgement leaves
+the workflow non-operational; the lifecycle does not retry delivery, construct
+a replacement record, or seal on restart. This provides at-least-once attempts
+and one persisted completion record per identifier for the MVP SQLite
+destination; it does not claim distributed exactly-once delivery or select a
+fan-out policy.
 
 **Operational Resilience Requirement:** The Server does NOT crash or exit if a
 Log Module destination becomes unavailable during normal operation (after
@@ -407,9 +412,18 @@ without relying on SQLite integer conversion for the unsigned timestamp range.
 The trigger enforces existing-row phase and correlation for direct new inserts,
 but SQLite does not prove that an opaque capability originated in the Audit
 producer, and the schema does not use a self-referential foreign key.
-Exact replay matching compares the canonical phase literal, phase-bound result,
-and nullable link. Legacy unlinked completions remain readable but cannot be
-used to invent or infer Attempt history.
+Within its immediate delivery transaction, exact replay matching compares the
+record type and every immutable stored field. System matching includes event
+time, result, correlation identifier, classification, and detail. Audit matching
+includes event time, canonical phase literal, phase-bound result, nullable
+Attempt record identifier, correlation identifier, classification, principal,
+principal type, Responsible Owner, action, target, and detail. An exact row is
+acknowledged without insertion, including after destination close and reopen. A
+proven cross-type or field mismatch is an integrity failure and leaves the
+existing row unchanged. Query, decode, or lock failure is unavailable because
+the destination cannot prove equality; it returns no acknowledgement. Legacy
+unlinked completions remain readable but cannot be used to invent or infer
+Attempt history.
 
 ### Descriptor-Relative Candidate Evidence
 
