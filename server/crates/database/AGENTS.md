@@ -20,7 +20,7 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and Application Database crate-boundary rules.
 - `weavelit-server-database/`: Backend-neutral Application Database contract crate.
-- `weavelit-server-database-authority/`: Server-owned capability key that gates persisted Audit Reference decoding.
+- `weavelit-server-database-authority/`: Server-owned capability key that gates persisted Audit Reference and opaque Audit terminal recovery decoding.
 - `weavelit-server-database-sqlite/`: MVP SQLite Application Database backend crate boundary.
 
 ## Usage Guidance

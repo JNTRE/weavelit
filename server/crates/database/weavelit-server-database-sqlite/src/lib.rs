@@ -2,6 +2,8 @@
 
 //! SQLite implementation of the Weavelit Application Database contract.
 
+#[cfg_attr(not(test), allow(dead_code))]
+mod audit_recovery;
 mod checkpoint;
 mod completion;
 mod connection;
@@ -100,7 +102,7 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore> {
-        None
+        Some(self)
     }
 
     fn close(self: Box<Self>) -> Result<(), DatabaseError> {

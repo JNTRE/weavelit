@@ -183,15 +183,21 @@ recover a terminal record.
 It owns no authorization, mutation sequencing, decision to create a correction,
 client-error mapping, System Log construction, retry scheduling, database
 storage implementation, or runtime drain execution. It does own trusted export
-and import of the exact immutable terminal recovery projection, the closed
-`dependency.audit-terminal.superseded` event, and construction of a fixed
-supersession disposition bound to an imported obligation. Authority-gated
-reauthentication and confirmation proofs plus a preflighted replacement are
-inputs to that construction; Audit does not verify credentials, present a user
-interface, or change assignments. The future owning Server workflow must supply
-those other boundaries, retain old binding handles, durably sequence
-normal-operation recovery through the Application Database contract, and
-ensure that each terminal record reflects an authoritative mutation outcome.
+and import of the exact immutable Log-owned terminal recovery projection, the
+closed `dependency.audit-terminal.superseded` event, and construction of a fixed
+Log-owned supersession disposition bound to an imported obligation. It is the
+only semantic adapter into the Application Database recovery contract: it
+converts validated projections, bindings, dispositions, and destination
+acknowledgements into private-field opaque database wrappers and validates
+opaque stored rows before destination access. The database contract has no Log
+or logging-authority dependency and cannot parse fields or mint those facts.
+Authority-gated reauthentication and confirmation proofs plus a preflighted
+replacement are inputs to Audit construction; Audit does not verify
+credentials, present a user interface, or change assignments. The future owning
+Server workflow must supply those other boundaries, retain old binding handles,
+durably sequence normal-operation recovery through the Application Database
+contract, and ensure that each terminal record reflects an authoritative
+mutation outcome.
 
 `weavelit-server-log-authority` carries the capability that separates
 Server-owned logging authority from an ordinary Log Module. Rust has no
@@ -209,13 +215,17 @@ capability itself.
 Server-owned selected-database decoding authority from an ordinary Application
 Database implementor. The dependency-free crate's privately represented
 `ServerDatabaseAuthority` is not reexported by the database contract or
-lifecycle crate. The database contract requires it at the sole
-`AuditReferencePersistence` issuer, lifecycle declares the direct production
-dependency that constructs a selected binding only after selection or reopening
-succeeds, and direct SQLite or Restore tests declare only dev dependencies. A
-JSON-diagnostic external fixture proves that a crate which can implement
-`ApplicationDatabase` still cannot import the authority, construct
-`SelectedDatabase`, issue the decoder, or decode persisted text without one.
+lifecycle crate. The database contract requires it at the
+`AuditReferencePersistence` and `AuditTerminalRecoveryPersistence` issuers;
+the latter gates opaque persisted-row decoding and validated write,
+supersession, and acknowledgement-proof construction without importing any Log
+type. Lifecycle declares the direct production dependency that constructs a
+selected binding only after selection or reopening succeeds, and direct SQLite,
+Audit, or Restore tests declare only reviewable dev dependencies. JSON-diagnostic
+external fixtures prove that an ordinary crate cannot import the authority,
+construct `SelectedDatabase`, issue either persistence capability, forge an
+opaque recovery obligation or validated write, or forge database
+acknowledgement proof.
 
 `weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
 shared by **[Init](../glossary.md#states-and-requests)** and

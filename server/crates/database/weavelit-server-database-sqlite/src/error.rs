@@ -2,6 +2,7 @@ use rusqlite::{Error, ErrorCode};
 use weavelit_server_database::DatabaseError;
 
 pub(super) enum ErrorContext {
+    AuditRecovery,
     Checkpoint,
     Close,
     Completion,
@@ -25,7 +26,8 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
             // A failure to empty the log or release the connection is a
             // cleanup failure; it is not evidence that stored state is unsound.
             ErrorContext::Close => DatabaseError::Unavailable,
-            ErrorContext::Checkpoint
+            ErrorContext::AuditRecovery
+            | ErrorContext::Checkpoint
             | ErrorContext::Completion
             | ErrorContext::Configure
             | ErrorContext::Health

@@ -3,9 +3,6 @@
 use std::fmt;
 
 use weavelit_server_database_authority::ServerDatabaseAuthority;
-use weavelit_server_log::{
-    AuditTerminalDeliveryAcknowledgement, AuditTerminalSupersessionDisposition,
-};
 
 use crate::DatabaseError;
 
@@ -13,17 +10,15 @@ use crate::DatabaseError;
 pub const AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH: usize = 16;
 
 /// Maximum opaque bytes retained for one exact terminal record and destination binding.
-pub const MAX_AUDIT_TERMINAL_OBLIGATION_BYTES: usize =
-    weavelit_server_log::MAX_AUDIT_TERMINAL_RECOVERY_BYTES;
+pub const MAX_AUDIT_TERMINAL_OBLIGATION_BYTES: usize = 50_176;
 
 /// Maximum opaque bytes retained for one append-only supersession disposition.
-pub const MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES: usize =
-    weavelit_server_log::MAX_AUDIT_TERMINAL_SUPERSESSION_BYTES;
+pub const MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES: usize = 1_024;
 
 /// Largest ordered pending-obligation batch one read may return.
 pub const MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE: usize = 64;
 
-/// Capability gating trusted terminal-obligation construction and persisted decoding.
+/// Capability gating trusted recovery writes, acknowledgements, and persisted decoding.
 pub struct AuditTerminalRecoveryPersistence {
     _private: (),
 }
@@ -33,6 +28,11 @@ impl AuditTerminalRecoveryPersistence {
     #[must_use]
     pub const fn from_server_authority(_authority: &ServerDatabaseAuthority) -> Self {
         Self { _private: () }
+    }
+
+    /// Returns opaque projection bytes to the trusted Server Audit importer.
+    pub fn projection_bytes<'a>(&self, obligation: &'a AuditTerminalObligation) -> &'a [u8] {
+        &obligation.projection.0
     }
 }
 
@@ -70,32 +70,115 @@ impl fmt::Debug for AuditTerminalObligationIdentifier {
     }
 }
 
-/// Immutable opaque terminal record projection retained outside restorable application state.
+/// Opaque identity and version of one retained Audit destination binding.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredAuditDestinationBinding {
+    identifier: [u8; AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH],
+    version: u64,
+}
+
+impl StoredAuditDestinationBinding {
+    /// Accepts a nonzero persisted binding under Server-owned database authority.
+    pub fn from_persisted(
+        _persistence: &AuditTerminalRecoveryPersistence,
+        identifier: [u8; AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH],
+        version: u64,
+    ) -> Result<Self, AuditTerminalRecoveryContractError> {
+        if identifier == [0; AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH] || version == 0 {
+            return Err(AuditTerminalRecoveryContractError::InvalidBinding);
+        }
+        Ok(Self {
+            identifier,
+            version,
+        })
+    }
+
+    /// Returns the opaque persisted binding identity.
+    pub const fn identifier(&self) -> &[u8; AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH] {
+        &self.identifier
+    }
+
+    /// Returns the nonzero persisted binding version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+}
+
+impl fmt::Debug for StoredAuditDestinationBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StoredAuditDestinationBinding(REDACTED)")
+    }
+}
+
+/// Bounded opaque terminal projection stored without field access or interpretation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OpaqueAuditTerminalProjection(Box<[u8]>);
+
+impl OpaqueAuditTerminalProjection {
+    fn from_persisted(
+        bytes: impl Into<Box<[u8]>>,
+    ) -> Result<Self, AuditTerminalRecoveryContractError> {
+        let bytes = bytes.into();
+        if bytes.is_empty() {
+            return Err(AuditTerminalRecoveryContractError::EmptyProjection);
+        }
+        if bytes.len() > MAX_AUDIT_TERMINAL_OBLIGATION_BYTES {
+            return Err(AuditTerminalRecoveryContractError::ProjectionTooLarge);
+        }
+        Ok(Self(bytes))
+    }
+}
+
+impl fmt::Debug for OpaqueAuditTerminalProjection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OpaqueAuditTerminalProjection(REDACTED)")
+    }
+}
+
+/// Bounded opaque supersession disposition stored without field interpretation.
+pub struct OpaqueAuditTerminalDisposition(Box<[u8]>);
+
+impl OpaqueAuditTerminalDisposition {
+    fn from_validated(
+        bytes: impl Into<Box<[u8]>>,
+    ) -> Result<Self, AuditTerminalRecoveryContractError> {
+        let bytes = bytes.into();
+        if bytes.is_empty() {
+            return Err(AuditTerminalRecoveryContractError::EmptyDisposition);
+        }
+        if bytes.len() > MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES {
+            return Err(AuditTerminalRecoveryContractError::DispositionTooLarge);
+        }
+        Ok(Self(bytes))
+    }
+}
+
+impl fmt::Debug for OpaqueAuditTerminalDisposition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OpaqueAuditTerminalDisposition(REDACTED)")
+    }
+}
+
+/// Immutable opaque terminal obligation loaded from private backend storage.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuditTerminalObligation {
     identifier: AuditTerminalObligationIdentifier,
-    projection: Box<[u8]>,
+    projection: OpaqueAuditTerminalProjection,
+    binding: StoredAuditDestinationBinding,
 }
 
 impl AuditTerminalObligation {
-    /// Decodes one bounded obligation under Server-owned database authority.
+    /// Decodes one bounded opaque stored row under Server-owned database authority.
     pub fn from_persisted(
         persistence: &AuditTerminalRecoveryPersistence,
         identifier: [u8; AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH],
         projection: impl Into<Box<[u8]>>,
+        binding: StoredAuditDestinationBinding,
     ) -> Result<Self, AuditTerminalRecoveryContractError> {
-        let identifier =
-            AuditTerminalObligationIdentifier::from_persisted(persistence, identifier)?;
-        let projection = projection.into();
-        if projection.is_empty() {
-            return Err(AuditTerminalRecoveryContractError::EmptyProjection);
-        }
-        if projection.len() > MAX_AUDIT_TERMINAL_OBLIGATION_BYTES {
-            return Err(AuditTerminalRecoveryContractError::ProjectionTooLarge);
-        }
         Ok(Self {
-            identifier,
-            projection,
+            identifier: AuditTerminalObligationIdentifier::from_persisted(persistence, identifier)?,
+            projection: OpaqueAuditTerminalProjection::from_persisted(projection)?,
+            binding,
         })
     }
 
@@ -104,9 +187,9 @@ impl AuditTerminalObligation {
         self.identifier
     }
 
-    /// Returns the opaque projection without interpreting its Audit fields.
-    pub fn projection(&self) -> &[u8] {
-        &self.projection
+    /// Returns the separately stored destination binding.
+    pub const fn binding(&self) -> &StoredAuditDestinationBinding {
+        &self.binding
     }
 }
 
@@ -116,49 +199,149 @@ impl fmt::Debug for AuditTerminalObligation {
     }
 }
 
+/// Capability-gated input for an opaque obligation written with an owning mutation.
+pub struct ValidatedAuditTerminalObligationWrite {
+    obligation: AuditTerminalObligation,
+}
+
+impl ValidatedAuditTerminalObligationWrite {
+    /// Captures bytes that Server Audit has semantically validated before persistence.
+    pub fn from_server_audit(
+        persistence: &AuditTerminalRecoveryPersistence,
+        identifier: [u8; AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH],
+        projection: impl Into<Box<[u8]>>,
+        binding: StoredAuditDestinationBinding,
+    ) -> Result<Self, AuditTerminalRecoveryContractError> {
+        Ok(Self {
+            obligation: AuditTerminalObligation::from_persisted(
+                persistence,
+                identifier,
+                projection,
+                binding,
+            )?,
+        })
+    }
+
+    /// Returns the opaque identifier for backend persistence.
+    pub const fn identifier(&self) -> AuditTerminalObligationIdentifier {
+        self.obligation.identifier
+    }
+
+    /// Returns the separately stored binding for backend persistence.
+    pub const fn binding(&self) -> &StoredAuditDestinationBinding {
+        &self.obligation.binding
+    }
+
+    /// Returns the exact opaque projection bytes for backend persistence.
+    pub fn projection_bytes(&self) -> &[u8] {
+        &self.obligation.projection.0
+    }
+}
+
+impl fmt::Debug for ValidatedAuditTerminalObligationWrite {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ValidatedAuditTerminalObligationWrite(REDACTED)")
+    }
+}
+
+/// Capability-gated proof of exact destination acknowledgement for one obligation.
+pub struct AuditTerminalAcknowledgementProof {
+    identifier: AuditTerminalObligationIdentifier,
+    binding: StoredAuditDestinationBinding,
+}
+
+impl AuditTerminalAcknowledgementProof {
+    /// Converts Server Audit's validated destination acknowledgement into database proof.
+    pub fn from_server_audit(
+        persistence: &AuditTerminalRecoveryPersistence,
+        identifier: [u8; AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH],
+        binding: StoredAuditDestinationBinding,
+    ) -> Result<Self, AuditTerminalRecoveryContractError> {
+        Ok(Self {
+            identifier: AuditTerminalObligationIdentifier::from_persisted(persistence, identifier)?,
+            binding,
+        })
+    }
+
+    /// Returns the exact acknowledged obligation identity.
+    pub const fn identifier(&self) -> AuditTerminalObligationIdentifier {
+        self.identifier
+    }
+
+    /// Returns the exact acknowledged destination binding.
+    pub const fn binding(&self) -> &StoredAuditDestinationBinding {
+        &self.binding
+    }
+}
+
+impl fmt::Debug for AuditTerminalAcknowledgementProof {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditTerminalAcknowledgementProof(REDACTED)")
+    }
+}
+
 /// Validated transaction input for one constrained terminal supersession.
-///
-/// This value retains the exact validated original identity and opaque projection.
-/// The original remains immutable and pending for late exact delivery. The disposition
-/// and replacement recovery obligation are appended in the same transaction in which
-/// the owning configuration workflow applies the replacement.
 pub struct AuditTerminalSupersession {
     original_obligation: AuditTerminalObligation,
-    disposition: AuditTerminalSupersessionDisposition,
-    replacement_obligation: AuditTerminalObligation,
+    disposition: OpaqueAuditTerminalDisposition,
+    original_binding: StoredAuditDestinationBinding,
+    replacement_binding: StoredAuditDestinationBinding,
+    replacement_obligation: ValidatedAuditTerminalObligationWrite,
 }
 
 impl AuditTerminalSupersession {
-    /// Retains the exact original with one validated disposition and distinct replacement.
-    pub fn new(
+    /// Captures Server Audit's validated opaque disposition and exact bound obligations.
+    pub fn from_server_audit(
+        _persistence: &AuditTerminalRecoveryPersistence,
         original: &AuditTerminalObligation,
-        disposition: AuditTerminalSupersessionDisposition,
-        replacement_obligation: AuditTerminalObligation,
+        disposition: impl Into<Box<[u8]>>,
+        original_binding: StoredAuditDestinationBinding,
+        replacement_binding: StoredAuditDestinationBinding,
+        replacement_obligation: ValidatedAuditTerminalObligationWrite,
     ) -> Result<Self, AuditTerminalRecoveryContractError> {
-        if disposition.original_record_id() != original.identifier.as_bytes()
-            || replacement_obligation.identifier == original.identifier
+        if original.binding != original_binding
+            || replacement_obligation.binding() != &replacement_binding
+            || original_binding == replacement_binding
+            || replacement_obligation.identifier() == original.identifier
         {
             return Err(AuditTerminalRecoveryContractError::MismatchedSupersession);
         }
         Ok(Self {
             original_obligation: original.clone(),
-            disposition,
+            disposition: OpaqueAuditTerminalDisposition::from_validated(disposition)?,
+            original_binding,
+            replacement_binding,
             replacement_obligation,
         })
     }
 
-    /// Returns the exact validated original obligation that must match persisted bytes.
+    /// Returns the exact validated original obligation.
     pub const fn original_obligation(&self) -> &AuditTerminalObligation {
         &self.original_obligation
     }
 
-    /// Returns the append-only degraded-completeness disposition.
-    pub const fn disposition(&self) -> &AuditTerminalSupersessionDisposition {
-        &self.disposition
+    /// Returns the exact original projection bytes for backend comparison.
+    pub fn original_projection_bytes(&self) -> &[u8] {
+        &self.original_obligation.projection.0
     }
 
-    /// Returns the new Audit action's terminal recovery obligation.
-    pub const fn replacement_obligation(&self) -> &AuditTerminalObligation {
+    /// Returns the opaque disposition bytes for append-only persistence.
+    pub fn disposition_bytes(&self) -> &[u8] {
+        &self.disposition.0
+    }
+
+    /// Returns the separately validated original binding.
+    pub const fn original_binding(&self) -> &StoredAuditDestinationBinding {
+        &self.original_binding
+    }
+
+    /// Returns the separately validated replacement binding.
+    pub const fn replacement_binding(&self) -> &StoredAuditDestinationBinding {
+        &self.replacement_binding
+    }
+
+    /// Returns the new Audit action's terminal recovery write.
+    pub const fn replacement_obligation(&self) -> &ValidatedAuditTerminalObligationWrite {
         &self.replacement_obligation
     }
 }
@@ -189,31 +372,22 @@ impl AuditTerminalReplayBatchSize {
 }
 
 /// Transaction-only insertion boundary for a consequential application-state mutation.
-///
-/// A backend exposes this capability only inside the same serialized transaction
-/// that applies the authoritative mutation. The transaction commits both the
-/// mutation and obligation or neither; there is no standalone enqueue operation.
 pub trait AuditTerminalRecoveryTransaction {
-    /// Persists one previously absent immutable obligation in the current transaction.
+    /// Persists one validated immutable obligation in the current transaction.
+    ///
+    /// An exact retry is idempotent. The same identifier with different projection or
+    /// binding bytes returns [`DatabaseError::InvalidState`] without mutation. Malformed
+    /// persisted rows from the backend return [`DatabaseError::IntegrityFailure`].
     fn persist_audit_terminal_obligation(
         &mut self,
-        obligation: &AuditTerminalObligation,
+        obligation: &ValidatedAuditTerminalObligationWrite,
     ) -> Result<(), DatabaseError>;
 
-    /// Appends one constrained supersession and its replacement Audit terminal obligation.
+    /// Atomically appends one constrained supersession and replacement obligation.
     ///
-    /// The exact original must be the oldest active pending obligation, must import as a
-    /// valid immutable terminal, and must have no prior disposition. Before mutation, the
-    /// backend compares its stored identity and opaque projection bytes with
-    /// `supersession.original_obligation()` and compares the stored retained binding with
-    /// `supersession.disposition().original_binding()`. The caller reaches this boundary
-    /// only after retained-binding repair is permanently unavailable, exact-session
-    /// authorization, explicit confirmation, and replacement preflight. The backend
-    /// appends the disposition and replacement obligation atomically with the replacement
-    /// assignment applied by the owning configuration transaction. It never rewrites,
-    /// removes, or acknowledges the original, which remains late-delivery eligible. Any
-    /// identity, projection, or binding mismatch, malformed state, repeated disposition,
-    /// or non-oldest request returns [`DatabaseError::InvalidState`] without mutation.
+    /// An exact retry is idempotent. Every mismatch, partial prior write, or non-oldest
+    /// original returns [`DatabaseError::InvalidState`] without mutation. Malformed rows
+    /// from the backend return [`DatabaseError::IntegrityFailure`].
     fn append_audit_terminal_supersession(
         &mut self,
         supersession: &AuditTerminalSupersession,
@@ -223,9 +397,6 @@ pub trait AuditTerminalRecoveryTransaction {
 /// Runtime storage boundary for ordered replay and acknowledgement after commit.
 pub trait AuditTerminalRecoveryStore {
     /// Lists active pending obligations in insertion order, oldest first.
-    ///
-    /// An original with an appended supersession disposition is excluded from this active
-    /// sequence but remains available through the late-delivery sequence below.
     fn list_pending_audit_terminal_obligations(
         &mut self,
         persistence: &AuditTerminalRecoveryPersistence,
@@ -239,30 +410,31 @@ pub trait AuditTerminalRecoveryStore {
         batch_size: AuditTerminalReplayBatchSize,
     ) -> Result<Vec<AuditTerminalObligation>, DatabaseError>;
 
-    /// Acknowledges exactly the oldest eligible obligation using destination acknowledgement.
-    ///
-    /// The capability is constructible only after exact bound destination
-    /// acknowledgement. An absent, already acknowledged, or non-oldest identity within
-    /// its active or late-delivery sequence returns [`DatabaseError::InvalidState`]. A
-    /// supersession disposition is never acknowledgement and cannot reach this method.
+    /// Acknowledges exactly the oldest eligible obligation using opaque database proof.
     fn acknowledge_audit_terminal_obligation(
         &mut self,
-        acknowledgement: AuditTerminalDeliveryAcknowledgement,
+        acknowledgement: AuditTerminalAcknowledgementProof,
     ) -> Result<(), DatabaseError>;
 }
 
-/// Payload-free rejection of an invalid obligation contract value.
+/// Payload-free rejection of an invalid opaque recovery contract value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuditTerminalRecoveryContractError {
     /// The obligation identity is the reserved all-zero value.
     InvalidIdentifier,
+    /// A separately stored binding identity or version is zero.
+    InvalidBinding,
     /// The opaque terminal projection is empty.
     EmptyProjection,
     /// The opaque terminal projection exceeds its fixed bound.
     ProjectionTooLarge,
+    /// The opaque disposition is empty.
+    EmptyDisposition,
+    /// The opaque disposition exceeds its fixed bound.
+    DispositionTooLarge,
     /// The requested replay batch is zero or exceeds its fixed bound.
     InvalidBatchSize,
-    /// A disposition or replacement obligation did not match its exact original.
+    /// A disposition or replacement obligation did not match its exact bindings.
     MismatchedSupersession,
 }
 
@@ -277,7 +449,6 @@ impl std::error::Error for AuditTerminalRecoveryContractError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weavelit_server_database_authority::ServerDatabaseAuthority;
 
     const SENSITIVE_VALUE: &str = "temporary-password=do-not-log";
 
@@ -285,16 +456,118 @@ mod tests {
         AuditTerminalRecoveryPersistence::from_server_authority(&ServerDatabaseAuthority::new())
     }
 
-    fn identifier() -> AuditTerminalObligationIdentifier {
-        AuditTerminalObligationIdentifier::from_persisted(&persistence(), [1; 16]).unwrap()
+    fn binding(
+        persistence: &AuditTerminalRecoveryPersistence,
+        byte: u8,
+    ) -> StoredAuditDestinationBinding {
+        StoredAuditDestinationBinding::from_persisted(persistence, [byte; 16], 1).unwrap()
+    }
+
+    fn write(
+        persistence: &AuditTerminalRecoveryPersistence,
+        identifier: u8,
+        projection: &[u8],
+        binding_byte: u8,
+    ) -> ValidatedAuditTerminalObligationWrite {
+        ValidatedAuditTerminalObligationWrite::from_server_audit(
+            persistence,
+            [identifier; 16],
+            projection.to_vec(),
+            binding(persistence, binding_byte),
+        )
+        .unwrap()
     }
 
     #[test]
-    fn identifiers_and_batch_sizes_enforce_nonzero_bounds() {
+    fn opaque_values_enforce_bounds_and_redact_diagnostics() {
+        let persistence = persistence();
         assert_eq!(
-            AuditTerminalObligationIdentifier::from_persisted(&persistence(), [0; 16]).unwrap_err(),
+            AuditTerminalObligationIdentifier::from_persisted(&persistence, [0; 16]).unwrap_err(),
             AuditTerminalRecoveryContractError::InvalidIdentifier
         );
+        assert_eq!(
+            StoredAuditDestinationBinding::from_persisted(&persistence, [0; 16], 1).unwrap_err(),
+            AuditTerminalRecoveryContractError::InvalidBinding
+        );
+        assert_eq!(
+            StoredAuditDestinationBinding::from_persisted(&persistence, [1; 16], 0).unwrap_err(),
+            AuditTerminalRecoveryContractError::InvalidBinding
+        );
+        assert_eq!(
+            ValidatedAuditTerminalObligationWrite::from_server_audit(
+                &persistence,
+                [1; 16],
+                Vec::new(),
+                binding(&persistence, 2),
+            )
+            .unwrap_err(),
+            AuditTerminalRecoveryContractError::EmptyProjection
+        );
+        assert_eq!(
+            ValidatedAuditTerminalObligationWrite::from_server_audit(
+                &persistence,
+                [1; 16],
+                vec![b'x'; MAX_AUDIT_TERMINAL_OBLIGATION_BYTES + 1],
+                binding(&persistence, 2),
+            )
+            .unwrap_err(),
+            AuditTerminalRecoveryContractError::ProjectionTooLarge
+        );
+
+        let write = write(&persistence, 1, SENSITIVE_VALUE.as_bytes(), 2);
+        assert_eq!(write.projection_bytes(), SENSITIVE_VALUE.as_bytes());
+        assert_eq!(
+            format!("{write:?}"),
+            "ValidatedAuditTerminalObligationWrite(REDACTED)"
+        );
+        assert!(!format!("{:?}", write.binding()).contains(SENSITIVE_VALUE));
+    }
+
+    #[test]
+    fn supersession_requires_exact_distinct_bindings_and_bounded_disposition() {
+        let persistence = persistence();
+        let original = AuditTerminalObligation::from_persisted(
+            &persistence,
+            [1; 16],
+            b"original".to_vec(),
+            binding(&persistence, 7),
+        )
+        .unwrap();
+        let replacement = write(&persistence, 2, b"replacement", 8);
+        let supersession = AuditTerminalSupersession::from_server_audit(
+            &persistence,
+            &original,
+            b"opaque-disposition".to_vec(),
+            binding(&persistence, 7),
+            binding(&persistence, 8),
+            replacement,
+        )
+        .unwrap();
+        assert_eq!(supersession.original_projection_bytes(), b"original");
+        assert_eq!(supersession.disposition_bytes(), b"opaque-disposition");
+        assert_eq!(
+            format!("{supersession:?}"),
+            "AuditTerminalSupersession(REDACTED)"
+        );
+
+        let error = AuditTerminalSupersession::from_server_audit(
+            &persistence,
+            &original,
+            vec![b'x'; MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES + 1],
+            binding(&persistence, 7),
+            binding(&persistence, 8),
+            write(&persistence, 3, b"replacement", 8),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            AuditTerminalRecoveryContractError::DispositionTooLarge
+        );
+        assert!(!error.to_string().contains(SENSITIVE_VALUE));
+    }
+
+    #[test]
+    fn batch_sizes_enforce_nonzero_bounds() {
         assert_eq!(AuditTerminalReplayBatchSize::new(1).unwrap().get(), 1);
         assert_eq!(
             AuditTerminalReplayBatchSize::new(MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE)
@@ -306,129 +579,82 @@ mod tests {
             AuditTerminalReplayBatchSize::new(0).unwrap_err(),
             AuditTerminalRecoveryContractError::InvalidBatchSize
         );
-        assert_eq!(
-            AuditTerminalReplayBatchSize::new(MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE + 1)
-                .unwrap_err(),
-            AuditTerminalRecoveryContractError::InvalidBatchSize
-        );
     }
 
     #[test]
-    fn obligations_enforce_projection_bounds_and_redact_debug_and_errors() {
-        let obligation = AuditTerminalObligation::from_persisted(
-            &persistence(),
-            *identifier().as_bytes(),
-            SENSITIVE_VALUE.as_bytes().to_vec(),
-        )
-        .unwrap();
-        assert_eq!(obligation.projection(), SENSITIVE_VALUE.as_bytes());
-        assert_eq!(
-            format!("{obligation:?}"),
-            "AuditTerminalObligation(REDACTED)"
-        );
-        assert!(!format!("{:?}", obligation.identifier()).contains(SENSITIVE_VALUE));
-
-        assert_eq!(
-            AuditTerminalObligation::from_persisted(
-                &persistence(),
-                *identifier().as_bytes(),
-                Vec::new(),
-            )
-            .unwrap_err(),
-            AuditTerminalRecoveryContractError::EmptyProjection
-        );
-        let error = AuditTerminalObligation::from_persisted(
-            &persistence(),
-            *identifier().as_bytes(),
-            vec![b'x'; MAX_AUDIT_TERMINAL_OBLIGATION_BYTES + 1],
-        )
-        .unwrap_err();
-        assert_eq!(
-            error,
-            AuditTerminalRecoveryContractError::ProjectionTooLarge
-        );
-        assert!(!error.to_string().contains(SENSITIVE_VALUE));
-    }
-
-    #[test]
-    fn supersession_requires_the_exact_original_and_a_distinct_replacement() {
+    fn supersession_mismatches_return_correct_error_for_all_binding_permutations() {
         let persistence = persistence();
         let original = AuditTerminalObligation::from_persisted(
             &persistence,
             [1; 16],
-            b"original-terminal".to_vec(),
+            b"original".to_vec(),
+            binding(&persistence, 7),
         )
         .unwrap();
-        let replacement = AuditTerminalObligation::from_persisted(
+
+        // Mismatched replacement identifier: replacement obligation has same ID as original
+        let error = AuditTerminalSupersession::from_server_audit(
             &persistence,
-            [2; 16],
-            b"replacement-terminal".to_vec(),
-        )
-        .unwrap();
-        let supersession =
-            AuditTerminalSupersession::new(&original, disposition([1; 16]), replacement).unwrap();
-
-        assert_eq!(supersession.original_obligation(), &original);
-        assert_eq!(
-            supersession.original_obligation().projection(),
-            b"original-terminal"
-        );
-        assert_eq!(
-            supersession.disposition().original_record_id(),
-            original.identifier().as_bytes()
-        );
-        assert_eq!(
-            supersession.disposition().completeness(),
-            weavelit_server_log::AuditTerminalCompleteness::Degraded
-        );
-        assert_ne!(
-            supersession.replacement_obligation().identifier(),
-            original.identifier()
-        );
-        assert_eq!(
-            format!("{supersession:?}"),
-            "AuditTerminalSupersession(REDACTED)"
-        );
-
-        let mismatched = AuditTerminalSupersession::new(
             &original,
-            disposition([3; 16]),
-            AuditTerminalObligation::from_persisted(
-                &persistence,
-                [4; 16],
-                b"replacement-terminal".to_vec(),
-            )
-            .unwrap(),
+            b"disposition".to_vec(),
+            binding(&persistence, 7),
+            binding(&persistence, 8),
+            write(&persistence, 1, b"different-id-projection", 8),
         )
         .unwrap_err();
         assert_eq!(
-            mismatched,
+            error,
             AuditTerminalRecoveryContractError::MismatchedSupersession
         );
 
-        let same_identifier =
-            AuditTerminalSupersession::new(&original, disposition([1; 16]), original.clone())
-                .unwrap_err();
+        // Mismatched original binding: original.binding() != original_binding_arg
+        let error = AuditTerminalSupersession::from_server_audit(
+            &persistence,
+            &original,
+            b"disposition".to_vec(),
+            binding(&persistence, 99), // Wrong original binding
+            binding(&persistence, 8),
+            write(&persistence, 2, b"replacement", 8),
+        )
+        .unwrap_err();
         assert_eq!(
-            same_identifier,
+            error,
             AuditTerminalRecoveryContractError::MismatchedSupersession
         );
-        assert!(!same_identifier.to_string().contains(SENSITIVE_VALUE));
+
+        // Mismatched replacement binding: replacement_obligation.binding() != replacement_binding_arg
+        let error = AuditTerminalSupersession::from_server_audit(
+            &persistence,
+            &original,
+            b"disposition".to_vec(),
+            binding(&persistence, 7),
+            binding(&persistence, 99), // Wrong replacement binding
+            write(&persistence, 2, b"replacement", 8), // write() binds to byte 8
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            AuditTerminalRecoveryContractError::MismatchedSupersession
+        );
+
+        // Identical bindings: original_binding == replacement_binding
+        let error = AuditTerminalSupersession::from_server_audit(
+            &persistence,
+            &original,
+            b"disposition".to_vec(),
+            binding(&persistence, 7),
+            binding(&persistence, 7), // Same as original
+            write(&persistence, 2, b"replacement", 7),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            AuditTerminalRecoveryContractError::MismatchedSupersession
+        );
     }
 
-    fn disposition(
-        original_identifier: [u8; AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH],
-    ) -> AuditTerminalSupersessionDisposition {
-        let document = serde_json::json!({
-            "version": 1,
-            "original_obligation_identifier": original_identifier,
-            "original_binding": { "identifier": vec![7; 16], "version": 3 },
-            "reason": "destination_permanently_unavailable",
-            "replacement_binding": { "identifier": vec![8; 16], "version": 1 },
-            "completeness": "degraded",
-            "original_state": "retained_pending_late_delivery"
-        });
-        AuditTerminalSupersessionDisposition::from_persisted(serde_json::to_vec(&document).unwrap())
-            .unwrap()
+    #[test]
+    fn database_contract_has_no_log_crate_dependency() {
+        assert!(!include_str!("../Cargo.toml").contains(concat!("weavelit-server-", "log")));
     }
 }

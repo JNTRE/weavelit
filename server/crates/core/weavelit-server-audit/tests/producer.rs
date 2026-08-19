@@ -8,20 +8,21 @@ use weavelit_server_audit::{
     OperationReference, ServerAudit, ServiceConnectionReference, StateChangeOutcome,
 };
 use weavelit_server_database::{
-    Account, AccountAuditReference, AuditReferenceIdentifier, AuditTerminalObligation,
-    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, AuditTerminalRecoveryTransaction,
-    AuditTerminalReplayBatchSize, AuditTerminalSupersession, DatabaseError, Group,
-    GroupAuditReference, Name, StateIdentifier,
+    Account, AccountAuditReference, AuditReferenceIdentifier, AuditTerminalAcknowledgementProof,
+    AuditTerminalObligation, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
+    AuditTerminalRecoveryTransaction, AuditTerminalReplayBatchSize, AuditTerminalSupersession,
+    DatabaseError, Group, GroupAuditReference, Name, StateIdentifier,
+    StoredAuditDestinationBinding, ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_log::{
     AuditDestinationBinding, AuditDestinationBindingTransition, AuditRecordPhase,
-    AuditTerminalCompleteness, AuditTerminalDeliveryAcknowledgement, AuditTerminalReplayError,
-    CompleteLogRecord, ConfiguredLogDestination, CorrelationId, DurableAcknowledgement, EventTime,
-    LogCapabilities, LogDeliveryError, LogDestination, LogDestinationError, LogDestinationFactory,
-    LogModuleCatalog, LogModuleFactoryContext, LogModuleIdentifier, LogModuleRegistration,
-    LogRecordPersistenceView, LogRecordType, LogResult, LogSettingsContract,
-    ResolvedAuditDestination, TrustedLogModuleContext, TrustedRecordIssuer,
+    AuditTerminalCompleteness, AuditTerminalReplayError, CompleteLogRecord,
+    ConfiguredLogDestination, CorrelationId, DurableAcknowledgement, EventTime, LogCapabilities,
+    LogDeliveryError, LogDestination, LogDestinationError, LogDestinationFactory, LogModuleCatalog,
+    LogModuleFactoryContext, LogModuleIdentifier, LogModuleRegistration, LogRecordPersistenceView,
+    LogRecordType, LogResult, LogSettingsContract, ResolvedAuditDestination,
+    TrustedLogModuleContext, TrustedRecordIssuer,
 };
 use weavelit_server_log_authority::ServerLogAuthority;
 
@@ -71,6 +72,31 @@ fn producer() -> ServerAudit {
 
 fn recovery_persistence() -> AuditTerminalRecoveryPersistence {
     AuditTerminalRecoveryPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+}
+
+fn stored_binding(
+    persistence: &AuditTerminalRecoveryPersistence,
+    binding: &AuditDestinationBinding,
+) -> StoredAuditDestinationBinding {
+    StoredAuditDestinationBinding::from_persisted(
+        persistence,
+        *binding.identifier(),
+        binding.version(),
+    )
+    .unwrap()
+}
+
+fn persisted_obligation(
+    persistence: &AuditTerminalRecoveryPersistence,
+    write: &ValidatedAuditTerminalObligationWrite,
+) -> AuditTerminalObligation {
+    AuditTerminalObligation::from_persisted(
+        persistence,
+        *write.identifier().as_bytes(),
+        write.projection_bytes().to_vec(),
+        write.binding().clone(),
+    )
+    .unwrap()
 }
 
 fn terminal_obligation(value: u8) -> AuditTerminalObligationReference {
@@ -909,7 +935,9 @@ fn terminal_recovery_exports_exactly_replays_and_only_then_acknowledges() {
             AuditTerminalReplayBatchSize::new(1).unwrap(),
         )
         .unwrap();
-    let recovered = producer.restore_terminal_recovery(&pending[0]).unwrap();
+    let recovered = producer
+        .restore_terminal_recovery(&persistence, &pending[0])
+        .unwrap();
     assert_eq!(recovered.binding(), &retained_binding);
     let changed_destination = acknowledging_destination();
     let changed_destination = ResolvedAuditDestination::from_server_authority(
@@ -918,7 +946,9 @@ fn terminal_recovery_exports_exactly_replays_and_only_then_acknowledges() {
         &changed_destination,
     );
     assert_eq!(
-        recovered.deliver(&changed_destination).unwrap_err(),
+        recovered
+            .deliver(&persistence, &changed_destination)
+            .unwrap_err(),
         AuditTerminalReplayError::DestinationBindingChanged
     );
     assert_eq!(store.pending.len(), 1);
@@ -929,7 +959,7 @@ fn terminal_recovery_exports_exactly_replays_and_only_then_acknowledges() {
         &retained_binding,
         &destination,
     );
-    let acknowledgement = recovered.deliver(&destination).unwrap();
+    let acknowledgement = recovered.deliver(&persistence, &destination).unwrap();
     acknowledgement.acknowledge(&mut store).unwrap();
     assert!(store.pending.is_empty());
     assert_eq!(
@@ -972,11 +1002,14 @@ fn terminal_recovery_rejects_mismatched_identity_without_payload_disclosure() {
     let mismatched = AuditTerminalObligation::from_persisted(
         &persistence,
         [0x93; 16],
-        obligation.projection().to_vec(),
+        obligation.projection_bytes().to_vec(),
+        obligation.binding().clone(),
     )
     .unwrap();
 
-    let error = producer.restore_terminal_recovery(&mismatched).unwrap_err();
+    let error = producer
+        .restore_terminal_recovery(&persistence, &mismatched)
+        .unwrap_err();
     assert_eq!(
         error,
         weavelit_server_audit::AuditTerminalObligationError::InvalidObligation
@@ -986,6 +1019,34 @@ fn terminal_recovery_rejects_mismatched_identity_without_payload_disclosure() {
         "Audit terminal recovery obligation is invalid"
     );
     assert!(!format!("{obligation:?}").contains("accountable action"));
+
+    let mismatched_binding = AuditTerminalObligation::from_persisted(
+        &persistence,
+        *obligation.identifier().as_bytes(),
+        obligation.projection_bytes().to_vec(),
+        StoredAuditDestinationBinding::from_persisted(&persistence, [0x94; 16], 1).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        producer
+            .restore_terminal_recovery(&persistence, &mismatched_binding)
+            .unwrap_err(),
+        weavelit_server_audit::AuditTerminalObligationError::InvalidObligation
+    );
+
+    let malformed = AuditTerminalObligation::from_persisted(
+        &persistence,
+        [0x95; 16],
+        b"bounded-but-not-a-terminal-projection".to_vec(),
+        obligation.binding().clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        producer
+            .restore_terminal_recovery(&persistence, &malformed)
+            .unwrap_err(),
+        weavelit_server_audit::AuditTerminalObligationError::InvalidObligation
+    );
 }
 
 #[test]
@@ -1032,16 +1093,16 @@ fn terminal_supersession_preserves_late_exact_delivery_and_advances_active_recov
         &persistence,
         [0xAF; 16],
         b"malformed-oldest-terminal".to_vec(),
+        stored_binding(&persistence, &original_binding),
     )
     .unwrap();
-    store
-        .persist_audit_terminal_obligation(&malformed_oldest)
-        .unwrap();
+    store.pending.push_back(malformed_oldest.clone());
     store
         .persist_audit_terminal_obligation(&original_obligation)
         .unwrap();
+    let persisted_original = persisted_obligation(&persistence, &original_obligation);
     let original = producer
-        .restore_terminal_recovery(&original_obligation)
+        .restore_terminal_recovery(&persistence, &persisted_original)
         .unwrap();
 
     let authorization = original.record_supersession_authorization(&authority);
@@ -1083,13 +1144,15 @@ fn terminal_supersession_preserves_late_exact_delivery_and_advances_active_recov
     let replacement_obligation = supersession_terminal
         .recovery_obligation(&persistence, &replacement_binding)
         .unwrap();
+    let replacement_identifier = replacement_obligation.identifier();
     let supersession = original
         .prepare_supersession(
+            &persistence,
             &transition,
             &authorization,
             &confirmation,
             &preflighted_replacement,
-            replacement_obligation.clone(),
+            replacement_obligation,
         )
         .unwrap();
     let mismatched_projection = original_terminal
@@ -1100,8 +1163,8 @@ fn terminal_supersession_preserves_late_exact_delivery_and_advances_active_recov
         original_obligation.identifier()
     );
     assert_ne!(
-        mismatched_projection.projection(),
-        original_obligation.projection()
+        mismatched_projection.projection_bytes(),
+        original_obligation.projection_bytes()
     );
     let mut mismatched_store = MemoryAuditTerminalStore::default();
     mismatched_store
@@ -1115,7 +1178,7 @@ fn terminal_supersession_preserves_late_exact_delivery_and_advances_active_recov
     );
     assert_eq!(
         mismatched_store.pending.front(),
-        Some(&mismatched_projection)
+        Some(&persisted_obligation(&persistence, &mismatched_projection))
     );
     assert!(mismatched_store.late_delivery.is_empty());
 
@@ -1144,10 +1207,12 @@ fn terminal_supersession_preserves_late_exact_delivery_and_advances_active_recov
             AuditTerminalReplayBatchSize::new(1).unwrap(),
         )
         .unwrap();
-    assert_eq!(active[0].identifier(), replacement_obligation.identifier());
-    assert_eq!(late[0], original_obligation);
+    assert_eq!(active[0].identifier(), replacement_identifier);
+    assert_eq!(late[0], persisted_original);
     assert_eq!(
-        original.deliver(&replacement_destination).unwrap_err(),
+        original
+            .deliver(&persistence, &replacement_destination)
+            .unwrap_err(),
         AuditTerminalReplayError::DestinationBindingChanged
     );
 
@@ -1158,7 +1223,7 @@ fn terminal_supersession_preserves_late_exact_delivery_and_advances_active_recov
         &retained_destination,
     );
     original
-        .deliver(&retained_destination)
+        .deliver(&persistence, &retained_destination)
         .unwrap()
         .acknowledge(&mut store)
         .unwrap();
@@ -1172,35 +1237,63 @@ fn terminal_supersession_preserves_late_exact_delivery_and_advances_active_recov
             .is_empty()
     );
 
-    producer
-        .restore_terminal_recovery(&replacement_obligation)
+    let replacement = store
+        .list_pending_audit_terminal_obligations(
+            &persistence,
+            AuditTerminalReplayBatchSize::new(1).unwrap(),
+        )
         .unwrap()
-        .deliver(&replacement_destination)
+        .remove(0);
+    producer
+        .restore_terminal_recovery(&persistence, &replacement)
+        .unwrap()
+        .deliver(&persistence, &replacement_destination)
         .unwrap()
         .acknowledge(&mut store)
         .unwrap();
     assert!(store.pending.is_empty());
 }
 
-#[derive(Default)]
 struct MemoryAuditTerminalStore {
+    persistence: AuditTerminalRecoveryPersistence,
     pending: VecDeque<AuditTerminalObligation>,
     late_delivery: VecDeque<AuditTerminalObligation>,
+    supersessions: Vec<(
+        weavelit_server_database::AuditTerminalObligationIdentifier,
+        Vec<u8>,
+    )>,
+}
+
+impl Default for MemoryAuditTerminalStore {
+    fn default() -> Self {
+        Self {
+            persistence: recovery_persistence(),
+            pending: VecDeque::new(),
+            late_delivery: VecDeque::new(),
+            supersessions: Vec::new(),
+        }
+    }
 }
 
 impl AuditTerminalRecoveryTransaction for MemoryAuditTerminalStore {
     fn persist_audit_terminal_obligation(
         &mut self,
-        obligation: &AuditTerminalObligation,
+        obligation: &ValidatedAuditTerminalObligationWrite,
     ) -> Result<(), DatabaseError> {
-        if self
+        let obligation = persisted_obligation(&self.persistence, obligation);
+        if let Some(existing) = self
             .pending
             .iter()
-            .any(|pending| pending.identifier() == obligation.identifier())
+            .chain(&self.late_delivery)
+            .find(|pending| pending.identifier() == obligation.identifier())
         {
-            return Err(DatabaseError::InvalidState);
+            return if existing == &obligation {
+                Ok(())
+            } else {
+                Err(DatabaseError::InvalidState)
+            };
         }
-        self.pending.push_back(obligation.clone());
+        self.pending.push_back(obligation);
         Ok(())
     }
 
@@ -1208,14 +1301,36 @@ impl AuditTerminalRecoveryTransaction for MemoryAuditTerminalStore {
         &mut self,
         supersession: &AuditTerminalSupersession,
     ) -> Result<(), DatabaseError> {
+        let replacement =
+            persisted_obligation(&self.persistence, supersession.replacement_obligation());
+        if let Some((_, disposition)) = self
+            .supersessions
+            .iter()
+            .find(|(identifier, _)| *identifier == supersession.original_obligation().identifier())
+        {
+            let exact_original = self
+                .late_delivery
+                .iter()
+                .any(|obligation| obligation == supersession.original_obligation());
+            let exact_replacement = self
+                .pending
+                .iter()
+                .any(|obligation| obligation == &replacement);
+            return if exact_original
+                && exact_replacement
+                && disposition.as_slice() == supersession.disposition_bytes()
+            {
+                Ok(())
+            } else {
+                Err(DatabaseError::InvalidState)
+            };
+        }
         if self.pending.front() != Some(supersession.original_obligation())
             || self
                 .pending
                 .iter()
                 .chain(&self.late_delivery)
-                .any(|obligation| {
-                    obligation.identifier() == supersession.replacement_obligation().identifier()
-                })
+                .any(|obligation| obligation.identifier() == replacement.identifier())
         {
             return Err(DatabaseError::InvalidState);
         }
@@ -1224,8 +1339,11 @@ impl AuditTerminalRecoveryTransaction for MemoryAuditTerminalStore {
             .pop_front()
             .ok_or(DatabaseError::InvalidState)?;
         self.late_delivery.push_back(original);
-        self.pending
-            .push_back(supersession.replacement_obligation().clone());
+        self.pending.push_back(replacement);
+        self.supersessions.push((
+            supersession.original_obligation().identifier(),
+            supersession.disposition_bytes().to_vec(),
+        ));
         Ok(())
     }
 }
@@ -1259,25 +1377,19 @@ impl AuditTerminalRecoveryStore for MemoryAuditTerminalStore {
 
     fn acknowledge_audit_terminal_obligation(
         &mut self,
-        acknowledgement: AuditTerminalDeliveryAcknowledgement,
+        acknowledgement: AuditTerminalAcknowledgementProof,
     ) -> Result<(), DatabaseError> {
-        if self
-            .pending
-            .front()
-            .map(AuditTerminalObligation::identifier)
-            .map(|identifier| *identifier.as_bytes())
-            == Some(*acknowledgement.record_id())
-        {
+        if self.pending.front().is_some_and(|obligation| {
+            obligation.identifier() == acknowledgement.identifier()
+                && obligation.binding() == acknowledgement.binding()
+        }) {
             self.pending.pop_front();
             return Ok(());
         }
-        if self
-            .late_delivery
-            .front()
-            .map(AuditTerminalObligation::identifier)
-            .map(|identifier| *identifier.as_bytes())
-            == Some(*acknowledgement.record_id())
-        {
+        if self.late_delivery.front().is_some_and(|obligation| {
+            obligation.identifier() == acknowledgement.identifier()
+                && obligation.binding() == acknowledgement.binding()
+        }) {
             self.late_delivery.pop_front();
             return Ok(());
         }

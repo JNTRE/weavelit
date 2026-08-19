@@ -50,6 +50,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0007_add_audit_references",
         sql: include_str!("../migrations/0007_add_audit_references.sql"),
     },
+    Migration {
+        sequence: 8,
+        identifier: "0008_add_audit_terminal_recovery",
+        sql: include_str!("../migrations/0008_add_audit_terminal_recovery.sql"),
+    },
 ];
 
 struct AppliedMigration {
@@ -305,6 +310,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ledger_count, 1);
+    }
+
+    #[test]
+    fn failed_audit_terminal_recovery_migration_rolls_back_schema_and_ledger() {
+        const FAILING_MIGRATION: &str = concat!(
+            include_str!("../migrations/0008_add_audit_terminal_recovery.sql"),
+            "INSERT INTO missing_table VALUES (1);"
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..7]).unwrap();
+        let mut migrations = MIGRATIONS.to_vec();
+        migrations[7].sql = FAILING_MIGRATION;
+
+        assert_eq!(
+            apply_migrations(&mut connection, &migrations),
+            Err(DatabaseError::IntegrityFailure)
+        );
+        assert!(!table_exists_for_test(
+            &connection,
+            "weavelit_audit_terminal_obligation"
+        ));
+        assert!(!table_exists_for_test(
+            &connection,
+            "weavelit_audit_terminal_supersession"
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_migration_ledger",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            7
+        );
     }
 
     #[test]

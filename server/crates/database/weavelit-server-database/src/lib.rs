@@ -9,11 +9,13 @@ mod session;
 mod state;
 
 pub use audit_recovery::{
-    AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH, AuditTerminalObligation,
-    AuditTerminalObligationIdentifier, AuditTerminalRecoveryContractError,
+    AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH, AuditTerminalAcknowledgementProof,
+    AuditTerminalObligation, AuditTerminalObligationIdentifier, AuditTerminalRecoveryContractError,
     AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, AuditTerminalRecoveryTransaction,
     AuditTerminalReplayBatchSize, AuditTerminalSupersession, MAX_AUDIT_TERMINAL_OBLIGATION_BYTES,
     MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES,
+    OpaqueAuditTerminalDisposition, OpaqueAuditTerminalProjection, StoredAuditDestinationBinding,
+    ValidatedAuditTerminalObligationWrite,
 };
 pub use mfa::{
     MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment,

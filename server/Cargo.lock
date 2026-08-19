@@ -1528,7 +1528,6 @@ dependencies = [
  "serde_json",
  "subtle",
  "weavelit-server-database-authority",
- "weavelit-server-log",
 ]
 
 [[package]]

@@ -31,9 +31,11 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 21] = [
+const EXPECTED_TABLES: [&str; 23] = [
     "weavelit_account",
     "weavelit_account_audit_reference",
+    "weavelit_audit_terminal_obligation",
+    "weavelit_audit_terminal_supersession",
     "weavelit_completion_obligation",
     "weavelit_configuration",
     "weavelit_group",
@@ -406,12 +408,12 @@ fn assert_redacted(error: DatabaseError) {
 }
 
 /// Proves the same intent the previous exact-column-name test carried: that
-/// sessions, log records, and Log Module credentials are not part of restorable
-/// state and cannot ride in a backup. It no longer conflates that intent with
-/// "no session table exists", because the specification requires the Server to
-/// store live sessions in the Application Database.
+/// sessions, queryable Log destination records, Log Module credentials, and
+/// opaque terminal recovery rows are not part of restorable state and cannot
+/// ride in a backup. It no longer conflates that intent with "no session or
+/// recovery table exists", because both are required live operational data.
 #[test]
-fn only_the_live_session_table_may_name_session_data_and_no_table_stores_log_records() {
+fn live_operational_tables_remain_outside_restorable_state_and_log_destination_storage() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     drop(SqliteDatabase::open(&path).unwrap());
@@ -437,9 +439,12 @@ fn only_the_live_session_table_may_name_session_data_and_no_table_stores_log_rec
         if lower_column.starts_with("weavelit_session.") {
             continue;
         }
-        assert!(!lower_column.contains("session"));
-        assert!(!lower_column.contains("token"));
-        assert!(!lower_column.contains("csrf"));
+        let (_, column_name) = lower_column
+            .split_once('.')
+            .expect("the inventory must qualify every column with its table");
+        assert!(!column_name.contains("session"));
+        assert!(!column_name.contains("token"));
+        assert!(!column_name.contains("csrf"));
     }
     let log_module_columns = column_names(&path)
         .into_iter()

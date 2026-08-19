@@ -109,6 +109,17 @@ credential, delivery failure, or source request payload. Import revalidates the
 terminal record through the shared constructors rather than exposing
 constructors for persisted identities or Attempt links.
 
+The Application Database contract does not depend on this Log contract,
+`ServerLogAuthority`, `AuditTerminalRecoveryProjection`,
+`AuditDestinationBinding`, `AuditTerminalSupersessionDisposition`, or
+`AuditTerminalDeliveryAcknowledgement`. Server Audit is the exclusive adapter:
+it validates the Log-owned projection and disposition, exports only bounded
+opaque bytes plus separate binding columns through database-authority-gated
+wrappers, reimports opaque rows for semantic validation, and converts a
+successful destination acknowledgement into the database contract's opaque
+identity-and-binding proof. An Application Database backend compares bytes and
+columns only and cannot mint, parse, restore, or acknowledge a Log-owned value.
+
 A recovered terminal accepts one `ResolvedAuditDestination`, which structurally
 pairs the binding and configured destination selected by trusted Server code.
 Binding equality cannot inspect or prove the identity of an independently
@@ -118,7 +129,8 @@ different identity or version fails before the destination is called. An exact
 match performs one ordinary synchronous delivery and yields a terminal-delivery
 acknowledgement capability only after the destination acknowledges the exact
 record. That capability is the only path from replay to Application Database
-acknowledgement. It does not authorize a mutation or represent whether the
+acknowledgement, after Server Audit converts it to the database contract's
+private proof. It does not authorize a mutation or represent whether the
 already committed mutation succeeded. `AuditDestinationBindingTransition`
 retains the exact prior binding beside its distinct replacement without
 selecting generation order. The future configuration workflow must preserve a
