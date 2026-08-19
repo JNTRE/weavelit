@@ -1,8 +1,25 @@
-schema: jntre-project-profile/v1
-repository: JNTRE/weavelit
-repository_url: https://github.com/JNTRE/weavelit
+schema: jntre-project-profile/v2
+repository:
+  owner: JNTRE
+  name: weavelit
+  url: https://github.com/JNTRE/weavelit
+  allowed_labels:
+    - documentation
+    - question
+    - service module
+    - client module
+    - database module
+    - log module
+    - server core
 project:
   owner: JNTRE
   number: 1
   title: Weavelit
   url: https://github.com/orgs/JNTRE/projects/1
+  allowed_issue_types:
+    - task
+    - bug
+    - feature
+    - epic
+    - decision
+    - risk
