@@ -195,6 +195,17 @@ current API. Ordinary Account authorization and a separate exact-session
 credential-issuance check will both be required before a workflow returns a
 temporary password.
 
+The authentication crate prepares each temporary credential from exactly 18
+bytes (144 bits) of operating-system randomness encoded as exactly 24 unpadded
+Base64url characters. It accepts no caller-supplied entropy and has no fallback
+for unavailable or unusable randomness. The plaintext remains in zeroizing
+storage, and the prepared value pairs its approved-profile verifier with a
+non-clonable disclosure whose only plaintext transfer consumes it. The bundle
+is completed before a future state mutation begins; only its verifier is
+eligible for persistence. The crate exports the fixed 24-hour lifetime as a
+typed duration but does not own an issuance clock, expiry persistence, Account
+state, or response transport.
+
 Future account creation will create the account's first verifier and temporary
 credential metadata in the same atomic state mutation that makes the account
 available. It has no prior target sessions to revoke. The successful originating

@@ -2,8 +2,9 @@
 
 This crate owns the Server's local password authentication core: the approved
 Argon2id profile, the closed allowlist of profiles a stored verifier may be
-attempted against, the equal-work password decision, and generation and hashing
-of session and CSRF bearer values.
+attempted against, the equal-work password decision, preparation of temporary
+password credentials, and generation and hashing of session and CSRF bearer
+values.
 
 ## Purpose and Scope
 
@@ -12,6 +13,7 @@ of session and CSRF bearer values.
   matching, the Argon2 execution seam, the decoy-backed equal-work denial,
   rehash-on-profile-drift, redacted authentication errors, session and CSRF
   token generation, encoding, digesting, and constant-time digest comparison,
+  preparation of a non-recoverable temporary password and approved verifier,
   and the opaque single-use continuation ticket that binds a verified password
   to a later second-factor or enrollment step.
 - It does not own account lookup, persistence, session lifetime, cookies, route
@@ -35,6 +37,8 @@ of session and CSRF bearer values.
 - `src/engine.rs`: The `Argon2Engine` seam and its RustCrypto implementation.
 - `src/password.rs`: The equal-work password decision and rehash-on-drift.
 - `src/session.rs`: Session and CSRF tokens, their digests, and redaction.
+- `src/temporary_password.rs`: Temporary-password generation, approved verifier
+  preparation, one-response disclosure ownership, and the fixed lifetime.
 - `src/continuation.rs`: The opaque, single-use, short-lived continuation
   ticket and its stored digest.
 - `src/error.rs`: Payload-free authentication errors.
