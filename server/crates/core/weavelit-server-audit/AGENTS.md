@@ -3,6 +3,14 @@
 This crate is Server Audit: the only producer of complete, pre-redacted Audit
 Log records and their synchronous delivery through a supplied destination.
 
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
 ## Purpose and Scope
 
 - This directory owns typed Audit event inputs, bounded record construction,
@@ -17,7 +25,6 @@ Log records and their synchronous delivery through a supplied destination.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local routing, inventory, and Audit producer boundary rules.
 - `Cargo.toml`: Package metadata, narrowly scoped dependencies, and the JSON
   dev-dependency used to read Cargo's compiler diagnostics.
 - `src/lib.rs`: Producer, phase preparation, Attempt retention, and delivery.
@@ -28,26 +35,22 @@ Log records and their synchronous delivery through a supplied destination.
 - `tests/fixtures/forbidden-attempt-reference/`: External crate that attempts to
   construct an Attempt reference privately; must keep failing with its pinned rustc diagnostic.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then `../AGENTS.md`, `../../AGENTS.md`,
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then `../AGENTS.md`, `../../AGENTS.md`,
   `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../../../docs/server/audit/audit-log-design.md`,
+- MUST read `../../../../docs/server/audit/audit-log-design.md`,
   `../../../../docs/log-modules/log-module-design.md`, and
   `../../../../docs/security-model.md` before changing record content.
-- Add or update focused tests with behavior changes as required by
+- MUST add or update focused tests with behavior changes as required by
   `../../../../docs/testing.md`.
 
-## Standards and Conventions
-
-- Accept only closed typed facts and bounded safe references; never accept raw
+- MUST accept only closed typed facts and bounded safe references; never accept raw
   request, response, database, provider, credential, factor, or payload data.
-- Keep construction errors and Debug output free of event content.
-- Obtain the record issuer from `ServerLogAuthority`; never widen the log
+- MUST keep construction errors and Debug output free of event content.
+- MUST obtain the record issuer from `ServerLogAuthority`; never widen the log
   contract's private constructors or expose an Attempt-reference constructor.
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.

@@ -12,10 +12,15 @@ authorization composition that evaluates every User Plane and Administration
 Plane request once a deployment is sealed. Provider integrations remain
 deferred to later epics.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own,
-and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns the Server executable's restricted startup composition,
   SQLite backend factory, state-root configuration reading, startup classification
@@ -25,9 +30,6 @@ and where child paths own detailed rules.
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
-
-- `AGENTS.md`: Local routing, inventory, and Server executable-boundary rules.
 - `Cargo.toml`: Rust package manifest for the Weavelit Server executable crate.
 - `src/lib.rs`: Restricted lifecycle startup composition, SQLite backend factory,
   state-root configuration reading, `classify_restricted_startup`, the listener's
@@ -80,30 +82,19 @@ Use this section as the source of truth for what assets belong in this directory
   covering fresh start, restart persistence, selection, pending states, and
   fail-closed failure categories.
 
-## Usage Guidance
+## Working Rules
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
-
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read the relevant canonical Server design under `../../../../docs/server/` before changing lifecycle, Init, Restore, API, authentication, authorization, audit, database, or observability behavior.
-- Keep provider-specific work in Service Module crates and client-facing request translation in Client Module crates.
-- Add focused tests for changed behavior in the appropriate Server test boundary, following `../../../../docs/testing.md`.
-
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep startup-state classification and the lifecycle gate in the Server
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+- Update this inventory when assets in this directory are added, removed, renamed, or moved.
+- Before editing, agents MUST read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- MUST read the relevant canonical Server design under `../../../../docs/server/` before changing lifecycle, Init, Restore, API, authentication, authorization, audit, database, or observability behavior.
+- MUST keep provider-specific work in Service Module crates and client-facing request translation in Client Module crates.
+- MUST add focused tests for changed behavior in the appropriate Server test boundary, following `../../../../docs/testing.md`.
+- MUST keep startup-state classification and the lifecycle gate in the Server
   runtime composition. Persist and validate the deployment record and database
   locator through `weavelit-server-lifecycle`; never expose normal functions
   before the `Initialized` seal is durable or reopen Init or Restore as a
   fallback for missing or invalid deployment state.
-- Preserve the Server's default-deny authorization and its ownership of final authorization decisions.
-- Keep provider credentials and provider-integration behavior in the trusted Server environment; never move them into client applications.
-- Keep canonical Server requirements in `../../../../docs/` and update their owning document instead of restating them here.
+- MUST preserve the Server's default-deny authorization and its ownership of final authorization decisions.
+- MUST keep provider credentials and provider-integration behavior in the trusted Server environment; never move them into client applications.

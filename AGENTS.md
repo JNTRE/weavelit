@@ -20,7 +20,7 @@ Apply instructions in this order:
 
 - `CONTRIBUTING.md`: Branch, pull-request, branch-name, and commit message requirements.
 - `README.md`: Repository identification and high-level implementation layout.
-- `docs/`: Canonical product, security, terminology, and unresolved-decision documentation; follow `docs/AGENTS.md` for changes within it.
+- `docs/`: Canonical product, security, terminology, and unresolved-decision documentation governed by its local documentation guidance.
 - `docs/spec.md`, `docs/glossary.md`, `docs/vision.md`: Canonical specification, terminology, and project vision (when present).
 - `project/`: GitHub Project and Repository binding, Issue invariants and templates; follow its local guide.
 - `weavelit-cli/`: Source, tests, and macOS release packaging for the separately packaged Weavelit CLI; follow its local guide.
@@ -32,6 +32,6 @@ Apply instructions in this order:
 - Follow [Contribution Guidelines](CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
 - For changes under `docs/`, application documentation MUST comply with the [Documentation Standards](docs/documentation-standards.md), which govern document creation, document edits, file naming, and document organization.
 - Use the exact canonical names in `docs/glossary.md` when a term is used and format terms as bold links on first substantive use in the text.
-- For changes under `server/` or `weavelit-cli/`, read the matching local guide and the canonical documentation it routes to before editing.
-- For every implementation behavior change, add or update focused automated tests in the same change and run the applicable validation required by [the Testing and Validation Policy](docs/testing.md). Document any unavoidable manual verification in the owning documentation.
+- For changes under `server/` or `weavelit-cli/`, agents MUST read the matching local guide and the canonical documentation it routes to before editing.
+- For every implementation behavior change, agents MUST add or update focused automated tests in the same change and run the applicable validation required by [the Testing and Validation Policy](docs/testing.md). Agents MUST document any unavoidable manual verification in the owning documentation.
 - Update this inventory when repository-level assets, primary folders, or compatibility shims are added, removed, renamed, or moved.

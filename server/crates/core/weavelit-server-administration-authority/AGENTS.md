@@ -3,6 +3,14 @@
 This crate supplies the capability key that distinguishes trusted Server
 administration composition from ordinary contract consumers.
 
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
 ## Purpose and Scope
 
 - This crate owns `ServerAdministrationAuthority` and nothing else.
@@ -13,28 +21,23 @@ administration composition from ordinary contract consumers.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local capability-boundary and dependency rules.
 - `Cargo.toml`: Dependency-free package metadata.
 - `src/lib.rs`: The Server administration authority capability.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then each parent `AGENTS.md` through the
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then each parent `AGENTS.md` through the
   repository root and the Server Authorization Design.
-- Depend on this crate only from the administration contract and trusted Server
+- MUST depend on this crate only from the administration contract and trusted Server
   runtime composition that atomically binds a successful authorization to its
   validated session or has just completed current-session MFA verification.
-- Never add this dependency to a Client Module, transport contract, Service
+- Agents MUST NOT add this dependency to a Client Module, transport contract, Service
   Module, MFA Module, Log Module, database backend, or detached consumer.
 
-## Standards and Conventions
-
-- Keep this crate free of dependencies, behavior, and state so possession stays
+- MUST keep this crate free of dependencies, behavior, and state so possession stays
   the only privilege it conveys.
-- Do not reexport the authority from the administration contract.
-- Update this inventory whenever crate assets are added, removed, renamed, or moved.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
+- Agents MUST NOT reexport the authority from the administration contract.
+- MUST update this inventory whenever crate assets are added, removed, renamed, or moved.

@@ -4,6 +4,14 @@ This crate owns the typed, transport-independent gate between an existing
 Administration Plane authorization and future Server-owned administration
 workflows.
 
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
 ## Purpose and Scope
 
 - This crate owns the closed administration action families, bounded component
@@ -19,7 +27,6 @@ workflows.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local ownership, security, and validation rules.
 - `Cargo.toml`: Package metadata, narrow contract dependencies, and the JSON
   diagnostic test dependency.
 - `src/lib.rs`: Administration actions, requests, results, step-up policy,
@@ -29,35 +36,31 @@ workflows.
 - `tests/fixtures/forbidden-administration/`: Detached crate that attempts to
   bypass the authorization proof and forge session or step-up capabilities.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then each parent `AGENTS.md` through the
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then each parent `AGENTS.md` through the
   repository root and the Server Authorization Design.
-- Keep `AdministrationPlane::authorize` as the single action gate and require
+- MUST keep `AdministrationPlane::authorize` as the single action gate and require
   `AuthorizedAdministrationAdmission` by value. Never accept a separately
   supplied current-session value at this gate.
-- Keep every step-up field and constructor private. Only a direct dependency on
+- MUST keep every step-up field and constructor private. Only a direct dependency on
   the authority package may bind a validated session or mint a proof after MFA
   verification.
-- Keep `MfaPolicy` and `GrantMutation` as the complete step-up-required set;
+- MUST keep `MfaPolicy` and `GrantMutation` as the complete step-up-required set;
   ordinary `Account` and `ComponentOperation` actions do not require step-up.
-- Read `ComponentEnablement` through the source on every component or Operation
+- MUST read `ComponentEnablement` through the source on every component or Operation
   check after confirming the target exists in `AvailableComponents`. Never
   retain an enablement snapshot on the plane, session, or result.
-- Map a missing, mismatched, rolled-back, or expired proof, an unavailable
+- MUST map a missing, mismatched, rolled-back, or expired proof, an unavailable
   enablement read, and a disabled target to the same `AuthorizationDenied`.
-- Run this package's tests during development and `make -C server check` before
+- MUST run this package's tests during development and `make -C server check` before
   handoff.
 
-## Standards and Conventions
-
-- Update this inventory whenever crate assets are added, removed, renamed, or moved.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep action and component-kind matches exhaustive and without wildcard arms.
-- Keep proof and session diagnostics redacted and every rejection payload-free.
-- Do not add a route, mutation, Audit producer call, persistence schema, or
+- MUST update this inventory whenever crate assets are added, removed, renamed, or moved.
+- MUST keep action and component-kind matches exhaustive and without wildcard arms.
+- MUST keep proof and session diagnostics redacted and every rejection payload-free.
+- Agents MUST NOT add a route, mutation, Audit producer call, persistence schema, or
   Client Module dependency to this crate.

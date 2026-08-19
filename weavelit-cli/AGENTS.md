@@ -6,9 +6,15 @@ commands and workflows for the User Plane and Administration Plane declared by
 the Weavelit CLI Client Module. It never owns provider credentials, provider
 integrations, Server authorization policy, or Server administration behavior.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns Weavelit CLI source, tests, and macOS release packaging.
 - It does not own the server-side Weavelit CLI Client Module; that belongs in `../server/crates/modules/client/weavelit-module-client-cli/`.
@@ -16,34 +22,23 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
-
-- `AGENTS.md`: Local routing, inventory, and source-boundary rules for the Weavelit CLI.
 - `packaging/`: Release packaging assets for the Weavelit CLI; `packaging/macos/` owns macOS `arm64` packaging files.
 - `src/`: Weavelit CLI application source.
 - `tests/`: Weavelit CLI-focused tests, including API workflow coverage.
 
-## Usage Guidance
+## Working Rules
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
+- MUST follow [Contribution Guidelines](../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../docs/), application documentation MUST comply with the [Documentation Standards](../docs/documentation-standards.md); use exact canonical terms from [the glossary](../docs/glossary.md), formatting them as bold links on first substantive use.
 
-- Before editing, read this `AGENTS.md`, then the repository-root `AGENTS.md`.
-- Read `../docs/clients/weavelit-cli/` for application requirements and `../docs/client-modules/weavelit-cli/` for its Server connection boundary before changing behavior.
-- Make minimal, targeted changes and keep client concerns separate from Server policy and provider-integration code.
-- Update the owning documentation and focused tests with each implementation behavior change, as required by `../docs/testing.md`.
-- Add a child `AGENTS.md` only when that path develops distinct commands, validation, security constraints, or documentation routing.
+- Before editing, agents MUST read this `AGENTS.md`, then the repository-root `AGENTS.md`.
+- MUST read `../docs/clients/weavelit-cli/` for application requirements and `../docs/client-modules/weavelit-cli/` for its Server connection boundary before changing behavior.
+- MUST make minimal, targeted changes and keep client concerns separate from Server policy and provider-integration code.
+- MUST update the owning documentation and focused tests with each implementation behavior change, as required by `../docs/testing.md`.
+- MUST add a child `AGENTS.md` only when that path develops distinct commands, validation, security constraints, or documentation routing.
 
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep Weavelit CLI application source under `src/`, its focused tests under `tests/`, and macOS `arm64` release packaging under `packaging/macos/`.
-- Implement commands and workflows only for planes declared by the Weavelit CLI Client Module, and submit every application function through that module's versioned API surface.
-- Do not add provider credentials, provider-integration logic, or Server authorization policy to this application.
-- Preserve the versioned HTTPS API boundary and canonical requirements in `../docs/`; link to or update those documents instead of duplicating their decisions here.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- MUST keep Weavelit CLI application source under `src/`, its focused tests under `tests/`, and macOS `arm64` release packaging under `packaging/macos/`.
+- MUST implement commands and workflows only for planes declared by the Weavelit CLI Client Module, and submit every application function through that module's versioned API surface.
+- Agents MUST NOT add provider credentials, provider-integration logic, or Server authorization policy to this application.
+- MUST preserve the versioned HTTPS API boundary and canonical requirements in `../docs/`; link to or update those documents instead of duplicating their decisions here.
