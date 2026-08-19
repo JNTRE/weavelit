@@ -62,11 +62,16 @@ Use this section as the source of truth for what assets belong in this directory
 - `src/operational.rs`: The single operational composition seam: the shared
   Application Database handle a sealed workflow hands over, the operational
   composer that mounts the Web UI operational surface and the authentication
-  routes together with their transport registrations, and the mounted surface
-  value the serving-mode switch accepts.
+  routes together with their transport registrations, activates bounded Audit
+  terminal recovery, exposes the internal pre-consequential drain gate, and
+  builds the mounted surface value the serving-mode switch accepts.
+- `src/operational_audit.rs`: Trusted Audit assignment resolution and the
+  process-serialized, bounded active-then-late terminal recovery drains that
+  run at activation and before consequential mutations.
 - `src/operational_logging.rs`: Normal-operation support that best-effort
-  records typed Audit Log destination failures in the System Log and maps them
-  to the stable payload-free consequential-operation rejection.
+  records typed Audit Log destination and terminal-recovery failures in the
+  System Log and maps only pre-mutation delivery failures to the stable
+  payload-free consequential-operation rejection.
 - `src/restore.rs`: Server-owned Restore orchestration that joins backup
   validation to the lifecycle typestate chain, the one-time ticket store and
   admission registrations behind the two-step submission protocol, the System

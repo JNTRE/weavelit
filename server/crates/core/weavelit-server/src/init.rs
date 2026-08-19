@@ -1320,6 +1320,7 @@ mod tests {
         StartupOutcome, bounded_response_from_axum, classify_restricted_startup,
         close_active_database, fallback_router,
         operational::test_support::ActivationBarrier,
+        operational_audit::{AuditRecoverySequenceState, OperationalAuditRecoveryState},
         server_components, sqlite_catalog,
         tests::assert_no_write_ahead_log,
         transport::{
@@ -1506,6 +1507,16 @@ mod tests {
         /// tests, which release that lock first.
         fn record_state(&self) -> LifecycleState {
             self.startup.composition.adapter.arbiter.record_state()
+        }
+
+        fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
+            self.orchestrator()
+                .operational
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .expect("completed Init retains its operational composer")
+                .activation_audit_recovery_state()
         }
 
         fn anchor_snapshot(&self) -> Vec<(OsString, Vec<u8>, i64, i64)> {
@@ -2530,6 +2541,9 @@ mod tests {
             ServingMode::Operational(_)
         ));
         assert!(serves(&after, AUTH_SESSION_ROUTE).await);
+        let recovery = surface.activation_audit_recovery_state();
+        assert_eq!(recovery.active(), AuditRecoverySequenceState::Ready);
+        assert_eq!(recovery.late_delivery(), AuditRecoverySequenceState::Ready);
     }
 
     /// The completion record reaches the destination the committed System Log
