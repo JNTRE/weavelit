@@ -534,6 +534,18 @@ consults only the deployment record, that load is the sole authority over the
 database: it reopens the database read-write, so SQLite recovers any retained
 write-ahead log, and it fails startup closed before binding rather than serving
 anything if recovery, integrity, deployment binding, or completeness fails.
+The normal-operation Audit terminal recovery contract defines obligations as
+live operational data outside `ApplicationState`. A conforming future backend
+store must preserve them across ordinary restart, while backup and normalized
+Restore input must never carry them. They do not alter sealed startup
+classification or reopen Init or Restore. The future normal-operation runtime
+owns their ordered startup and pre-mutation drain; the shared pre-operational
+lifecycle owns neither replay nor acknowledgement. An append-only terminal
+supersession disposition and degraded Audit-completeness state are also live
+normal-operation data: they do not create a lifecycle state, make Restore
+eligible, enter a backup, or permit a Restore or System Log result to substitute
+for exact late delivery of the retained original.
+
 Because the pre-operational status and Application Database contracts cannot be
 expressed in an operational capability declaration, they are absent from the
 sealed surface rather than mounted and denied; every request for them receives
@@ -987,3 +999,4 @@ and the state-root lock are immediately reusable.
 - [Server Restore Design](restore/restore-design.md)
 - [Testing and Validation Policy](../../testing.md)
 - [Application Database Design](../database/application-database-design.md)
+- [Audit Terminal Binding Retention And Supersession Decision](../../log-modules/audit-terminal-binding-retention-decision.md)

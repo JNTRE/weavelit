@@ -87,17 +87,44 @@ while related records reuse the owning request or workflow correlation
 identifier. Exact replay matching includes the Audit phase, phase-bound result,
 and Attempt link. The Audit producer constructs and delivers attempts,
 linked completions, and linked corrections; the owning
-**[Administration Plane](../glossary.md#applications-and-interfaces)** workflow
-sequences the mutation, decides when correction evidence is required, emits any
-System Log, and owns future durable normal-operation recovery when completion
-delivery cannot finish after commit. That recovery does not reuse the Init or
-Restore lifecycle obligation contract.
+future **[Administration Plane](../glossary.md#applications-and-interfaces)**
+workflow must sequence the mutation, decide when correction evidence is
+required, emit any System Log, and own durable normal-operation recovery when
+terminal delivery cannot finish after commit. That recovery must use the shared
+projection and acknowledgement contracts without reusing the Init or Restore
+lifecycle obligation contract.
 
 The producer's prepared terminal delivery borrows the immutable record so a
 caller may deliberately re-deliver its exact identifier and content. Each call
 performs one synchronous dispatch. The producer does not loop, schedule,
-replace, or decide to recover that record; future Administration Plane workflow
-design decides whether and how the retained value enters post-commit recovery.
+replace, or decide to recover that record. The shared contract also defines a
+versioned `AuditTerminalRecoveryProjection` containing the exact terminal
+record and `AuditDestinationBinding`. The binding is the opaque nonzero
+application-owned Log Module configuration identity plus a nonzero version that
+changes whenever the configuration or Audit assignment changes. Its constructor
+requires Server logging authority. The projection's derived 49 KiB encoded
+bound covers the 8 KiB maximum record payload under worst-case JSON escaping
+plus fixed document overhead. It contains no destination setting, path,
+credential, delivery failure, or source request payload. Import revalidates the
+terminal record through the shared constructors rather than exposing
+constructors for persisted identities or Attempt links.
+
+A recovered terminal accepts one `ResolvedAuditDestination`, which structurally
+pairs the binding and configured destination selected by trusted Server code.
+Binding equality cannot inspect or prove the identity of an independently
+supplied destination handle, so the future assignment resolver must derive both
+members from the same committed configuration before constructing the pair. A
+different identity or version fails before the destination is called. An exact
+match performs one ordinary synchronous delivery and yields a terminal-delivery
+acknowledgement capability only after the destination acknowledges the exact
+record. That capability is the only path from replay to Application Database
+acknowledgement. It does not authorize a mutation or represent whether the
+already committed mutation succeeded. `AuditDestinationBindingTransition`
+retains the exact prior binding beside its distinct replacement without
+selecting generation order. The future configuration workflow must preserve a
+resolvable old binding handle while any terminal obligation references that
+version; identifying a replacement never changes the original projection.
+
 The SQLite destination confirms an exact existing record as one persisted row
 and still rejects the same identifier with different content.
 
@@ -130,6 +157,12 @@ Init/Restore). Instead:
 - For **non-consequential operations** (read-only queries, health checks, or
   internal-only tasks), the route layer MAY absorb the delivery failure and
   succeed, after recording the failure in System Logs.
+- If pre-commit Attempt delivery fails, a consequential mutation remains
+  rejected with the stable error above. If terminal delivery fails after the
+  mutation and its recovery obligation commit, the mutation is already
+  authoritative: internal recovery reports only that committed Audit terminal
+  delivery remains pending and must never map that failure to `operation
+  rejected`.
 
 A "consequential operation" is an operation that modifies application state
 (account creation, permission grant, policy change, etc.). All Administration
@@ -216,7 +249,8 @@ The initial Audit Log taxonomy is `lifecycle.backup.created`;
 `authorization.group-membership.changed`, `authorization.group-grant.changed`,
 `authorization.group-grant.removal-denied`, and
 `authorization.automation-scope.changed`;
-`dependency.log-module-configuration.changed` and
+`dependency.audit-terminal.superseded`,
+`dependency.log-module-configuration.changed`, and
 `dependency.service-connection.changed`; `provider.operation.started` and
 `provider.operation.completed`; and `internal.server-configuration.changed`,
 `internal.user-status.changed`, and `internal.log-policy.changed`.
@@ -238,6 +272,16 @@ The initial Audit Log taxonomy is `lifecycle.backup.created`;
     ServerAdministration grant from an account and the operation is rejected.
   - Context: administrator (principal), target group, target account, reason
     (e.g., "would orphan permission").
+
+- **`dependency.audit-terminal.superseded`** (Audit Log)
+  - Records the constrained integrity exception for one exact oldest terminal
+    obligation after its retained destination is permanently unavailable.
+  - Action: `supersede-terminal-delivery`; target: the bounded typed terminal
+    obligation reference; successful detail: Audit completeness is degraded.
+  - Destination error text, settings, credentials, password or TOTP evidence,
+    confirmation content, and raw identifiers are excluded.
+  - This event is distinct from the original terminal and is never a
+    Correction or proof that the original was delivered.
 
 **[Init](../glossary.md#states-and-requests)** and
 **[Restore](../glossary.md#states-and-requests)** completion results remain
@@ -402,6 +446,44 @@ not a valid snapshot or recovery procedure. A future remote destination must
 choose either source-bound replacement lineage or validated shared continuity
 with exact record-identifier replay.
 
+### Audit Binding Retention And Terminal Supersession
+
+Ordinary Audit destination changes retain each old binding identity, version,
+and resolved destination handle while a pending terminal obligation references
+it. Exact replay continues through `ResolvedAuditDestination`; a current or
+replacement binding with a different identity or version is rejected before
+delivery. The Administration Plane configuration work owns durable generation
+sequencing and change execution, but may not discard a referenced old binding.
+
+Supersession is permitted only for the exact oldest valid active obligation
+after retained-binding repair failed and the destination is permanently
+unavailable. The trusted input boundary requires fresh exact-session password
+reauthentication, fresh TOTP when enrolled, explicit confirmation bound to the
+original and replacement, and a replacement handle produced by successful
+Audit preflight. The contract accepts no boolean bypass.
+
+The append-only disposition carries only the original record identity, original
+binding, fixed `destination_permanently_unavailable` reason, replacement
+binding, `degraded` completeness, and
+`retained_pending_late_delivery` original state. It is bounded to 1 KiB and
+contains no error, setting, path, credential, request body, or arbitrary reason.
+The replacement assignment, disposition, and new supersession Audit terminal
+obligation commit together. Every malformed, mismatched, repeated, non-oldest,
+or out-of-order request fails closed without mutation. Before that append, the
+Application Database compares the stored original identity and opaque
+projection bytes with the exact Server Audit-validated obligation carried by
+the request, and separately compares its retained binding with the disposition.
+A matching identity alone is insufficient.
+
+Supersession moves the original out of the active sequence but neither rewrites
+nor acknowledges it. It remains in an oldest-first late-delivery sequence and
+accepts only exact replay through its retained binding. The replacement Audit
+action records a visible degraded-completeness integrity exception; it cannot
+stand in for original delivery. System Logs, Restore, and lifecycle completion
+records are also never substitutes. The accepted rationale and follow-on
+boundaries are preserved in the
+[Audit Terminal Binding Retention And Supersession decision](audit-terminal-binding-retention-decision.md).
+
 ## Destination Retention And Capacity
 
 Retention and purge are destination-owned and Administrator-selected only when
@@ -517,3 +599,4 @@ directly.
 - [Application Database Design](../server/database/application-database-design.md)
 - [Server Restore Design](../server/lifecycle/restore/restore-design.md)
 - [Audit Log Unavailability System Log Record](../server/observability/audit-log-unavailability-record-design.md)
+- [Audit Terminal Binding Retention And Supersession Decision](audit-terminal-binding-retention-decision.md)

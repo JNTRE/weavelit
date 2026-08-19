@@ -374,6 +374,12 @@ impl ApplicationDatabase for LyingDatabase {
         None
     }
 
+    fn audit_terminal_recovery(
+        &mut self,
+    ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
+        None
+    }
+
     fn close(self: Box<Self>) -> Result<(), weavelit_server_database::DatabaseError> {
         Ok(())
     }
@@ -1546,6 +1552,12 @@ impl ApplicationDatabase for DriftingDatabase {
     }
 
     fn reconciliation(&mut self) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
+        None
+    }
+
+    fn audit_terminal_recovery(
+        &mut self,
+    ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
         None
     }
 

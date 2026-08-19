@@ -1488,6 +1488,7 @@ dependencies = [
  "tempfile",
  "weavelit-module-log-sqlite",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
  "weavelit-server-log",
  "weavelit-server-log-authority",
 ]
@@ -1524,8 +1525,10 @@ name = "weavelit-server-database"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
+ "serde_json",
  "subtle",
  "weavelit-server-database-authority",
+ "weavelit-server-log",
 ]
 
 [[package]]
@@ -1580,6 +1583,7 @@ dependencies = [
 name = "weavelit-server-log"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "weavelit-server-log-authority",
 ]

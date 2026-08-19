@@ -17,9 +17,10 @@ pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
     AccountAuditReference, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
-    ComponentEnablement, DatabaseError, DatabaseInspection, DeploymentIdentifier,
-    GroupAuditReference, HumanAuthorizationSnapshot, InitializedState, MfaStore,
-    ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
+    AuditTerminalRecoveryStore, ComponentEnablement, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
+    MfaStore, ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier,
+    WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -96,6 +97,10 @@ impl ApplicationDatabase for SqliteDatabase {
 
     fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore> {
         Some(self)
+    }
+
+    fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore> {
+        None
     }
 
     fn close(self: Box<Self>) -> Result<(), DatabaseError> {

@@ -25,7 +25,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Read `../../../../docs/log-modules/log-module-design.md` before changing what this capability permits.
-- Depend on this crate only from Server-owned crates that must mint logging authority, currently the Server executable, Server Observability, and the log contract itself.
+- Depend on this crate only from Server-owned crates that must mint logging authority, currently the Server executable, Server Audit, Server Observability, and the log contract itself.
 - Never add this crate to a Log Module dependency graph; that edge is what the log contract's compile fixtures exist to prevent.
 
 ## Standards and Conventions

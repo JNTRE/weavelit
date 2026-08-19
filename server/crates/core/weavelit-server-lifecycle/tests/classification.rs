@@ -218,6 +218,12 @@ impl ApplicationDatabase for FakeDatabase {
         None
     }
 
+    fn audit_terminal_recovery(
+        &mut self,
+    ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
+        None
+    }
+
     fn close(self: Box<Self>) -> Result<(), DatabaseError> {
         Ok(())
     }
@@ -672,6 +678,12 @@ fn deployment_mismatch_on_database_fails_closed() {
         fn reconciliation(
             &mut self,
         ) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
+            None
+        }
+
+        fn audit_terminal_recovery(
+            &mut self,
+        ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
             None
         }
 

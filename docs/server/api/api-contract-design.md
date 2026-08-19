@@ -219,6 +219,33 @@ and the
 own where each capability originates and how its digest is persisted and, for
 Restore, atomically replaced.
 
+## Future Audit Terminal Recovery Administration
+
+The future **[Administration Plane](../../glossary.md#applications-and-interfaces)**
+configuration contract owns Log Module binding generations, ordinary change
+sequencing, retained-binding status, degraded Audit-completeness presentation,
+and the terminal recovery user interface. This version 1 contract does not yet
+define a route, method, request body, response schema, or client implementation
+for those functions.
+
+An ordinary configuration change must retain every binding version referenced
+by a pending terminal obligation. A future supersession request may address
+only the exact oldest valid active obligation after binding repair proves its
+destination permanently unavailable. The handler must consume an
+action-scoped authorization proof created by fresh password reauthentication
+for the exact current session and fresh TOTP verification when enrolled,
+separate explicit confirmation bound to the displayed original and replacement,
+and a successful replacement Audit preflight proof. It must not accept boolean
+fields as substitutes for any proof.
+
+The future status surface must distinguish active obligations from retained
+late-delivery obligations and present degraded completeness as an integrity
+exception rather than success. Client-visible output and the new Audit action
+must omit destination errors, settings, credentials, authentication evidence,
+and confirmation content. It must not offer Restore, System Log creation,
+replacement delivery, Correction, or manual acknowledgement as a way to clear
+the original.
+
 ## Result And Error Representation
 
 A successful response carries a structured result and a Server-generated
@@ -438,6 +465,7 @@ for this purpose.
 - [Server Architecture Design](../server-architecture-design.md)
 - [Server Authentication Design](../authentication/authentication-design.md)
 - [Server Authorization Design](../authorization/authorization-design.md)
+- [Audit Terminal Binding Retention And Supersession Decision](../../log-modules/audit-terminal-binding-retention-decision.md)
 - [Server Lifecycle Design](../lifecycle/lifecycle-design.md)
 - [Server Init Design](../lifecycle/init/init-design.md)
 - [Server Restore Design](../lifecycle/restore/restore-design.md)

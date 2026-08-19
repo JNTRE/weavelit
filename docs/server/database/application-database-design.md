@@ -152,17 +152,75 @@ factor data, Service Connection credentials, the persisted recovery public key,
 non-secret Log Module configuration and settings, System Log and Audit Log
 assignments, and the workflow completion obligation.
 
-The aggregate has no session, Log Module destination data, or Log Module
-credential member. Active sessions, System Logs and Audit Logs, other Log Module
-destination data, and Log Module authentication or connection credentials
-therefore cannot enter persisted application state through this contract.
+The aggregate has no session, Log Module destination data, normal-operation
+Audit terminal recovery obligation, or Log Module credential member. Active
+sessions, System Logs and Audit Logs, other Log Module destination data, live
+terminal recovery obligations, and Log Module authentication or connection
+credentials therefore cannot enter persisted application state through this
+contract.
 
 Live sessions are still stored in the Application Database, through the separate
 `SessionStore` contract described in [Live Session Storage](#live-session-storage).
 They are live operational data rather than restorable state: they survive an
 ordinary restart, they never appear in normalized state or in a backup, and a
-Restore clears them. A backend has no schema in which to record log records, Log
-Module destination data, or Log Module credentials at all.
+Restore clears them. The same separation applies to normal-operation Audit
+terminal recovery obligations described below. A backend has no schema in
+which to act as a Log Module destination or store Log Module credentials.
+
+### Live Audit Terminal Recovery
+
+The **[Application Database](../../glossary.md#applications-and-interfaces)**
+recovery contract permits a backend to retain only the opaque immutable
+normal-operation terminal recovery obligation exported by Server Audit. A
+backend implementation must not parse Audit fields, become an Audit Log
+destination, or store queryable Audit records. Each obligation has a nonzero
+16-byte identity equal to the terminal record identity and at most the shared
+derived 49 KiB projection bound. That projection carries the exact pre-redacted
+terminal record and exact Audit destination binding; destination failure detail,
+credentials, settings, request bodies, temporary credentials, and verifiers are
+absent.
+
+`AuditTerminalRecoveryTransaction` is available only inside a consequential
+application-state mutation transaction. That transaction persists the
+authoritative mutation and its previously absent immutable obligation together,
+or commits neither. The backend-neutral contract deliberately exposes no
+standalone enqueue operation that could add an obligation after a mutation had
+already become durable.
+
+`AuditTerminalRecoveryStore` exposes separate bounded oldest-first sequences for
+active pending obligations and superseded originals retained for late delivery.
+It acknowledges only the exact oldest eligible identity in the applicable
+sequence; an absent, repeated, or out-of-order acknowledgement returns
+`InvalidState`. The Audit and Log contracts make this call reachable only after
+the exact retained record receives durable acknowledgement through its trusted
+resolved binding-and-destination pair. A changed binding, delivery failure,
+import failure, or acknowledgement failure leaves the obligation pending.
+
+`AuditTerminalSupersession` retains the exact Server Audit-validated original
+obligation, including its identity and immutable opaque projection, together
+with the validated append-only disposition and a distinct replacement Audit
+terminal obligation. The transaction accepts it only when the stored original
+is the oldest valid active obligation, its identity and projection bytes equal
+the carried original exactly, its retained binding equals the disposition's
+original binding, retained-binding repair has failed permanently, and no
+disposition already exists. Matching identity alone is insufficient. It
+atomically appends the disposition and replacement obligation in the same
+transaction where the owning configuration workflow applies the replacement
+assignment. It never updates, removes, or acknowledges the original; that
+obligation moves only from the active sequence to the late-delivery sequence. A
+malformed projection or disposition, identity, projection, or binding mismatch,
+duplicate, non-oldest request, or partial write returns `InvalidState` and
+changes nothing. Concrete storage, runtime drain, and configuration-change
+execution remain future backend and Server work.
+
+These obligations are defined as live operational data that a conforming store
+must preserve across ordinary restart. They are not members of
+`ApplicationState` and cannot enter Application Database backups or normalized
+Restore input. Restore therefore imports no source-deployment obligation; a
+replacement deployment begins with none inherited from the backup. This
+contract defines no in-place Restore clearing operation. Obligations are also
+absent from every Log Module destination backup unless and until that
+destination has acknowledged the replayed record.
 
 ### Future Temporary-Credential State
 
@@ -179,12 +237,13 @@ metadata and the flag, and increment or replace the revision. Refer to
 [Authentication Design](../authentication/authentication-design.md#future-account-credential-issuance)
 for the approved expiry, revision, session, and reauthentication policy.
 
-The Application Database transaction covers credential metadata and session
-revocation only. Audit attempt, terminal outcome, and any future post-commit
-recovery sequencing remain owned by the Audit design and the owning workflow;
-the Application Database does not store Audit artifacts or participate in
-temporary credential issuance. A compare-and-set conflict commits neither a
-new credential nor plaintext and returns a stable secret-free result. The
+The future account transaction covers credential metadata, session revocation,
+and the opaque terminal recovery obligation atomically. Audit Attempt delivery,
+terminal construction, replay sequencing, and record interpretation remain
+owned by the Audit design and the owning workflow; the Application Database
+does not participate in temporary credential issuance or act as an Audit Log
+destination. A compare-and-set conflict commits neither a new credential,
+terminal obligation, nor plaintext and returns a stable secret-free result. The
 fixed temporary-credential expiry is 24 hours. These are future contract
 obligations; they do not alter Init or permit a password-retrieval operation.
 
@@ -482,11 +541,13 @@ A backup includes the application configuration and state needed to restore
 operational status, including local accounts, password verifiers, Groups and
 their grants, enabled-module state, protected MFA factor data, Service
 Connection credentials, and other application configuration. It excludes active
-sessions, which are invalidated on restore, and the live lifecycle
-reconciliation digest, which is not application state: each completed Init or
-Restore atomically writes its own digest outside `ApplicationState`, so a
-Restore's replacement digest always reflects that exact Restore rather than
-backup content. For Log Modules, it includes only
+sessions, which are invalidated on restore, live normal-operation Audit terminal
+recovery obligations, and the live lifecycle reconciliation digest. Neither
+operational store is application state: each completed Init or Restore
+atomically writes its own reconciliation digest outside `ApplicationState`, and
+normalized Restore input carries no source-deployment terminal obligation. A
+replacement deployment therefore starts with no obligation inherited from the
+backup. For Log Modules, a backup includes only
 non-secret configuration and assignments. System Logs and Audit Logs, other Log
 Module destination data, and Log Module authentication or connection credentials
 are outside this Application Database backup contract.
@@ -539,3 +600,4 @@ backend.
 - [Testing and Validation Policy](../../testing.md)
 - [Authentication Design](../authentication/authentication-design.md)
 - [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)
+- [Audit Terminal Binding Retention And Supersession Decision](../../log-modules/audit-terminal-binding-retention-decision.md)

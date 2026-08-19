@@ -142,10 +142,38 @@ a second correlation identifier or a caller-selected record identifier.
 `PreparedAuditTerminal::deliver(&self)` deliberately permits exact idempotent
 re-delivery of the same immutable record identifier and content. It performs one
 synchronous delivery per call; the producer never loops, schedules, queues,
-replaces, or independently retries the record. The producer stores no
-destination, catalog, authority, queue, or post-commit obligation. A future
-Administration Plane workflow decides whether and how a retained terminal
-record participates in durable post-commit recovery.
+replaces, or independently retries the record. Before the owning mutation
+transaction commits, `PreparedAuditTerminal::recovery_obligation` captures the
+same complete terminal record and the exact Audit destination binding as one
+bounded, versioned opaque projection. The projection includes the original
+record identifier, event time, phase, result, Attempt link, correlation
+identifier, complete pre-redacted body, and destination configuration identity
+and binding version. It contains no delivery failure, setting, path, or
+credential. Only Server logging authority can create a binding, and only Server
+Audit exports or imports the database obligation, so ordinary callers cannot
+choose record fields or invent a destination identity.
+
+The producer stores no destination, catalog, queue, or retry schedule. The
+Application Database recovery contract defines the opaque obligation as live
+operational data outside `ApplicationState` and every backup; backend storage
+and runtime draining remain future work. On import, Server Audit revalidates
+every field through the shared complete-record constructors and requires the
+obligation identity to equal the embedded record identifier. A malformed,
+oversized, unsupported, mismatched, or arbitrary secret-bearing document cannot
+become a replayable record merely because it was persisted.
+
+Server Audit also binds a constrained supersession disposition to that exact
+imported obligation. The resulting trusted transaction value retains the exact
+validated obligation identity and opaque projection rather than reconstructing
+it from an identifier. The input boundary requires separate Server-authority
+proofs for fresh exact-session password reauthentication with TOTP when
+enrolled and for explicit confirmation of the exact original and replacement.
+It additionally requires a replacement binding-and-destination pair that has
+passed Audit preflight. No proof accepts a boolean credential, confirmation, or
+preflight flag. The producer then exports only the fixed bounded disposition
+and opaque original already accepted through the bounded recovery contract; it
+does not expose record fields, verify credentials, present confirmation, retain
+a destination, or execute the configuration change.
 
 The future account-create and password-reset workflows may disclose a generated
 temporary password only in their originating successful response. Audit records
@@ -160,8 +188,9 @@ protected-data requirements are authoritative in the [Authentication Design](../
 and [Security Model](../../security-model.md#multifactor-authentication-security-profile);
 this document does not restate their session or enrollment semantics.
 
-The owning **[Administration Plane](../../glossary.md#applications-and-interfaces)**
-workflow sequences construction and delivery as follows. The producer does
+The future owning
+**[Administration Plane](../../glossary.md#applications-and-interfaces)**
+workflow must sequence construction and delivery as follows. The producer does
 not authorize, mutate state, map client errors, construct System Logs, or own
 post-commit obligations:
 
@@ -181,21 +210,42 @@ post-commit obligations:
   workflow does not retry, enqueue, or create a substitute record. The normal
   Server process remains alive. The owning workflow records the corresponding
   System Log classification and timing under the [Log Module taxonomy](../../log-modules/log-module-design.md#event-classification-taxonomy).
-6. Apply the atomic application-state mutation.
-7. After the mutation outcome is authoritative, ask the producer to construct
-  and synchronously deliver a correlated `completion` record. Its `result`
-  is derived from the matching typed detail, whose safe fact represents the
-  committed success or whose payload-free denied or failed variant represents
-  the known non-commit outcome. Its `attempt_record_id` directly identifies the
-  acknowledged Attempt. Final state and affected count may appear only in a
-  matching typed completion detail or a later matching correction detail.
-8. If completion delivery cannot finish after commit, the owning workflow
-  triggers and durably manages the future normal-operation recovery contract.
-  That contract is separate from the Init and Restore lifecycle obligations and
-  remains future Administration Plane workflow design. When the workflow asks
-  for correction evidence, the producer constructs the bounded correlated
+6. Begin the serialized application-state transaction and apply the mutation
+  decision. Once its outcome is authoritative inside that transaction, ask the
+  producer to construct a correlated `completion`. Its `result` derives from
+  the matching typed detail, whose safe fact represents the state that this
+  transaction will commit or whose payload-free denied or failed variant
+  represents the authoritative non-commit outcome. Its `attempt_record_id`
+  directly identifies the acknowledged Attempt. Final state and affected count
+  may appear only in a matching typed completion detail or a later matching
+  correction detail.
+7. Capture that exact terminal record with the current Audit destination
+  binding. Atomically persist the immutable obligation with the mutation and
+  commit both, or commit neither. Then synchronously deliver the exact retained
+  terminal record.
+8. Exact destination acknowledgement authorizes acknowledgement of the oldest
+  database obligation. If delivery or database acknowledgement cannot finish,
+  leave the obligation pending. This is a post-commit failure and must not map
+  to the pre-commit `Audit Log unavailable; operation rejected.` result or
+  claim that the mutation was rejected. The future runtime recovery path must
+  replay obligations oldest first and refuse a changed current destination
+  identity or binding version before delivery. It must resolve the binding and
+  destination together through the trusted structural pair; binding equality
+  alone does not prove an unrelated handle's identity. The contract is separate
+  from Init and Restore lifecycle obligations. When the workflow asks for
+  correction evidence, the producer constructs the bounded correlated
   `correction` with a direct link to the same Attempt; it does not decide when
-  one is required or make it durable.
+  one is required.
+9. An ordinary Audit destination change retains the old identity, version, and
+  resolved handle while an obligation references it. If repair later proves
+  that exact destination permanently unavailable, the Administration Plane may
+  supersede only the exact oldest valid active obligation after fresh
+  exact-session password reauthentication, fresh TOTP when enrolled, explicit
+  confirmation, and replacement Audit preflight. It emits a distinct
+  `dependency.audit-terminal.superseded` Attempt and terminal, then atomically
+  commits the replacement assignment, append-only disposition, and new terminal
+  recovery obligation. The original remains immutable and pending for exact
+  late delivery; this action is neither a Correction nor delivery proof.
 
 The same correlation identifier relates the attempt, completion or correction,
 API response, and any related System Log for a request workflow, while each
@@ -238,6 +288,7 @@ context.
 | `authorization.group-grant.changed` | Client, Service, Operation, or Server Administration Permission grant changes | change-grant; stable group and grant references; result | Credentials or unbounded policy payloads |
 | `authorization.group-grant.removal-denied` | Rejected attempt to remove the last Server Administration Permission | remove-grant; stable group/account references; last-grant rejection | Internal authorization detail beyond the safe reason |
 | `authorization.automation-scope.changed` | Automation Identity Operation-scope changes | change-automation-scope; stable identity and Operation references; result | Automation credentials or secret configuration |
+| `dependency.audit-terminal.superseded` | Constrained supersession of one permanently undeliverable terminal obligation | supersede-terminal-delivery; bounded terminal reference; degraded completeness | Destination errors, settings, credentials, reauthentication or TOTP evidence, confirmation content, raw identifiers |
 | `dependency.log-module-configuration.changed` | Log Module configuration changes | change-log-module-configuration; stable configuration/module reference; result | Destination credentials, paths, raw settings, or payloads |
 | `dependency.service-connection.changed` | Service Connection configuration changes | change-service-connection; stable connection reference; result | Provider credentials, tokens, keys, or raw configuration |
 | `internal.server-configuration.changed` | Other Server, Client Module, Service Module, or Operation enablement changes | change-server-configuration; stable component reference; safe state | Secrets, raw configuration, or arbitrary submitted values |
@@ -250,7 +301,8 @@ Both provider rows come from one `ProviderOperation` producer event. Its
 Attempt is classified as `provider.operation.started` with `operation-start`;
 its linked completion or correction is classified as
 `provider.operation.completed` with `operation-complete`. The shared typed
-classification catalog and persisted Log schema remain unchanged.
+classification catalog remains closed, and terminal recovery rejects unknown
+future values.
 
 The producer may also use the remaining approved catalog entries
 `lifecycle.backup.created`, `authentication.password.changed`, and
@@ -260,12 +312,14 @@ decision. The canonical full catalog remains in [Log Module Design](../../log-mo
 
 The implemented producer owns typed, bounded attempt, completion, and
 correction construction, including direct Attempt linkage, and synchronous
-delivery to a supplied configured Audit destination. Future Administration
-Plane workflow work decides when a correction is required and owns assignment
-resolution, mutation sequencing, client-error mapping, System Log emission, and
-the durable normal-operation recovery contract for a completion that cannot be
-delivered after commit. This producer design does not select that recovery
-mechanism.
+delivery to a supplied configured Audit destination. It also owns trusted
+export and import of the immutable normal-operation terminal recovery
+projection. Administration Plane workflow work decides when a correction is
+required and owns assignment resolution, mutation sequencing, client-error
+mapping, System Log emission, credential verification, confirmation
+presentation, configuration generations, and runtime drain policy. The
+producer owns only the typed supersession event and exact imported-obligation
+disposition boundary; it does not select or execute those policies.
 
 ## Retention And Validation Implications
 
@@ -301,9 +355,20 @@ must prove:
   return the stable redacted error, and leave the process alive while the
   owning workflow records `dependency.audit-log-unavailable`; and
 - the attempt is acknowledged before the corresponding mutation commit, the
-  completion follows the authoritative outcome, and a post-commit delivery
-  failure remains with the owning workflow's future normal-operation recovery
-  contract without reusing an Init or Restore lifecycle obligation;
+  terminal record follows the authoritative transaction outcome, the exact
+  terminal projection commits atomically with that outcome, and a post-commit
+  delivery failure remains pending without reusing an Init or Restore lifecycle
+  obligation or returning the pre-commit rejection;
+- projection import revalidates every immutable field and matching identity,
+  changed current bindings prevent destination calls, replay is oldest first,
+  and database acknowledgement follows only exact destination acknowledgement;
+- ordinary binding transitions retain the exact prior identity and version;
+  supersession accepts only matching authority, confirmation, and preflight
+  evidence for the exact oldest valid active obligation; a stored original with
+  the same identity but different projection bytes or retained binding is
+  rejected before mutation; its fixed disposition remains secret-free and
+  degraded; and exact late delivery through the old binding remains possible
+  after the replacement becomes active;
 - exact repeated delivery of one immutable prepared terminal record is
   idempotent at the SQLite destination while the producer performs no delivery
   loop, schedule, replacement, or recovery decision; and
@@ -322,3 +387,4 @@ must prove:
 - [Glossary](../../glossary.md)
 - [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)
 - [Testing and Validation Policy](../../testing.md)
+- [Audit Terminal Binding Retention And Supersession Decision](../../log-modules/audit-terminal-binding-retention-decision.md)

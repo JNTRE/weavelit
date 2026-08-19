@@ -181,11 +181,17 @@ dispatch per call. The producer never loops, schedules, replaces, or chooses to
 recover a terminal record.
 
 It owns no authorization, mutation sequencing, decision to create a correction,
-client-error mapping, System Log construction, retry or queue behavior, or
-post-commit obligation persistence and execution. The owning Server workflow
-supplies those boundaries, triggers and durably owns normal-operation recovery,
-and remains responsible for ensuring that a completion or correction record
-reflects an authoritative mutation outcome.
+client-error mapping, System Log construction, retry scheduling, database
+storage implementation, or runtime drain execution. It does own trusted export
+and import of the exact immutable terminal recovery projection, the closed
+`dependency.audit-terminal.superseded` event, and construction of a fixed
+supersession disposition bound to an imported obligation. Authority-gated
+reauthentication and confirmation proofs plus a preflighted replacement are
+inputs to that construction; Audit does not verify credentials, present a user
+interface, or change assignments. The future owning Server workflow must supply
+those other boundaries, retain old binding handles, durably sequence
+normal-operation recovery through the Application Database contract, and
+ensure that each terminal record reflects an authoritative mutation outcome.
 
 `weavelit-server-log-authority` carries the capability that separates
 Server-owned logging authority from an ordinary Log Module. Rust has no
@@ -1515,3 +1521,4 @@ impact, and validation performed.
 - [Application Database Design](database/application-database-design.md)
 - [Log Module Design](../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../testing.md)
+- [Audit Terminal Binding Retention And Supersession Decision](../log-modules/audit-terminal-binding-retention-decision.md)

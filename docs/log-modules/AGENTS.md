@@ -16,6 +16,7 @@ Use this section to understand what this directory owns, what it does not own, a
 Use this section as the source of truth for what assets belong in this directory and what each asset is for.
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Log Modules.
+- `audit-terminal-binding-retention-decision.md`: Accepted architecture decision for retained destination binding versions and constrained terminal supersession.
 - `log-module-design.md`: Shared Log Module design, including Init configuration and log-type assignment.
 
 ## Usage Guidance

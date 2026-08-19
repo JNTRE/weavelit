@@ -575,6 +575,12 @@ pub(crate) mod test_support {
             None
         }
 
+        fn audit_terminal_recovery(
+            &mut self,
+        ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
+            None
+        }
+
         fn close(self: Box<Self>) -> Result<(), DatabaseError> {
             self.closes.fetch_add(1, Ordering::SeqCst);
             if let Some(close_block) = self.close_block {

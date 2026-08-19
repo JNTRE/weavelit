@@ -414,6 +414,24 @@ operational for other requests. Operators MUST monitor System Logs for
 `dependency.audit-log-unavailable` events and restore destination connectivity
 to resume consequential operations.
 
+An ordinary Audit destination configuration or assignment change MUST retain
+every old binding identity, version, and resolvable destination handle while a
+pending terminal obligation references it. Exact replay MUST continue only to
+that retained binding. If repair proves the exact oldest valid active
+obligation's destination permanently unavailable, an Administrator MAY
+supersede it only after fresh password reauthentication for the exact current
+session, fresh TOTP verification when enrolled, explicit confirmation, and
+successful replacement Audit preflight. Supersession MUST append a distinct
+Audit action and fixed disposition, atomically establish the replacement
+assignment and its terminal recovery obligation, expose degraded Audit
+completeness, and retain the immutable original for exact late delivery. Before
+the append, storage MUST match the exact Server Audit-validated original
+identity and immutable projection bytes and its retained binding; matching an
+identifier alone is insufficient. Supersession MUST NOT be represented as a
+Correction, acknowledgement, or delivery proof. Restore, System Logs, and
+delivery to the replacement MUST NOT substitute for exact delivery of the
+original to its retained binding.
+
 Administrators MUST be able to view System Logs and Audit Logs through a
 read-only Web UI logging area and configure Log Modules through an
 **[Administration Plane](glossary.md#applications-and-interfaces)**. Client
@@ -739,3 +757,4 @@ automation interfaces.
 - [Server Restore Design](server/lifecycle/restore/restore-design.md)
 - [Server Audit Log Design](server/audit/audit-log-design.md)
 - [Testing and Validation Policy](testing.md)
+- [Audit Terminal Binding Retention And Supersession Decision](log-modules/audit-terminal-binding-retention-decision.md)

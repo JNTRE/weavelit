@@ -7,8 +7,12 @@ Log records and their synchronous delivery through a supplied destination.
 
 - This directory owns typed Audit event inputs, bounded record construction,
   Attempt references, and synchronous Audit delivery.
-- It does not own authorization, mutation sequencing, destination assignment,
-  System Logs, client errors, retries, queues, or post-commit recovery.
+- Its bounded R0 recovery ownership is trusted immutable terminal projection
+  export/import and fixed supersession-disposition construction.
+- It does not own SQLite persistence, runtime drain or scheduling, destination
+  configuration or change execution, client routes, account mutations,
+  authorization, mutation sequencing, System Logs, client errors, retries, or
+  queues.
 - It has no child paths other than its compile-fixture directory.
 
 ## Asset Inventory

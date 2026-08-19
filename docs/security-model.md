@@ -391,6 +391,23 @@ display and diagnostic representations must not include rejected values, and a
 logging-required workflow must fail closed when a pre-redacted bounded record
 cannot be constructed.
 
+Normal-operation Audit terminal projections and supersession dispositions are
+integrity metadata, not authentication or destination-configuration storage.
+They must not contain raw destination errors, paths, settings, credentials,
+request bodies, passwords, password verifiers, TOTP codes, confirmation
+content, or arbitrary reason text. Their validation and debug failures remain
+payload-free.
+
+The supersession authority boundary must bind fresh password reauthentication
+to the exact current session, require fresh TOTP verification when that account
+is enrolled, bind explicit confirmation to the exact original and replacement,
+and require successful replacement Audit preflight. No caller-supplied boolean
+may stand in for those proofs. The original terminal and destination binding
+remain immutable and late-delivery eligible, while the deployment exposes
+degraded Audit completeness. A replacement Audit action, System Log, Restore,
+or lifecycle result is not original-delivery evidence and must not authorize
+acknowledgement of the original.
+
 An **[Audit Reference Identifier](glossary.md#applications-and-interfaces)** is
 internal pseudonymous data. It is safe to carry in a pre-redacted Audit Log but
 remains linkable across records, so it must not be presented as anonymous or
@@ -448,3 +465,4 @@ requests.
 - [Server Init Design](server/lifecycle/init/init-design.md)
 - [Server Restore Design](server/lifecycle/restore/restore-design.md)
 - [Testing and Validation Policy](testing.md)
+- [Audit Terminal Binding Retention And Supersession Decision](log-modules/audit-terminal-binding-retention-decision.md)

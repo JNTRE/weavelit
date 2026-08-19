@@ -2,11 +2,19 @@
 
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
+mod audit_recovery;
 mod mfa;
 mod reconciliation;
 mod session;
 mod state;
 
+pub use audit_recovery::{
+    AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH, AuditTerminalObligation,
+    AuditTerminalObligationIdentifier, AuditTerminalRecoveryContractError,
+    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, AuditTerminalRecoveryTransaction,
+    AuditTerminalReplayBatchSize, AuditTerminalSupersession, MAX_AUDIT_TERMINAL_OBLIGATION_BYTES,
+    MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES,
+};
 pub use mfa::{
     MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment,
     MfaModuleTarget, MfaStore, MfaTimeStep,
@@ -260,6 +268,15 @@ pub trait ApplicationDatabase: Send {
     /// replacement. The retained value is separate from restorable state, so
     /// a Restore proves only its own submission and a backup carries none.
     fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore>;
+
+    /// Returns live normal-operation Audit terminal recovery storage, when available.
+    ///
+    /// This store is separate from restorable [`ApplicationState`]. A runtime
+    /// that requires recovery must refuse consequential mutations when the
+    /// selected backend returns `None`; it must not silently continue without
+    /// durable terminal obligations. The method is required rather than
+    /// defaulted so every backend deliberately declares its support.
+    fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore>;
 
     /// Closes the database and releases its storage cleanly.
     ///

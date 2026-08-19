@@ -1,7 +1,11 @@
-use core::fmt;
+use core::fmt::{self, Write as _};
 
-use weavelit_server_database::{AccountAuditReference, GroupAuditReference};
-use weavelit_server_log::{AuditLogBody, AuditLogClassification, AuditPrincipal, LogResult};
+use weavelit_server_database::{
+    AccountAuditReference, AuditTerminalObligationIdentifier, GroupAuditReference,
+};
+use weavelit_server_log::{
+    AuditLogBody, AuditLogClassification, AuditPrincipal, AuditTerminalCompleteness, LogResult,
+};
 
 use crate::AuditError;
 
@@ -47,6 +51,32 @@ safe_reference!(LogPolicyReference, "log-policy");
 safe_reference!(MfaModuleReference, "mfa-module");
 safe_reference!(OperationReference, "operation");
 safe_reference!(ServiceConnectionReference, "service-connection");
+
+/// Bounded, non-secret reference to one immutable Audit terminal obligation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct AuditTerminalObligationReference(AuditTerminalObligationIdentifier);
+
+impl AuditTerminalObligationReference {
+    /// Creates a reference only from the typed nonzero persistence identity.
+    #[must_use]
+    pub const fn from_identifier(identifier: AuditTerminalObligationIdentifier) -> Self {
+        Self(identifier)
+    }
+
+    fn render(self) -> String {
+        let mut rendered = String::from("audit-terminal:");
+        for byte in self.0.as_bytes() {
+            write!(&mut rendered, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        rendered
+    }
+}
+
+impl fmt::Debug for AuditTerminalObligationReference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditTerminalObligationReference(REDACTED)")
+    }
+}
 
 /// Accountable actor represented only by approved Audit-safe references.
 #[derive(Clone, Eq, PartialEq)]
@@ -131,6 +161,9 @@ pub enum AuditEvent {
     AuthorizationAutomationScopeChanged {
         automation: AutomationReference,
         operation: OperationReference,
+    },
+    DependencyAuditTerminalSuperseded {
+        obligation: AuditTerminalObligationReference,
     },
     DependencyLogModuleConfigurationChanged {
         module: LogModuleReference,
@@ -218,6 +251,9 @@ impl AuditEvent {
             Self::AuthorizationAutomationScopeChanged { .. } => {
                 AuditLogClassification::AuthorizationAutomationScopeChanged
             }
+            Self::DependencyAuditTerminalSuperseded { .. } => {
+                AuditLogClassification::DependencyAuditTerminalSuperseded
+            }
             Self::DependencyLogModuleConfigurationChanged { .. } => {
                 AuditLogClassification::DependencyLogModuleConfigurationChanged
             }
@@ -257,6 +293,7 @@ impl AuditEvent {
             Self::AuthorizationGroupGrantChanged { .. } => "change-grant",
             Self::AuthorizationGroupGrantRemovalDenied { .. } => "remove-grant",
             Self::AuthorizationAutomationScopeChanged { .. } => "change-automation-scope",
+            Self::DependencyAuditTerminalSuperseded { .. } => "supersede-terminal-delivery",
             Self::DependencyLogModuleConfigurationChanged { .. } => {
                 "change-log-module-configuration"
             }
@@ -296,6 +333,7 @@ impl AuditEvent {
                 automation,
                 operation,
             } => join_targets(automation.render(), operation.render()),
+            Self::DependencyAuditTerminalSuperseded { obligation } => obligation.render(),
             Self::DependencyLogModuleConfigurationChanged {
                 module,
                 configuration,
@@ -341,6 +379,9 @@ impl AuditEvent {
             Self::AuthorizationAutomationScopeChanged { .. } => {
                 DetailKind::AuthorizationAutomationScopeChanged
             }
+            Self::DependencyAuditTerminalSuperseded { .. } => {
+                DetailKind::DependencyAuditTerminalSuperseded
+            }
             Self::DependencyLogModuleConfigurationChanged { .. } => {
                 DetailKind::DependencyLogModuleConfigurationChanged
             }
@@ -381,6 +422,9 @@ impl AuditEvent {
             | Detail::DependencyServiceConnectionChanged(outcome)
             | Detail::ProviderOperation(outcome)
             | Detail::InternalLogPolicyChanged(outcome) => Ok(TerminalOutcome::action(outcome)),
+            Detail::DependencyAuditTerminalSuperseded(outcome) => {
+                Ok(TerminalOutcome::state_change(outcome))
+            }
             Detail::AuthenticationUserDisabled(outcome) => match outcome {
                 StateChangeOutcome::Succeeded(AccountStatus::Active) => {
                     Err(AuditError::InvalidOutcome)
@@ -502,6 +546,7 @@ pub enum AuditOutcomeDetail {
     AuthorizationGroupGrantChanged(ActionOutcome),
     AuthorizationGroupGrantRemovalDenied,
     AuthorizationAutomationScopeChanged(ActionOutcome),
+    DependencyAuditTerminalSuperseded(StateChangeOutcome<AuditTerminalCompleteness>),
     DependencyLogModuleConfigurationChanged(ActionOutcome),
     DependencyServiceConnectionChanged(ActionOutcome),
     ProviderOperation(ActionOutcome),
@@ -540,6 +585,9 @@ impl AuditOutcomeDetail {
             Self::AuthorizationAutomationScopeChanged(_) => {
                 DetailKind::AuthorizationAutomationScopeChanged
             }
+            Self::DependencyAuditTerminalSuperseded(_) => {
+                DetailKind::DependencyAuditTerminalSuperseded
+            }
             Self::DependencyLogModuleConfigurationChanged(_) => {
                 DetailKind::DependencyLogModuleConfigurationChanged
             }
@@ -573,6 +621,7 @@ enum DetailKind {
     AuthorizationGroupGrantChanged,
     AuthorizationGroupGrantRemovalDenied,
     AuthorizationAutomationScopeChanged,
+    DependencyAuditTerminalSuperseded,
     DependencyLogModuleConfigurationChanged,
     DependencyServiceConnectionChanged,
     ProviderOperation,
@@ -705,6 +754,14 @@ impl SafeFact for MfaModuleChange {
             "MFA module state: {state}; affected count: {}",
             self.affected_count
         )
+    }
+}
+
+impl SafeFact for AuditTerminalCompleteness {
+    fn render(self) -> String {
+        match self {
+            Self::Degraded => "Audit completeness: degraded".to_owned(),
+        }
     }
 }
 
