@@ -74,6 +74,7 @@ pub(crate) struct OperationalAuditRecovery {
     reporting: OperationalAuditReporting,
     #[cfg(test)]
     destination_override: Option<OperationalAuditDestination>,
+    drain_permit: Mutex<()>,
     state: Mutex<OperationalAuditRecoveryState>,
 }
 
@@ -96,6 +97,7 @@ impl OperationalAuditRecovery {
             reporting,
             #[cfg(test)]
             destination_override: None,
+            drain_permit: Mutex::new(()),
             state: Mutex::new(OperationalAuditRecoveryState {
                 active: AuditRecoverySequenceState::RecoveryRequired,
                 late_delivery: AuditRecoverySequenceState::RecoveryRequired,
@@ -115,6 +117,11 @@ impl OperationalAuditRecovery {
     }
 
     fn drain(&self) -> OperationalAuditRecoveryState {
+        let _permit = self
+            .drain_permit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+
         #[cfg(test)]
         if let Some(destination) = self.destination_override.as_ref() {
             return self.drain_resolved(destination);
@@ -439,10 +446,11 @@ mod tests {
         collections::VecDeque,
         path::{Path, PathBuf},
         sync::{
-            Arc, Mutex,
+            Arc, Condvar, Mutex, PoisonError,
             atomic::{AtomicUsize, Ordering},
             mpsc,
         },
+        thread,
         time::Duration,
     };
 
@@ -489,6 +497,7 @@ mod tests {
         initialized_state_loads: usize,
         active_list_calls: usize,
         late_list_calls: usize,
+        acknowledgement_calls: usize,
         fail_acknowledgement: bool,
         fail_active_list: bool,
         fail_late_list: bool,
@@ -540,6 +549,7 @@ mod tests {
             acknowledgement: AuditTerminalDeliveryAcknowledgement,
         ) -> Result<(), DatabaseError> {
             let mut state = self.state.lock().expect("the fake store must not poison");
+            state.acknowledgement_calls += 1;
             if state.fail_acknowledgement {
                 return Err(DatabaseError::Unavailable);
             }
@@ -774,6 +784,60 @@ mod tests {
         }
     }
 
+    struct ControlledFactory {
+        attempts: Arc<AtomicUsize>,
+        arrivals: mpsc::Sender<usize>,
+        first_delivery_release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl LogDestinationFactory for ControlledFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
+        fn create(
+            &self,
+            _context: &LogModuleFactoryContext<'_>,
+        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+            Ok(Box::new(ControlledDestination {
+                attempts: Arc::clone(&self.attempts),
+                arrivals: self.arrivals.clone(),
+                first_delivery_release: Arc::clone(&self.first_delivery_release),
+            }))
+        }
+    }
+
+    struct ControlledDestination {
+        attempts: Arc<AtomicUsize>,
+        arrivals: mpsc::Sender<usize>,
+        first_delivery_release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl LogDestination for ControlledDestination {
+        fn deliver(
+            &self,
+            _record: &CompleteLogRecord,
+            acknowledgement: DurableAcknowledgement,
+        ) -> Result<DurableAcknowledgement, LogDestinationError> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            self.arrivals
+                .send(attempt)
+                .map_err(|_| LogDestinationError::Unavailable)?;
+            if attempt == 1 {
+                let (released, wake) = &*self.first_delivery_release;
+                let mut released = released.lock().unwrap_or_else(PoisonError::into_inner);
+                while !*released {
+                    released = wake.wait(released).unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+            Ok(acknowledgement)
+        }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            Ok(())
+        }
+    }
+
     #[derive(Debug, Eq, PartialEq)]
     struct ReportedSystemRecord {
         classification: String,
@@ -938,6 +1002,14 @@ mod tests {
         reenter: Arc<Mutex<Option<OperationalDatabase>>>,
     }
 
+    struct ControlledDestinationFixture {
+        binding: AuditDestinationBinding,
+        destination: OperationalAuditDestination,
+        attempts: Arc<AtomicUsize>,
+        arrivals: mpsc::Receiver<usize>,
+        first_delivery_release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
     type RecordingCatalogFixture = (
         Arc<LogModuleCatalog>,
         Arc<Mutex<Vec<[u8; 16]>>>,
@@ -991,6 +1063,49 @@ mod tests {
         }
     }
 
+    fn controlled_destination(binding_identifier: [u8; 16]) -> ControlledDestinationFixture {
+        let authority = ServerLogAuthority::new();
+        let binding =
+            AuditDestinationBinding::from_server_authority(&authority, binding_identifier, 1)
+                .expect("the binding is valid");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (arrivals, arrived) = mpsc::channel();
+        let first_delivery_release = Arc::new((Mutex::new(false), Condvar::new()));
+        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "controlled",
+            LogCapabilities::new(vec![LogRecordType::Audit]).expect("the capability is valid"),
+            Box::new(ControlledFactory {
+                attempts: Arc::clone(&attempts),
+                arrivals,
+                first_delivery_release: Arc::clone(&first_delivery_release),
+            }),
+        )])
+        .expect("the catalog is valid");
+        let destination = catalog
+            .create_destination(
+                &LogModuleIdentifier::new("controlled").expect("the identifier is valid"),
+                &TrustedLogModuleContext::from_server_authority(
+                    &authority,
+                    PathBuf::from("/unused"),
+                    [0x73; 16],
+                ),
+            )
+            .expect("the destination opens");
+        ControlledDestinationFixture {
+            binding: binding.clone(),
+            destination: OperationalAuditDestination {
+                authority,
+                binding,
+                module: LogModuleIdentifier::new("controlled")
+                    .expect("the module identifier is valid"),
+                destination,
+            },
+            attempts,
+            arrivals: arrived,
+            first_delivery_release,
+        }
+    }
+
     fn recording_catalog(fail_on_attempt: Option<usize>) -> RecordingCatalogFixture {
         let delivered = Arc::new(Mutex::new(Vec::new()));
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -1036,6 +1151,7 @@ mod tests {
                 .expect("the deployment identifier is valid"),
             reporting,
             destination_override: Some(destination),
+            drain_permit: Mutex::new(()),
             state: Mutex::new(OperationalAuditRecoveryState {
                 active: AuditRecoverySequenceState::RecoveryRequired,
                 late_delivery: AuditRecoverySequenceState::RecoveryRequired,
@@ -1143,6 +1259,64 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_drains_deliver_and_acknowledge_one_obligation_once() {
+        let ControlledDestinationFixture {
+            binding,
+            destination,
+            attempts,
+            arrivals,
+            first_delivery_release,
+        } = controlled_destination([0x3D; 16]);
+        let store = Arc::new(Mutex::new(StoreState {
+            active: VecDeque::from([obligation(&binding, 92)]),
+            ..StoreState::default()
+        }));
+        let recovery = Arc::new(recovery(database(Arc::clone(&store)), destination));
+
+        let first_recovery = Arc::clone(&recovery);
+        let first = thread::spawn(move || first_recovery.drain_before_consequential_operation());
+        assert_eq!(
+            arrivals.recv_timeout(Duration::from_secs(1)),
+            Ok(1),
+            "the first drain must reach destination delivery"
+        );
+
+        let (second_started, second_is_running) = mpsc::channel();
+        let second_recovery = Arc::clone(&recovery);
+        let second = thread::spawn(move || {
+            second_started
+                .send(())
+                .expect("the test must observe the second drain start");
+            second_recovery.drain_before_consequential_operation()
+        });
+        second_is_running
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the second drain must start");
+        let concurrent_delivery = arrivals.recv_timeout(Duration::from_secs(1));
+
+        let (released, wake) = &*first_delivery_release;
+        *released.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        wake.notify_all();
+
+        let first = first.join().expect("the first drain must not panic");
+        let second = second.join().expect("the second drain must not panic");
+        assert!(
+            concurrent_delivery.is_err(),
+            "the second drain must wait before destination delivery"
+        );
+        assert_eq!(first.active(), AuditRecoverySequenceState::Ready);
+        assert_eq!(first.late_delivery(), AuditRecoverySequenceState::Ready);
+        assert_eq!(second.active(), AuditRecoverySequenceState::Ready);
+        assert_eq!(second.late_delivery(), AuditRecoverySequenceState::Ready);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let store = store.lock().expect("the fake store must not poison");
+        assert_eq!(store.acknowledgement_calls, 1);
+        assert_eq!(store.active_list_calls, 2);
+        assert_eq!(store.late_list_calls, 2);
+        assert!(store.active.is_empty());
+    }
+
+    #[test]
     fn a_full_bounded_batch_continues_on_the_next_drain_invocation() {
         let DestinationFixture {
             binding,
@@ -1212,6 +1386,7 @@ mod tests {
                 .expect("the deployment identifier is valid"),
             reporting: reporting_without_system(),
             destination_override: None,
+            drain_permit: Mutex::new(()),
             state: Mutex::new(OperationalAuditRecoveryState {
                 active: AuditRecoverySequenceState::Ready,
                 late_delivery: AuditRecoverySequenceState::Ready,
@@ -1360,6 +1535,7 @@ mod tests {
                 .expect("the deployment identifier is valid"),
             reporting,
             destination_override: None,
+            drain_permit: Mutex::new(()),
             state: Mutex::new(OperationalAuditRecoveryState {
                 active: AuditRecoverySequenceState::Ready,
                 late_delivery: AuditRecoverySequenceState::Ready,
@@ -1544,6 +1720,7 @@ mod tests {
                 .expect("the deployment identifier is valid"),
             reporting: reporting_without_system(),
             destination_override: None,
+            drain_permit: Mutex::new(()),
             state: Mutex::new(OperationalAuditRecoveryState {
                 active: AuditRecoverySequenceState::Ready,
                 late_delivery: AuditRecoverySequenceState::Ready,

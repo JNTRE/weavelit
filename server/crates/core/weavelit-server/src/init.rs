@@ -1320,6 +1320,7 @@ mod tests {
         StartupOutcome, bounded_response_from_axum, classify_restricted_startup,
         close_active_database, fallback_router,
         operational::test_support::ActivationBarrier,
+        operational_audit::{AuditRecoverySequenceState, OperationalAuditRecoveryState},
         server_components, sqlite_catalog,
         tests::assert_no_write_ahead_log,
         transport::{
@@ -1508,6 +1509,16 @@ mod tests {
         /// tests, which release that lock first.
         fn record_state(&self) -> LifecycleState {
             self.startup.composition.adapter.arbiter.record_state()
+        }
+
+        fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
+            self.orchestrator()
+                .operational
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .expect("completed Init retains its operational composer")
+                .activation_audit_recovery_state()
         }
 
         fn anchor_snapshot(&self) -> Vec<(OsString, Vec<u8>, i64, i64)> {
@@ -2637,7 +2648,7 @@ mod tests {
         );
         assert_eq!(
             recorder.delivered_with_classification(AUDIT_LOG_UNAVAILABLE_CLASSIFICATION),
-            2
+            0
         );
         assert_eq!(surface.record_state(), LifecycleState::Initialized);
     }
@@ -2971,7 +2982,7 @@ mod tests {
         );
         assert_eq!(
             recorder.delivered_with_classification(AUDIT_LOG_UNAVAILABLE_CLASSIFICATION),
-            2
+            0
         );
         assert_eq!(surface.record_state(), LifecycleState::Initialized);
     }
@@ -3064,7 +3075,7 @@ mod tests {
         );
         assert_eq!(
             recorder.delivered_with_classification(AUDIT_LOG_UNAVAILABLE_CLASSIFICATION),
-            2
+            0
         );
     }
 
@@ -3698,7 +3709,16 @@ mod tests {
             &surface.state_root,
             AUDIT_LOG_UNAVAILABLE_CLASSIFICATION,
         );
-        assert_eq!(unavailable_records.len(), 2);
+        let activation_recovery = surface.activation_audit_recovery_state();
+        assert_eq!(
+            activation_recovery.active(),
+            AuditRecoverySequenceState::Ready
+        );
+        assert_eq!(
+            activation_recovery.late_delivery(),
+            AuditRecoverySequenceState::Ready
+        );
+        assert!(unavailable_records.is_empty());
 
         let (_root, state_root) = surface.release();
         let startup =
@@ -3751,13 +3771,12 @@ mod tests {
             system_log_records_for_classification(&state_root, INIT_CLASSIFICATION),
             init_records
         );
-        assert_eq!(
+        assert!(
             system_log_records_for_classification(
                 &state_root,
                 AUDIT_LOG_UNAVAILABLE_CLASSIFICATION,
             )
-            .len(),
-            unavailable_records.len() + 2
+            .is_empty()
         );
 
         assert_signs_in(&served).await;

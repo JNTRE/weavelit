@@ -61,6 +61,9 @@ fresh record identifier and event time, uses the fixed correlation identifier
 once for each encountered failure, absorbs construction or System destination
 failure, and never re-enters Audit recovery. Raw dependency errors, committed
 settings, and obligation projections do not enter this path.
+Successful assignment resolution and empty active or late-delivery sequence
+reads are healthy results. Activation reports both empty sequences as `ready`
+and does not construct a `dependency.audit-log-unavailable` System record.
 
 ## Related Documents
 

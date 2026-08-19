@@ -436,11 +436,21 @@ pre-consequential drain whose active-sequence state is `ready`, `pending`, or
 `recovery required`; it does not map that state to a client error and cannot
 reinterpret a committed mutation as rejected. Active obligations and
 superseded late-delivery originals drain as separate oldest-first sequences.
+One process-local permit serializes complete drain invocations. A concurrent
+pre-consequential drain waits for the current drain to finish, then lists the
+store again, so two invocations in one Server process cannot deliver the same
+pending obligation concurrently. The permit is independent of the Application
+Database lane.
 Each bounded read and exact acknowledgement holds the Application Database
 lane only for that operation; obligation import, binding resolution, and Log
 Module delivery run after the lane is released. A failure stops only its
 current sequence and leaves the failed oldest obligation durable. The
 coordinator owns no background loop, timer, queue, or automatic retry.
+
+A healthy activation with empty active and late-delivery sequences reports
+both sequences as `ready` and emits no
+`dependency.audit-log-unavailable` System Log. A successful empty list is not
+an unavailable dependency.
 
 Assignment resolution, obligation listing or import, destination delivery, and
 database acknowledgement failures each trigger one best-effort
