@@ -280,6 +280,51 @@ The Audit catalog separately names
 `authorization.group-grant.removal-denied`; neither catalog entry causes the
 producer to emit a System Log or orchestrate a mutation.
 
+## Operational Terminal Recovery
+
+The `weavelit-server` operational composer owns one process-local recovery
+coordinator for the selected **[Application Database](../../glossary.md#applications-and-interfaces)**.
+It invokes a bounded drain once during activation and exposes the same internal
+drain immediately before a future consequential mutation. It runs no
+background loop, timer, client route, configuration action, or independent
+retry schedule. Activation recovery does not prevent the Server from exposing
+read and authentication functions; a future consequential writer must inspect
+the active-sequence result before mutation.
+
+Every drain obtains one process-local permit, reloads initialized state, and
+resolves the current Audit assignment again. The initial committed assignment
+produces immutable binding version `1`, whose identity is the assigned Log
+Module configuration identifier. Trusted Server code derives that binding and
+the configured destination together and constructs one
+`ResolvedAuditDestination`; an independently supplied destination cannot be
+paired by comparing binding bytes alone.
+
+The coordinator drains active obligations first and late-delivery obligations
+second. Each sequence is independently listed oldest first with at most the
+Application Database contract's fixed batch maximum. A full batch returns
+`Pending` so another activation or pre-consequential invocation may continue;
+it does not loop through an unbounded backlog. Failure in one sequence does not
+prevent the bounded attempt for the other sequence.
+
+The database operation lane is held only while listing opaque rows or applying
+one acknowledgement proof. After listing, Server Audit imports and validates
+the opaque projection outside that lane, verifies its separately stored record
+identity and binding, and delivers through the trusted resolved pair. Only an
+exact durable destination acknowledgement becomes the database proof used to
+acknowledge the oldest eligible obligation. Import, binding, delivery, or
+acknowledgement failure leaves the obligation pending. Concurrent drains are
+serialized across resolution, both sequences, delivery, and acknowledgement,
+so two gates cannot deliver one listed obligation concurrently.
+
+Each list, import, assignment-resolution, delivery, or acknowledgement failure
+attempts one safe `dependency.audit-log-unavailable` System record through the
+independently opened System Log destination. Reporting contains only the
+validated destination module and the fixed `internal.log-policy.changed`
+classification; raw database, projection, destination, setting, record, or
+request content is never rendered. Reporting failure is absorbed. A healthy
+empty activation emits no unavailable event, and terminal recovery has no
+client error mapping.
+
 ## Administrative Event Taxonomy
 
 **[Audit Logs](../../glossary.md#applications-and-interfaces)** use lowercase

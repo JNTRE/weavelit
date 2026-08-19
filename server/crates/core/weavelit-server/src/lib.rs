@@ -66,6 +66,7 @@ pub mod authentication;
 pub mod authorization;
 pub mod init;
 pub mod operational;
+mod operational_audit;
 pub mod operational_logging;
 pub mod reconciliation;
 pub mod restore;
@@ -3008,6 +3009,7 @@ pub(crate) mod tests {
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
+        operational_audit::AuditRecoverySequenceState,
         parse_http_request, processing_response, raw_header_section_bytes,
         read_default_profile_request, read_request_head_until, redacted_response,
         request_timeout_response,
@@ -3839,7 +3841,7 @@ pub(crate) mod tests {
             recovery_public_key: RecoveryPublicKey::new("age1recoverypublickeyvalue").unwrap(),
             log_module_configurations: vec![LogModuleConfiguration {
                 identifier: configuration_identifier,
-                module: Name::new("log-sqlite").unwrap(),
+                module: Name::new(weavelit_module_log_sqlite::MODULE_IDENTIFIER).unwrap(),
                 name: Name::new("local").unwrap(),
                 enabled: true,
                 settings: vec![],
@@ -3923,6 +3925,45 @@ pub(crate) mod tests {
                 deployment_identifier
             }
         );
+    }
+
+    #[test]
+    fn a_healthy_sqlite_operational_activation_is_ready_and_silent() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        seal_deployment(&state_root);
+
+        let startup = classify_restricted_startup(&state_root)
+            .expect("a sealed deployment must reach normal operation");
+        let composer = operational_composer(&startup, "127.0.0.1:8443".parse().unwrap());
+
+        let activation = composer.activation_audit_recovery_state();
+        assert_eq!(activation.active(), AuditRecoverySequenceState::Ready);
+        assert_eq!(
+            activation.late_delivery(),
+            AuditRecoverySequenceState::Ready
+        );
+        let before_consequential = composer.drain_audit_before_consequential_operation();
+        assert_eq!(
+            before_consequential.active(),
+            AuditRecoverySequenceState::Ready
+        );
+        assert_eq!(
+            before_consequential.late_delivery(),
+            AuditRecoverySequenceState::Ready
+        );
+
+        let connection = rusqlite::Connection::open(state_root.join("log.sqlite3")).unwrap();
+        let unavailable_records: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM weavelit_log_system_records \
+                 WHERE classification = 'dependency.audit-log-unavailable'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unavailable_records, 0);
     }
 
     #[test]

@@ -32,6 +32,16 @@ Modules, generate or accept private recovery keys, interpret backup contents,
 or implement client presentation. Those responsibilities remain in their
 workflow and Client Module boundaries.
 
+After selection or reopening succeeds, lifecycle binds the opened database to
+both Server-issued persistence decoders in one private-field `SelectedDatabase`:
+the typed Audit Reference decoder and the opaque Audit terminal recovery
+decoder. The operational runtime may clone the latter capability so Server
+Audit can validate a listed opaque row after the database operation lane has
+been released. The decoder remains inseparable from the selected operational
+handle's authority: neither an Application Database backend nor an ordinary
+caller can issue it, parse a terminal projection, or mint an acknowledgement
+proof.
+
 The backend-neutral domain and catalog layer defines the three canonical
 lifecycle states, the nonzero 16-byte locator generation, version 1
 deployment-record and locator domain values, and the later startup capability

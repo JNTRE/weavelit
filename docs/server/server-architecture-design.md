@@ -227,6 +227,17 @@ construct `SelectedDatabase`, issue either persistence capability, forge an
 opaque recovery obligation or validated write, or forge database
 acknowledgement proof.
 
+The executable's operational composition retains the selected database's
+opaque terminal recovery decoder in the same shared operational handle while
+serializing backend access through the database lane. Listing and
+acknowledgement hold that lane briefly; Server Audit import, assignment
+resolution, and Log Module delivery occur after it is released. A separate
+process-local permit serializes each complete bounded activation or
+pre-consequential drain, including active then late-delivery sequencing. This
+keeps database backends field-blind, permits destination delivery to reenter an
+unrelated database read, and prevents concurrent gates from delivering one
+listed obligation twice before either can acknowledge it.
+
 `weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
 shared by **[Init](../glossary.md#states-and-requests)** and
 **[Restore](../glossary.md#states-and-requests)**. The two workflow crates own

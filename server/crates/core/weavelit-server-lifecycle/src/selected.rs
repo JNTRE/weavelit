@@ -1,8 +1,9 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use weavelit_server_database::{
-    AccountAuditReference, ApplicationDatabase, AuditReferencePersistence, DatabaseError,
-    DeploymentIdentifier, GroupAuditReference, InitializedState, StateIdentifier,
+    AccountAuditReference, ApplicationDatabase, AuditReferencePersistence,
+    AuditTerminalRecoveryPersistence, DatabaseError, DeploymentIdentifier, GroupAuditReference,
+    InitializedState, StateIdentifier,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
@@ -14,6 +15,7 @@ use weavelit_server_database_authority::ServerDatabaseAuthority;
 pub struct SelectedDatabase {
     database: Box<dyn ApplicationDatabase>,
     persistence: AuditReferencePersistence,
+    audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
 }
 
 pub(crate) fn selected_database(database: Box<dyn ApplicationDatabase>) -> SelectedDatabase {
@@ -34,6 +36,9 @@ impl SelectedDatabase {
         Self {
             database,
             persistence: AuditReferencePersistence::from_server_authority(authority),
+            audit_terminal_recovery_persistence: Arc::new(
+                AuditTerminalRecoveryPersistence::from_server_authority(authority),
+            ),
         }
     }
 
@@ -46,6 +51,12 @@ impl SelectedDatabase {
     #[must_use]
     pub const fn audit_reference_persistence(&self) -> AuditReferencePersistence {
         self.persistence
+    }
+
+    /// Returns the opaque recovery decoder bound to this selected database.
+    #[must_use]
+    pub fn audit_terminal_recovery_persistence(&self) -> Arc<AuditTerminalRecoveryPersistence> {
+        Arc::clone(&self.audit_terminal_recovery_persistence)
     }
 
     /// Loads initialized state through this selected database's decoder.
