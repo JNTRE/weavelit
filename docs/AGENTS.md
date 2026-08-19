@@ -22,11 +22,11 @@ Use this section as the source of truth for what assets belong in this directory
 - `client-modules/`: Documentation for the server-side **[Client Modules](glossary.md#applications-and-interfaces)** that provide client-facing connection surfaces to the Weavelit Server.
 - `clients/`: Documentation for individual client applications, including the **[Weavelit CLI](glossary.md#applications-and-interfaces)** and **[Web UI](glossary.md#applications-and-interfaces)**.
 - `containers/`: Development and production OCI container-image documentation.
-- `documentation-standards.md`: Shared authority, document-type, lifecycle, structure, and writing standards for production documentation under `docs/`.
+- `documentation-standards.md`: Shared authority, structure, and writing standards for application documentation under `docs/`.
 - `glossary.md`: Canonical definitions for Weavelit applications, interfaces, identities, access, states, and requests.
 - `log-modules/`: Documentation for server-side **[Log Modules](glossary.md#applications-and-interfaces)** that persist or deliver System Logs and Audit Logs.
 - `mfa-modules/`: Documentation for server-side **[MFA Modules](glossary.md#applications-and-interfaces)** and their method-specific enrollment, verification, and protected factor-data handling.
-- `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Technical Specification, Glossary, or an architecture decision record.
+- `open-questions.md`: Unresolved architecture and product decisions; resolved decisions belong in the Vision, Technical Specification, Glossary, or the relevant design document.
 - `project/`: Delivery-planning documentation, the GitHub Project binding file (`project.yaml`), and agent-authored issue templates (`issue_templates/`); follow `project/AGENTS.md` for changes within it.
 - `security-model.md`: Protected assets, trust assumptions, cross-cutting security invariants, and approved security profiles supporting the Technical Specification.
 - `server/`: Implementation-design documentation for the **[Weavelit Server](glossary.md#applications-and-interfaces)**, including its API, authentication, authorization, **[Automation Identity](glossary.md#identities-and-access)**, audit, and observability boundaries.
@@ -40,10 +40,10 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
+- Before creating or updating application documentation, read the [Documentation Standards](documentation-standards.md) and apply its authority, structure, and writing rules.
 - Make minimal, targeted edits; avoid broad rewrites unless explicitly requested.
 - Use `glossary.md` for canonical terms and keep their usage consistent across the documentation.
-- Record settled product, security, or technical commitments in `spec.md`; remove a resolved item from `open-questions.md` and place its decision in the appropriate canonical document or an architecture decision record.
+- Record settled product, security, or technical commitments in `spec.md`; remove a resolved item from `open-questions.md` and place its decision in the appropriate canonical or design document.
 - Keep GitHub Milestones aligned with canonical documents for settled product,
   security, and technical decisions instead of redefining those decisions.
 - Keep security constraints in `security-model.md` aligned with `spec.md`, and preserve each document's stated scope.
