@@ -30,7 +30,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`,
   `../../AGENTS.md`, `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
+- Before creating or updating a production document, read the [Documentation Standards](../../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
 - Keep SQLite-specific driver, schema migration, transaction, connection-health,
   and error behavior in this folder.
 - Update shared backend-contract documentation in `../` and canonical decisions

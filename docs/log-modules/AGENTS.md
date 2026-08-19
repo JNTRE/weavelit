@@ -24,7 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
+- Before creating or updating a production document, read the [Documentation Standards](../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
 - Keep Log Module design aligned with the canonical logging policy in `../spec.md` and `../security-model.md`.
 - Record only genuinely unresolved destination implementation choices in `../open-questions.md`; do not restate the settled destination recovery and retention policies there.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.

@@ -23,7 +23,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
+- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
 - Update the parent Init, Restore, or lifecycle design when Server contract behavior changes; update a user story here for the resulting user-visible sequence and responsibilities.
 - Update affected `Related Documents` links in the same change whenever a document is added, moved, renamed, replaced, or retired.
 - Make minimal, targeted edits and preserve each user story's workflow-oriented structure unless the task requires a broader revision.

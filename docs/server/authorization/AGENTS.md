@@ -25,7 +25,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
+- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
 - Keep authorization design aligned with `../../security-model.md` and record only settled commitments in `../../spec.md`.
 - Keep credential validation in `../authentication/` and service-specific **[Operation](../../glossary.md#applications-and-interfaces)** behavior in `../../service-modules/`.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.

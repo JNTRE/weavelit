@@ -16,14 +16,13 @@ Use this section as the source of truth for what assets belong in this directory
 
 - `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server authentication.
 - `authentication-design.md`: Canonical implementation design for Server authentication.
-- `temporary-password-disclosure-decision.md`: Accepted ADR preserving the temporary-password one-response disclosure decision.
 
 ## Usage Guidance
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
+- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
 - Keep authentication design aligned with `../../security-model.md` and record only settled commitments in `../../spec.md`.
 - Keep authorization evaluation in `../authorization/` and use `../../glossary.md` for canonical terminology.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.

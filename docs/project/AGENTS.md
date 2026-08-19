@@ -30,7 +30,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read the nearest `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the
   [Documentation Standards](../documentation-standards.md) and apply its
-  authority, document-type, lifecycle, structure, and writing rules.
+  authority, document-type, structure, and writing rules.
 - Read the authoritative GitHub Issue directly before changing an issue.
 - Read GitHub directly before changing Issue, Pull Request, milestone, or
   Project state. Use `project-standards.md` only to route legacy references to current authorities.

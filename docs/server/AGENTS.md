@@ -33,7 +33,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing this directory, read this `AGENTS.md`, then `../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the
   [Documentation Standards](../documentation-standards.md) and apply its
-  authority, document-type, lifecycle, structure, and writing rules.
+  authority, document-type, structure, and writing rules.
 - Keep broad shared Server design documentation directly in this folder; place pre-operational lifecycle design, boundary-specific detail, and user-visible lifecycle narratives in their appropriate child directories.
 - Update `../spec.md` for settled commitments and `../open-questions.md` for unresolved choices instead of treating local design documentation as their replacement.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.

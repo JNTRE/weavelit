@@ -24,7 +24,7 @@ Use this section as the source of truth for what assets belong in this directory
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
+- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
 - Keep audit design aligned with `../../spec.md` and `../../security-model.md`; record unresolved retention and backup choices in `../../open-questions.md`.
 - Keep operational diagnosis in `../observability/` and Audit Log storage and delivery design in `../../log-modules/`.
 - Make minimal, targeted changes and update this inventory when assets are added, removed, renamed, or moved.

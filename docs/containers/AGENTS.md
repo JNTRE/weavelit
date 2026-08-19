@@ -33,7 +33,7 @@ Follow this section for workflow, sequencing, and decision order when making cha
   repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the
   [Documentation Standards](../documentation-standards.md) and apply its
-  authority, document-type, lifecycle, structure, and writing rules.
+  authority, document-type, structure, and writing rules.
 - Keep the development image and production OCI image as separate artifacts;
   do not make production behavior a development-image mode.
 - Preserve OCI-compatible image contracts. Docker may be documented as a local

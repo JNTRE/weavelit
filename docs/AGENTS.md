@@ -44,7 +44,6 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Make minimal, targeted edits; avoid broad rewrites unless explicitly requested.
 - Use `glossary.md` for canonical terms and keep their usage consistent across the documentation.
 - Record settled product, security, or technical commitments in `spec.md`; remove a resolved item from `open-questions.md` and place its decision in the appropriate canonical or design document.
-- Keep GitHub Milestones aligned with canonical documents for settled product,
   security, and technical decisions instead of redefining those decisions.
 - Keep security constraints in `security-model.md` aligned with `spec.md`, and preserve each document's stated scope.
 
@@ -58,7 +57,6 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Preserve the required heading order and keep this guide under 100 lines.
 - Use the exact canonical names defined in `glossary.md` when documenting Weavelit concepts.
 - On first substantive use in each document section, write a canonical glossary term
   as a bold link to its glossary category; later uses in that section may be plain
