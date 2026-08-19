@@ -38,28 +38,12 @@ Apply instructions in this order:
 - `weavelit-cli/`: Source, tests, and macOS release packaging for the separately packaged Weavelit CLI; follow its local guide.
 - `server/`: Source, tests, Web UI, and Debian release packaging for the Weavelit Server; follow its local guide.
 
-## 3. Usage Guidance
+## 3. Working Rules
 
 - Before editing, read the nearest `AGENTS.md`, then each parent guide upward to this file.
-- Make minimal, targeted changes and preserve the existing document structure unless the task requires a broader revision.
-- Read `CONTRIBUTING.md` before preparing branches, commits, or pull requests; work from `dev` through a focused topic branch, not directly on `main`.
-- Use `<type>/<short-kebab-case-description>` branch names and `<type>(<scope>): <description>` commit messages with a listed required scope.
-- For changes under `docs/`, use the local guide and update the canonical document rather than duplicating product commitments elsewhere.
+- Follow [Contribution Guidelines](CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under `docs/`, application documentation MUST comply with the [Documentation Standards](docs/documentation-standards.md), which govern document creation, document edits, file naming, and document organization.
+- Use the exact canonical names in `docs/glossary.md` when a term is used and format terms as bold links on first substantive use in the text.
 - For changes under `server/` or `weavelit-cli/`, read the matching local guide and the canonical documentation it routes to before editing.
 - For every implementation behavior change, add or update focused automated tests in the same change and run the applicable validation required by [the Testing and Validation Policy](docs/testing.md). Document any unavoidable manual verification in the owning documentation.
-
-## 4. Standards and Conventions
-
-- Name the repository authority file `AGENTS.md` (uppercase).
-- Keep this root `AGENTS.md` as the canonical repository instruction source.
-- Maintain product-specific AI instruction files only as thin shims that link or defer to this root file.
-- Keep this root `AGENTS.md` at 100 lines or fewer.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Preserve the terms and stated boundaries in the canonical documentation when adding or revising product claims.
-- Use the exact canonical names in `docs/glossary.md` when naming Weavelit concepts.
-- On first substantive use in a written section, format a canonical glossary term as a bold link to its glossary category; later uses in that section may be plain text.
 - Update this inventory when repository-level assets, primary folders, or compatibility shims are added, removed, renamed, or moved.
