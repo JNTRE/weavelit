@@ -43,9 +43,3 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
 - Preserve the Server's final, default-deny, per-**[Operation](../../glossary.md#applications-and-interfaces)** authorization boundary; do not grant broad provider-integration access.
-- Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
-- Every production document must include a `## Related Documents` section at the end of the document.
-- `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
-- Include only valid, repository-relative links to existing canonical documents.
-- Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
-- Remove stale links and add canonical links so the section reflects current source-of-truth references.

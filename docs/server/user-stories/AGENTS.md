@@ -25,7 +25,6 @@ Follow this section for workflow, sequencing, and decision order when making cha
 - Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository-root `AGENTS.md`.
 - Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
 - Update the parent Init, Restore, or lifecycle design when Server contract behavior changes; update a user story here for the resulting user-visible sequence and responsibilities.
-- Update affected `Related Documents` links in the same change whenever a document is added, moved, renamed, replaced, or retired.
 - Make minimal, targeted edits and preserve each user story's workflow-oriented structure unless the task requires a broader revision.
 
 ## Standards and Conventions
@@ -41,8 +40,3 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Preserve the required heading order and keep this guide under 100 lines.
 - Use exact canonical names from `../../glossary.md`; on first substantive use in a section, format a canonical term as a bold link to its glossary category.
 - Keep user-visible workflow narratives in this directory and Server implementation contracts in the parent design documents.
-- Every production document must include a `## Related Documents` section at the end of the document.
-- `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
-- Include only valid, repository-relative links to existing canonical documents.
-- Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
-- Remove stale links and add canonical links so the section reflects current source-of-truth references.

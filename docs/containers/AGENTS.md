@@ -51,9 +51,3 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
 - The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
 - Preserve the required heading order and keep this guide under 100 lines.
-- Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
-- Every production document must include a `## Related Documents` section at the end of the document.
-- `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
-- Include only valid, repository-relative links to existing canonical documents.
-- Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
-- Remove stale links and add canonical links so the section reflects current source-of-truth references.

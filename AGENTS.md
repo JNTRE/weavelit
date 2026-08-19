@@ -1,43 +1,32 @@
 # Weavelit Agent Guide
 
-Weavelit is a self-hosted gateway for AI-assisted operational workflows through
-deliberately supported Service Modules. This repository contains the Server and
-Weavelit CLI applications, their supporting documentation, and contribution
-workflow; this guide routes work to the relevant local guidance.
+Weavelit is a self-hosted gateway for AI-assisted operational workflows through deliberately supported Service Modules. This repository contains the Server and Weavelit CLI applications, their supporting documentation, and contribution workflow; this guide routes work to the relevant local guidance.
 
 ## Instruction Precedence
 
 Apply instructions in this order:
 
 1. Nearest folder-level `AGENTS.md` in the path being edited.
-2. Repository root `AGENTS.md` (this file).
+2. Repository root `AGENTS.md`.
 3. Tool-specific overlays for runtime behavior only.
 
-## 1. Purpose and Scope
+## Purpose and Scope
 
 - The repository owns the Weavelit Server, the separately packaged Weavelit CLI, and their canonical product, security, and technical direction.
 - Root-level work covers contribution policy, repository orientation, workspace metadata, and routing into implementation and documentation boundaries.
-- This `AGENTS.md` is the canonical source of repository-wide agent guidance; `docs/AGENTS.md` owns documentation-specific workflow.
 - Do not introduce product-specific AI instruction shims unless a tool requires one; any such shim must defer to this file.
 
-## 2. Asset Inventory
+## Asset Inventory
 
-- `AGENTS.md`: Canonical repository-wide agent routing and standards.
-- `.github/`: GitHub-specific repository metadata, including the Copilot compatibility shim.
-- `.github/copilot-instructions.md`: Compatibility shim that defers to this guide.
-- `.gitignore`: Git ignore rules for local macOS, build, backup, and workspace artifacts.
-- `.dockerignore`: Docker build-context exclusions for the dev container image build.
-- `.devcontainer/`: VS Code Dev Containers configuration for local development workflows.
-- `.vscode/`: Shared VS Code workspace settings.
-- `CONTRIBUTING.md`: Branch, pull-request, branch-name, agent-created issue-title,
-  and Conventional Commit requirements.
+- `CONTRIBUTING.md`: Branch, pull-request, branch-name, and commit message requirements.
 - `README.md`: Repository identification and high-level implementation layout.
 - `docs/`: Canonical product, security, terminology, and unresolved-decision documentation; follow `docs/AGENTS.md` for changes within it.
+- `docs/spec.md`, `docs/glossary.md`, `docs/vision.md`: Canonical specification, terminology, and project vision (when present).
 - `project/`: GitHub Project and Repository binding, Issue invariants and templates; follow its local guide.
 - `weavelit-cli/`: Source, tests, and macOS release packaging for the separately packaged Weavelit CLI; follow its local guide.
 - `server/`: Source, tests, Web UI, and Debian release packaging for the Weavelit Server; follow its local guide.
 
-## 3. Working Rules
+## Working Rules
 
 - Before editing, read the nearest `AGENTS.md`, then each parent guide upward to this file.
 - Follow [Contribution Guidelines](CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
