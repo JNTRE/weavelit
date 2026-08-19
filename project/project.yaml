@@ -18,7 +18,7 @@ project:
   title: Weavelit
   url: https://github.com/orgs/JNTRE/projects/1
   issue_templates:
-    directory: /docs/project/issue_templates
+    directory: /project/issue_templates
     allowed_types:
       - name: task
         template: task-template.md

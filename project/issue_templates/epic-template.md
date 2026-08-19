@@ -31,5 +31,5 @@ assign the component labels, Priority, milestone, Project status, and child issu
 
 ## Related Documents
 
-- [Contributing](../../../CONTRIBUTING.md)
+- [Contributing](../../CONTRIBUTING.md)
 - [Project Planning Guide](../AGENTS.md)

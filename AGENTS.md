@@ -24,8 +24,6 @@ Apply instructions in this order:
 
 - `AGENTS.md`: Canonical repository-wide agent routing and standards.
 - `.github/`: GitHub-specific repository metadata, including the Copilot compatibility shim.
-- `docs/project/project.yaml`: Minimal tracked repository and GitHub Project binding for
-  JNTRE workflow operations; it does not duplicate live GitHub configuration.
 - `.github/copilot-instructions.md`: Compatibility shim that defers to this guide.
 - `.gitignore`: Git ignore rules for local macOS, build, backup, and workspace artifacts.
 - `.dockerignore`: Docker build-context exclusions for the dev container image build.
@@ -35,6 +33,7 @@ Apply instructions in this order:
   and Conventional Commit requirements.
 - `README.md`: Repository identification and high-level implementation layout.
 - `docs/`: Canonical product, security, terminology, and unresolved-decision documentation; follow `docs/AGENTS.md` for changes within it.
+- `project/`: GitHub Project binding, planning invariants, and agent-authored Issue templates; follow its local guide.
 - `weavelit-cli/`: Source, tests, and macOS release packaging for the separately packaged Weavelit CLI; follow its local guide.
 - `server/`: Source, tests, Web UI, and Debian release packaging for the Weavelit Server; follow its local guide.
 

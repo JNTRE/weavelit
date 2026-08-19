@@ -1,6 +1,6 @@
 # Issue Templates Agent Guide
 
-This `docs/project/issue_templates/` directory defines the Markdown bodies
+This `project/issue_templates/` directory defines the Markdown bodies
 that agents copy into temporary files before creating Weavelit GitHub issues
 through `gh issue create`. Each file corresponds to one native GitHub issue
 type and preserves a reviewable issue structure without relying on GitHub Issue
@@ -32,7 +32,8 @@ Use this section as the source of truth for what assets belong in this directory
 
 Follow this section for workflow, sequencing, and decision order when making changes in this directory.
 
-- Before editing, read this `AGENTS.md`, then the repository-root `AGENTS.md`.
+- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, and the
+  repository-root `AGENTS.md`.
 - Select the template whose hidden `Native type` value matches the issue being created.
 - Before creating any native issue type, supply the Conventional Commit-style
   title required for agent-created issues by `CONTRIBUTING.md`; the title is
@@ -54,11 +55,7 @@ Treat every rule in this section as mandatory for formatting, naming, scope boun
 - Keep issue titles out of template bodies; the active issue lifecycle workflow
   validates and passes the title separately at creation time.
 - Keep the `## Related Documents` section at the end of each template and link
-  it to [Contributing](../../../CONTRIBUTING.md).
+  it to [Contributing](../../CONTRIBUTING.md).
 - Do not place live issue assignments or Project values in a template body; apply them after issue creation through the documented GitHub workflow.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
+- Keep templates accurate, complete, and aligned with the configured Issue types.
 - End Markdown files with a single trailing newline.
