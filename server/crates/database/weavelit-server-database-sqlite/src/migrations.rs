@@ -60,6 +60,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0009_add_log_configuration_generations",
         sql: include_str!("../migrations/0009_add_log_configuration_generations.sql"),
     },
+    Migration {
+        sequence: 10,
+        identifier: "0010_migrate_totp_component_enablement",
+        sql: include_str!("../migrations/0010_migrate_totp_component_enablement.sql"),
+    },
 ];
 
 struct AppliedMigration {
@@ -404,6 +409,71 @@ mod tests {
                 )
                 .unwrap(),
             "existing"
+        );
+    }
+
+    #[test]
+    fn failed_totp_enablement_migration_rolls_back_data_and_ledger() {
+        const FAILING_MIGRATION: &str = concat!(
+            include_str!("../migrations/0010_migrate_totp_component_enablement.sql"),
+            "INSERT INTO missing_table VALUES (1);"
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..9]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_lifecycle_state \
+                 (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                 VALUES (1, ?1, 'initialized', NULL, NULL)",
+                [[0x41_u8; 16].as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_configuration \
+                 (component, setting_key, setting_value) VALUES ('mfa.totp', 'enabled', 'true')",
+                [],
+            )
+            .unwrap();
+        let mut migrations = MIGRATIONS.to_vec();
+        migrations[9].sql = FAILING_MIGRATION;
+
+        assert_eq!(
+            apply_migrations(&mut connection, &migrations),
+            Err(DatabaseError::IntegrityFailure)
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT setting_value FROM weavelit_configuration \
+                     WHERE component = 'mfa.totp' AND setting_key = 'enabled'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "true"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_configuration \
+                     WHERE component = 'totp' AND setting_key = 'mfa-module.enabled'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_migration_ledger",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            9
         );
     }
 

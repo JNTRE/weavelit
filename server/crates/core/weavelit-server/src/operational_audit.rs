@@ -15,11 +15,11 @@ use weavelit_server_database::{
     AuditTerminalObligation, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
     AuditTerminalReplayBatchSize, DatabaseError, DeploymentIdentifier, InitializedState,
     LogAssignment, LogConfigurationGeneration, LogConfigurationGenerationKey,
-    LogModuleConfiguration, LogType, MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE,
+    LogModuleConfiguration, LogType, MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, StateIdentifier,
 };
 use weavelit_server_log::{
     AuditDestinationBinding, AuditTerminalReplayError, ConfiguredLogDestination,
-    DestinationSettings, LogModuleCatalog, LogModuleIdentifier, LogRecordType,
+    DestinationSettings, LogDeliveryError, LogModuleCatalog, LogModuleIdentifier, LogRecordType,
     ResolvedAuditDestination, TrustedLogModuleContext, TrustedRecordIssuer,
 };
 use weavelit_server_log_authority::ServerLogAuthority;
@@ -102,6 +102,45 @@ impl OperationalAuditRecovery {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        database: OperationalDatabase,
+        log_catalog: Arc<LogModuleCatalog>,
+        module: LogModuleIdentifier,
+        destination: ConfiguredLogDestination,
+    ) -> Self {
+        let authority = ServerLogAuthority::new();
+        let binding = AuditDestinationBinding::from_server_authority(&authority, [0x68; 16], 1)
+            .expect("the fixed test binding is valid");
+        let reporting_authority = ServerLogAuthority::new();
+        Self {
+            database,
+            producer: ServerAudit::new(TrustedRecordIssuer::from_server_authority(&authority)),
+            log_catalog,
+            state_root: PathBuf::from("/unused"),
+            deployment_identifier: DeploymentIdentifier::from_bytes([0x42; 16])
+                .expect("the fixed deployment identifier is valid"),
+            reporting: OperationalAuditReporting {
+                support: OperationalLogSupport::new(
+                    TrustedRecordIssuer::from_server_authority(&reporting_authority),
+                    None,
+                ),
+                fallback_module: module.clone(),
+            },
+            destination_override: Some(OperationalAuditGenerationDestination {
+                authority,
+                binding,
+                module,
+                destination,
+            }),
+            drain_permit: Mutex::new(()),
+            state: Mutex::new(OperationalAuditRecoveryState {
+                active: AuditRecoverySequenceState::RecoveryRequired,
+                late_delivery: AuditRecoverySequenceState::RecoveryRequired,
+            }),
+        }
+    }
+
     /// Runs one bounded activation drain without deciding whether the Server may start.
     pub(crate) fn drain_for_activation(&self) -> OperationalAuditRecoveryState {
         self.drain()
@@ -111,6 +150,67 @@ impl OperationalAuditRecovery {
     #[allow(dead_code)]
     pub(crate) fn drain_before_consequential_operation(&self) -> OperationalAuditRecoveryState {
         self.drain()
+    }
+
+    /// Runs the post-commit bounded active-then-late recovery drain.
+    pub(crate) fn drain_after_consequential_operation(&self) -> OperationalAuditRecoveryState {
+        self.drain()
+    }
+
+    /// Borrows the producer that constructs records for the owning workflow.
+    pub(crate) const fn producer(&self) -> &ServerAudit {
+        &self.producer
+    }
+
+    /// Resolves and retains the exact current Audit generation for one workflow.
+    pub(crate) fn with_current_destination<R>(
+        &self,
+        operation: impl FnOnce(&OperationalAuditGenerationDestination) -> R,
+    ) -> Result<R, DatabaseError> {
+        #[cfg(test)]
+        if let Some(destination) = self.destination_override.as_ref() {
+            return Ok(operation(destination));
+        }
+
+        let generation = self
+            .database
+            .load_current_audit_log_configuration_generation()?
+            .ok_or(DatabaseError::Unavailable)?;
+        let destination = OperationalAuditGenerationDestination::resolve(
+            &self.log_catalog,
+            &self.state_root,
+            self.deployment_identifier,
+            generation.key(),
+            Some(&generation),
+            ServerLogAuthority::new(),
+        )
+        .map_err(|_| DatabaseError::Unavailable)?;
+        Ok(operation(&destination))
+    }
+
+    /// Best-effort reports an Attempt delivery failure through existing System Log support.
+    pub(crate) fn reject_attempt_delivery(
+        &self,
+        error: LogDeliveryError,
+        record_identifier: [u8; 16],
+        event_time: u64,
+        correlation_identifier: &str,
+        destination_module: &LogModuleIdentifier,
+    ) {
+        let Ok(record_identifier) = StateIdentifier::from_bytes(record_identifier) else {
+            return;
+        };
+        let Ok(event_time) = i64::try_from(event_time) else {
+            return;
+        };
+        let _ = self.reporting.support.reject_consequential_audit_failure(
+            error,
+            record_identifier,
+            event_time,
+            correlation_identifier,
+            destination_module,
+            weavelit_server_log::AuditLogClassification::AuthenticationMfaModuleEnablementChanged,
+        );
     }
 
     fn drain(&self) -> OperationalAuditRecoveryState {
@@ -355,7 +455,7 @@ impl fmt::Debug for OperationalAuditRecovery {
 }
 
 /// Resolver for one authority-selected immutable Audit configuration generation.
-struct OperationalAuditGenerationDestination {
+pub(crate) struct OperationalAuditGenerationDestination {
     authority: ServerLogAuthority,
     binding: AuditDestinationBinding,
     module: LogModuleIdentifier,
@@ -445,8 +545,16 @@ impl OperationalAuditGenerationDestination {
         Ok((module, settings))
     }
 
-    fn module(&self) -> &LogModuleIdentifier {
+    pub(crate) fn module(&self) -> &LogModuleIdentifier {
         &self.module
+    }
+
+    pub(crate) const fn binding(&self) -> &AuditDestinationBinding {
+        &self.binding
+    }
+
+    pub(crate) const fn destination(&self) -> &ConfiguredLogDestination {
+        &self.destination
     }
 
     fn resolved(&self) -> ResolvedAuditDestination<'_> {

@@ -520,9 +520,24 @@ well as the factor: the store reads that component's enabled setting, refuses
 the enrollment when the Module is not enabled, and otherwise writes the factor,
 its confirming watermark, and the session, all in one transaction. It reports
 whether the factor was enrolled, was already present, or was refused because the
-Module was disabled. Changing enabled state is atomic with recounting the
-enrolled accounts an Administrator previewed and with revoking the sessions of
-accounts holding a factor.
+Module was disabled. The store also exposes a target-scoped count of distinct
+enrolled Human Users for the Administrator preview.
+
+Changing enabled state accepts the expected enrolled-Human-User count and two
+opaque, Server Audit-validated terminal writes: applied and count-changed. One
+transaction recounts enrolled Human Users, selects exactly one terminal, and
+persists that obligation. A matching count writes the canonical component
+enablement and, on disablement, revokes every session belonging to an enrolled
+Human User before committing the applied terminal. A changed count commits only
+the count-changed terminal and returns the current affected-Human-User count.
+Any state, session, or obligation failure rolls the whole transaction back.
+The backend neither parses the terminal nor accepts a standalone enqueue.
+
+The canonical TOTP entry is component `totp`, key `mfa-module.enabled`. Init
+seeds it to a disabled value. Restore normalization removes the former
+`mfa.totp` / `enabled` entry and emits exactly one canonical entry, preserving
+an exact canonical value when no legacy entry is present and otherwise deriving
+the canonical value from the legacy entry. No second mutable authority remains.
 
 A watermark is live operational data in the same sense as a session: it belongs
 to the running deployment rather than to the restorable aggregate. It is not a

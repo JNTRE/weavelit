@@ -62,6 +62,7 @@ use weavelit_server_log::LogModuleCatalog;
 use weavelit_server_restore::{Name, TOTAL_REQUEST_DEADLINE};
 use zeroize::{Zeroize, Zeroizing};
 
+pub(crate) mod administration;
 pub mod authentication;
 pub mod authorization;
 pub mod init;

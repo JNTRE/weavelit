@@ -31,9 +31,10 @@ use weavelit_server_authentication::RustCryptoArgon2;
 #[cfg(test)]
 use weavelit_server_database::AuditReferencePersistence;
 use weavelit_server_database::{
-    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, LogConfigurationGeneration,
-    LogConfigurationGenerationKey, LogConfigurationGenerationPersistence,
-    LogConfigurationGenerationStore, LogConfigurationVersion, StateIdentifier,
+    AccountAuditReference, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
+    LogConfigurationGeneration, LogConfigurationGenerationKey,
+    LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
+    LogConfigurationVersion, MfaStore, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
@@ -253,6 +254,35 @@ impl OperationalDatabase {
                 operation(&mut **database)
             }
         })
+    }
+
+    /// Runs one short target-scoped operation against MFA storage.
+    pub(crate) fn with_mfa<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn MfaStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| operation(database.mfa().ok_or(DatabaseError::Unavailable)?))?
+    }
+
+    /// Loads the authenticated actor's typed Audit Reference through database authority.
+    pub(crate) fn load_account_audit_reference(
+        &self,
+        account: StateIdentifier,
+    ) -> Result<Option<AccountAuditReference>, DatabaseError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| DatabaseError::Unavailable)?;
+        match database.as_mut().ok_or(DatabaseError::Unavailable)? {
+            OperationalDatabaseHandle::Selected(database) => {
+                database.load_account_audit_reference(account)
+            }
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest {
+                database,
+                audit_reference_persistence,
+            } => database.load_account_audit_reference(audit_reference_persistence, account),
+        }
     }
 
     /// Runs one short operation against terminal recovery storage and its decoder.
@@ -519,6 +549,17 @@ impl OperationalComposer {
         &self,
     ) -> OperationalAuditRecoveryState {
         self.audit_recovery.drain_before_consequential_operation()
+    }
+
+    /// Returns the internal TOTP enablement workflow over this operational composition.
+    #[allow(dead_code)]
+    pub(crate) fn mfa_module_enablement_workflow(
+        &self,
+    ) -> crate::administration::MfaModuleEnablementWorkflow<'_> {
+        crate::administration::MfaModuleEnablementWorkflow::new(
+            &self.database,
+            &self.audit_recovery,
+        )
     }
 
     /// Returns the state observed by the activation drain.

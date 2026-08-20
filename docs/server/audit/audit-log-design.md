@@ -10,9 +10,10 @@ catalog implementation, and destination storage remain defined by the
 This document does not define Audit Log retrieval, query, export, client
 presentation, destination-specific storage, or destination redaction.
 
-`weavelit-server-audit` implements this producer boundary. The
+`weavelit-server-audit` implements this producer boundary. The first consuming
 **[Administration Plane](../../glossary.md#applications-and-interfaces)**
-workflows that consume it remain future work.
+workflow is the Server-owned, transport-independent TOTP MFA Module enablement
+change; other administration mutations remain future work.
 
 ## Ownership And Invariants
 
@@ -200,8 +201,7 @@ protected-data requirements are authoritative in the [Authentication Design](../
 and [Security Model](../../security-model.md#multifactor-authentication-security-profile);
 this document does not restate their session or enrollment semantics.
 
-The future owning
-**[Administration Plane](../../glossary.md#applications-and-interfaces)**
+The owning **[Administration Plane](../../glossary.md#applications-and-interfaces)**
 workflow must sequence construction and delivery as follows. The producer does
 not authorize, mutate state, map client errors, construct System Logs, or own
 post-commit obligations:
@@ -222,19 +222,18 @@ post-commit obligations:
   workflow does not retry, enqueue, or create a substitute record. The normal
   Server process remains alive. The owning workflow records the corresponding
   System Log classification and timing under the [Log Module taxonomy](../../log-modules/log-module-design.md#event-classification-taxonomy).
-6. Begin the serialized application-state transaction and apply the mutation
-  decision. Once its outcome is authoritative inside that transaction, ask the
-  producer to construct a correlated `completion`. Its `result` derives from
-  the matching typed detail, whose safe fact represents the state that this
-  transaction will commit or whose payload-free denied or failed variant
-  represents the authoritative non-commit outcome. Its `attempt_record_id`
-  directly identifies the acknowledged Attempt. Final state and affected count
-  may appear only in a matching typed completion detail or a later matching
-  correction detail.
-7. Capture that exact terminal record with the current Audit destination
-  binding. Atomically persist the immutable obligation with the mutation and
-  commit both, or commit neither. Then synchronously deliver the exact retained
-  terminal record.
+6. Prepare every bounded terminal the transaction may select. The TOTP
+  enablement workflow prepares one success terminal containing only desired
+  state and the previewed affected-Human-User count, plus one payload-free
+  denied terminal for a stale preview. Each directly identifies the
+  acknowledged Attempt. No final state or affected count appears in the
+  Attempt or denied terminal.
+7. Begin the serialized application-state transaction, establish the
+  authoritative outcome, and select exactly one prevalidated terminal. Capture
+  each candidate with the retained current Audit destination binding before the
+  transaction; atomically persist only the selected immutable obligation with
+  the applied mutation or conflict result and commit both, or commit neither.
+  Then invoke the bounded active-then-late drain for the exact retained record.
 8. Exact destination acknowledgement authorizes acknowledgement of the oldest
   database obligation. Server Audit converts that successful Log-owned
   acknowledgement into the Application Database contract's opaque proof
@@ -242,7 +241,7 @@ post-commit obligations:
   destination authority. If delivery or database acknowledgement cannot
   finish, leave the obligation pending. This is a post-commit failure and must
   not map to the pre-commit `Audit Log unavailable; operation rejected.` result
-  or claim that the mutation was rejected. The future runtime recovery path
+  or claim that the mutation was rejected. The runtime recovery path
   must replay obligations oldest first and refuse a changed current destination
   identity or binding version before delivery. It must resolve the binding and
   destination together through the trusted structural pair; binding equality
@@ -285,10 +284,10 @@ producer to emit a System Log or orchestrate a mutation.
 The `weavelit-server` operational composer owns one process-local recovery
 coordinator for the selected **[Application Database](../../glossary.md#applications-and-interfaces)**.
 It invokes a bounded drain once during activation and exposes the same internal
-drain immediately before a future consequential mutation. It runs no
+drain immediately before each consequential mutation. It runs no
 background loop, timer, client route, configuration action, or independent
 retry schedule. Activation recovery does not prevent the Server from exposing
-read and authentication functions; a future consequential writer must inspect
+read and authentication functions; a consequential writer must inspect
 the active-sequence result before mutation.
 
 Every drain obtains one process-local permit and loads the exact current Audit
@@ -402,7 +401,8 @@ durability, backup, recovery, and compatibility remain owned by the Log Module
 design and its destination; this document does not promise indefinite survival
 or add a Server-wide retention mechanism.
 
-Focused validation for the producer and future administration contracts
+Focused validation for the producer, the TOTP enablement workflow, and future
+administration contracts
 must prove:
 
 - every field rejects empty or over-bound UTF-8 input, including the 8 KiB

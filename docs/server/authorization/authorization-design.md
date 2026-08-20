@@ -252,9 +252,12 @@ issuance-specific gate.
 `ComponentOperation` means an administration action performed through an
 already enabled target. It is not an enablement mutation. A
 `ComponentEnablementChange` instead carries the exact component kind, bounded
-name, and desired enabled state. The gate retains that descriptor for a future
-workflow but performs no mutation, persistence, Audit Log delivery, or
-configuration generation. It preserves the
+name, and desired enabled state. The gate retains that descriptor but performs
+no mutation, persistence, Audit Log delivery, or configuration generation. The
+Server's first consuming workflow accepts only the exact TOTP MFA Module target
+and spends the authorized action by value when it applies a target-bound
+preview. Other component kinds remain without a mutation workflow. This
+preserves the
 [MFA re-enable exception](#mfa-re-enablement-exception), so a disabled target
 cannot prevent the authorized action that re-enables it.
 

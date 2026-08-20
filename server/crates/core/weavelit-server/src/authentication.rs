@@ -54,9 +54,11 @@ use weavelit_server_authentication::{
     PasswordAuthenticator, PasswordPolicy, PasswordVerdict, RustCryptoArgon2, SessionSecrets,
     SessionTokenDigest, StoredCredential,
 };
+#[cfg(test)]
+use weavelit_server_database::MfaEnablementOutcome;
 use weavelit_server_database::{
-    Account, ApplicationState, DatabaseError, DeploymentIdentifier, InitializedState, LogType,
-    MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment, MfaFactor,
+    Account, ApplicationState, ComponentKind, DatabaseError, DeploymentIdentifier,
+    InitializedState, LogType, MfaAcceptance, MfaDirectSession, MfaEnrollment, MfaFactor,
     MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession, SessionCsrfHash, SessionInstant,
     SessionStore, SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
 };
@@ -103,10 +105,10 @@ const _: () = assert!(
 const TOTP_MODULE: &str = weavelit_module_mfa_totp::MODULE_IDENTIFIER;
 
 /// The configuration component that owns the TOTP Module's enabled setting.
-pub const TOTP_COMPONENT: &str = "mfa.totp";
+pub const TOTP_COMPONENT: &str = TOTP_MODULE;
 
 /// The setting key an MFA Module's enabled state is stored under.
-const MFA_ENABLED_KEY: &str = "enabled";
+const MFA_ENABLED_KEY: &str = ComponentKind::MfaModule.enablement_key();
 
 /// The stored value that enables an MFA Module.
 ///
@@ -1008,18 +1010,10 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     /// the module, and the same number is presented back to
     /// [`Self::set_module_enabled`] so the decision is checked against the
     /// count that was actually shown.
+    #[cfg(test)]
     pub fn enrolled_accounts(&self) -> Result<usize, AuthenticationRejection> {
-        let state = self.initialized_state()?;
-        let mut accounts: Vec<_> = state
-            .state()
-            .mfa_factors()
-            .iter()
-            .filter(|factor| factor.module.as_str() == TOTP_MODULE)
-            .map(|factor| factor.account)
-            .collect();
-        accounts.sort_unstable_by_key(|account| *account.as_bytes());
-        accounts.dedup();
-        Ok(accounts.len())
+        let target = totp_target()?;
+        self.with_mfa(|store| store.enrolled_accounts(&target))
     }
 
     /// Enables or disables the MFA Module against a previewed enrolled count.
@@ -1027,13 +1021,51 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     /// Disabling revokes every live session of every enrolled account, because
     /// those sessions were established behind a factor this deployment is no
     /// longer willing to verify.
+    #[cfg(test)]
     pub fn set_module_enabled(
         &self,
         enabled: bool,
         expected_enrolled: usize,
     ) -> Result<MfaEnablementOutcome, AuthenticationRejection> {
         let target = totp_target()?;
-        self.with_mfa(|store| store.set_module_enabled(&target, enabled, expected_enrolled))
+        let authority = weavelit_server_database_authority::ServerDatabaseAuthority::new();
+        let persistence =
+            weavelit_server_database::AuditTerminalRecoveryPersistence::from_server_authority(
+                &authority,
+            );
+        let binding = weavelit_server_database::StoredAuditDestinationBinding::from_persisted(
+            &persistence,
+            [0x71; 16],
+            1,
+        )
+        .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+        let applied_identifier = random_bytes::<16>()
+            .filter(|identifier| *identifier != [0; 16])
+            .ok_or(AuthenticationRejection::ServiceUnavailable)?;
+        let conflict_identifier = random_bytes::<16>()
+            .filter(|identifier| *identifier != [0; 16])
+            .ok_or(AuthenticationRejection::ServiceUnavailable)?;
+        let applied =
+            weavelit_server_database::ValidatedAuditTerminalObligationWrite::from_server_audit(
+                &persistence,
+                applied_identifier,
+                b"authentication-test-applied".to_vec(),
+                binding.clone(),
+            )
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+        let conflict =
+            weavelit_server_database::ValidatedAuditTerminalObligationWrite::from_server_audit(
+                &persistence,
+                conflict_identifier,
+                b"authentication-test-conflict".to_vec(),
+                binding,
+            )
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+        let audit_terminals =
+            weavelit_server_database::MfaEnablementAuditTerminalWrites::new(&applied, &conflict);
+        self.with_mfa(|store| {
+            store.set_module_enabled(&target, enabled, expected_enrolled, &audit_terminals)
+        })
     }
 
     /// Recovers the enrolled secret one factor holds.

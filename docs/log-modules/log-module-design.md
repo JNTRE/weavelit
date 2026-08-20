@@ -96,12 +96,17 @@ while related records reuse the owning request or workflow correlation
 identifier. Exact replay matching includes the Audit phase, phase-bound result,
 and Attempt link. The Audit producer constructs and delivers attempts,
 linked completions, and linked corrections; the owning
-future **[Administration Plane](../glossary.md#applications-and-interfaces)**
-workflow must sequence the mutation, decide when correction evidence is
+**[Administration Plane](../glossary.md#applications-and-interfaces)** workflow
+must sequence the mutation, decide when correction evidence is
 required, emit any System Log, and own durable normal-operation recovery when
 terminal delivery cannot finish after commit. That recovery must use the shared
 projection and acknowledgement contracts without reusing the Init or Restore
 lifecycle obligation contract.
+
+The first such workflow changes TOTP MFA Module enablement. It waits for durable
+Attempt acknowledgement, captures applied and stale-preview terminal candidates
+against the exact current Audit binding, and lets the Application Database
+transaction persist exactly the selected opaque obligation with its outcome.
 
 The producer's prepared terminal delivery borrows the immutable record so a
 caller may deliberately re-deliver its exact identifier and content. Each call
@@ -132,7 +137,7 @@ columns only and cannot mint, parse, restore, or acknowledge a Log-owned value.
 A recovered terminal accepts one `ResolvedAuditDestination`, which structurally
 pairs the binding and configured destination selected by trusted Server code.
 Binding equality cannot inspect or prove the identity of an independently
-supplied destination handle, so the future assignment resolver must derive both
+supplied destination handle, so the runtime assignment resolver derives both
 members from the same committed configuration before constructing the pair. A
 different identity or version fails before the destination is called. An exact
 match performs one ordinary synchronous delivery and yields a terminal-delivery
@@ -142,7 +147,7 @@ acknowledgement, after Server Audit converts it to the database contract's
 private proof. It does not authorize a mutation or represent whether the
 already committed mutation succeeded. `AuditDestinationBindingTransition`
 retains the exact prior binding beside its distinct replacement without
-selecting generation order. The future configuration workflow must preserve a
+selecting generation order. A future configuration workflow must preserve a
 resolvable old binding handle while any terminal obligation references that
 version; identifying a replacement never changes the original projection.
 

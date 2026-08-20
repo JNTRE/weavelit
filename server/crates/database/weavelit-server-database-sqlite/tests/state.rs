@@ -174,8 +174,8 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
     ApplicationState::new(ApplicationStateInput {
         configuration: vec![
             ConfigurationEntry {
-                component: name("mfa.totp"),
-                key: ConfigurationKey::new("enabled").unwrap(),
+                component: name("totp"),
+                key: ConfigurationKey::new("mfa-module.enabled").unwrap(),
                 value: ConfigurationValue::new("false").unwrap(),
             },
             ConfigurationEntry {
@@ -570,11 +570,11 @@ fn every_component_is_enabled_until_an_entry_disables_it() {
     let path = database_path(&temporary_directory);
     let mut database = restored_database(&path, deployment(23));
 
-    // The seeded state carries component configuration but no enablement
-    // entry, so nothing is disabled.
+    // Restored state explicitly leaves TOTP disabled until an Administrator
+    // enables it.
     assert_eq!(
         database.load_component_enablement().unwrap(),
-        ComponentEnablement::default()
+        ComponentEnablement::new([(ComponentKind::MfaModule, name("totp"))])
     );
 
     disable_component(&path, ComponentKind::ClientModule, "web-ui", "false");
@@ -621,13 +621,14 @@ fn the_enablement_projection_reads_no_other_component_setting() {
         .map(|(kind, name)| (kind, name.as_str().to_owned()))
         .collect();
 
-    // The seeded state carries a display name, an MFA Module setting, an
-    // account, its verifier, and a recovery key. None of them is a component
-    // enablement entry, so exactly one entry is projected and nothing else is
-    // reachable through this read at all.
+    // The seeded state carries the canonical TOTP disablement and the test
+    // adds one Client Module disablement. No other setting is projected.
     assert_eq!(
         disabled,
-        vec![(ComponentKind::ClientModule, String::from("web-ui"))]
+        vec![
+            (ComponentKind::ClientModule, String::from("web-ui")),
+            (ComponentKind::MfaModule, String::from("totp")),
+        ]
     );
 }
 
@@ -648,7 +649,7 @@ fn disable_component(path: &Path, kind: ComponentKind, component: &str, value: &
 fn totp_target() -> MfaModuleTarget {
     MfaModuleTarget {
         module: name("totp"),
-        component: name("mfa.totp"),
+        component: name("totp"),
     }
 }
 
@@ -658,7 +659,8 @@ fn enable_totp_module(path: &Path) {
         .unwrap()
         .execute(
             "INSERT OR REPLACE INTO weavelit_configuration \
-             (component, setting_key, setting_value) VALUES ('mfa.totp', 'enabled', ?1)",
+             (component, setting_key, setting_value) \
+             VALUES ('totp', 'mfa-module.enabled', ?1)",
             [COMPONENT_ENABLED_VALUE],
         )
         .unwrap();
@@ -721,7 +723,8 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
     Connection::open(&path)
         .unwrap()
         .execute(
-            "DELETE FROM weavelit_configuration WHERE component = 'mfa.totp'",
+            "DELETE FROM weavelit_configuration WHERE component = 'totp' \
+             AND setting_key = 'mfa-module.enabled'",
             [],
         )
         .unwrap();

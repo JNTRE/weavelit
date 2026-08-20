@@ -35,6 +35,8 @@ Apply instructions in this order:
   state-root configuration reading, `classify_restricted_startup`, the listener's
   serving-mode switch, the listener-owned response-write acknowledgement, and
   stable error presentation.
+- `src/administration.rs`: Transport-independent Administrator-controlled TOTP
+  MFA Module enablement preview and synchronous audited mutation workflow.
 - `src/authentication.rs`: The local login, session-validation, and logout route
   decisions: account and password-verifier resolution, the equal-work denial
   path, the single-permit login admission lane, session issuance and
@@ -43,8 +45,7 @@ Apply instructions in this order:
   decisions: the eight-row login admission truth table, the single-use
   continuation ticket, second-factor code verification, enrollment opening from
   both a login continuation and a live session, enrollment confirmation, and
-  the enrolled-account preview and session-revoking Module enablement
-  primitives.
+  canonical TOTP Module enablement decisions.
 - `src/authorization.rs`: `AuthorizationRuntime`, the live composition point for
   both authorization decisions: the compiled-in served-component inventory, the
   catalog built from one live component-enablement read, the `ValidatedSession`

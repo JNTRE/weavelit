@@ -136,6 +136,23 @@ fn create_0008_database(path: &Path) {
     }
 }
 
+fn create_0009_database(path: &Path) {
+    create_0008_database(path);
+    let connection = Connection::open(path).unwrap();
+    let sql = include_str!("../migrations/0009_add_log_configuration_generations.sql");
+    connection.execute_batch(sql).unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_migration_ledger \
+             (sequence_number, identifier, checksum) VALUES (9, ?1, ?2)",
+            params![
+                "0009_add_log_configuration_generations",
+                Sha256::digest(sql.as_bytes()).as_slice()
+            ],
+        )
+        .unwrap();
+}
+
 fn assert_integrity_failure_is_redacted(error: DatabaseError, path: &Path) {
     assert_eq!(error, DatabaseError::IntegrityFailure);
     let message = error.to_string();
@@ -156,7 +173,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     let first_schema = schema_rows(&connection);
     drop(connection);
 
-    assert_eq!(first_ledger.len(), 9);
+    assert_eq!(first_ledger.len(), 10);
     assert_eq!(first_ledger[0].0, 1);
     assert_eq!(first_ledger[0].1, "0001_create_migration_ledger");
     assert_eq!(first_ledger[1].0, 2);
@@ -178,6 +195,8 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[7].1, "0008_add_audit_terminal_recovery");
     assert_eq!(first_ledger[8].0, 9);
     assert_eq!(first_ledger[8].1, "0009_add_log_configuration_generations");
+    assert_eq!(first_ledger[9].0, 10);
+    assert_eq!(first_ledger[9].1, "0010_migrate_totp_component_enablement");
     assert_eq!(first_ledger[0].2.len(), 32);
     assert_eq!(first_ledger[1].2.len(), 32);
     assert_eq!(first_ledger[2].2.len(), 32);
@@ -187,6 +206,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[6].2.len(), 32);
     assert_eq!(first_ledger[7].2.len(), 32);
     assert_eq!(first_ledger[8].2.len(), 32);
+    assert_eq!(first_ledger[9].2.len(), 32);
     assert_eq!(
         first_ledger[0].2,
         Sha256::digest(include_bytes!(
@@ -247,6 +267,13 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         first_ledger[8].2,
         Sha256::digest(include_bytes!(
             "../migrations/0009_add_log_configuration_generations.sql"
+        ))
+        .to_vec()
+    );
+    assert_eq!(
+        first_ledger[9].2,
+        Sha256::digest(include_bytes!(
+            "../migrations/0010_migrate_totp_component_enablement.sql"
         ))
         .to_vec()
     );
@@ -336,7 +363,7 @@ fn populated_0008_database_upgrades_and_backfills_version_one() {
     drop(SqliteDatabase::open(&path).unwrap());
 
     let connection = direct_connection(&path);
-    assert_eq!(ledger_rows(&connection).len(), 9);
+    assert_eq!(ledger_rows(&connection).len(), 10);
     let generation: (Vec<u8>, Vec<u8>, String, String, i64) = connection
         .query_row(
             "SELECT configuration_id, generation_version, module, name, enabled \
@@ -400,6 +427,122 @@ fn populated_0008_database_upgrades_and_backfills_version_one() {
             )
             .unwrap(),
         (configuration_id.to_vec(), 1_u64.to_be_bytes().to_vec())
+    );
+}
+
+#[test]
+fn initialized_legacy_totp_enablement_migrates_to_one_canonical_authority() {
+    for (legacy, existing_canonical, expected) in [
+        (Some("true"), None, "true"),
+        (Some("false"), None, "false"),
+        (Some("yes"), None, "false"),
+        (None, None, "false"),
+        (Some("true"), Some("false"), "true"),
+        (Some("false"), Some("true"), "false"),
+    ] {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        create_0009_database(&path);
+        let connection = direct_connection(&path);
+        connection
+            .execute(
+                "INSERT INTO weavelit_lifecycle_state \
+                 (singleton, deployment_identifier, state, workflow_kind, checkpoint_metadata) \
+                 VALUES (1, ?1, 'initialized', NULL, NULL)",
+                [[0x51_u8; 16].as_slice()],
+            )
+            .unwrap();
+        if let Some(value) = legacy {
+            connection
+                .execute(
+                    "INSERT INTO weavelit_configuration \
+                     (component, setting_key, setting_value) \
+                     VALUES ('mfa.totp', 'enabled', ?1)",
+                    [value],
+                )
+                .unwrap();
+        }
+        if let Some(value) = existing_canonical {
+            connection
+                .execute(
+                    "INSERT INTO weavelit_configuration \
+                     (component, setting_key, setting_value) \
+                     VALUES ('totp', 'mfa-module.enabled', ?1)",
+                    [value],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        drop(SqliteDatabase::open(&path).unwrap());
+        drop(SqliteDatabase::open(&path).unwrap());
+
+        let connection = direct_connection(&path);
+        assert_eq!(ledger_rows(&connection).len(), 10);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT setting_value FROM weavelit_configuration \
+                     WHERE component = 'totp' AND setting_key = 'mfa-module.enabled'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_configuration \
+                     WHERE component = 'mfa.totp' AND setting_key = 'enabled'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn uninitialized_migration_does_not_seed_or_remove_totp_enablement() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    create_0009_database(&path);
+    let connection = direct_connection(&path);
+    connection
+        .execute(
+            "INSERT INTO weavelit_configuration \
+             (component, setting_key, setting_value) VALUES ('mfa.totp', 'enabled', 'true')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+
+    let connection = direct_connection(&path);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_configuration \
+                 WHERE component = 'totp' AND setting_key = 'mfa-module.enabled'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT setting_value FROM weavelit_configuration \
+                 WHERE component = 'mfa.totp' AND setting_key = 'enabled'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "true"
     );
 }
 
@@ -481,7 +624,7 @@ fn unknown_extra_history_is_rejected() {
     connection
         .execute(
             "INSERT INTO weavelit_migration_ledger \
-            (sequence_number, identifier, checksum) VALUES (10, '0010_unknown', ?1)",
+            (sequence_number, identifier, checksum) VALUES (11, '0011_unknown', ?1)",
             [vec![0_u8; 32]],
         )
         .unwrap();
@@ -506,7 +649,7 @@ fn missing_applied_history_is_rejected_without_new_ledger_row() {
     drop(connection);
 
     assert_integrity_failure_is_redacted(open_error(&path), &path);
-    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 8);
+    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 9);
 }
 
 #[test]

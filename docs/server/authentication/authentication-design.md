@@ -623,19 +623,26 @@ every login for that user. A user who is required to use MFA but is not yet
 enrolled receives no application session; the Server fails closed with an
 enrollment prompt, and only when the required Module is enabled.
 
-Changing enablement is a preview-then-act decision, implemented as
-`AuthenticationRuntime::enrolled_accounts` and
-`AuthenticationRuntime::set_module_enabled`. An Administrator first previews how
-many accounts currently hold a TOTP factor; disabling the Module then names
-that same previewed count. The count, the enabled-state write, and the session
-revocation described below are one atomic operation: the count is recomputed
-and checked against the previewed value inside that same operation, and a count
-that no longer matches writes nothing and reports the current count instead, so
-a concurrent enrollment cannot change what an Administrator's decision actually
-disables. This satisfies the
+Changing enablement is a preview-then-act decision owned by the Server's
+transport-independent TOTP administration workflow. It borrows an
+`AuthorizedAdministrationAction` only for the exact
+`ComponentEnablementChange(MfaModule, "totp", desired_state)` target when it
+creates the preview, then consumes that action and the target-bound preview when
+applying. The preview reports the number of distinct Human Users currently
+holding a TOTP factor. The transaction recounts those Human Users and selects
+either the prebuilt success Audit terminal or the payload-free conflict terminal.
+A changed count commits only the conflict obligation, changes no enablement or
+session state, and reports the current count. This satisfies the
 [Security Model](../../security-model.md#multifactor-authentication-security-profile)'s
 requirement to report the number of affected Human Users before disabling a
 Module with dependent enrollments.
+
+The TOTP Module's one mutable enablement authority is the generic component
+entry whose component is `totp` and whose key is `mfa-module.enabled`. Init
+explicitly seeds it disabled. Restore normalization emits exactly that entry,
+and the SQLite compatibility migration maps and removes the former
+`mfa.totp` / `enabled` entry. Enrollment, verification, direct-session issuance,
+preview, and mutation therefore read or write the same canonical state.
 
 Disabling the Module also revokes the live session of every account holding a
 TOTP factor, in that same atomic operation, because those sessions were
@@ -652,10 +659,16 @@ factor is denied under the
 [Second-Factor Admission](#second-factor-admission) table above rather than
 admitted without one.
 
-These two operations are Server-core primitives; no Administration Plane route
-composes them yet, so the Security Model's enablement requirement is satisfied
-at the runtime layer and remains to be exposed through an administration
-route.
+Before the transaction, the workflow requires the active Audit recovery
+sequence to be ready, resolves and retains the exact current Audit configuration
+generation, obtains the Administrator's typed Audit Reference, and waits for
+durable Attempt acknowledgement. It prebuilds the applied and conflict terminal
+obligations, then commits the selected obligation with recount, enablement, and
+disablement session revocation in one transaction. After commit it invokes the
+bounded active-then-late recovery drain and reports terminal delivery as
+acknowledged or pending. A pending terminal never changes an applied result into
+a rejection. No Administration Plane route or client contract exposes this
+internal workflow yet.
 
 ## Related Documents
 

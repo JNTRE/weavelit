@@ -1174,8 +1174,8 @@ mod tests {
     fn valid_input() -> ApplicationStateInput {
         ApplicationStateInput {
             configuration: vec![ConfigurationEntry {
-                component: name("mfa.totp"),
-                key: ConfigurationKey::new("enabled").unwrap(),
+                component: name("totp"),
+                key: ConfigurationKey::new("mfa-module.enabled").unwrap(),
                 value: ConfigurationValue::new("false").unwrap(),
             }],
             protected_secrets: vec![ProtectedSecret {
@@ -1475,8 +1475,8 @@ mod tests {
         duplicate_configuration
             .configuration
             .push(ConfigurationEntry {
-                component: name("mfa.totp"),
-                key: ConfigurationKey::new("enabled").unwrap(),
+                component: name("totp"),
+                key: ConfigurationKey::new("mfa-module.enabled").unwrap(),
                 value: ConfigurationValue::new("true").unwrap(),
             });
 

@@ -24,8 +24,8 @@ pub use log_configuration::{
     LogConfigurationVersion,
 };
 pub use mfa::{
-    MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment,
-    MfaModuleTarget, MfaStore, MfaTimeStep,
+    MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementAuditTerminalWrites,
+    MfaEnablementOutcome, MfaEnrollment, MfaModuleTarget, MfaStore, MfaTimeStep,
 };
 pub use reconciliation::{RECONCILIATION_DIGEST_LENGTH, ReconciliationDigest, ReconciliationStore};
 pub use session::{

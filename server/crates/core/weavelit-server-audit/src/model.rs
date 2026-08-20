@@ -500,7 +500,7 @@ pub enum MfaResetState {
     ReenrollmentRequired,
 }
 
-/// Committed MFA Module state and the number of affected sessions.
+/// Committed MFA Module state and the number of affected Human Users.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MfaModuleChange {
     state: ComponentState,

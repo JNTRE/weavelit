@@ -11,12 +11,12 @@ use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
     AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX, Account, AccountAuditReference,
     AccountPasswordVerifier, AuditReferenceIdentifier, AuditReferencePersistence,
-    ConfigurationEntry, ConfigurationKey, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
-    GroupMembership, LogAssignment, LogModuleConfiguration, LogModuleSetting, LogType,
-    MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
-    MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
-    MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name, PasswordVerifier, RecoveryPublicKey,
-    STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    COMPONENT_ENABLED_VALUE, ComponentKind, ConfigurationEntry, ConfigurationKey,
+    ConfigurationValue, Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership,
+    LogAssignment, LogModuleConfiguration, LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH,
+    MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH,
+    MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name,
+    PasswordVerifier, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     BackendIdentifier, MAX_IDENTIFIER_LENGTH, MAX_PROTECTED_PLAINTEXT_BYTES,
@@ -606,13 +606,14 @@ pub fn normalize(
     let recovery_public_key = RecoveryPublicKey::new(document.recovery_public_key.into_inner())
         .map_err(|_| ContentError::DomainInvalid)?;
 
-    let configuration = map_collection(document.configuration, |entry| {
+    let mut configuration = map_collection(document.configuration, |entry| {
         Ok(ConfigurationEntry {
             component: name(entry.component)?,
             key: bounded(entry.key)?,
             value: bounded(entry.value)?,
         })
     })?;
+    normalize_totp_component_enablement(&mut configuration)?;
     let protected_secrets = map_collection(document.protected_secrets, |entry| {
         Ok(BackupProtectedSecret {
             component: name(entry.component)?,
@@ -741,6 +742,54 @@ pub fn normalize(
     reject_unusable_password_verifiers(&backup)?;
 
     Ok(backup)
+}
+
+fn normalize_totp_component_enablement(
+    configuration: &mut Vec<ConfigurationEntry>,
+) -> Result<(), ContentError> {
+    const LEGACY_COMPONENT: &str = "mfa.totp";
+    const LEGACY_KEY: &str = "enabled";
+    const CANONICAL_COMPONENT: &str = "totp";
+    const DISABLED_VALUE: &str = "false";
+
+    let canonical_key = ComponentKind::MfaModule.enablement_key();
+    let mut legacy = configuration.iter().filter(|entry| {
+        entry.component.as_str() == LEGACY_COMPONENT && entry.key.as_str() == LEGACY_KEY
+    });
+    let legacy_value = legacy.next().map(|entry| entry.value.as_str());
+    if legacy.next().is_some() {
+        return Err(ContentError::DuplicateEntry);
+    }
+    let mut canonical = configuration.iter().filter(|entry| {
+        entry.component.as_str() == CANONICAL_COMPONENT && entry.key.as_str() == canonical_key
+    });
+    let canonical_value = canonical.next().map(|entry| entry.value.as_str());
+    if canonical.next().is_some() {
+        return Err(ContentError::DuplicateEntry);
+    }
+    let enabled = legacy_value
+        .or(canonical_value)
+        .is_some_and(|value| value == COMPONENT_ENABLED_VALUE);
+
+    configuration.retain(|entry| {
+        !((entry.component.as_str() == LEGACY_COMPONENT && entry.key.as_str() == LEGACY_KEY)
+            || (entry.component.as_str() == CANONICAL_COMPONENT
+                && entry.key.as_str() == canonical_key))
+    });
+    if configuration.len() == MAX_COLLECTION_ENTRIES {
+        return Err(ContentError::CollectionTooLarge);
+    }
+    configuration.push(ConfigurationEntry {
+        component: Name::new(CANONICAL_COMPONENT).map_err(|_| ContentError::DomainInvalid)?,
+        key: ConfigurationKey::new(canonical_key).map_err(|_| ContentError::DomainInvalid)?,
+        value: ConfigurationValue::new(if enabled {
+            COMPONENT_ENABLED_VALUE
+        } else {
+            DISABLED_VALUE
+        })
+        .map_err(|_| ContentError::DomainInvalid)?,
+    });
+    Ok(())
 }
 
 fn order(backup: &mut NormalizedBackup) {

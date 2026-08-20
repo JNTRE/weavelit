@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
-    ApplicationDatabase, COMPONENT_ENABLED_VALUE, MfaAcceptance, MfaModuleTarget, MfaStore,
-    MfaTimeStep, Name, NewSession, SESSION_DIGEST_LENGTH, SessionCsrfHash, SessionInstant,
-    SessionTokenHash, StateIdentifier,
+    ApplicationDatabase, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
+    AuditTerminalReplayBatchSize, COMPONENT_ENABLED_VALUE, DatabaseError, MfaAcceptance,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, MfaStore, MfaTimeStep,
+    Name, NewSession, SESSION_DIGEST_LENGTH, SessionCsrfHash, SessionInstant, SessionTokenHash,
+    StateIdentifier, StoredAuditDestinationBinding, ValidatedAuditTerminalObligationWrite,
 };
+use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_database_sqlite::SqliteDatabase;
 
 const CSRF_BYTE: u8 = 0x7f;
@@ -31,7 +34,7 @@ fn step(value: u64) -> MfaTimeStep {
 fn target() -> MfaModuleTarget {
     MfaModuleTarget {
         module: Name::new("totp").unwrap(),
-        component: Name::new("mfa.totp").unwrap(),
+        component: Name::new("totp").unwrap(),
     }
 }
 
@@ -65,7 +68,8 @@ fn set_enablement(path: &Path, value: &str) {
         .unwrap()
         .execute(
             "INSERT OR REPLACE INTO weavelit_configuration \
-             (component, setting_key, setting_value) VALUES ('mfa.totp', 'enabled', ?1)",
+             (component, setting_key, setting_value) \
+             VALUES ('totp', 'mfa-module.enabled', ?1)",
             [value],
         )
         .unwrap();
@@ -89,6 +93,181 @@ fn stored_step(path: &Path, factor: StateIdentifier) -> Option<i64> {
             |row| row.get(0),
         )
         .ok()
+}
+
+fn enablement(path: &Path) -> Option<String> {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT setting_value FROM weavelit_configuration \
+             WHERE component = 'totp' AND setting_key = 'mfa-module.enabled'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+}
+
+fn insert_enrolled_account(path: &Path, byte: u8) {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_account \
+             (account_id, username, display_name, active, mfa_required) \
+             VALUES (?1, ?2, NULL, 1, 0)",
+            rusqlite::params![factor(byte).as_bytes().as_slice(), format!("user-{byte}")],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_mfa_factor \
+             (factor_id, account_id, module, protected_factor_data) VALUES (?1, ?2, 'totp', ?3)",
+            rusqlite::params![
+                factor(byte.wrapping_add(0x40)).as_bytes().as_slice(),
+                factor(byte).as_bytes().as_slice(),
+                [0x55_u8; 20].as_slice()
+            ],
+        )
+        .unwrap();
+}
+
+fn audit_persistence() -> AuditTerminalRecoveryPersistence {
+    AuditTerminalRecoveryPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+}
+
+fn audit_terminal(
+    persistence: &AuditTerminalRecoveryPersistence,
+    identifier_byte: u8,
+    projection: &[u8],
+) -> ValidatedAuditTerminalObligationWrite {
+    let binding =
+        StoredAuditDestinationBinding::from_persisted(persistence, [0x44; 16], 1).unwrap();
+    ValidatedAuditTerminalObligationWrite::from_server_audit(
+        persistence,
+        [identifier_byte; 16],
+        projection.to_vec(),
+        binding,
+    )
+    .unwrap()
+}
+
+#[test]
+fn enablement_persists_the_terminal_selected_by_the_transaction_outcome() {
+    for (expected_enrolled, expected_outcome, expected_identifier) in [
+        (
+            0,
+            MfaEnablementOutcome::Applied {
+                revoked_sessions: 0,
+            },
+            1,
+        ),
+        (
+            1,
+            MfaEnablementOutcome::EnrolledCountChanged {
+                current_affected_users: 0,
+            },
+            2,
+        ),
+    ] {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let mut database = SqliteDatabase::open(&database_path(&temporary_directory)).unwrap();
+        let persistence = audit_persistence();
+        let applied = audit_terminal(&persistence, 1, b"applied-terminal");
+        let conflict = audit_terminal(&persistence, 2, b"conflict-terminal");
+        let audit_terminals = MfaEnablementAuditTerminalWrites::new(&applied, &conflict);
+
+        assert_eq!(
+            database
+                .set_module_enabled(&target(), true, expected_enrolled, &audit_terminals)
+                .unwrap(),
+            expected_outcome
+        );
+        let pending = database
+            .list_pending_audit_terminal_obligations(
+                &persistence,
+                AuditTerminalReplayBatchSize::new(2).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].identifier().as_bytes(),
+            &[expected_identifier; 16]
+        );
+        assert_eq!(
+            enablement(&database_path(&temporary_directory)),
+            (expected_enrolled == 0).then(|| "true".to_owned())
+        );
+    }
+}
+
+#[test]
+fn disabling_recounts_users_revokes_their_sessions_and_commits_the_success_terminal() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = enabled_database(&path);
+    insert_enrolled_account(&path, 1);
+    weavelit_server_database::SessionStore::create(&mut database, &session(1)).unwrap();
+    let persistence = audit_persistence();
+    let applied = audit_terminal(&persistence, 3, b"disable-applied");
+    let conflict = audit_terminal(&persistence, 4, b"disable-conflict");
+    let audit_terminals = MfaEnablementAuditTerminalWrites::new(&applied, &conflict);
+
+    assert_eq!(database.enrolled_accounts(&target()).unwrap(), 1);
+    assert_eq!(
+        database
+            .set_module_enabled(&target(), false, 1, &audit_terminals)
+            .unwrap(),
+        MfaEnablementOutcome::Applied {
+            revoked_sessions: 1
+        }
+    );
+    assert_eq!(enablement(&path).as_deref(), Some("false"));
+    assert_eq!(session_count(&path), 0);
+    let pending = database
+        .list_pending_audit_terminal_obligations(
+            &persistence,
+            AuditTerminalReplayBatchSize::new(2).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].identifier().as_bytes(), &[3; 16]);
+}
+
+#[test]
+fn terminal_persistence_failure_rolls_back_enablement_sessions_and_obligation() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = enabled_database(&path);
+    insert_enrolled_account(&path, 1);
+    weavelit_server_database::SessionStore::create(&mut database, &session(1)).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_mfa_audit_terminal \
+             BEFORE INSERT ON weavelit_audit_terminal_obligation \
+             BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .unwrap();
+    let persistence = audit_persistence();
+    let applied = audit_terminal(&persistence, 5, b"rollback-applied");
+    let conflict = audit_terminal(&persistence, 6, b"rollback-conflict");
+    let audit_terminals = MfaEnablementAuditTerminalWrites::new(&applied, &conflict);
+
+    assert_eq!(
+        database.set_module_enabled(&target(), false, 1, &audit_terminals),
+        Err(DatabaseError::IntegrityFailure)
+    );
+    assert_eq!(enablement(&path).as_deref(), Some(COMPONENT_ENABLED_VALUE));
+    assert_eq!(session_count(&path), 1);
+    assert!(
+        database
+            .list_pending_audit_terminal_obligations(
+                &persistence,
+                AuditTerminalReplayBatchSize::new(2).unwrap(),
+            )
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

@@ -9,10 +9,10 @@
 use weavelit_server_authentication::PasswordVerifierFactory;
 use weavelit_server_database::{
     Account, AccountAuditReference, AccountPasswordVerifier, ApplicationState,
-    ApplicationStateInput, AuditReferenceIdentifier, CompletionObligation, Group,
-    GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
-    LogModuleConfiguration, LogType, Name, PasswordVerifier, ProtectedSecret,
-    STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    ApplicationStateInput, AuditReferenceIdentifier, CompletionObligation, ComponentKind,
+    ConfigurationEntry, ConfigurationKey, ConfigurationValue, Group, GroupAuditReference,
+    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogModuleConfiguration, LogType,
+    Name, PasswordVerifier, ProtectedSecret, STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
 use weavelit_server_lifecycle::{ProtectedValueKind, ProtectedValueSealer};
 
@@ -124,10 +124,12 @@ pub(crate) fn build_initial_state(
     ];
 
     ApplicationState::new(ApplicationStateInput {
-        // Every compiled-in component is enabled unless an entry disables it,
-        // so the first state records no enablement entry rather than freezing
-        // this build's inventory into the deployment.
-        configuration: Vec::new(),
+        configuration: vec![ConfigurationEntry {
+            component: Name::new("totp").map_err(|_| InitError::InitializationFailed)?,
+            key: ConfigurationKey::new(ComponentKind::MfaModule.enablement_key())
+                .map_err(|_| InitError::InitializationFailed)?,
+            value: ConfigurationValue::new("false").map_err(|_| InitError::InitializationFailed)?,
+        }],
         protected_secrets,
         accounts: vec![account],
         account_audit_references: vec![AccountAuditReference::new(

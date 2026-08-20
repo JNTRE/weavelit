@@ -394,10 +394,10 @@ fn the_initial_state_records_the_prepared_recipient_and_explicit_log_assignments
     );
 
     assert_eq!(state.completion_obligation().workflow(), WorkflowKind::Init);
-    assert!(
-        state.configuration().is_empty(),
-        "Init freezes no component enablement into the first state"
-    );
+    assert_eq!(state.configuration().len(), 1);
+    assert_eq!(state.configuration()[0].component.as_str(), "totp");
+    assert_eq!(state.configuration()[0].key.as_str(), "mfa-module.enabled");
+    assert_eq!(state.configuration()[0].value.as_str(), "false");
 }
 
 #[test]

@@ -1,10 +1,12 @@
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
-    COMPONENT_ENABLED_VALUE, DatabaseError, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome,
-    MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
+    COMPONENT_ENABLED_VALUE, ComponentKind, DatabaseError, MfaAcceptance, MfaDirectSession,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnrollment, MfaFactor,
+    MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
 };
 
 use crate::SqliteDatabase;
+use crate::audit_recovery;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::session;
 
@@ -45,12 +47,6 @@ const SET_ENABLEMENT: &str = "INSERT INTO weavelit_configuration \
 const REVOKE_ENROLLED_SESSIONS: &str = "DELETE FROM weavelit_session WHERE account_id IN \
      (SELECT account_id FROM weavelit_mfa_factor WHERE module = ?1)";
 
-/// The configuration key one MFA Module's enabled state is stored under.
-///
-/// The key is owned by the module's own configuration component, so the entry
-/// that disables the TOTP Module belongs to `mfa.totp`.
-const MODULE_ENABLED_KEY: &str = "enabled";
-
 /// The stored value that leaves an MFA Module disabled.
 ///
 /// Only [`COMPONENT_ENABLED_VALUE`] enables a module, so this value is written
@@ -71,6 +67,10 @@ pub(super) fn clear(connection: &Connection) -> Result<(), DatabaseError> {
 }
 
 impl MfaStore for SqliteDatabase {
+    fn enrolled_accounts(&mut self, target: &MfaModuleTarget) -> Result<usize, DatabaseError> {
+        enrolled_account_count(&self.connection, target)
+    }
+
     fn accepted_step(
         &mut self,
         factor: StateIdentifier,
@@ -233,22 +233,24 @@ impl MfaStore for SqliteDatabase {
         target: &MfaModuleTarget,
         enabled: bool,
         expected_enrolled: usize,
+        audit_terminals: &MfaEnablementAuditTerminalWrites<'_>,
     ) -> Result<MfaEnablementOutcome, DatabaseError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-        let enrolled: i64 = transaction
-            .query_row(
-                COUNT_ENROLLED_ACCOUNTS,
-                params![target.module.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-        let enrolled = usize::try_from(enrolled).map_err(|_| DatabaseError::IntegrityFailure)?;
-        // Rolled back rather than committed, so a stale preview writes nothing.
+        let enrolled = enrolled_account_count(&transaction, target)?;
         if enrolled != expected_enrolled {
-            return Ok(MfaEnablementOutcome::EnrolledCountChanged { enrolled });
+            audit_recovery::persist_in_transaction(
+                &transaction,
+                audit_terminals.enrolled_count_changed(),
+            )?;
+            transaction
+                .commit()
+                .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+            return Ok(MfaEnablementOutcome::EnrolledCountChanged {
+                current_affected_users: enrolled,
+            });
         }
 
         let value = if enabled {
@@ -259,7 +261,11 @@ impl MfaStore for SqliteDatabase {
         transaction
             .execute(
                 SET_ENABLEMENT,
-                params![target.component.as_str(), MODULE_ENABLED_KEY, value],
+                params![
+                    target.component.as_str(),
+                    ComponentKind::MfaModule.enablement_key(),
+                    value
+                ],
             )
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
         let revoked_sessions = if enabled {
@@ -269,12 +275,27 @@ impl MfaStore for SqliteDatabase {
                 .execute(REVOKE_ENROLLED_SESSIONS, params![target.module.as_str()])
                 .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?
         };
+        audit_recovery::persist_in_transaction(&transaction, audit_terminals.applied())?;
         transaction
             .commit()
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
 
         Ok(MfaEnablementOutcome::Applied { revoked_sessions })
     }
+}
+
+fn enrolled_account_count(
+    connection: &Connection,
+    target: &MfaModuleTarget,
+) -> Result<usize, DatabaseError> {
+    let enrolled: i64 = connection
+        .query_row(
+            COUNT_ENROLLED_ACCOUNTS,
+            params![target.module.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+    usize::try_from(enrolled).map_err(|_| DatabaseError::IntegrityFailure)
 }
 
 fn step(stored: i64) -> Result<MfaTimeStep, DatabaseError> {
@@ -291,7 +312,10 @@ fn enabled(transaction: &Transaction<'_>, target: &MfaModuleTarget) -> Result<bo
     let stored: Option<String> = transaction
         .query_row(
             SELECT_ENABLEMENT,
-            params![target.component.as_str(), MODULE_ENABLED_KEY],
+            params![
+                target.component.as_str(),
+                ComponentKind::MfaModule.enablement_key()
+            ],
             |row| row.get(0),
         )
         .optional()

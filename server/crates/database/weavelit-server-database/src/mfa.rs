@@ -8,7 +8,10 @@
 //! watermark that could accept or refuse a code on evidence from another
 //! deployment's history.
 
-use crate::{ContractInputError, DatabaseError, MfaFactor, Name, NewSession, StateIdentifier};
+use crate::{
+    ContractInputError, DatabaseError, MfaFactor, Name, NewSession, StateIdentifier,
+    ValidatedAuditTerminalObligationWrite,
+};
 
 /// Largest accepted time step.
 ///
@@ -125,9 +128,47 @@ pub enum MfaEnablementOutcome {
     /// for the module, which the caller already asked for by previewing it.
     /// Nothing was written.
     EnrolledCountChanged {
-        /// The enrolled-account count observed inside the rejecting transaction.
-        enrolled: usize,
+        /// The affected-Human-User count observed inside the rejecting transaction.
+        current_affected_users: usize,
     },
+}
+
+/// Prevalidated terminal obligations for either authoritative enablement outcome.
+pub struct MfaEnablementAuditTerminalWrites<'a> {
+    applied: &'a ValidatedAuditTerminalObligationWrite,
+    enrolled_count_changed: &'a ValidatedAuditTerminalObligationWrite,
+}
+
+impl<'a> MfaEnablementAuditTerminalWrites<'a> {
+    /// Binds the success and stale-preview terminal writes before mutation begins.
+    #[must_use]
+    pub const fn new(
+        applied: &'a ValidatedAuditTerminalObligationWrite,
+        enrolled_count_changed: &'a ValidatedAuditTerminalObligationWrite,
+    ) -> Self {
+        Self {
+            applied,
+            enrolled_count_changed,
+        }
+    }
+
+    /// Returns the terminal obligation for an applied state change.
+    #[must_use]
+    pub const fn applied(&self) -> &ValidatedAuditTerminalObligationWrite {
+        self.applied
+    }
+
+    /// Returns the terminal obligation for a stale enrolled-user preview.
+    #[must_use]
+    pub const fn enrolled_count_changed(&self) -> &ValidatedAuditTerminalObligationWrite {
+        self.enrolled_count_changed
+    }
+}
+
+impl std::fmt::Debug for MfaEnablementAuditTerminalWrites<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MfaEnablementAuditTerminalWrites(REDACTED)")
+    }
 }
 
 /// Durable live MFA replay watermarks available during normal operation.
@@ -138,6 +179,9 @@ pub enum MfaEnablementOutcome {
 /// presentation of the same code observes the same earlier watermark and is
 /// also accepted.
 pub trait MfaStore {
+    /// Counts distinct Human Users holding a factor for the target Module.
+    fn enrolled_accounts(&mut self, target: &MfaModuleTarget) -> Result<usize, DatabaseError>;
+
     /// Returns the last step one factor accepted, when it has accepted one.
     fn accepted_step(
         &mut self,
@@ -224,6 +268,7 @@ pub trait MfaStore {
         target: &MfaModuleTarget,
         enabled: bool,
         expected_enrolled: usize,
+        audit_terminals: &MfaEnablementAuditTerminalWrites<'_>,
     ) -> Result<MfaEnablementOutcome, DatabaseError>;
 }
 

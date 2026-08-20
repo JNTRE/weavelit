@@ -76,6 +76,57 @@ fn the_committed_plaintext_normalizes() {
 }
 
 #[test]
+fn totp_enablement_normalizes_to_one_canonical_entry() {
+    for (entries, expected) in [
+        (
+            r#"{"component":"mfa.totp","key":"enabled","value":"true"}"#,
+            "true",
+        ),
+        (
+            r#"{"component":"mfa.totp","key":"enabled","value":"false"}"#,
+            "false",
+        ),
+        (
+            r#"{"component":"mfa.totp","key":"enabled","value":"yes"}"#,
+            "false",
+        ),
+        (
+            r#"{"component":"totp","key":"mfa-module.enabled","value":"true"}"#,
+            "true",
+        ),
+        (
+            r#"{"component":"mfa.totp","key":"enabled","value":"false"},{"component":"totp","key":"mfa-module.enabled","value":"true"}"#,
+            "false",
+        ),
+        ("", "false"),
+    ] {
+        let document = replaced(
+            r#"{"component":"weavelit-server","key":"site-name","value":"Example"}"#,
+            &format!(
+                r#"{{"component":"weavelit-server","key":"site-name","value":"Example"}}{}{}"#,
+                if entries.is_empty() { "" } else { "," },
+                entries
+            ),
+        );
+
+        let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
+        let totp = backup
+            .configuration()
+            .iter()
+            .filter(|entry| {
+                entry.component.as_str() == "totp" && entry.key.as_str() == "mfa-module.enabled"
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(totp.len(), 1);
+        assert_eq!(totp[0].value.as_str(), expected);
+        assert!(!backup.configuration().iter().any(|entry| {
+            entry.component.as_str() == "mfa.totp" && entry.key.as_str() == "enabled"
+        }));
+    }
+}
+
+#[test]
 fn supplied_audit_references_survive_normalization_exactly() {
     const ACCOUNT_REFERENCE: &str = "ar-11111111111111111111111111111111";
     const GROUP_REFERENCE: &str = "ar-22222222222222222222222222222222";

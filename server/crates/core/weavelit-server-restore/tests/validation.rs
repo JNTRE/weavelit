@@ -27,7 +27,7 @@ fn a_valid_backup_normalizes_to_the_replacement_deployment() {
         backup.recovery_public_key().as_str(),
         committed_text("valid-recipient.txt")
     );
-    assert_eq!(backup.configuration().len(), 1);
+    assert_eq!(backup.configuration().len(), 2);
     assert_eq!(backup.protected_secrets().len(), 1);
     assert_eq!(backup.accounts().len(), 1);
     assert_eq!(backup.password_verifiers().len(), 1);

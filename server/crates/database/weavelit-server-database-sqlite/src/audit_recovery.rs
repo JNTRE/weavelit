@@ -183,6 +183,13 @@ fn insert_exact(
     Ok(InsertResult::Inserted)
 }
 
+pub(super) fn persist_in_transaction(
+    transaction: &Transaction<'_>,
+    obligation: &ValidatedAuditTerminalObligationWrite,
+) -> Result<(), DatabaseError> {
+    insert_exact(transaction, obligation).map(|_| ())
+}
+
 fn append_supersession(
     connection: &Connection,
     supersession: &AuditTerminalSupersession,

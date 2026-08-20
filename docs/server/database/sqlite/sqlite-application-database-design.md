@@ -64,7 +64,8 @@ The registry contains `0001_create_migration_ledger.sql`,
 `0006_add_lifecycle_reconciliation.sql`, and
 `0007_add_audit_references.sql`, and
 `0008_add_audit_terminal_recovery.sql`, and
-`0009_add_log_configuration_generations.sql`. Each
+`0009_add_log_configuration_generations.sql`, and
+`0010_migrate_totp_component_enablement.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -363,6 +364,16 @@ an enrolled factor is part of the aggregate a Restore replaces, while the
 highest time step that factor has been observed to use is live operational
 state produced by this running deployment.
 
+`0010_migrate_totp_component_enablement.sql` normalizes an initialized
+deployment's former `mfa.totp` / `enabled` configuration entry into the generic
+`totp` / `mfa-module.enabled` component entry. Exact legacy `true` becomes
+canonical `true`; false, absent, or any other legacy value becomes canonical
+`false`, replacing a conflicting canonical row. The legacy row is then removed
+in the same migration transaction. An uninitialized database is unchanged;
+Init explicitly seeds canonical TOTP disablement when it creates application
+state. Reopening repeats no data change because the migration ledger records
+the exact migration once.
+
 Accepting a time step reads the Module's enabled setting, advances the
 watermark, and inserts the session the acceptance issues, inside one
 `BEGIN IMMEDIATE` transaction. A disabled Module returns before anything is
@@ -378,6 +389,14 @@ trigger additionally aborts any statement, including a direct one, that reuses
 or rewinds an accepted step, so a spent code cannot be made usable again by
 writing to the table. Enrolling a factor spans the same three tables in one
 transaction for the same reason.
+
+The enablement mutation uses one `BEGIN IMMEDIATE` transaction to count
+distinct enrolled account identifiers, select one of the two opaque validated
+Audit terminal writes, and persist that obligation. The applied branch writes
+`totp` / `mfa-module.enabled` and deletes every session belonging to an enrolled
+account only when disabling. The stale-preview branch writes no configuration
+or session state and commits only its conflict obligation. An obligation insert
+failure rolls back configuration and session changes with it.
 
 Issuing the session a login receives when no second factor gates it uses one
 `BEGIN IMMEDIATE` transaction in the same way: it reads the Module's enabled
