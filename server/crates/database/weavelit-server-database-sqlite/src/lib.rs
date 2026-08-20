@@ -2,6 +2,7 @@
 
 //! SQLite implementation of the Weavelit Application Database contract.
 
+mod account_writer;
 #[cfg_attr(not(test), allow(dead_code))]
 mod audit_recovery;
 mod checkpoint;
@@ -19,13 +20,14 @@ mod state;
 pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
-    AccountAdministrationStore, AccountAuditReference, AccountPublicIdentifier,
-    AccountPublicIdentifierPersistence, AccountPublicIdentity, ApplicationDatabase,
-    ApplicationState, AuditReferencePersistence, AuditTerminalRecoveryStore, ComponentEnablement,
-    DatabaseError, DatabaseInspection, DeploymentIdentifier, GroupAuditReference,
-    HumanAuthorizationSnapshot, InitializedState, LogConfigurationAuditReference,
-    LogConfigurationGenerationStore, LogConfigurationMutationStore, MfaStore, ReconciliationDigest,
-    ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
+    AccountAdministrationStore, AccountAuditReference, AccountCredentialWriterStore,
+    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountPublicIdentity,
+    ApplicationDatabase, ApplicationState, AuditReferencePersistence, AuditTerminalRecoveryStore,
+    ComponentEnablement, DatabaseError, DatabaseInspection, DeploymentIdentifier,
+    GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
+    LogConfigurationAuditReference, LogConfigurationGenerationStore, LogConfigurationMutationStore,
+    MfaStore, ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier,
+    WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -136,6 +138,10 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn account_administration(&mut self) -> Option<&mut dyn AccountAdministrationStore> {
+        Some(self)
+    }
+
+    fn account_credential_writers(&mut self) -> Option<&mut dyn AccountCredentialWriterStore> {
         Some(self)
     }
 

@@ -13,6 +13,7 @@
 //! returns.
 
 mod continuation;
+mod credential_issuance;
 mod engine;
 mod error;
 mod password;
@@ -26,6 +27,7 @@ mod verifier;
 pub use continuation::{
     CONTINUATION_ENTROPY_BYTES, CONTINUATION_TEXT_BYTES, Continuation, ContinuationDigest,
 };
+pub use credential_issuance::AccountCredentialIssuanceInput;
 pub use engine::{Argon2Engine, RustCryptoArgon2};
 pub use error::AuthenticationError;
 pub use password::{PasswordAuthenticator, PasswordVerdict, ReplacementVerifier, StoredCredential};

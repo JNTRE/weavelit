@@ -196,7 +196,7 @@ temporary password only in their originating successful response. Audit records
 record issuance or reset acceptance and safe outcomes only; they must never
 contain the password, verifier, response or delivery content, or whether a
 human viewed or handled the response. The [Security Model](../../security-model.md#administrator-initiated-password-reset)
-and [Authentication Design](../authentication/authentication-design.md#future-account-credential-issuance)
+and [Authentication Design](../authentication/authentication-design.md#account-credential-issuance-writers)
 own the disclosure and credential lifecycle policy.
 
 Password reset and MFA reset are independent actions. Their behavior and
@@ -406,8 +406,9 @@ durability, backup, recovery, and compatibility remain owned by the Log Module
 design and its destination; this document does not promise indefinite survival
 or add a Server-wide retention mechanism.
 
-Focused validation for the producer, the TOTP enablement workflow, the Log
-Module configuration workflow, and future administration contracts
+Focused validation for the producer, the account credential writers, the TOTP
+enablement workflow, the Log Module configuration workflow, and future
+administration contracts
 must prove:
 
 - every field rejects empty or over-bound UTF-8 input, including the 8 KiB

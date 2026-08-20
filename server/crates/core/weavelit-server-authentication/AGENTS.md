@@ -48,6 +48,8 @@ Apply instructions in this order:
   preparation, one-response disclosure ownership, and the fixed lifetime.
 - `src/continuation.rs`: The opaque, single-use, short-lived continuation
   ticket and its stored digest.
+- `src/credential_issuance.rs`: Zeroizing, non-clonable current-password and
+  optional TOTP input for exact-session account credential issuance.
 - `src/error.rs`: Payload-free authentication errors.
 - `src/random.rs`: Operating-system randomness with no fallback.
 

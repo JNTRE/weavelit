@@ -245,11 +245,74 @@ pub enum AccountAdministrationRead {
     View(AccountPublicIdentifier),
 }
 
+/// One bounded local Human User account creation request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountCreate {
+    username: Name,
+    display_name: Name,
+}
+
+impl AccountCreate {
+    /// Validates the username and display name against persisted-name bounds.
+    pub fn new(
+        username: impl Into<Box<str>>,
+        display_name: impl Into<Box<str>>,
+    ) -> Result<Self, AdministrationInputRejected> {
+        Ok(Self {
+            username: Name::new(username).map_err(|_| AdministrationInputRejected)?,
+            display_name: Name::new(display_name).map_err(|_| AdministrationInputRejected)?,
+        })
+    }
+
+    /// Returns the requested unique username.
+    #[must_use]
+    pub const fn username(&self) -> &Name {
+        &self.username
+    }
+
+    /// Returns the requested display name.
+    #[must_use]
+    pub const fn display_name(&self) -> &Name {
+        &self.display_name
+    }
+}
+
+/// One exact local Human User password-reset target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AccountPasswordReset {
+    target: AccountPublicIdentifier,
+}
+
+impl AccountPasswordReset {
+    /// Targets one exact typed account public identifier.
+    #[must_use]
+    pub const fn new(target: AccountPublicIdentifier) -> Self {
+        Self { target }
+    }
+
+    /// Returns the exact target account public identifier.
+    #[must_use]
+    pub const fn target(&self) -> AccountPublicIdentifier {
+        self.target
+    }
+}
+
+/// Closed account administration actions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AccountAdministrationAction {
+    /// Read the bounded account administration projection.
+    Read(AccountAdministrationRead),
+    /// Create one local Human User account with a temporary credential.
+    Create(AccountCreate),
+    /// Replace one local Human User account's credential with a temporary credential.
+    PasswordReset(AccountPasswordReset),
+}
+
 /// Closed Administration Plane action families owned by this foundation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdministrationAction {
-    /// Ordinary account administration read; no current-session step-up is required.
-    Account(AccountAdministrationRead),
+    /// Account administration; credential issuance has its own exact-session gate.
+    Account(AccountAdministrationAction),
     /// MFA requirement or enrollment-reset administration.
     MfaPolicy,
     /// Group membership or grant mutation.
@@ -441,11 +504,81 @@ impl AuthorizedAdministrationAction {
     pub const fn action(&self) -> &AdministrationAction {
         &self.action
     }
+
+    /// Consumes an authorized action into the exact account-workflow proof.
+    ///
+    /// A non-account action is consumed and denied rather than returned for
+    /// reuse against another workflow.
+    pub fn into_account(
+        self,
+    ) -> Result<AuthorizedAccountAdministrationAction, AuthorizationDenied> {
+        let Self { admission, action } = self;
+        let AdministrationAction::Account(action) = action else {
+            return Err(AuthorizationDenied);
+        };
+        Ok(AuthorizedAccountAdministrationAction {
+            actor: admission.actor,
+            session: admission.session,
+            client_module: admission.authorization.client_module().clone(),
+            action,
+        })
+    }
 }
 
 impl fmt::Debug for AuthorizedAdministrationAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthorizedAdministrationAction(REDACTED)")
+    }
+}
+
+/// One authorized account action bound to its exact validated session.
+///
+/// The value proves only Administration Plane authorization for the retained
+/// action. It does not prove target state or fresh credential reauthentication.
+/// It is not clonable and can be obtained only by consuming an
+/// [`AuthorizedAdministrationAction`].
+pub struct AuthorizedAccountAdministrationAction {
+    actor: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+    action: AccountAdministrationAction,
+}
+
+impl AuthorizedAccountAdministrationAction {
+    /// Returns the authenticated actor.
+    #[must_use]
+    pub const fn actor(&self) -> StateIdentifier {
+        self.actor
+    }
+
+    /// Returns the exact validated session digest.
+    #[must_use]
+    pub const fn session(&self) -> SessionTokenHash {
+        self.session
+    }
+
+    /// Returns the Client Module through which the action was authorized.
+    #[must_use]
+    pub const fn client_module(&self) -> &Name {
+        &self.client_module
+    }
+
+    /// Returns the exact authorized account action.
+    #[must_use]
+    pub const fn action(&self) -> &AccountAdministrationAction {
+        &self.action
+    }
+
+    /// Consumes the proof and returns the exact authorized account action.
+    #[must_use]
+    pub fn into_action(self) -> AccountAdministrationAction {
+        self.action
+    }
+}
+
+impl fmt::Debug for AuthorizedAccountAdministrationAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedAccountAdministrationAction(REDACTED)")
     }
 }
 
@@ -716,22 +849,90 @@ mod tests {
         let enablement = TestEnablement::new(ComponentEnablement::default());
         let mut plane = plane(TestClock::new(Duration::ZERO), enablement.clone());
 
-        for read in [
-            AccountAdministrationRead::List,
-            AccountAdministrationRead::View(AccountPublicIdentifier::generate().unwrap()),
+        for account_action in [
+            AccountAdministrationAction::Read(AccountAdministrationRead::List),
+            AccountAdministrationAction::Read(AccountAdministrationRead::View(
+                AccountPublicIdentifier::generate().unwrap(),
+            )),
+            AccountAdministrationAction::Create(
+                AccountCreate::new("new-user", "New User").unwrap(),
+            ),
+            AccountAdministrationAction::PasswordReset(AccountPasswordReset::new(
+                AccountPublicIdentifier::generate().unwrap(),
+            )),
         ] {
+            let action = AdministrationAction::Account(account_action);
             let authorized = plane
                 .authorize(
                     administration_admission(&authority, 1, 11),
-                    AdministrationRequest::new(AdministrationAction::Account(read)),
+                    AdministrationRequest::new(action.clone()),
                 )
                 .unwrap();
 
             assert_eq!(authorized.actor(), identifier(1));
             assert_eq!(authorized.client_module().as_str(), CLIENT_MODULE);
-            assert_eq!(authorized.action(), &AdministrationAction::Account(read));
+            assert_eq!(authorized.action(), &action);
+
+            let authorized = authorized.into_account().unwrap();
+            assert_eq!(authorized.actor(), identifier(1));
+            assert!(authorized.session().matches(&session(11)));
+            assert_eq!(authorized.client_module().as_str(), CLIENT_MODULE);
+            assert_eq!(
+                authorized.action(),
+                match &action {
+                    AdministrationAction::Account(action) => action,
+                    AdministrationAction::MfaPolicy
+                    | AdministrationAction::GrantMutation
+                    | AdministrationAction::ComponentOperation(_)
+                    | AdministrationAction::ComponentEnablementChange(_)
+                    | AdministrationAction::LogConfigurationChange(_) => unreachable!(),
+                }
+            );
+            assert_eq!(
+                format!("{authorized:?}"),
+                "AuthorizedAccountAdministrationAction(REDACTED)"
+            );
         }
         assert_eq!(enablement.reads(), 0);
+    }
+
+    #[test]
+    fn non_account_authorization_is_consumed_without_producing_an_account_proof() {
+        let authority = ServerAdministrationAuthority::new();
+        let mut plane = plane(
+            TestClock::new(Duration::ZERO),
+            TestEnablement::new(ComponentEnablement::default()),
+        );
+        let authorized = plane
+            .authorize(
+                administration_admission(&authority, 1, 11),
+                AdministrationRequest::new(AdministrationAction::LogConfigurationChange(
+                    LogConfigurationChange::new(identifier(9), Some(true), None, Vec::new())
+                        .unwrap(),
+                )),
+            )
+            .unwrap();
+
+        assert_eq!(authorized.into_account().unwrap_err(), AuthorizationDenied);
+    }
+
+    #[test]
+    fn account_write_inputs_are_bounded_and_rejection_is_payload_free() {
+        let create = AccountCreate::new("new-user", "New User").unwrap();
+        assert_eq!(create.username().as_str(), "new-user");
+        assert_eq!(create.display_name().as_str(), "New User");
+
+        let target = AccountPublicIdentifier::generate().unwrap();
+        assert_eq!(AccountPasswordReset::new(target).target(), target);
+
+        let oversized = "sensitive".repeat(MAX_NAME_LENGTH + 1);
+        for rejected in [
+            AccountCreate::new(oversized.clone(), "display").unwrap_err(),
+            AccountCreate::new("username", oversized).unwrap_err(),
+        ] {
+            assert_eq!(rejected.to_string(), "administration input rejected");
+            assert_eq!(format!("{rejected:?}"), "AdministrationInputRejected");
+        }
     }
 
     #[test]

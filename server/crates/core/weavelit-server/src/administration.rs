@@ -5,25 +5,37 @@
 use std::{error::Error as StdError, fmt};
 
 use weavelit_server_administration::{
-    AccountAdministrationRead, AdministrationAction, AuthorizedAdministrationAction,
-    LogConfigurationChange,
+    AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
+    AdministrationAction, AuthorizedAdministrationAction, LogConfigurationChange,
 };
 use weavelit_server_audit::{
     ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail, ComponentState,
     LogConfigurationAuditReferences, MfaModuleChange, MfaModuleReference, StateChangeOutcome,
 };
+use weavelit_server_authentication::{
+    AccountCredentialIssuanceInput, Argon2Engine, PasswordVerifierFactory,
+    PreparedTemporaryPassword, TEMPORARY_PASSWORD_LIFETIME, TemporaryPasswordDisclosure,
+};
 use weavelit_server_database::{
-    AccountAdministrationProjection, ComponentKind, DatabaseError, LogAssignment,
-    LogConfigurationAuditTerminalWrites, LogConfigurationMutationOutcome,
-    LogConfigurationMutationRequest, LogConfigurationPreparation, LogType,
-    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, Name,
+    Account, AccountAdministrationProjection, AccountAuditReference, AccountCreateMutation,
+    AccountCreateOutcome, AccountCredentialAuditTerminalWrites, AccountPasswordResetMutation,
+    AccountPasswordResetOutcome, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentity, AuditReferenceIdentifier, ComponentKind, CredentialRevision,
+    DatabaseError, LogAssignment, LogConfigurationAuditTerminalWrites,
+    LogConfigurationMutationOutcome, LogConfigurationMutationRequest, LogConfigurationPreparation,
+    LogType, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, Name,
+    PasswordVerifier, StateIdentifier, TemporaryCredentialExpiration,
+    ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_log::{
-    AuditLogClassification, CorrelationId, EventTime, LogRecordPersistenceView,
+    AuditLogClassification, CorrelationId, EventTime, LogRecordPersistenceView, LogRecordType,
 };
 
 use crate::{
-    authentication::{correlation_identifier, system_clock},
+    authentication::{
+        AccountCredentialIssuanceAdmission, AccountCredentialIssuanceError, AuthenticationRuntime,
+        correlation_identifier, random_bytes, system_clock,
+    },
     operational::OperationalDatabase,
     operational_audit::{
         AuditRecoverySequenceState, OperationalAuditGenerationDestination, OperationalAuditRecovery,
@@ -67,6 +79,506 @@ pub(crate) struct AccountAdministrationReadWorkflow<'a> {
     database: &'a OperationalDatabase,
 }
 
+/// Postcommit Audit terminal delivery state for an account credential writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountCredentialIssuanceDelivery {
+    /// Exact destination delivery and database acknowledgement completed.
+    Acknowledged,
+    /// The committed obligation remains available for bounded restart recovery.
+    Pending,
+}
+
+/// Complete internal result of one account credential writer.
+pub(crate) enum AccountCredentialIssuanceResult {
+    /// Account state committed and the temporary password may be disclosed once.
+    Created {
+        account: AccountPublicIdentifier,
+        temporary_password: TemporaryPasswordDisclosure,
+        delivery: AccountCredentialIssuanceDelivery,
+    },
+    /// Password reset committed and the new temporary password may be disclosed once.
+    PasswordReset {
+        account: AccountPublicIdentifier,
+        temporary_password: TemporaryPasswordDisclosure,
+        delivery: AccountCredentialIssuanceDelivery,
+    },
+    /// A username or generated identity collided; no account or disclosure committed.
+    Conflict {
+        delivery: AccountCredentialIssuanceDelivery,
+    },
+    /// The prepared reset target revision changed; no credential or disclosure committed.
+    Stale {
+        delivery: AccountCredentialIssuanceDelivery,
+    },
+    /// Final issuer state denied the mutation; no business state or disclosure committed.
+    Denied {
+        delivery: AccountCredentialIssuanceDelivery,
+    },
+}
+
+impl fmt::Debug for AccountCredentialIssuanceResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AccountCredentialIssuanceResult(REDACTED)")
+    }
+}
+
+/// Payload-free refusal before or during an account credential writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountCredentialIssuanceWorkflowError {
+    /// The consumed authorization was not an account credential writer action.
+    ActionNotSupported,
+    /// Fresh issuer credentials were not accepted.
+    CredentialDenied,
+    /// The exact password-reset target did not exist at preparation.
+    TargetNotFound,
+    /// Credential, identifier, clock, or selected database preparation failed.
+    Unavailable,
+    /// Required Audit recovery, destination, Attempt, terminal, or commit failed.
+    AuditLogUnavailable,
+}
+
+impl fmt::Display for AccountCredentialIssuanceWorkflowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ActionNotSupported => "administration action not supported",
+            Self::CredentialDenied => "account credential issuance denied",
+            Self::TargetNotFound => "account credential target not found",
+            Self::Unavailable => "account credential issuance unavailable",
+            Self::AuditLogUnavailable => "consequential operation Audit Log unavailable",
+        })
+    }
+}
+
+impl StdError for AccountCredentialIssuanceWorkflowError {}
+
+/// Transport-independent Administrator account creation and password reset workflow.
+pub(crate) struct AccountCredentialIssuanceWorkflow<'a, E> {
+    database: &'a OperationalDatabase,
+    authentication: &'a AuthenticationRuntime<E>,
+    audit: &'a OperationalAuditRecovery,
+}
+
+impl<'a, E> AccountCredentialIssuanceWorkflow<'a, E>
+where
+    E: Argon2Engine + Send + Sync + 'static,
+{
+    pub(crate) const fn new(
+        database: &'a OperationalDatabase,
+        authentication: &'a AuthenticationRuntime<E>,
+        audit: &'a OperationalAuditRecovery,
+    ) -> Self {
+        Self {
+            database,
+            authentication,
+            audit,
+        }
+    }
+
+    /// Consumes authorization and fresh credentials, then commits one audited outcome.
+    pub(crate) fn issue(
+        &self,
+        authorization: AuthorizedAdministrationAction,
+        input: AccountCredentialIssuanceInput,
+    ) -> Result<AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflowError> {
+        let authorization = authorization
+            .into_account()
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::ActionNotSupported)?;
+        let admission = self
+            .authentication
+            .admit_account_credential_issuance(authorization, input)
+            .map_err(issuance_admission_error)?;
+        if self.audit.drain_before_consequential_operation().active()
+            != AuditRecoverySequenceState::Ready
+        {
+            return Err(AccountCredentialIssuanceWorkflowError::AuditLogUnavailable);
+        }
+
+        let action = admission.action().clone();
+        match action {
+            AccountAdministrationAction::Create(change) => self.create(admission, change),
+            AccountAdministrationAction::PasswordReset(change) => self.reset(admission, change),
+            AccountAdministrationAction::Read(_) => {
+                Err(AccountCredentialIssuanceWorkflowError::ActionNotSupported)
+            }
+        }
+    }
+
+    fn create(
+        &self,
+        admission: AccountCredentialIssuanceAdmission,
+        change: AccountCreate,
+    ) -> Result<AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflowError> {
+        let prepared = PreparedTemporaryPassword::generate(&PasswordVerifierFactory::approved())
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
+        let account = issue_state_identifier()?;
+        let public_identifier = AccountPublicIdentifier::generate()
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
+        let target = AccountAuditReference::new(
+            account,
+            AuditReferenceIdentifier::generate()
+                .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?,
+        );
+        let actor = self.actor_reference(&admission)?;
+        let event = AuditEvent::AuthenticationUserCreated { account: target };
+
+        self.audit
+            .with_current_destination(|destination| {
+                destination
+                    .destination()
+                    .preflight(LogRecordType::Audit)
+                    .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+                let terminals = self.prepare_account_terminals(
+                    actor,
+                    event,
+                    AuditLogClassification::AuthenticationUserCreated,
+                    destination,
+                )?;
+                let (action, recheck) = self
+                    .authentication
+                    .prepare_account_credential_issuance_recheck(admission)
+                    .map_err(issuance_admission_error)?;
+                if action != AccountAdministrationAction::Create(change.clone()) {
+                    return Err(AccountCredentialIssuanceWorkflowError::ActionNotSupported);
+                }
+                let expiration = temporary_expiration(recheck.now())?;
+                let (verifier, disclosure) = prepared.into_parts();
+                let mutation = AccountCreateMutation::new(
+                    recheck,
+                    Account {
+                        identifier: account,
+                        username: change.username().clone(),
+                        display_name: Some(change.display_name().clone()),
+                        active: true,
+                        mfa_required: false,
+                        credential_revision: CredentialRevision::INITIAL,
+                        must_change_password: true,
+                        temporary_credential_expiration: Some(expiration),
+                    },
+                    AccountPublicIdentity::new(account, public_identifier),
+                    target,
+                    AccountPasswordVerifier {
+                        account,
+                        verifier: PasswordVerifier::new(verifier.into_string())
+                            .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?,
+                    },
+                )
+                .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
+                let outcome = self
+                    .database
+                    .create_account(&mutation, &terminals.writes())
+                    .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+                Ok(self.create_result(outcome, public_identifier, disclosure))
+            })
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?
+    }
+
+    fn reset(
+        &self,
+        admission: AccountCredentialIssuanceAdmission,
+        change: AccountPasswordReset,
+    ) -> Result<AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflowError> {
+        let target = self
+            .database
+            .prepare_account_password_reset_target(change.target())
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?
+            .ok_or(AccountCredentialIssuanceWorkflowError::TargetNotFound)?;
+        let target_account = target.account();
+        let prepared = PreparedTemporaryPassword::generate(&PasswordVerifierFactory::approved())
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
+        let actor = self.actor_reference(&admission)?;
+        let event = AuditEvent::AuthenticationPasswordResetStarted {
+            account: target.audit_reference(),
+        };
+
+        self.audit
+            .with_current_destination(|destination| {
+                destination
+                    .destination()
+                    .preflight(LogRecordType::Audit)
+                    .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+                let terminals = self.prepare_account_terminals(
+                    actor,
+                    event,
+                    AuditLogClassification::AuthenticationPasswordResetStarted,
+                    destination,
+                )?;
+                let (action, recheck) = self
+                    .authentication
+                    .prepare_account_credential_issuance_recheck(admission)
+                    .map_err(issuance_admission_error)?;
+                if action != AccountAdministrationAction::PasswordReset(change) {
+                    return Err(AccountCredentialIssuanceWorkflowError::ActionNotSupported);
+                }
+                let expiration = temporary_expiration(recheck.now())?;
+                let (verifier, disclosure) = prepared.into_parts();
+                let mutation = AccountPasswordResetMutation::new(
+                    recheck,
+                    target,
+                    expiration,
+                    AccountPasswordVerifier {
+                        account: target_account,
+                        verifier: PasswordVerifier::new(verifier.into_string())
+                            .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?,
+                    },
+                )
+                .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
+                let outcome = self
+                    .database
+                    .reset_account_password(&mutation, &terminals.writes())
+                    .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+                Ok(self.reset_result(outcome, change.target(), disclosure))
+            })
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?
+    }
+
+    fn actor_reference(
+        &self,
+        admission: &AccountCredentialIssuanceAdmission,
+    ) -> Result<AccountAuditReference, AccountCredentialIssuanceWorkflowError> {
+        self.database
+            .load_account_audit_reference(admission.actor())
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?
+            .ok_or(AccountCredentialIssuanceWorkflowError::Unavailable)
+    }
+
+    fn prepare_account_terminals(
+        &self,
+        actor: AccountAuditReference,
+        event: AuditEvent,
+        classification: AuditLogClassification,
+        destination: &OperationalAuditGenerationDestination,
+    ) -> Result<PreparedAccountCredentialTerminals, AccountCredentialIssuanceWorkflowError> {
+        let correlation = CorrelationId::new(
+            correlation_identifier().ok_or(AccountCredentialIssuanceWorkflowError::Unavailable)?,
+        )
+        .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
+        let attempt = self
+            .audit
+            .producer()
+            .prepare_attempt(
+                account_event_time()?,
+                correlation,
+                AuditActor::Human(actor),
+                event,
+            )
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+        let LogRecordPersistenceView::Audit(attempt_record) = attempt.record().persistence_view()
+        else {
+            return Err(AccountCredentialIssuanceWorkflowError::AuditLogUnavailable);
+        };
+        let attempt_identifier = *attempt_record.record_id().as_bytes();
+        let attempt_event_time = attempt_record.event_time().unix_milliseconds();
+        let attempt_correlation = attempt_record.correlation_id().as_str().to_owned();
+        let delivered = match attempt.deliver(destination.destination()) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                self.audit.reject_attempt_delivery(
+                    error,
+                    attempt_identifier,
+                    attempt_event_time,
+                    &attempt_correlation,
+                    destination.module(),
+                    classification,
+                );
+                return Err(AccountCredentialIssuanceWorkflowError::AuditLogUnavailable);
+            }
+        };
+        let succeeded = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered,
+                account_event_time()?,
+                account_audit_detail(classification, ActionOutcome::Succeeded),
+            )
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+        let conflict = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered,
+                account_event_time()?,
+                account_audit_detail(classification, ActionOutcome::Denied),
+            )
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+        let denied = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered,
+                account_event_time()?,
+                account_audit_detail(classification, ActionOutcome::Denied),
+            )
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+        let persistence = self.database.audit_terminal_recovery_persistence();
+        Ok(PreparedAccountCredentialTerminals {
+            succeeded: succeeded
+                .recovery_obligation(persistence, destination.binding())
+                .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?,
+            conflict: conflict
+                .recovery_obligation(persistence, destination.binding())
+                .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?,
+            denied: denied
+                .recovery_obligation(persistence, destination.binding())
+                .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?,
+        })
+    }
+
+    fn create_result(
+        &self,
+        outcome: AccountCreateOutcome,
+        account: AccountPublicIdentifier,
+        disclosure: TemporaryPasswordDisclosure,
+    ) -> AccountCredentialIssuanceResult {
+        let delivery = self.postcommit_delivery();
+        match outcome {
+            AccountCreateOutcome::Created => AccountCredentialIssuanceResult::Created {
+                account,
+                temporary_password: disclosure,
+                delivery,
+            },
+            AccountCreateOutcome::Conflict => {
+                drop(disclosure);
+                AccountCredentialIssuanceResult::Conflict { delivery }
+            }
+            AccountCreateOutcome::Denied => {
+                drop(disclosure);
+                AccountCredentialIssuanceResult::Denied { delivery }
+            }
+        }
+    }
+
+    fn reset_result(
+        &self,
+        outcome: AccountPasswordResetOutcome,
+        account: AccountPublicIdentifier,
+        disclosure: TemporaryPasswordDisclosure,
+    ) -> AccountCredentialIssuanceResult {
+        let delivery = self.postcommit_delivery();
+        match outcome {
+            AccountPasswordResetOutcome::Reset { .. } => {
+                AccountCredentialIssuanceResult::PasswordReset {
+                    account,
+                    temporary_password: disclosure,
+                    delivery,
+                }
+            }
+            AccountPasswordResetOutcome::Stale => {
+                drop(disclosure);
+                AccountCredentialIssuanceResult::Stale { delivery }
+            }
+            AccountPasswordResetOutcome::Denied => {
+                drop(disclosure);
+                AccountCredentialIssuanceResult::Denied { delivery }
+            }
+        }
+    }
+
+    fn postcommit_delivery(&self) -> AccountCredentialIssuanceDelivery {
+        if self.audit.drain_after_consequential_operation().active()
+            == AuditRecoverySequenceState::Ready
+        {
+            AccountCredentialIssuanceDelivery::Acknowledged
+        } else {
+            AccountCredentialIssuanceDelivery::Pending
+        }
+    }
+}
+
+struct PreparedAccountCredentialTerminals {
+    succeeded: ValidatedAuditTerminalObligationWrite,
+    conflict: ValidatedAuditTerminalObligationWrite,
+    denied: ValidatedAuditTerminalObligationWrite,
+}
+
+impl PreparedAccountCredentialTerminals {
+    fn writes(&self) -> AccountCredentialAuditTerminalWrites<'_> {
+        AccountCredentialAuditTerminalWrites::new(&self.succeeded, &self.conflict, &self.denied)
+    }
+}
+
+fn account_audit_detail(
+    classification: AuditLogClassification,
+    outcome: ActionOutcome,
+) -> AuditOutcomeDetail {
+    match classification {
+        AuditLogClassification::AuthenticationUserCreated => {
+            AuditOutcomeDetail::AuthenticationUserCreated(outcome)
+        }
+        AuditLogClassification::AuthenticationPasswordResetStarted => {
+            AuditOutcomeDetail::AuthenticationPasswordResetStarted(outcome)
+        }
+        AuditLogClassification::LifecycleBackupCreated
+        | AuditLogClassification::AuthenticationUserDisabled
+        | AuditLogClassification::AuthenticationPasswordChanged
+        | AuditLogClassification::AuthenticationMfaEnrolled
+        | AuditLogClassification::AuthenticationMfaReset
+        | AuditLogClassification::AuthenticationMfaRequirementChanged
+        | AuditLogClassification::AuthenticationMfaModuleEnablementChanged
+        | AuditLogClassification::AuthenticationSessionRevoked
+        | AuditLogClassification::AuthorizationGroupCreated
+        | AuditLogClassification::AuthorizationGroupMembershipChanged
+        | AuditLogClassification::AuthorizationGroupGrantChanged
+        | AuditLogClassification::AuthorizationGroupGrantRemovalDenied
+        | AuditLogClassification::AuthorizationAutomationScopeChanged
+        | AuditLogClassification::DependencyAuditTerminalSuperseded
+        | AuditLogClassification::DependencyLogModuleConfigurationChanged
+        | AuditLogClassification::DependencyServiceConnectionChanged
+        | AuditLogClassification::ProviderOperationStarted
+        | AuditLogClassification::ProviderOperationCompleted
+        | AuditLogClassification::InternalServerConfigurationChanged
+        | AuditLogClassification::InternalUserStatusChanged
+        | AuditLogClassification::InternalLogPolicyChanged => {
+            unreachable!("account writers pass only their two classifications")
+        }
+    }
+}
+
+fn temporary_expiration(
+    now: weavelit_server_database::SessionInstant,
+) -> Result<TemporaryCredentialExpiration, AccountCredentialIssuanceWorkflowError> {
+    let lifetime = i64::try_from(TEMPORARY_PASSWORD_LIFETIME.as_millis())
+        .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
+    let expiration = now
+        .as_unix_milliseconds()
+        .checked_add(lifetime)
+        .ok_or(AccountCredentialIssuanceWorkflowError::Unavailable)?;
+    TemporaryCredentialExpiration::from_unix_milliseconds(expiration)
+        .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)
+}
+
+fn issue_state_identifier() -> Result<StateIdentifier, AccountCredentialIssuanceWorkflowError> {
+    for _ in 0..8 {
+        let bytes =
+            random_bytes::<16>().ok_or(AccountCredentialIssuanceWorkflowError::Unavailable)?;
+        if let Ok(identifier) = StateIdentifier::from_bytes(bytes) {
+            return Ok(identifier);
+        }
+    }
+    Err(AccountCredentialIssuanceWorkflowError::Unavailable)
+}
+
+fn account_event_time() -> Result<EventTime, AccountCredentialIssuanceWorkflowError> {
+    let milliseconds =
+        system_clock()().ok_or(AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+    let milliseconds = u64::try_from(milliseconds)
+        .map_err(|_| AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)?;
+    Ok(EventTime::from_unix_milliseconds(milliseconds))
+}
+
+fn issuance_admission_error(
+    error: AccountCredentialIssuanceError,
+) -> AccountCredentialIssuanceWorkflowError {
+    match error {
+        AccountCredentialIssuanceError::Denied => {
+            AccountCredentialIssuanceWorkflowError::CredentialDenied
+        }
+        AccountCredentialIssuanceError::Unavailable => {
+            AccountCredentialIssuanceWorkflowError::Unavailable
+        }
+    }
+}
+
 impl<'a> AccountAdministrationReadWorkflow<'a> {
     pub(crate) const fn new(database: &'a OperationalDatabase) -> Self {
         Self { database }
@@ -77,7 +589,9 @@ impl<'a> AccountAdministrationReadWorkflow<'a> {
         &self,
         action: AuthorizedAdministrationAction,
     ) -> Result<AccountAdministrationReadResult, AccountAdministrationReadError> {
-        let AdministrationAction::Account(read) = action.action() else {
+        let AdministrationAction::Account(AccountAdministrationAction::Read(read)) =
+            action.action()
+        else {
             return Err(AccountAdministrationReadError::ActionNotSupported);
         };
         let read = *read;
@@ -682,11 +1196,11 @@ pub(crate) mod tests {
     const CLIENT_MODULE: &str = "web-ui";
 
     #[derive(Clone, Debug, Eq, PartialEq)]
-    struct ObservedAuditRecord {
-        classification: String,
-        action: String,
-        target: String,
-        detail: String,
+    pub(crate) struct ObservedAuditRecord {
+        pub(crate) classification: String,
+        pub(crate) action: String,
+        pub(crate) target: String,
+        pub(crate) detail: String,
     }
 
     struct RecordingDestination {
@@ -948,7 +1462,7 @@ pub(crate) mod tests {
             .unwrap();
     }
 
-    fn recovery(
+    pub(crate) fn recovery(
         database: OperationalDatabase,
         fail_on_attempt: Option<usize>,
     ) -> (
@@ -1094,7 +1608,9 @@ pub(crate) mod tests {
         AdministrationPlane::new(FixedClock, NoEnablementRead, AvailableComponents::default())
             .authorize(
                 admission,
-                AdministrationRequest::new(AdministrationAction::Account(read)),
+                AdministrationRequest::new(AdministrationAction::Account(
+                    AccountAdministrationAction::Read(read),
+                )),
             )
             .unwrap()
     }

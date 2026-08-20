@@ -117,14 +117,9 @@ impl MfaStore for SqliteDatabase {
         if !enabled(&transaction, target)? {
             return Ok(MfaAcceptance::ModuleDisabled);
         }
-        let written = transaction
-            .execute(
-                ADVANCE_WATERMARK,
-                params![factor.as_bytes().as_slice(), step.as_stored()],
-            )
-            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        let written = advance_watermark(&transaction, factor, step)?;
         // Rolled back rather than committed, so a replayed code issues nothing.
-        if written == 0 {
+        if !written {
             return Ok(MfaAcceptance::Replayed);
         }
         session::insert(&transaction, session)?;
@@ -319,7 +314,10 @@ fn step(stored: i64) -> Result<MfaTimeStep, DatabaseError> {
 ///
 /// Any value other than the exact enabled one, and a missing entry, leaves the
 /// module disabled.
-fn enabled(transaction: &Transaction<'_>, target: &MfaModuleTarget) -> Result<bool, DatabaseError> {
+pub(super) fn enabled(
+    transaction: &Transaction<'_>,
+    target: &MfaModuleTarget,
+) -> Result<bool, DatabaseError> {
     let stored: Option<String> = transaction
         .query_row(
             SELECT_ENABLEMENT,
@@ -333,6 +331,62 @@ fn enabled(transaction: &Transaction<'_>, target: &MfaModuleTarget) -> Result<bo
         .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
 
     Ok(stored.as_deref() == Some(COMPONENT_ENABLED_VALUE))
+}
+
+pub(super) fn factor_for_account(
+    transaction: &Transaction<'_>,
+    account: StateIdentifier,
+    target: &MfaModuleTarget,
+) -> Result<Option<StateIdentifier>, DatabaseError> {
+    let stored: Option<Vec<u8>> = transaction
+        .query_row(
+            "SELECT factor_id FROM weavelit_mfa_factor WHERE account_id = ?1 AND module = ?2",
+            params![account.as_bytes().as_slice(), target.module.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+    stored
+        .map(|stored| {
+            let stored: [u8; 16] = stored
+                .try_into()
+                .map_err(|_| DatabaseError::IntegrityFailure)?;
+            StateIdentifier::from_bytes(stored).map_err(|_| DatabaseError::IntegrityFailure)
+        })
+        .transpose()
+}
+
+pub(super) fn watermark_accepts(
+    transaction: &Transaction<'_>,
+    factor: StateIdentifier,
+    candidate: MfaTimeStep,
+) -> Result<bool, DatabaseError> {
+    let stored: Option<i64> = transaction
+        .query_row(
+            SELECT_WATERMARK,
+            params![factor.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+    Ok(stored
+        .map(step)
+        .transpose()?
+        .is_none_or(|stored| candidate > stored))
+}
+
+pub(super) fn advance_watermark(
+    transaction: &Transaction<'_>,
+    factor: StateIdentifier,
+    step: MfaTimeStep,
+) -> Result<bool, DatabaseError> {
+    transaction
+        .execute(
+            ADVANCE_WATERMARK,
+            params![factor.as_bytes().as_slice(), step.as_stored()],
+        )
+        .map(|written| written == 1)
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))
 }
 
 /// Reports whether one account holds a factor for one MFA Module, inside the

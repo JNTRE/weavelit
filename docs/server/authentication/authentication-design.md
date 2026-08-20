@@ -191,13 +191,13 @@ which compares stored digests rather than bearer values, and the decision to
 accept that row as the presented session is a constant-time comparison of the
 two digests.
 
-## Future Account Credential Issuance
+## Account Credential Issuance Writers
 
-Future account creation and password reset workflows will own temporary
-credential issuance. No account-create or password-reset route exists in the
-current API. Ordinary Account authorization and a separate exact-session
-credential-issuance check will both be required before a workflow returns a
-temporary password.
+The implemented transport-independent account creation and password reset
+writers own temporary credential issuance. No account-create or password-reset
+route exists in the current API. Ordinary Account authorization and a separate
+exact-session credential-issuance check are both required before a workflow
+returns a temporary-password disclosure.
 
 The authentication crate prepares each temporary credential from exactly 18
 bytes (144 bits) of operating-system randomness encoded as exactly 24 unpadded
@@ -205,19 +205,20 @@ Base64url characters. It accepts no caller-supplied entropy and has no fallback
 for unavailable or unusable randomness. The plaintext remains in zeroizing
 storage, and the prepared value pairs its approved-profile verifier with a
 non-clonable disclosure whose only plaintext transfer consumes it. The bundle
-is completed before a future state mutation begins; only its verifier is
+is completed before a state mutation begins; only its verifier is
 eligible for persistence. The crate exports the fixed 24-hour lifetime as a
 typed duration but does not own an issuance clock, expiry persistence, Account
 state, or response transport.
 
-Future account creation will create the account's first verifier and temporary
+Account creation creates the account's first verifier and temporary
 credential metadata in the same atomic state mutation that makes the account
 available. It has no prior target sessions to revoke. The successful originating
-response will disclose the generated temporary password under the same one-time
-wire contract as password reset; a lost response requires a new explicit
-administrative action and does not trigger automatic re-disclosure.
+internal result owns the generated temporary-password disclosure. A future
+transport may consume that value once under the approved wire contract; a lost
+result requires a new explicit administrative action and does not trigger
+automatic re-disclosure.
 
-### Future Password Reset
+### Password Reset Writer
 
 1. **Issuance authorization:** An authenticated **[Administrator](../../glossary.md#identities-and-access)** with
    **[Server Administration Permission](../../glossary.md#identities-and-access)**
@@ -227,31 +228,45 @@ administrative action and does not trigger automatic re-disclosure.
    outside this flow.
 2. **Generate and prepare:** The Server generates a temporary password using
    the same `PasswordVerifierFactory` as account creation, creates its Argon2
-   verifier, and prepares the typed secret-bearing response before any
+   verifier, and prepares the typed secret-bearing internal result before any
    single-use state mutation. The plaintext and response buffer use zeroizing,
    non-rendering owners; only the verifier is eligible for persistence.
-3. **Atomic mutation:** One compare-and-set transaction checks the expected
+3. **Audit sequencing:** The workflow requires a ready active recovery drain,
+   preflights the exact current Audit generation, receives durable
+   acknowledgement for a secret-free Attempt, and prepares every possible
+   terminal obligation before mutation.
+4. **Atomic mutation:** One compare-and-set transaction rechecks the exact
+   issuer session, ordinary actor credential revision and state, current factor
+   enrollment and Module enablement, and the verified TOTP replay step when
+   enrolled. It then checks the expected
    account credential revision, writes or replaces the verifier, increments or
    replaces the revision, sets `must_change_password`, records the fixed
-   24-hour absolute expiry, and revokes the target's active sessions. A stale
-   concurrent request commits no credential and returns one stable,
-   secret-free conflict result.
-4. **One-response disclosure:** Only after the mutation succeeds does the
-   Server return the plaintext temporary password in the originating successful
-   response. The response is `Cache-Control: no-store`, has no redirect, URL,
-   cookie, or browser-storage effect, and is never reconstructed or returned by
-   a later lookup. An indeterminate or lost response is not automatically
-   retried; a new reset creates a new credential and supersedes the old one.
-5. **Temporary-password sign-in:** Before expiry, the Server verifies the
+   24-hour absolute expiry, revokes the target's active sessions, and persists
+   exactly the selected opaque Audit terminal. A stale concurrent request
+   commits no credential and returns one stable, secret-free conflict result.
+5. **One-response disclosure:** Only a committed successful mutation receives
+   ownership of the plaintext temporary-password disclosure. Conflict, stale,
+   denied, Audit-failure, and cancelled paths drop it. The value is never
+   reconstructed or returned by a later lookup. An indeterminate or lost
+   result is not automatically retried; a new reset creates a new credential
+   and supersedes the old one.
+
+### Deferred Temporary Credential Consumption
+
+The current delivery does not add account-create, password-reset,
+password-change, or forced-change routes. The following consumption behavior
+remains required for that future transport and route work:
+
+1. **Temporary-password sign-in:** Before expiry, the Server verifies the
    temporary password against the retained verifier, checks the credential
    revision and `must_change_password`, and refuses the session if the fixed
    24-hour expiry has passed. The user must change the password before any
    other operation, including MFA enrollment.
-6. **Forced-change gate:** All routes except logout and password-change routes
+2. **Forced-change gate:** All routes except logout and password-change routes
    check `must_change_password` after the existing MFA step-up validation. If
    it is set, the Server rejects the request with a stable error and directs
    the user to the password-change route.
-7. **Password change:** The user changes the password using the current
+3. **Password change:** The user changes the password using the current
    temporary credential. In one transaction the Server verifies the current
    credential revision, writes or replaces a new normal verifier, increments
    or replaces the revision, clears the temporary metadata and
@@ -267,9 +282,9 @@ step-up gate in an atomic transaction. This ensures that if MFA is required, the
 user must complete MFA before reaching the password-change route, preventing
 unauthorized password changes by actors with only the temporary password.
 
-**State Semantics:** The future `must_change_password` flag, temporary expiry,
-and credential revision are stable Account properties and must survive Server
-restarts through the future Application Database migration. Creation creates no
+**State Semantics:** The `must_change_password` flag, temporary expiry, and
+credential revision are stable Account properties and survive Server restarts
+through the current Application Database schema. Creation creates no
 prior sessions; reset revokes existing sessions. Any stale pre-reset password
 verification or future password-change continuation cannot issue a session.
 Changing the password clears the temporary metadata and flag and produces a

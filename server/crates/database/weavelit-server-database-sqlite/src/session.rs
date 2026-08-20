@@ -261,7 +261,7 @@ fn resolve(
 /// The indexed equality match locates a candidate row. The decision to treat
 /// that row as this session's is the constant-time comparison below, so no
 /// accept path depends on the storage engine's own byte comparison.
-fn load(
+pub(super) fn load(
     transaction: &Transaction<'_>,
     token_hash: &SessionTokenHash,
 ) -> Result<Option<StoredSession>, DatabaseError> {

@@ -28,10 +28,11 @@ use weavelit_module_client::{
     ReconciliationRejection, validate_reconciliation_request,
 };
 use weavelit_server_authentication::RustCryptoArgon2;
-#[cfg(test)]
-use weavelit_server_database::AuditReferencePersistence;
 use weavelit_server_database::{
-    AccountAdministrationStore, AccountAuditReference, AccountPublicIdentifierPersistence,
+    AccountAdministrationStore, AccountAuditReference, AccountCreateMutation, AccountCreateOutcome,
+    AccountCredentialAuditTerminalWrites, AccountCredentialWriterStore,
+    AccountPasswordResetMutation, AccountPasswordResetOutcome, AccountPasswordResetTarget,
+    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AuditReferencePersistence,
     AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, LogConfigurationAuditReference,
     LogConfigurationAuditTerminalWrites, LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
@@ -180,6 +181,7 @@ impl fmt::Debug for ActiveDatabase {
 pub struct OperationalDatabase {
     database: Arc<Mutex<Option<OperationalDatabaseHandle>>>,
     account_public_identifier_persistence: AccountPublicIdentifierPersistence,
+    audit_reference_persistence: AuditReferencePersistence,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
     log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
     log_configuration_mutation_persistence: Arc<LogConfigurationMutationPersistence>,
@@ -216,6 +218,9 @@ impl OperationalDatabase {
             ))),
             account_public_identifier_persistence:
                 AccountPublicIdentifierPersistence::from_server_authority(&authority),
+            audit_reference_persistence: AuditReferencePersistence::from_server_authority(
+                &authority,
+            ),
             audit_terminal_recovery_persistence: Arc::new(
                 AuditTerminalRecoveryPersistence::from_server_authority(&authority),
             ),
@@ -232,6 +237,7 @@ impl OperationalDatabase {
     fn from_selected(database: SelectedDatabase) -> Self {
         let account_public_identifier_persistence =
             database.account_public_identifier_persistence();
+        let audit_reference_persistence = database.audit_reference_persistence();
         let audit_terminal_recovery_persistence = database.audit_terminal_recovery_persistence();
         let log_configuration_generation_persistence =
             database.log_configuration_generation_persistence();
@@ -242,6 +248,7 @@ impl OperationalDatabase {
                 database,
             )))),
             account_public_identifier_persistence,
+            audit_reference_persistence,
             audit_terminal_recovery_persistence,
             log_configuration_generation_persistence,
             log_configuration_mutation_persistence,
@@ -293,6 +300,63 @@ impl OperationalDatabase {
                 &self.account_public_identifier_persistence,
                 database
                     .account_administration()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Resolves one exact password-reset target through both selected decoders.
+    pub(crate) fn prepare_account_password_reset_target(
+        &self,
+        target: AccountPublicIdentifier,
+    ) -> Result<Option<AccountPasswordResetTarget>, DatabaseError> {
+        self.with_account_credential_writers(|store| {
+            store.prepare_password_reset_target(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                target,
+            )
+        })
+    }
+
+    /// Commits one account creation and exactly one selected Audit terminal.
+    pub(crate) fn create_account(
+        &self,
+        mutation: &AccountCreateMutation,
+        audit_terminals: &AccountCredentialAuditTerminalWrites<'_>,
+    ) -> Result<AccountCreateOutcome, DatabaseError> {
+        self.with_account_credential_writers(|store| {
+            store.create_account(
+                &self.account_public_identifier_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    /// Commits one password reset and exactly one selected Audit terminal.
+    pub(crate) fn reset_account_password(
+        &self,
+        mutation: &AccountPasswordResetMutation,
+        audit_terminals: &AccountCredentialAuditTerminalWrites<'_>,
+    ) -> Result<AccountPasswordResetOutcome, DatabaseError> {
+        self.with_account_credential_writers(|store| {
+            store.reset_account_password(
+                &self.account_public_identifier_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    fn with_account_credential_writers<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn AccountCredentialWriterStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                database
+                    .account_credential_writers()
                     .ok_or(DatabaseError::Unavailable)?,
             )
         })?

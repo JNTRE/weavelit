@@ -1,8 +1,7 @@
 # Server Administration Crate Agent Guide
 
 This crate owns the typed, transport-independent gate between an existing
-Administration Plane authorization and future Server-owned administration
-workflows.
+Administration Plane authorization and Server-owned administration workflows.
 
 ## Instruction Precedence
 
@@ -14,7 +13,8 @@ Apply instructions in this order:
 
 ## Purpose and Scope
 
-- This crate owns the closed administration action families, bounded component
+- This crate owns the closed administration action families, bounded account
+  read/create/reset payloads and exact-session authorized account proof, bounded component
   targets and desired enablement state, exact-session-bound compound admission,
   current-session MFA step-up proof and five-minute policy, live component-operation
   enablement check, non-forgeable authorized-action result, and reason-free denial

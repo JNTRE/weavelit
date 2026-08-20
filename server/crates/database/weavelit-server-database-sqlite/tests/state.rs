@@ -6,20 +6,24 @@ use std::{
 use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
-    Account, AccountAdministrationStore, AccountAuditReference, AccountPasswordVerifier,
-    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountPublicIdentity,
-    ApplicationDatabase, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
-    AuditReferencePersistence, COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation,
-    ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
-    CorrelationIdentifier, CredentialRevision, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
-    GroupMembership, LogAssignment, LogClassification, LogConfigurationAuditReference,
-    LogConfigurationGenerationPersistence, LogConfigurationVersion, LogDetail,
-    LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore,
-    MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
+    Account, AccountAdministrationStore, AccountAuditReference, AccountCreateMutation,
+    AccountCreateOutcome, AccountCredentialAuditTerminalWrites, AccountCredentialIssuanceFactor,
+    AccountCredentialIssuanceRecheck, AccountCredentialWriterStore, AccountPasswordResetMutation,
+    AccountPasswordResetOutcome, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentifierPersistence, AccountPublicIdentity, ApplicationDatabase,
+    ApplicationState, ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
+    AuditTerminalRecoveryPersistence, COMPONENT_ENABLED_VALUE, CheckpointMetadata,
+    CompletionObligation, ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey,
+    ConfigurationValue, CorrelationIdentifier, CredentialRevision, DatabaseError,
+    DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference, GroupGrant,
+    GroupGrantRecord, GroupMembership, LogAssignment, LogClassification,
+    LogConfigurationAuditReference, LogConfigurationGenerationPersistence, LogConfigurationVersion,
+    LogDetail, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget,
+    MfaStore, MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
     ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
     ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
-    StateIdentifier, TemporaryCredentialExpiration, WorkflowCheckpoint, WorkflowKind,
+    StateIdentifier, StoredAuditDestinationBinding, TemporaryCredentialExpiration,
+    ValidatedAuditTerminalObligationWrite, WorkflowCheckpoint, WorkflowKind,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_database_sqlite::SqliteDatabase;
@@ -2226,4 +2230,239 @@ fn recovery_obligations_and_supersessions_are_live_operational_data_excluded_fro
         supersession_replacement_binding_version.to_vec()
     );
     drop(connection);
+}
+
+#[test]
+fn created_and_reset_account_state_round_trips_through_normalized_restore() {
+    let source_directory = tempfile::tempdir().unwrap();
+    let source_path = database_path(&source_directory);
+    let source_deployment = deployment(60);
+    let mut source = restored_database(&source_path, source_deployment);
+    let connection = Connection::open(&source_path).unwrap();
+    connection
+        .execute(
+            "UPDATE weavelit_account SET active = 1 WHERE account_id = ?1",
+            [identifier(2).as_bytes().as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_password_verifier \
+             (account_id, encoded_verifier) VALUES (?1, '$issuer-verifier')",
+            [identifier(2).as_bytes().as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_session \
+             (token_hash, csrf_hash, account_id, client_module, issued_at_milliseconds, \
+              last_seen_at_milliseconds, absolute_expires_at_milliseconds) \
+             VALUES (?1, ?2, ?3, 'web-ui', 1000, 1000, 43201000)",
+            rusqlite::params![
+                [0x31_u8; SESSION_DIGEST_LENGTH].as_slice(),
+                [0x32_u8; SESSION_DIGEST_LENGTH].as_slice(),
+                identifier(2).as_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let authority = ServerDatabaseAuthority::new();
+    let terminal_persistence = AuditTerminalRecoveryPersistence::from_server_authority(&authority);
+    let binding =
+        StoredAuditDestinationBinding::from_persisted(&terminal_persistence, [0x71; 16], 1)
+            .unwrap();
+    let terminal = |identifier: u8| {
+        ValidatedAuditTerminalObligationWrite::from_server_audit(
+            &terminal_persistence,
+            [identifier; 16],
+            vec![identifier; 32],
+            binding.clone(),
+        )
+        .unwrap()
+    };
+    let target = MfaModuleTarget {
+        module: name("totp"),
+        component: name("totp"),
+    };
+    let recheck = || {
+        AccountCredentialIssuanceRecheck::new(
+            identifier(2),
+            SessionTokenHash::from_bytes([0x31; SESSION_DIGEST_LENGTH]).unwrap(),
+            name("web-ui"),
+            CredentialRevision::INITIAL,
+            SessionInstant::from_unix_milliseconds(1_001).unwrap(),
+            AccountCredentialIssuanceFactor::NoneObserved {
+                target: target.clone(),
+            },
+        )
+    };
+    let created_account = identifier(8);
+    let created_public_identifier = account_public_identifier(0x98);
+    let created = AccountCreateMutation::new(
+        recheck(),
+        Account {
+            identifier: created_account,
+            username: name("restorable-created"),
+            display_name: Some(name("Restorable Created")),
+            active: true,
+            mfa_required: false,
+            credential_revision: CredentialRevision::INITIAL,
+            must_change_password: true,
+            temporary_credential_expiration: Some(
+                TemporaryCredentialExpiration::from_unix_milliseconds(86_401_001).unwrap(),
+            ),
+        },
+        AccountPublicIdentity::new(created_account, created_public_identifier),
+        AccountAuditReference::new(created_account, audit_reference(0xD8)),
+        AccountPasswordVerifier {
+            account: created_account,
+            verifier: PasswordVerifier::new("$created-verifier").unwrap(),
+        },
+    )
+    .unwrap();
+    let create_succeeded = terminal(0x81);
+    let create_conflict = terminal(0x82);
+    let create_denied = terminal(0x83);
+    assert_eq!(
+        source.create_account(
+            &account_public_identifier_persistence(),
+            &created,
+            &AccountCredentialAuditTerminalWrites::new(
+                &create_succeeded,
+                &create_conflict,
+                &create_denied,
+            ),
+        ),
+        Ok(AccountCreateOutcome::Created)
+    );
+
+    let reset_target = source
+        .prepare_password_reset_target(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            created_public_identifier,
+        )
+        .unwrap()
+        .unwrap();
+    let reset = AccountPasswordResetMutation::new(
+        recheck(),
+        reset_target,
+        TemporaryCredentialExpiration::from_unix_milliseconds(86_402_001).unwrap(),
+        AccountPasswordVerifier {
+            account: created_account,
+            verifier: PasswordVerifier::new("$reset-verifier").unwrap(),
+        },
+    )
+    .unwrap();
+    let reset_succeeded = terminal(0x84);
+    let reset_conflict = terminal(0x85);
+    let reset_denied = terminal(0x86);
+    assert!(matches!(
+        source.reset_account_password(
+            &account_public_identifier_persistence(),
+            &reset,
+            &AccountCredentialAuditTerminalWrites::new(
+                &reset_succeeded,
+                &reset_conflict,
+                &reset_denied,
+            ),
+        ),
+        Ok(AccountPasswordResetOutcome::Reset { .. })
+    ));
+
+    let normalized = source
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            source_deployment,
+        )
+        .unwrap();
+    let created_state = normalized
+        .state()
+        .accounts()
+        .iter()
+        .find(|account| account.identifier == created_account)
+        .unwrap();
+    assert_eq!(
+        created_state.credential_revision,
+        CredentialRevision::from_value(2).unwrap()
+    );
+    assert!(created_state.must_change_password);
+    assert_eq!(
+        created_state
+            .temporary_credential_expiration
+            .unwrap()
+            .as_unix_milliseconds(),
+        86_402_001
+    );
+    assert_eq!(
+        normalized
+            .state()
+            .password_verifiers()
+            .iter()
+            .find(|verifier| verifier.account == created_account)
+            .unwrap()
+            .verifier
+            .as_str(),
+        "$reset-verifier"
+    );
+
+    let destination_directory = tempfile::tempdir().unwrap();
+    let destination_path = database_path(&destination_directory);
+    let destination_deployment = deployment(61);
+    let mut destination = SqliteDatabase::open(&destination_path).unwrap();
+    let checkpoint = restore_checkpoint(destination_deployment);
+    destination.create_checkpoint(&checkpoint).unwrap();
+    destination
+        .complete_checkpoint(
+            &account_public_identifier_persistence(),
+            &checkpoint,
+            normalized.state(),
+            &reconciliation_digest(0xE1),
+        )
+        .unwrap();
+    let restored = destination
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            destination_deployment,
+        )
+        .unwrap();
+    assert_eq!(restored.state(), normalized.state());
+
+    let source_connection = Connection::open(&source_path).unwrap();
+    assert_eq!(
+        source_connection
+            .query_row("SELECT count(*) FROM weavelit_session", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        source_connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_audit_terminal_obligation",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        2
+    );
+    let destination_connection = Connection::open(&destination_path).unwrap();
+    for table in [
+        "weavelit_session",
+        "weavelit_mfa_replay_watermark",
+        "weavelit_audit_terminal_obligation",
+    ] {
+        assert_eq!(
+            destination_connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0,
+            "{table} must not transfer through normalized Restore state"
+        );
+    }
 }

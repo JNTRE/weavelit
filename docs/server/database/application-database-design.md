@@ -307,7 +307,7 @@ contract defines no in-place Restore clearing operation. Obligations are also
 absent from every Log Module destination backup unless and until that
 destination has acknowledged the replayed record.
 
-### Account Credential State Foundation
+### Account Credential Writers
 
 Every account record carries a nonzero monotonically increasing credential
 revision, a `must_change_password` flag, and an optional nonnegative absolute
@@ -317,15 +317,28 @@ metadata is valid only for an account that has a password verifier. An ordinary
 credential has a false flag and no expiry. The aggregate carries no temporary
 password, response content, delivery content, or continuation bearer.
 
-This foundation adds no account-create, password-reset, password-change, or
-other account mutation operation. Those future operations must atomically
-compare the expected revision, update the verifier and metadata, advance the
-revision, and revoke sessions where their approved workflow requires it. They
-also require their own Audit design and implementation; the credential-state
-foundation does not add an Audit terminal workflow or make the Application
-Database an Audit Log destination. Refer to
-[Authentication Design](../authentication/authentication-design.md#future-account-credential-issuance)
-for the approved future expiry, revision, session, and reauthentication policy.
+`AccountCredentialWriterStore` implements transport-independent account create
+and password-reset mutations. A reset-target preparation read resolves one
+exact Account Public Identifier, internal account, credential revision, and
+typed Audit Reference in one backend snapshot. Each final mutation receives a
+non-clonable exact-session recheck, the prepared verifier and 24-hour metadata,
+and prevalidated opaque Audit terminal alternatives.
+
+The final transaction rechecks exact session ownership, Client Module, and
+liveness; active ordinary actor credential state and revision; current factor
+identity and Module enablement; and the verified TOTP replay step when
+enrolled. Create writes revision `1`, active optional-MFA state, independently
+generated internal, public, and Audit identities, and no Group, grant, factor,
+watermark, or session. Reset compare-and-sets the target revision, replaces or
+creates its verifier, preserves its other Account state, and revokes every
+target session. Each outcome commits exactly one selected opaque Audit terminal
+with the business decision or rolls back both.
+
+The contract adds no route, response encoding, password-change writer, or
+request-idempotency store. The Application Database remains separate from the
+Audit Log destination. Refer to the
+[Authentication Design](../authentication/authentication-design.md#account-credential-issuance-writers)
+for expiry, disclosure, session, and reauthentication policy.
 
 ## Live Session Storage
 

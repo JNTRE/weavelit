@@ -282,10 +282,23 @@ temporary account to have a password verifier.
 
 The migration stores only the existing Argon2 verifier and bounded metadata;
 plaintext temporary passwords, response buffers, delivery content, and
-continuation bearer values have no SQLite column. It adds no account mutation
-writer, Audit terminal workflow, route, retrieval endpoint, or password-change
-ticket. Future account creation, reset, and password change require separately
-approved compare-and-set transactions and Audit behavior.
+continuation bearer values have no SQLite column. It adds no route, retrieval
+endpoint, response store, or password-change ticket. Account creation and
+password reset use the existing schema through separately implemented
+compare-and-set transactions; no later migration or backup-format change is
+required.
+
+The account credential writer uses one `BEGIN IMMEDIATE` transaction. It
+rechecks exact issuer session ownership, Client Module, and lifetime; active
+ordinary actor credential state and revision; current TOTP factor identity and
+Module enablement; and atomically advances the replay watermark when enrolled.
+A create prechecks username and generated identity collisions before inserting
+the account, public identity, Audit Reference, and verifier. A reset verifies
+the exact public-identifier association, compare-and-sets the target revision,
+replaces or creates the verifier, and deletes every target session. Success,
+duplicate or stale conflict, and final issuer denial each select exactly one
+opaque terminal obligation. The selected obligation and any watermark or
+business writes commit together or roll back together.
 
 ## Live Session Schema
 

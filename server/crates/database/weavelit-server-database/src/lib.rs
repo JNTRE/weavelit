@@ -3,6 +3,7 @@
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
 mod account_administration;
+mod account_writer;
 mod audit_recovery;
 mod log_configuration;
 mod mfa;
@@ -11,6 +12,12 @@ mod session;
 mod state;
 
 pub use account_administration::{AccountAdministrationProjection, AccountAdministrationStore};
+pub use account_writer::{
+    AccountCreateMutation, AccountCreateOutcome, AccountCredentialAuditTerminalWrites,
+    AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck,
+    AccountCredentialMutationError, AccountCredentialWriterStore, AccountPasswordResetMutation,
+    AccountPasswordResetOutcome, AccountPasswordResetTarget,
+};
 pub use audit_recovery::{
     AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH, AuditTerminalAcknowledgementProof,
     AuditTerminalObligation, AuditTerminalObligationIdentifier, AuditTerminalRecoveryContractError,
@@ -314,6 +321,11 @@ pub trait ApplicationDatabase: Send {
 
     /// Returns bounded account administration reads, when available.
     fn account_administration(&mut self) -> Option<&mut dyn AccountAdministrationStore> {
+        None
+    }
+
+    /// Returns account credential mutation storage, when available.
+    fn account_credential_writers(&mut self) -> Option<&mut dyn AccountCredentialWriterStore> {
         None
     }
 
