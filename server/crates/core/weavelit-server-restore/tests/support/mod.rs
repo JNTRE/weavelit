@@ -585,7 +585,7 @@ fn generate_backup(plaintext_length: usize, flag_final: bool) -> GeneratedBackup
     GeneratedBackup {
         artifact: envelope(&stream),
         plaintext,
-        configuration_entries: 1 + padding.len(),
+        configuration_entries: 2 + padding.len(),
     }
 }
 
