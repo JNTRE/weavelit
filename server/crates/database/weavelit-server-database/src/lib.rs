@@ -3,6 +3,7 @@
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
 mod audit_recovery;
+mod log_configuration;
 mod mfa;
 mod reconciliation;
 mod session;
@@ -16,6 +17,11 @@ pub use audit_recovery::{
     MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES,
     OpaqueAuditTerminalDisposition, OpaqueAuditTerminalProjection, StoredAuditDestinationBinding,
     ValidatedAuditTerminalObligationWrite,
+};
+pub use log_configuration::{
+    LogConfigurationGeneration, LogConfigurationGenerationError, LogConfigurationGenerationKey,
+    LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
+    LogConfigurationVersion,
 };
 pub use mfa::{
     MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment,
@@ -279,6 +285,17 @@ pub trait ApplicationDatabase: Send {
     /// durable terminal obligations. The method is required rather than
     /// defaulted so every backend deliberately declares its support.
     fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore>;
+
+    /// Returns immutable Log Module configuration generation reads, when available.
+    ///
+    /// Generation persistence is introduced independently of a concrete backend
+    /// migration. The default makes absence explicit to callers while allowing
+    /// existing backends to remain compatible until they implement the store.
+    fn log_configuration_generations(
+        &mut self,
+    ) -> Option<&mut dyn LogConfigurationGenerationStore> {
+        None
+    }
 
     /// Closes the database and releases its storage cleanly.
     ///

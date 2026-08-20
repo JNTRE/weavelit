@@ -14,12 +14,13 @@ use weavelit_server_audit::ServerAudit;
 use weavelit_server_database::{
     AuditTerminalObligation, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
     AuditTerminalReplayBatchSize, DatabaseError, DeploymentIdentifier, InitializedState,
-    LogAssignment, LogModuleConfiguration, LogType, MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE,
+    LogAssignment, LogConfigurationGeneration, LogConfigurationGenerationKey,
+    LogModuleConfiguration, LogType, MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE,
 };
 use weavelit_server_log::{
     AuditDestinationBinding, AuditTerminalReplayError, ConfiguredLogDestination,
-    DestinationSettings, LogModuleCatalog, LogModuleIdentifier, ResolvedAuditDestination,
-    TrustedLogModuleContext, TrustedRecordIssuer,
+    DestinationSettings, LogModuleCatalog, LogModuleIdentifier, LogRecordType,
+    ResolvedAuditDestination, TrustedLogModuleContext, TrustedRecordIssuer,
 };
 use weavelit_server_log_authority::ServerLogAuthority;
 
@@ -241,6 +242,119 @@ impl fmt::Debug for OperationalAuditRecovery {
         formatter.write_str("OperationalAuditRecovery(REDACTED)")
     }
 }
+
+/// Inert resolver for one authority-selected immutable Audit configuration generation.
+///
+/// This is intentionally not registered with operational composition until a
+/// concrete backend implements the generation store in #148-B.
+#[allow(dead_code)]
+struct OperationalAuditGenerationDestination {
+    authority: ServerLogAuthority,
+    binding: AuditDestinationBinding,
+    module: LogModuleIdentifier,
+    destination: ConfiguredLogDestination,
+}
+
+#[allow(dead_code)]
+impl OperationalAuditGenerationDestination {
+    fn resolve(
+        log_catalog: &LogModuleCatalog,
+        state_root: &Path,
+        deployment_identifier: DeploymentIdentifier,
+        selected_key: LogConfigurationGenerationKey,
+        generation: Option<&LogConfigurationGeneration>,
+        authority: ServerLogAuthority,
+    ) -> Result<Self, OperationalAuditGenerationResolutionError> {
+        let generation = generation.ok_or(OperationalAuditGenerationResolutionError)?;
+        if generation.key() != selected_key
+            || !generation.enabled()
+            || !generation.contains_log_type(LogType::Audit)
+        {
+            return Err(OperationalAuditGenerationResolutionError);
+        }
+
+        let module = LogModuleIdentifier::new(generation.module().as_str())
+            .map_err(|_| OperationalAuditGenerationResolutionError)?;
+        let settings = DestinationSettings::new(
+            generation
+                .settings()
+                .iter()
+                .map(|setting| {
+                    (
+                        setting.key.as_str().to_owned(),
+                        setting.value.as_str().to_owned(),
+                    )
+                })
+                .collect(),
+        )
+        .map_err(|_| OperationalAuditGenerationResolutionError)?;
+        let declaration = log_catalog
+            .declaration(&module)
+            .ok_or(OperationalAuditGenerationResolutionError)?;
+        if !declaration.capabilities().supports(LogRecordType::Audit)
+            || !declaration.accepted_settings().accepts(&settings)
+        {
+            return Err(OperationalAuditGenerationResolutionError);
+        }
+
+        let binding = AuditDestinationBinding::from_server_authority(
+            &authority,
+            *selected_key.configuration().as_bytes(),
+            selected_key.version().get(),
+        )
+        .map_err(|_| OperationalAuditGenerationResolutionError)?;
+        let context = TrustedLogModuleContext::from_server_authority(
+            &authority,
+            state_root.to_path_buf(),
+            *deployment_identifier.as_bytes(),
+        )
+        .with_settings(settings);
+        let destination = log_catalog
+            .create_destination(&module, &context)
+            .map_err(|_| OperationalAuditGenerationResolutionError)?;
+
+        Ok(Self {
+            authority,
+            binding,
+            module,
+            destination,
+        })
+    }
+
+    fn module(&self) -> &LogModuleIdentifier {
+        &self.module
+    }
+
+    fn resolved(&self) -> ResolvedAuditDestination<'_> {
+        ResolvedAuditDestination::from_server_authority(
+            &self.authority,
+            &self.binding,
+            &self.destination,
+        )
+    }
+}
+
+impl fmt::Debug for OperationalAuditGenerationDestination {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OperationalAuditGenerationDestination(REDACTED)")
+    }
+}
+
+struct OperationalAuditGenerationResolutionError;
+
+impl fmt::Debug for OperationalAuditGenerationResolutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OperationalAuditGenerationResolutionError(REDACTED)")
+    }
+}
+
+impl fmt::Display for OperationalAuditGenerationResolutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Audit destination generation is unavailable")
+    }
+}
+
+impl std::error::Error for OperationalAuditGenerationResolutionError {}
 
 /// Best-effort System Log support retained independently of Audit resolution.
 struct OperationalAuditReporting {
@@ -467,7 +581,9 @@ mod tests {
         CompletionObligation, ComponentEnablement, ConfigurationKey, ConfigurationValue,
         CorrelationIdentifier, DatabaseError, DatabaseInspection, DeploymentIdentifier,
         GroupAuditReference, HumanAuthorizationSnapshot, InitializedState, LogAssignment,
-        LogClassification, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
+        LogClassification, LogConfigurationGeneration, LogConfigurationGenerationKey,
+        LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
+        LogConfigurationVersion, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
         MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, MfaStore, Name, ReconciliationDigest,
         ReconciliationStore, RecoveryPublicKey, SessionStore, StateIdentifier,
         StoredAuditDestinationBinding, WorkflowCheckpoint, WorkflowKind,
@@ -484,7 +600,8 @@ mod tests {
     use weavelit_server_log_authority::ServerLogAuthority;
 
     use super::{
-        AuditRecoverySequenceState, OperationalAuditDestination, OperationalAuditRecovery,
+        AuditRecoverySequenceState, OperationalAuditDestination,
+        OperationalAuditGenerationDestination, OperationalAuditRecovery,
         OperationalAuditRecoveryState, OperationalAuditReporting, assigned_configuration,
     };
     use crate::{operational::OperationalDatabase, operational_logging::OperationalLogSupport};
@@ -857,6 +974,52 @@ mod tests {
 
     struct SettingsFactory {
         received: Arc<Mutex<Option<String>>>,
+    }
+
+    struct GenerationResolverFactory {
+        factory_calls: Arc<AtomicUsize>,
+        delivery_calls: Arc<AtomicUsize>,
+        received: Arc<Mutex<Option<String>>>,
+    }
+
+    impl LogDestinationFactory for GenerationResolverFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::new(vec!["endpoint".to_owned()]).unwrap()
+        }
+
+        fn create(
+            &self,
+            context: &LogModuleFactoryContext<'_>,
+        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+            self.factory_calls.fetch_add(1, Ordering::SeqCst);
+            *self
+                .received
+                .lock()
+                .map_err(|_| LogDestinationError::Unavailable)? =
+                context.settings().get("endpoint").map(str::to_owned);
+            Ok(Box::new(GenerationResolverDestination {
+                delivery_calls: Arc::clone(&self.delivery_calls),
+            }))
+        }
+    }
+
+    struct GenerationResolverDestination {
+        delivery_calls: Arc<AtomicUsize>,
+    }
+
+    impl LogDestination for GenerationResolverDestination {
+        fn deliver(
+            &self,
+            _record: &CompleteLogRecord,
+            acknowledgement: DurableAcknowledgement,
+        ) -> Result<DurableAcknowledgement, LogDestinationError> {
+            self.delivery_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(acknowledgement)
+        }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            Ok(())
+        }
     }
 
     impl LogDestinationFactory for SettingsFactory {
@@ -1561,6 +1724,224 @@ mod tests {
     }
 
     #[test]
+    fn generation_resolver_pairs_exact_binding_and_committed_settings_without_delivery() {
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let delivery_calls = Arc::new(AtomicUsize::new(0));
+        let received = Arc::new(Mutex::new(None));
+        let catalog = generation_catalog(
+            vec![LogRecordType::Audit],
+            Arc::clone(&factory_calls),
+            Arc::clone(&delivery_calls),
+            Arc::clone(&received),
+        );
+        let persistence = generation_persistence();
+        let key = persistence.key(identifier(0x51), LogConfigurationVersion::new(7).unwrap());
+        let generation = generation(
+            &persistence,
+            key,
+            true,
+            vec![LogType::Audit],
+            "audit-primary",
+        );
+
+        let destination = OperationalAuditGenerationDestination::resolve(
+            &catalog,
+            Path::new("/unused"),
+            DeploymentIdentifier::from_bytes([0x52; 16]).unwrap(),
+            key,
+            Some(&generation),
+            ServerLogAuthority::new(),
+        )
+        .unwrap();
+
+        assert_eq!(destination.module().as_str(), "generation-test");
+        assert_eq!(
+            destination.resolved().binding().identifier(),
+            identifier(0x51).as_bytes()
+        );
+        assert_eq!(destination.resolved().binding().version(), 7);
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(delivery_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(received.lock().unwrap().as_deref(), Some("audit-primary"));
+    }
+
+    #[test]
+    fn generation_resolver_rejects_untrusted_shapes_before_factory_or_delivery() {
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let delivery_calls = Arc::new(AtomicUsize::new(0));
+        let received = Arc::new(Mutex::new(None));
+        let catalog = generation_catalog(
+            vec![LogRecordType::Audit],
+            Arc::clone(&factory_calls),
+            Arc::clone(&delivery_calls),
+            Arc::clone(&received),
+        );
+        let persistence = generation_persistence();
+        let selected = persistence.key(identifier(0x61), LogConfigurationVersion::new(3).unwrap());
+        let cases = [
+            None,
+            Some(generation(
+                &persistence,
+                selected,
+                false,
+                vec![LogType::Audit],
+                "disabled",
+            )),
+            Some(generation(
+                &persistence,
+                persistence.key(identifier(0x62), LogConfigurationVersion::new(3).unwrap()),
+                true,
+                vec![LogType::Audit],
+                "wrong-identity",
+            )),
+            Some(generation(
+                &persistence,
+                persistence.key(identifier(0x61), LogConfigurationVersion::new(4).unwrap()),
+                true,
+                vec![LogType::Audit],
+                "wrong-version",
+            )),
+            Some(generation(
+                &persistence,
+                selected,
+                true,
+                vec![LogType::System],
+                "non-audit",
+            )),
+            Some(
+                persistence
+                    .generation(
+                        selected,
+                        Name::new("unknown-module").unwrap(),
+                        Name::new("audit-generation").unwrap(),
+                        true,
+                        vec![LogModuleSetting {
+                            key: ConfigurationKey::new("endpoint").unwrap(),
+                            value: ConfigurationValue::new("unknown-module").unwrap(),
+                        }],
+                        vec![LogType::Audit],
+                    )
+                    .unwrap(),
+            ),
+            Some(
+                persistence
+                    .generation(
+                        selected,
+                        Name::new("generation-test").unwrap(),
+                        Name::new("audit-generation").unwrap(),
+                        true,
+                        vec![LogModuleSetting {
+                            key: ConfigurationKey::new("undeclared").unwrap(),
+                            value: ConfigurationValue::new("sensitive-setting").unwrap(),
+                        }],
+                        vec![LogType::Audit],
+                    )
+                    .unwrap(),
+            ),
+        ];
+
+        for generation in &cases {
+            let error = OperationalAuditGenerationDestination::resolve(
+                &catalog,
+                Path::new("/sensitive/path"),
+                DeploymentIdentifier::from_bytes([0x63; 16]).unwrap(),
+                selected,
+                generation.as_ref(),
+                ServerLogAuthority::new(),
+            )
+            .unwrap_err();
+            assert_eq!(
+                format!("{error:?} {error}"),
+                "OperationalAuditGenerationResolutionError(REDACTED) Audit destination generation is unavailable"
+            );
+        }
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(delivery_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(*received.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn generation_resolver_rejects_non_audit_module_before_factory_or_delivery() {
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let delivery_calls = Arc::new(AtomicUsize::new(0));
+        let received = Arc::new(Mutex::new(None));
+        let catalog = generation_catalog(
+            vec![LogRecordType::System],
+            Arc::clone(&factory_calls),
+            Arc::clone(&delivery_calls),
+            Arc::clone(&received),
+        );
+        let persistence = generation_persistence();
+        let key = persistence.key(identifier(0x71), LogConfigurationVersion::INITIAL);
+        let generation = generation(
+            &persistence,
+            key,
+            true,
+            vec![LogType::Audit],
+            "must-not-open",
+        );
+
+        assert!(
+            OperationalAuditGenerationDestination::resolve(
+                &catalog,
+                Path::new("/unused"),
+                DeploymentIdentifier::from_bytes([0x72; 16]).unwrap(),
+                key,
+                Some(&generation),
+                ServerLogAuthority::new(),
+            )
+            .is_err()
+        );
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(delivery_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(*received.lock().unwrap(), None);
+    }
+
+    fn generation_persistence() -> LogConfigurationGenerationPersistence {
+        LogConfigurationGenerationPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+    }
+
+    fn generation(
+        persistence: &LogConfigurationGenerationPersistence,
+        key: LogConfigurationGenerationKey,
+        enabled: bool,
+        log_types: Vec<LogType>,
+        endpoint: &str,
+    ) -> LogConfigurationGeneration {
+        persistence
+            .generation(
+                key,
+                Name::new("generation-test").unwrap(),
+                Name::new("audit-generation").unwrap(),
+                enabled,
+                vec![LogModuleSetting {
+                    key: ConfigurationKey::new("endpoint").unwrap(),
+                    value: ConfigurationValue::new(endpoint).unwrap(),
+                }],
+                log_types,
+            )
+            .unwrap()
+    }
+
+    fn generation_catalog(
+        capabilities: Vec<LogRecordType>,
+        factory_calls: Arc<AtomicUsize>,
+        delivery_calls: Arc<AtomicUsize>,
+        received: Arc<Mutex<Option<String>>>,
+    ) -> LogModuleCatalog {
+        LogModuleCatalog::new(vec![LogModuleRegistration::new(
+            "generation-test",
+            LogCapabilities::new(capabilities).unwrap(),
+            Box::new(GenerationResolverFactory {
+                factory_calls,
+                delivery_calls,
+                received,
+            }),
+        )])
+        .unwrap()
+    }
+
+    #[test]
     fn absent_recovery_store_keeps_reads_available_for_later_gate_attempts() {
         let DestinationFixture { destination, .. } =
             operational_destination([0x42; 16], None, None, None);
@@ -1582,6 +1963,318 @@ mod tests {
             );
         }
         assert!(database.with(|_| ()).is_ok());
+    }
+
+    #[test]
+    fn load_generation_store_accessors_unavailable_when_no_store() {
+        let database = OperationalDatabase::from_open(Box::new(RecoveryDatabase {
+            state: Arc::new(Mutex::new(StoreState::default())),
+            serves_recovery: false,
+        }));
+        let persistence = generation_persistence();
+        let key = persistence.key(
+            StateIdentifier::from_bytes([0xAA; 16]).unwrap(),
+            LogConfigurationVersion::new(1).unwrap(),
+        );
+
+        let result_current = database.load_current_audit_log_configuration_generation();
+        assert_eq!(result_current, Err(DatabaseError::Unavailable));
+
+        let result_historical = database.load_log_configuration_generation(key);
+        assert_eq!(result_historical, Err(DatabaseError::Unavailable));
+    }
+
+    #[test]
+    fn load_generation_store_accessors_work_with_store() {
+        let persistence = generation_persistence();
+        let key = persistence.key(
+            StateIdentifier::from_bytes([0xBB; 16]).unwrap(),
+            LogConfigurationVersion::new(1).unwrap(),
+        );
+
+        let current_snapshot = generation(
+            &persistence,
+            key,
+            true,
+            vec![LogType::Audit],
+            "test-endpoint",
+        );
+        let historical_snapshot = generation(
+            &persistence,
+            key,
+            true,
+            vec![LogType::System],
+            "history-endpoint",
+        );
+
+        struct GenerationStoreDouble {
+            current: LogConfigurationGeneration,
+            historical: Option<LogConfigurationGeneration>,
+        }
+
+        impl LogConfigurationGenerationStore for GenerationStoreDouble {
+            fn load_current_audit_log_configuration_generation(
+                &mut self,
+                _persistence: &LogConfigurationGenerationPersistence,
+            ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+                Ok(Some(self.current.clone()))
+            }
+
+            fn load_log_configuration_generation(
+                &mut self,
+                _persistence: &LogConfigurationGenerationPersistence,
+                _key: LogConfigurationGenerationKey,
+            ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+                Ok(self.historical.clone())
+            }
+        }
+
+        struct DatabaseDoubleWithStore {
+            generation_store: GenerationStoreDouble,
+        }
+
+        impl ApplicationDatabase for DatabaseDoubleWithStore {
+            fn inspect(
+                &mut self,
+                _expected_deployment_identifier: DeploymentIdentifier,
+            ) -> Result<DatabaseInspection, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn create_checkpoint(
+                &mut self,
+                _checkpoint: &WorkflowCheckpoint,
+            ) -> Result<(), DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn complete_checkpoint(
+                &mut self,
+                _checkpoint: &WorkflowCheckpoint,
+                _state: &ApplicationState,
+                _reconciliation: &ReconciliationDigest,
+            ) -> Result<(), DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_initialized_state(
+                &mut self,
+                _persistence: &AuditReferencePersistence,
+                _expected_deployment_identifier: DeploymentIdentifier,
+            ) -> Result<InitializedState, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn acknowledge_completion(
+                &mut self,
+                _expected_deployment_identifier: DeploymentIdentifier,
+                _record_identifier: StateIdentifier,
+            ) -> Result<(), DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_human_authorization(
+                &mut self,
+                _account: StateIdentifier,
+            ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_account_audit_reference(
+                &mut self,
+                _persistence: &AuditReferencePersistence,
+                _account: StateIdentifier,
+            ) -> Result<Option<AccountAuditReference>, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_group_audit_reference(
+                &mut self,
+                _persistence: &AuditReferencePersistence,
+                _group: StateIdentifier,
+            ) -> Result<Option<GroupAuditReference>, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn sessions(&mut self) -> Option<&mut dyn SessionStore> {
+                None
+            }
+
+            fn mfa(&mut self) -> Option<&mut dyn MfaStore> {
+                None
+            }
+
+            fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore> {
+                None
+            }
+
+            fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore> {
+                None
+            }
+
+            fn log_configuration_generations(
+                &mut self,
+            ) -> Option<&mut dyn LogConfigurationGenerationStore> {
+                Some(&mut self.generation_store)
+            }
+
+            fn close(self: Box<Self>) -> Result<(), DatabaseError> {
+                Ok(())
+            }
+        }
+
+        let database = OperationalDatabase::from_open(Box::new(DatabaseDoubleWithStore {
+            generation_store: GenerationStoreDouble {
+                current: current_snapshot.clone(),
+                historical: Some(historical_snapshot.clone()),
+            },
+        }));
+
+        let result_current = database.load_current_audit_log_configuration_generation();
+        assert_eq!(result_current, Ok(Some(current_snapshot)));
+
+        let result_historical = database.load_log_configuration_generation(key);
+        assert_eq!(result_historical, Ok(Some(historical_snapshot)));
+    }
+
+    #[test]
+    fn load_generation_store_accessor_passes_through_absent_generation() {
+        let persistence = generation_persistence();
+        let key = persistence.key(
+            StateIdentifier::from_bytes([0xCC; 16]).unwrap(),
+            LogConfigurationVersion::new(1).unwrap(),
+        );
+
+        struct AbsentGenerationStoreDouble;
+
+        impl LogConfigurationGenerationStore for AbsentGenerationStoreDouble {
+            fn load_current_audit_log_configuration_generation(
+                &mut self,
+                _persistence: &LogConfigurationGenerationPersistence,
+            ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+                Ok(None)
+            }
+
+            fn load_log_configuration_generation(
+                &mut self,
+                _persistence: &LogConfigurationGenerationPersistence,
+                _key: LogConfigurationGenerationKey,
+            ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+                Ok(None)
+            }
+        }
+
+        struct DatabaseDoubleWithAbsentStore {
+            generation_store: AbsentGenerationStoreDouble,
+        }
+
+        impl ApplicationDatabase for DatabaseDoubleWithAbsentStore {
+            fn inspect(
+                &mut self,
+                _expected_deployment_identifier: DeploymentIdentifier,
+            ) -> Result<DatabaseInspection, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn create_checkpoint(
+                &mut self,
+                _checkpoint: &WorkflowCheckpoint,
+            ) -> Result<(), DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn complete_checkpoint(
+                &mut self,
+                _checkpoint: &WorkflowCheckpoint,
+                _state: &ApplicationState,
+                _reconciliation: &ReconciliationDigest,
+            ) -> Result<(), DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_initialized_state(
+                &mut self,
+                _persistence: &AuditReferencePersistence,
+                _expected_deployment_identifier: DeploymentIdentifier,
+            ) -> Result<InitializedState, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn acknowledge_completion(
+                &mut self,
+                _expected_deployment_identifier: DeploymentIdentifier,
+                _record_identifier: StateIdentifier,
+            ) -> Result<(), DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_human_authorization(
+                &mut self,
+                _account: StateIdentifier,
+            ) -> Result<Option<HumanAuthorizationSnapshot>, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_account_audit_reference(
+                &mut self,
+                _persistence: &AuditReferencePersistence,
+                _account: StateIdentifier,
+            ) -> Result<Option<AccountAuditReference>, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_group_audit_reference(
+                &mut self,
+                _persistence: &AuditReferencePersistence,
+                _group: StateIdentifier,
+            ) -> Result<Option<GroupAuditReference>, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn sessions(&mut self) -> Option<&mut dyn SessionStore> {
+                None
+            }
+
+            fn mfa(&mut self) -> Option<&mut dyn MfaStore> {
+                None
+            }
+
+            fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore> {
+                None
+            }
+
+            fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore> {
+                None
+            }
+
+            fn log_configuration_generations(
+                &mut self,
+            ) -> Option<&mut dyn LogConfigurationGenerationStore> {
+                Some(&mut self.generation_store)
+            }
+
+            fn close(self: Box<Self>) -> Result<(), DatabaseError> {
+                Ok(())
+            }
+        }
+
+        let database = OperationalDatabase::from_open(Box::new(DatabaseDoubleWithAbsentStore {
+            generation_store: AbsentGenerationStoreDouble,
+        }));
+
+        let result_current = database.load_current_audit_log_configuration_generation();
+        assert_eq!(result_current, Ok(None));
+
+        let result_historical = database.load_log_configuration_generation(key);
+        assert_eq!(result_historical, Ok(None));
     }
 
     fn initialized_state(

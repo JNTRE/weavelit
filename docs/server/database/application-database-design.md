@@ -13,13 +13,15 @@ Server, and storage-neutral typed errors. It contains no backend selection,
 driver, connection, query, transaction, migration, or backup implementation.
 
 `weavelit-server-database-authority` is the dependency-free, unpublished
-capability crate that gates persisted Audit Reference decoding. Its privately
-represented `ServerDatabaseAuthority` is not reexported by the database
-contract or lifecycle crate. Lifecycle is the sole production authority that
-constructs a selected database binding. The database contract declares the
-capability only as the decoder factory's input, and direct persistence test
-support declares its own reviewable dev dependency rather than obtaining
-authority through the public backend-neutral contract.
+capability crate that gates persisted Audit Reference decoding, immutable Log
+Module configuration-generation materialization, and opaque Audit terminal
+recovery decoding. Its privately represented `ServerDatabaseAuthority` is not
+reexported by the database contract or lifecycle crate. Lifecycle is the sole
+production authority that constructs a selected database binding. The database
+contract declares the capability only as a persistence-capability factory's
+input, and direct persistence test support declares its own reviewable dev
+dependency rather than obtaining authority through the public backend-neutral
+contract.
 
 Each supported backend is a dedicated compiled-in implementation crate. The
 MVP SQLite implementation is `weavelit-server-database-sqlite`. It implements
@@ -166,6 +168,39 @@ ordinary restart, they never appear in normalized state or in a backup, and a
 Restore clears them. The same separation applies to normal-operation Audit
 terminal recovery obligations described below. A backend has no schema in
 which to act as a Log Module destination or store Log Module credentials.
+
+### Immutable Log Module Configuration Generations
+
+The backend-neutral contract defines an internal immutable generation key as
+the existing Log Module configuration `StateIdentifier` plus a nonzero
+`LogConfigurationVersion`. Version `1` is `INITIAL`. The key has no text codec,
+Serde representation, random generation identifier, or public API identifier;
+its diagnostic representation exposes neither the state identifier nor the
+version.
+
+Each `LogConfigurationGeneration` is a non-secret immutable snapshot containing
+that exact key, the committed Log Module and configuration name, enabled state,
+canonically ordered non-secret settings, and canonically ordered Log Type
+membership. Settings and memberships must be unique. The snapshot carries no
+credential, protected setting, destination handle, Log-owned binding, or Log
+authority. `LogConfigurationGenerationPersistence`, issued only from
+`ServerDatabaseAuthority`, is the only public construction path for keys and
+persisted snapshots; ordinary contract consumers cannot forge either value.
+
+`LogConfigurationGenerationStore` is read-only. It can load the generation
+currently assigned to Audit Logs or one exact historical generation by key. It
+does not expose enumeration, mutation, version allocation, supersession, route,
+or public-identifier behavior. `ApplicationDatabase::log_configuration_generations`
+defaults to `None` as an explicit staged backend decision: existing backends
+remain source-compatible, and a caller requiring generation reconstruction
+must treat absence as unavailable rather than fall back to mutable state.
+
+The MVP SQLite backend does not implement this store in the contract-only
+stage. Its future persistence delivery owns the forward migration, immutable
+row storage, current-Audit selection, exact historical lookup, indexed access,
+restart evidence, and transactional behavior. That delivery must implement
+this interface without changing the existing Audit terminal recovery contract
+or making the Application Database depend on Log or logging-authority types.
 
 ### Live Audit Terminal Recovery
 

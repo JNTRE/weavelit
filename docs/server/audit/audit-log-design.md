@@ -299,6 +299,24 @@ the configured destination together and constructs one
 `ResolvedAuditDestination`; an independently supplied destination cannot be
 paired by comparing binding bytes alone.
 
+The runtime also contains an inert immutable-generation resolver for the future
+Application Database generation store. Given an authority-materialized exact
+generation and its selected key, it requires matching configuration identity
+and version, enabled state, Audit Log membership, a compiled-in module with the
+Audit capability, and settings accepted by that module before calling the
+module factory. Missing, disabled, mismatched, non-Audit, unknown-module,
+unsupported-capability, or undeclared-setting input fails with one payload-free
+error before factory access or delivery. Only the resolver constructs the
+`AuditDestinationBinding` and configured destination and joins them as one
+`ResolvedAuditDestination`, so a caller cannot pair a binding with an
+independently supplied handle.
+
+This generation resolver is not registered with the operational composer,
+recovery drain, route layer, configuration workflow, or writer. The active
+version-`1` initialized-state resolver and the R0/R2 terminal-recovery behavior
+remain unchanged until a concrete backend implements generation persistence and
+a separately approved integration activates that read path.
+
 The coordinator drains active obligations first and late-delivery obligations
 second. Each sequence is independently listed oldest first with at most the
 Application Database contract's fixed batch maximum. A full batch returns

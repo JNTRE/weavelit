@@ -39,7 +39,7 @@ fn terminal_recovery_authority_and_obligations_cannot_be_forged_externally() {
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(errors.len(), 6, "every private construction must fail");
+    assert_eq!(errors.len(), 9, "every private construction must fail");
     assert!(
         errors.iter().all(|message| {
             let diagnostic = &message["message"];
@@ -52,7 +52,7 @@ fn terminal_recovery_authority_and_obligations_cannot_be_forged_externally() {
         }),
         "only private recovery fields may reject the fixture"
     );
-    for expected_line in [11_u64, 22, 29, 37, 50, 59] {
+    for expected_line in [12_u64, 19, 30, 41, 48, 56, 69, 78, 79] {
         assert!(
             errors.iter().any(|message| {
                 message["message"]["spans"].as_array().is_some_and(|spans| {

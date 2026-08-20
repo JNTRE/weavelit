@@ -247,6 +247,34 @@ carrying settings its named module could not serve before their checkpoints are
 committed, without opening the destination; see
 [Compiled-In Component Inventory](../server/lifecycle/restore/restore-design.md#compiled-in-component-inventory).
 
+### Immutable Configuration Generations
+
+The **[Application Database](../glossary.md#applications-and-interfaces)**
+contract represents each immutable Log Module configuration generation by the
+existing internal configuration `StateIdentifier` and a nonzero version that
+starts at `1`. It introduces no separate random generation identifier, text
+encoding, Serde form, or public configuration ID. A generation snapshot retains
+the committed module, configuration name, enabled state, ordered non-secret
+settings, and Log Type membership. It contains no destination credential or
+Log-owned authority.
+
+The read contract exposes only the current Audit generation and exact
+historical lookup. Construction requires database persistence authority, and
+the Application Database's optional accessor defaults to absent until a
+concrete backend implements the future persistence and migration delivery. The
+contract stage provides no mutation, version allocation, assignment change,
+supersession interface, public route, or user interface.
+
+Trusted Server runtime reconstructs an Audit destination only from one exact
+authority-materialized generation. Before module factory access, it verifies
+the selected identity and version, enabled state, Audit membership, compiled-in
+module Audit capability, and the module's accepted-settings declaration. It
+then derives the binding and destination from that same snapshot and constructs
+one `ResolvedAuditDestination`. Missing or mismatched generation state cannot
+fall back to the current assignment or an independently supplied destination.
+The resolver remains inert until concrete generation persistence and explicit
+runtime integration are delivered.
+
 ## Event Classification Taxonomy
 
 Every classification is a lowercase dotted identifier that a producer selects

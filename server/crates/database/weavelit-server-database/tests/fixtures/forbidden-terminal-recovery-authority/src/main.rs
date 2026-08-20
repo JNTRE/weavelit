@@ -1,10 +1,29 @@
 use weavelit_server_database::{
     AuditTerminalAcknowledgementProof, AuditTerminalObligation,
     AuditTerminalObligationIdentifier, AuditTerminalRecoveryPersistence,
-    AuditTerminalSupersession, OpaqueAuditTerminalDisposition,
-    OpaqueAuditTerminalProjection, StoredAuditDestinationBinding,
-    ValidatedAuditTerminalObligationWrite,
+    AuditTerminalSupersession, LogConfigurationGeneration, LogConfigurationGenerationKey,
+    LogConfigurationGenerationPersistence, LogConfigurationVersion, Name,
+    OpaqueAuditTerminalDisposition, OpaqueAuditTerminalProjection, StateIdentifier,
+    StoredAuditDestinationBinding, ValidatedAuditTerminalObligationWrite,
 };
+
+fn forge_generation_key() -> LogConfigurationGenerationKey {
+    LogConfigurationGenerationKey {
+        configuration: StateIdentifier::from_bytes([2; 16]).unwrap(),
+        version: LogConfigurationVersion::INITIAL,
+    }
+}
+
+fn forge_generation(key: LogConfigurationGenerationKey) -> LogConfigurationGeneration {
+    LogConfigurationGeneration {
+        key,
+        module: Name::new("module").unwrap(),
+        name: Name::new("configuration").unwrap(),
+        enabled: true,
+        settings: Box::default(),
+        log_types: Box::default(),
+    }
+}
 
 fn forge_binding() -> StoredAuditDestinationBinding {
     StoredAuditDestinationBinding {
@@ -57,4 +76,5 @@ fn forge_supersession(
 
 fn main() {
     let _forged = AuditTerminalRecoveryPersistence { _private: () };
+    let _forged = LogConfigurationGenerationPersistence { _private: () };
 }

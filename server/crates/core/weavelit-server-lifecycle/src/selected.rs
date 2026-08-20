@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc};
 use weavelit_server_database::{
     AccountAuditReference, ApplicationDatabase, AuditReferencePersistence,
     AuditTerminalRecoveryPersistence, DatabaseError, DeploymentIdentifier, GroupAuditReference,
-    InitializedState, StateIdentifier,
+    InitializedState, LogConfigurationGenerationPersistence, StateIdentifier,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
@@ -16,6 +16,7 @@ pub struct SelectedDatabase {
     database: Box<dyn ApplicationDatabase>,
     persistence: AuditReferencePersistence,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
+    log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
 }
 
 pub(crate) fn selected_database(database: Box<dyn ApplicationDatabase>) -> SelectedDatabase {
@@ -39,6 +40,9 @@ impl SelectedDatabase {
             audit_terminal_recovery_persistence: Arc::new(
                 AuditTerminalRecoveryPersistence::from_server_authority(authority),
             ),
+            log_configuration_generation_persistence: Arc::new(
+                LogConfigurationGenerationPersistence::from_server_authority(authority),
+            ),
         }
     }
 
@@ -57,6 +61,14 @@ impl SelectedDatabase {
     #[must_use]
     pub fn audit_terminal_recovery_persistence(&self) -> Arc<AuditTerminalRecoveryPersistence> {
         Arc::clone(&self.audit_terminal_recovery_persistence)
+    }
+
+    /// Returns immutable configuration-generation persistence authority.
+    #[must_use]
+    pub fn log_configuration_generation_persistence(
+        &self,
+    ) -> Arc<LogConfigurationGenerationPersistence> {
+        Arc::clone(&self.log_configuration_generation_persistence)
     }
 
     /// Loads initialized state through this selected database's decoder.

@@ -30,7 +30,11 @@ use weavelit_module_client::{
 use weavelit_server_authentication::RustCryptoArgon2;
 #[cfg(test)]
 use weavelit_server_database::AuditReferencePersistence;
-use weavelit_server_database::{AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore};
+use weavelit_server_database::{
+    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, LogConfigurationGeneration,
+    LogConfigurationGenerationKey, LogConfigurationGenerationPersistence,
+    LogConfigurationGenerationStore,
+};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
     SelectedDatabase,
@@ -172,6 +176,7 @@ impl fmt::Debug for ActiveDatabase {
 pub struct OperationalDatabase {
     database: Arc<Mutex<Option<OperationalDatabaseHandle>>>,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
+    log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
 }
 
 enum OperationalDatabaseHandle {
@@ -206,17 +211,23 @@ impl OperationalDatabase {
             audit_terminal_recovery_persistence: Arc::new(
                 AuditTerminalRecoveryPersistence::from_server_authority(&authority),
             ),
+            log_configuration_generation_persistence: Arc::new(
+                LogConfigurationGenerationPersistence::from_server_authority(&authority),
+            ),
         }
     }
 
     /// Takes ownership of a lifecycle-selected database and its decoder.
     fn from_selected(database: SelectedDatabase) -> Self {
         let audit_terminal_recovery_persistence = database.audit_terminal_recovery_persistence();
+        let log_configuration_generation_persistence =
+            database.log_configuration_generation_persistence();
         Self {
             database: Arc::new(Mutex::new(Some(OperationalDatabaseHandle::Selected(
                 database,
             )))),
             audit_terminal_recovery_persistence,
+            log_configuration_generation_persistence,
         }
     }
 
@@ -265,6 +276,44 @@ impl OperationalDatabase {
     /// Returns the selected decoder without taking the database operation lane.
     pub(crate) fn audit_terminal_recovery_persistence(&self) -> &AuditTerminalRecoveryPersistence {
         &self.audit_terminal_recovery_persistence
+    }
+
+    /// Loads the current Audit configuration generation from a capable backend.
+    #[allow(dead_code)]
+    pub(crate) fn load_current_audit_log_configuration_generation(
+        &self,
+    ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+        self.with_log_configuration_generations(|persistence, store| {
+            store.load_current_audit_log_configuration_generation(persistence)
+        })
+    }
+
+    /// Loads one exact historical configuration generation from a capable backend.
+    #[allow(dead_code)]
+    pub(crate) fn load_log_configuration_generation(
+        &self,
+        key: LogConfigurationGenerationKey,
+    ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+        self.with_log_configuration_generations(|persistence, store| {
+            store.load_log_configuration_generation(persistence, key)
+        })
+    }
+
+    fn with_log_configuration_generations<R>(
+        &self,
+        operation: impl FnOnce(
+            &LogConfigurationGenerationPersistence,
+            &mut dyn LogConfigurationGenerationStore,
+        ) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                &self.log_configuration_generation_persistence,
+                database
+                    .log_configuration_generations()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
     }
 
     /// Loads initialized state through the selected database's decoder.
