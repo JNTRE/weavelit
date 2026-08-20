@@ -65,6 +65,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0010_migrate_totp_component_enablement",
         sql: include_str!("../migrations/0010_migrate_totp_component_enablement.sql"),
     },
+    Migration {
+        sequence: 11,
+        identifier: "0011_add_log_configuration_audit_references",
+        sql: include_str!("../migrations/0011_add_log_configuration_audit_references.sql"),
+    },
 ];
 
 struct AppliedMigration {
@@ -474,6 +479,46 @@ mod tests {
                 )
                 .unwrap(),
             9
+        );
+    }
+
+    #[test]
+    fn failed_log_configuration_audit_reference_backfill_rolls_back_schema_and_ledger() {
+        const FAILING_MIGRATION: &str = concat!(
+            include_str!("../migrations/0011_add_log_configuration_audit_references.sql"),
+            "INSERT INTO missing_table VALUES (1);"
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..10]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_module_configuration \
+                 (configuration_id, module, name, enabled) \
+                 VALUES (?1, 'log-sqlite', 'existing', 1)",
+                [[0x61_u8; 16].as_slice()],
+            )
+            .unwrap();
+        let mut migrations = MIGRATIONS.to_vec();
+        migrations[10].sql = FAILING_MIGRATION;
+
+        assert_eq!(
+            apply_migrations(&mut connection, &migrations),
+            Err(DatabaseError::IntegrityFailure)
+        );
+        assert!(!table_exists_for_test(
+            &connection,
+            "weavelit_log_configuration_audit_reference"
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_migration_ledger",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            10
         );
     }
 

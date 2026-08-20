@@ -200,6 +200,15 @@ impl ApplicationDatabase for FakeDatabase {
         Err(DatabaseError::NotInitialized)
     }
 
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _configuration: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+    {
+        Err(DatabaseError::NotInitialized)
+    }
+
     fn load_component_enablement(
         &mut self,
     ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
@@ -658,6 +667,15 @@ fn deployment_mismatch_on_database_fails_closed() {
             _persistence: &weavelit_server_database::AuditReferencePersistence,
             _: StateIdentifier,
         ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_log_configuration_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+        {
             Err(DatabaseError::DeploymentMismatch)
         }
 

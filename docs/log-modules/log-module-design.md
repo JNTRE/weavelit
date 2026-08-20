@@ -270,9 +270,37 @@ concrete backend implements generation persistence. The MVP SQLite Application
 Database implements immutable snapshot, setting, membership, and current-pointer
 storage; version `1` is backfilled on migration or seeded atomically with fresh
 Init and Restore state. Its history survives restart but remains outside
-`ApplicationState`, backup content, and normalized Restore input. This delivery
-provides no mutation, version allocation, assignment change, supersession
-interface, public route, or user interface.
+`ApplicationState`, backup content, and normalized Restore input.
+
+The backend-neutral internal mutation contract accepts one existing primary
+configuration, an optional desired enabled state, optional complete non-secret
+settings, and zero or more desired Log Type assignments. Preparation reads one
+consistent current snapshot and returns an exact no-op before any Audit record
+or write. Otherwise it creates one immutable next generation for each distinct
+affected configuration. An assignment move therefore advances its source and
+destination exactly once, including when the destination is also the primary
+configuration being enabled or reconfigured. Every resultant configuration is
+validated against its compiled-in module declaration, and every desired
+assignment destination completes the appropriate preflight before commit.
+
+The normal-operation workflow drains earlier terminal obligations before the
+change, resolves the source Audit destination from the exact current generation
+observed during preparation, and binds the Attempt and both possible terminal
+records to that retained binding. The Attempt target contains only the
+canonically ordered typed Audit Reference Identifiers of affected
+configurations. There is no bootstrap exception: an unavailable or mismatched
+source Audit generation rejects the mutation before the Attempt.
+
+After durable Attempt acknowledgement, one serialized Application Database
+transaction rechecks the exact affected generations and complete assignment
+topology. A stale result commits only its denied terminal obligation. A match
+commits all configuration state, assignments, immutable generations, the
+applied terminal obligation, and each affected pointer, with pointer updates
+last. The workflow then runs the bounded recovery drain. A post-commit delivery
+failure reports the authoritative result as committed with delivery pending;
+it never reports a rejection. This internal workflow adds no public route,
+wire identifier, Client Module or UI surface, generation deletion, or terminal
+supersession implementation.
 
 Trusted Server runtime reconstructs an Audit destination only from one exact
 authority-materialized generation. Before module factory access, it verifies
@@ -343,6 +371,15 @@ The initial Audit Log taxonomy is `lifecycle.backup.created`;
   - This event is distinct from the original terminal and is never a
     Correction or proof that the original was delivered.
 
+- **`dependency.log-module-configuration.changed`** (Audit Log)
+  - Records an internal Log Module configuration, enabled-state, or Log Type
+    assignment change.
+  - Action: `change-log-module-configuration`; target: the canonically ordered
+    typed Audit Reference Identifiers for every affected configuration.
+  - Configuration names, module names, settings, destination credentials,
+    internal state identifiers, generation numbers, and record identifiers are
+    excluded.
+
 **[Init](../glossary.md#states-and-requests)** and
 **[Restore](../glossary.md#states-and-requests)** completion results remain
 System-only events under `lifecycle.init` and `lifecycle.restore`. A raw
@@ -364,8 +401,9 @@ accepts a path, filename, URI, or connection string for this destination.
 The runtime constructs one validated SQLite registration in its compiled-in Log
 Module catalog after lifecycle startup classification and retains that catalog
 for the process lifetime. Catalog construction does not invoke the destination
-factory. Until a later Server-owned configuration and assignment flow selects
-the module, startup neither opens nor delivers to the destination.
+factory, and startup alone neither opens nor delivers to the destination. The
+internal configuration workflow opens a candidate only for its required
+preflight and does not expose a public selection surface.
 
 The destination stores System and Audit records separately within its own
 database. It must not depend on or reuse an Application Database crate, file,
@@ -396,9 +434,8 @@ ignoring it.
 This MVP defines one local SQLite destination rather than Server-issued
 multiple destination instances. The recovery and capacity policy below defines
 requirements for future destination implementation work; it does not add
-backup, recovery, retention, purge, or capacity behavior to the current
-unselected SQLite catalog scaffold, assert that it is production-ready, or
-activate it through a configuration or assignment flow.
+backup, recovery, retention, purge, or capacity behavior, assert that the
+destination is production-ready, or add a public activation route.
 
 The SQLite destination derives its fixed `log.sqlite3` filename only from the
 trusted local root supplied to its factory; it does not inspect an environment

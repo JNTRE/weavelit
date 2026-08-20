@@ -32,9 +32,12 @@ use weavelit_server_authentication::RustCryptoArgon2;
 use weavelit_server_database::AuditReferencePersistence;
 use weavelit_server_database::{
     AccountAuditReference, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
+    LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
     LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
-    LogConfigurationVersion, MfaStore, StateIdentifier,
+    LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
+    LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
+    MfaStore, PreparedLogConfigurationMutation, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
@@ -178,6 +181,7 @@ pub struct OperationalDatabase {
     database: Arc<Mutex<Option<OperationalDatabaseHandle>>>,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
     log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
+    log_configuration_mutation_persistence: Arc<LogConfigurationMutationPersistence>,
 }
 
 enum OperationalDatabaseHandle {
@@ -215,6 +219,9 @@ impl OperationalDatabase {
             log_configuration_generation_persistence: Arc::new(
                 LogConfigurationGenerationPersistence::from_server_authority(&authority),
             ),
+            log_configuration_mutation_persistence: Arc::new(
+                LogConfigurationMutationPersistence::from_server_authority(&authority),
+            ),
         }
     }
 
@@ -223,12 +230,15 @@ impl OperationalDatabase {
         let audit_terminal_recovery_persistence = database.audit_terminal_recovery_persistence();
         let log_configuration_generation_persistence =
             database.log_configuration_generation_persistence();
+        let log_configuration_mutation_persistence =
+            database.log_configuration_mutation_persistence();
         Self {
             database: Arc::new(Mutex::new(Some(OperationalDatabaseHandle::Selected(
                 database,
             )))),
             audit_terminal_recovery_persistence,
             log_configuration_generation_persistence,
+            log_configuration_mutation_persistence,
         }
     }
 
@@ -283,6 +293,59 @@ impl OperationalDatabase {
                 audit_reference_persistence,
             } => database.load_account_audit_reference(audit_reference_persistence, account),
         }
+    }
+
+    /// Loads one Log Module configuration's typed Audit Reference.
+    pub(crate) fn load_log_configuration_audit_reference(
+        &self,
+        configuration: StateIdentifier,
+    ) -> Result<Option<LogConfigurationAuditReference>, DatabaseError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| DatabaseError::Unavailable)?;
+        match database.as_mut().ok_or(DatabaseError::Unavailable)? {
+            OperationalDatabaseHandle::Selected(database) => {
+                database.load_log_configuration_audit_reference(configuration)
+            }
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest {
+                database,
+                audit_reference_persistence,
+            } => database
+                .load_log_configuration_audit_reference(audit_reference_persistence, configuration),
+        }
+    }
+
+    /// Prepares one Log configuration mutation from one atomic backend snapshot.
+    pub(crate) fn prepare_log_configuration_mutation(
+        &self,
+        request: &LogConfigurationMutationRequest,
+    ) -> Result<LogConfigurationPreparation, DatabaseError> {
+        self.with(|database| {
+            database
+                .log_configuration_mutations()
+                .ok_or(DatabaseError::Unavailable)?
+                .prepare_log_configuration_mutation(
+                    &self.log_configuration_generation_persistence,
+                    &self.log_configuration_mutation_persistence,
+                    request,
+                )
+        })?
+    }
+
+    /// Commits one prepared mutation and exactly one selected terminal obligation.
+    pub(crate) fn commit_log_configuration_mutation(
+        &self,
+        mutation: &PreparedLogConfigurationMutation,
+        audit_terminals: &LogConfigurationAuditTerminalWrites<'_>,
+    ) -> Result<LogConfigurationMutationOutcome, DatabaseError> {
+        self.with(|database| {
+            database
+                .log_configuration_mutations()
+                .ok_or(DatabaseError::Unavailable)?
+                .commit_log_configuration_mutation(mutation, audit_terminals)
+        })?
     }
 
     /// Runs one short operation against terminal recovery storage and its decoder.
@@ -731,6 +794,15 @@ pub(crate) mod test_support {
             _persistence: &weavelit_server_database::AuditReferencePersistence,
             _group: StateIdentifier,
         ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
+            Err(DatabaseError::Unavailable)
+        }
+
+        fn load_log_configuration_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _configuration: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+        {
             Err(DatabaseError::Unavailable)
         }
 

@@ -11,9 +11,10 @@ use std::{
 };
 
 use weavelit_server_database::{
-    ApplicationStateInput, CheckpointMetadata, CompletionObligation, CorrelationIdentifier,
-    DatabaseInspection, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
-    LogType, Name, RecoveryPublicKey,
+    ApplicationStateInput, AuditReferenceIdentifier, CheckpointMetadata, CompletionObligation,
+    CorrelationIdentifier, DatabaseInspection, LogAssignment, LogClassification,
+    LogConfigurationAuditReference, LogDetail, LogModuleConfiguration, LogType, Name,
+    RecoveryPublicKey,
 };
 use weavelit_server_database_sqlite::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_lifecycle::{
@@ -225,6 +226,10 @@ fn workflow_application_state(workflow: WorkflowKind) -> ApplicationState {
             enabled: true,
             settings: vec![],
         }],
+        log_configuration_audit_references: vec![LogConfigurationAuditReference::new(
+            configuration_identifier,
+            AuditReferenceIdentifier::generate().unwrap(),
+        )],
         log_assignments: LogType::ALL
             .into_iter()
             .map(|log_type| LogAssignment {
@@ -348,6 +353,17 @@ impl ApplicationDatabase for LyingDatabase {
         _group: StateIdentifier,
     ) -> Result<
         Option<weavelit_server_database::GroupAuditReference>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
+    }
+
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _configuration: StateIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::LogConfigurationAuditReference>,
         weavelit_server_database::DatabaseError,
     > {
         Ok(None)
@@ -1529,6 +1545,17 @@ impl ApplicationDatabase for DriftingDatabase {
         _group: StateIdentifier,
     ) -> Result<
         Option<weavelit_server_database::GroupAuditReference>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
+    }
+
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _configuration: StateIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::LogConfigurationAuditReference>,
         weavelit_server_database::DatabaseError,
     > {
         Ok(None)

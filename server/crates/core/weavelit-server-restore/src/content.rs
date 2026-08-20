@@ -13,10 +13,11 @@ use weavelit_server_database::{
     AccountPasswordVerifier, AuditReferenceIdentifier, AuditReferencePersistence,
     COMPONENT_ENABLED_VALUE, ComponentKind, ConfigurationEntry, ConfigurationKey,
     ConfigurationValue, Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership,
-    LogAssignment, LogModuleConfiguration, LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH,
-    MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH,
-    MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name,
-    PasswordVerifier, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    LogAssignment, LogConfigurationAuditReference, LogModuleConfiguration, LogModuleSetting,
+    LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
+    MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
+    MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name, PasswordVerifier, RecoveryPublicKey,
+    STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     BackendIdentifier, MAX_IDENTIFIER_LENGTH, MAX_PROTECTED_PLAINTEXT_BYTES,
@@ -143,6 +144,7 @@ pub struct NormalizedBackup {
     service_connections: Vec<BackupServiceConnection>,
     recovery_public_key: RecoveryPublicKey,
     log_module_configurations: Vec<LogModuleConfiguration>,
+    log_configuration_audit_references: Vec<LogConfigurationAuditReference>,
     log_assignments: Vec<LogAssignment>,
 }
 
@@ -215,6 +217,11 @@ impl NormalizedBackup {
     /// Returns the configured Log Modules.
     pub fn log_module_configurations(&self) -> &[LogModuleConfiguration] {
         &self.log_module_configurations
+    }
+
+    /// Returns the Log Module configuration Audit Reference projections.
+    pub fn log_configuration_audit_references(&self) -> &[LogConfigurationAuditReference] {
+        &self.log_configuration_audit_references
     }
 
     /// Returns the log type assignments.
@@ -548,6 +555,9 @@ struct ServiceConnectionV1 {
 #[serde(deny_unknown_fields)]
 struct LogModuleConfigurationV1 {
     identifier: WireIdentifier,
+    /// Absent in a compatible document written before configuration Audit References existed.
+    #[serde(default, deserialize_with = "deserialize_present_audit_reference")]
+    audit_reference: Option<WireAuditReference>,
     module: WireName,
     name: WireName,
     enabled: bool,
@@ -691,20 +701,28 @@ pub fn normalize(
             credential: SensitiveBytes::new(decode_bytes(&entry.credential)?)?,
         })
     })?;
-    let log_module_configurations = map_collection(document.log_module_configurations, |entry| {
-        Ok(LogModuleConfiguration {
-            identifier: identifier(&entry.identifier)?,
-            module: name(entry.module)?,
-            name: name(entry.name)?,
-            enabled: entry.enabled,
-            settings: map_collection(entry.settings, |setting| {
-                Ok(LogModuleSetting {
-                    key: bounded(setting.key)?,
-                    value: bounded(setting.value)?,
-                })
-            })?,
-        })
+    let log_configuration_entries = map_collection(document.log_module_configurations, |entry| {
+        let identifier = identifier(&entry.identifier)?;
+        let audit_reference =
+            resolve_audit_reference(entry.audit_reference, audit_reference_persistence)?;
+        Ok((
+            LogModuleConfiguration {
+                identifier,
+                module: name(entry.module)?,
+                name: name(entry.name)?,
+                enabled: entry.enabled,
+                settings: map_collection(entry.settings, |setting| {
+                    Ok(LogModuleSetting {
+                        key: bounded(setting.key)?,
+                        value: bounded(setting.value)?,
+                    })
+                })?,
+            },
+            LogConfigurationAuditReference::new(identifier, audit_reference),
+        ))
     })?;
+    let (log_module_configurations, log_configuration_audit_references) =
+        log_configuration_entries.into_iter().unzip();
     let log_assignments = map_collection(document.log_assignments, |entry| {
         Ok(LogAssignment {
             log_type: match entry.log_type {
@@ -730,6 +748,7 @@ pub fn normalize(
         service_connections,
         recovery_public_key,
         log_module_configurations,
+        log_configuration_audit_references,
         log_assignments,
     };
 
@@ -808,6 +827,7 @@ fn order(backup: &mut NormalizedBackup) {
         configuration.settings.sort();
     }
     backup.log_module_configurations.sort();
+    backup.log_configuration_audit_references.sort();
     backup.log_assignments.sort();
 }
 
@@ -845,6 +865,12 @@ fn reject_duplicates(backup: &NormalizedBackup) -> Result<(), ContentError> {
                 .iter()
                 .map(GroupAuditReference::audit_reference),
         )
+        .chain(
+            backup
+                .log_configuration_audit_references
+                .iter()
+                .map(LogConfigurationAuditReference::audit_reference),
+        )
         .collect::<Vec<_>>();
     audit_references.sort_unstable();
     reject_adjacent(&audit_references, |left, right| left == right)?;
@@ -864,6 +890,9 @@ fn reject_duplicates(backup: &NormalizedBackup) -> Result<(), ContentError> {
     })?;
     reject_adjacent(&backup.log_module_configurations, |left, right| {
         left.identifier == right.identifier
+    })?;
+    reject_adjacent(&backup.log_configuration_audit_references, |left, right| {
+        left.configuration() == right.configuration()
     })?;
     reject_duplicate_keys(&backup.log_module_configurations, |entry| {
         entry.name.clone()

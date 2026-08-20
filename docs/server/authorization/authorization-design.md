@@ -234,6 +234,7 @@ weaker rule.
 | `GrantMutation` | Required, scoped to `GrantMutation` | Covers future Group membership and grant mutations. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
 | `ComponentEnablementChange` | Not required | The exact kind and name must identify a compiled-in Client Module, Service Module, MFA Module, or Operation. The descriptor retains the requested enabled state without reading current enablement. |
+| `LogConfigurationChange` | Not required | Carries one existing primary Log Module configuration, optional enabled state and complete non-secret settings, and canonically ordered assignment changes. The gate performs no configuration read or mutation. |
 
 Credential issuance is future policy, not an existing accepted
 `AdministrationAction` descriptor or type. Future account-create and
@@ -260,6 +261,14 @@ preview. Other component kinds remain without a mutation workflow. This
 preserves the
 [MFA re-enable exception](#mfa-re-enablement-exception), so a disabled target
 cannot prevent the authorized action that re-enables it.
+
+`LogConfigurationChange` is a separate assignment-aware action. Its constructor
+rejects an empty change, duplicate setting keys, and duplicate Log Type
+assignments, then orders settings and assignments canonically. It does not
+accept a public identifier, destination credential, protected setting, or
+generation number. Trusted Server composition consumes the authorized action
+and owns every later database read, destination preflight, Audit sequence, and
+mutation decision; this action family does not add a route or client contract.
 
 ### Current-Session Step-Up Proof
 

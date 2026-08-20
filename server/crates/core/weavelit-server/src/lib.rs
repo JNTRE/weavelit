@@ -3847,6 +3847,12 @@ pub(crate) mod tests {
                 enabled: true,
                 settings: vec![],
             }],
+            log_configuration_audit_references: vec![
+                weavelit_server_database::LogConfigurationAuditReference::new(
+                    configuration_identifier,
+                    test_audit_reference(),
+                ),
+            ],
             log_assignments: LogType::ALL
                 .into_iter()
                 .map(|log_type| LogAssignment {

@@ -67,6 +67,15 @@ impl ApplicationDatabase for ExternalDatabase {
         Ok(None)
     }
 
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        _persistence: &AuditReferencePersistence,
+        _configuration: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+    {
+        Ok(None)
+    }
+
     fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError> {
         Ok(ComponentEnablement::default())
     }

@@ -151,8 +151,9 @@ about, migrate, and integrity-check individual entities. `ApplicationState`
 covers component configuration, protected component secrets, local accounts,
 password verifiers, Groups, Group memberships, Group grants, protected MFA
 factor data, Service Connection credentials, the persisted recovery public key,
-non-secret Log Module configuration and settings, System Log and Audit Log
-assignments, and the workflow completion obligation.
+non-secret Log Module configuration and settings, typed Audit Reference
+projections for every account, Group, and Log Module configuration, System Log
+and Audit Log assignments, and the workflow completion obligation.
 
 The aggregate has no session, Log Module destination data, immutable Log Module
 configuration-generation history, normal-operation Audit terminal recovery
@@ -194,6 +195,26 @@ or public-identifier behavior. `ApplicationDatabase::log_configuration_generatio
 defaults to `None` as an explicit staged backend decision: existing backends
 remain source-compatible, and a caller requiring generation reconstruction
 must treat absence as unavailable rather than fall back to mutable state.
+
+`LogConfigurationMutationStore` is the separate optional internal mutation
+surface. A backend atomically prepares a canonical request from its current
+configuration rows, settings, complete assignments, immutable generations, and
+current pointers. An exact no-op returns `Unchanged` before an Audit Attempt or
+write. A prepared change carries each affected configuration's exact expected
+generation and one next-version candidate, the complete expected and desired
+assignment topologies, and every resultant current generation needed for
+Server-owned validation and destination preflight. Moving an assignment
+advances both its old and new configuration exactly once, even when the primary
+configuration also changes settings or enabled state.
+
+Commit rechecks the exact affected generations and complete expected assignment
+topology in one serialized backend transaction. A mismatch commits only the
+prevalidated stale terminal obligation and no configuration, generation,
+assignment, or pointer change. A match atomically appends all candidate
+generations, updates current application state and assignments, persists only
+the applied terminal obligation, and advances every affected current pointer
+last. The contract does not expose public routes, wire identifiers, destination
+credentials, generation deletion, or terminal supersession.
 
 The MVP SQLite backend implements this store through deployment-local
 operational tables. Migration and checkpoint completion seed version `1` from
@@ -372,7 +393,7 @@ representation. A password verifier is a bounded ASCII PHC string, and the
 recovery public key is the canonical lowercase `age1` recipient encoding
 defined by the [Server Restore Design](../lifecycle/restore/restore-design.md).
 
-Every account and Group carries exactly one
+Every account, Group, and Log Module configuration carries exactly one
 **[Audit Reference Identifier](../../glossary.md#applications-and-interfaces)**
 in normalized application state. This identifier is an independent random,
 nonzero 128-bit value rendered only as `ar-` followed by 32 lowercase
@@ -408,14 +429,16 @@ binding constructor, arbitrary-string constructor, `From`, `TryFrom`,
 `FromStr`, or raw-byte accessor. The capability exposes only canonical nonzero
 decoding and keeps its `Debug` representation redacted.
 
-The checked aggregate requires exact account and Group coverage and rejects an
-Audit Reference Identifier reused by either entity kind. The database contract
-exposes typed `AccountAuditReference` and `GroupAuditReference` projections,
-looked up by the entity's `StateIdentifier`, so later Audit construction never
-accepts an arbitrary reference string. Service Connections, Log Module
-configurations, and Automation Identities use the same identifier type when
-their owning state and audit integration are implemented; this contract does
-not create placeholder entities or references for absent state.
+The checked aggregate requires exact account, Group, and Log Module
+configuration coverage and rejects an Audit Reference Identifier reused by any
+of those entity kinds. The database contract exposes typed
+`AccountAuditReference`, `GroupAuditReference`, and
+`LogConfigurationAuditReference` projections, looked up by the entity's
+`StateIdentifier`, so later Audit construction never accepts an arbitrary
+reference string. Service Connections and Automation Identities use the same
+identifier type when their owning state and audit integration are implemented;
+this contract does not create placeholder entities or references for absent
+state.
 
 Reversibly encrypted values are modeled as opaque protected byte payloads. The
 Application Database stores and returns those bytes exactly. It never accepts
@@ -633,16 +656,17 @@ non-secret configuration and assignments. Generation history, System Logs and
 Audit Logs, other Log Module destination data, and Log Module authentication or
 connection credentials are outside this Application Database backup contract.
 
-Account and Group Audit Reference Identifiers are restorable application state.
-The current forward contract for a future backup writer carries their canonical
-rendered values. The Restore reader preserves each valid supplied value exactly
-through the lifecycle-selected Application Database's persistence decoder. A compatible
-version-1 backup written before these fields existed remains accepted when the
-field is omitted; an explicitly present JSON `null` is malformed rather than a
-legacy omission. Restore assigns fresh independent random values to omitted
-fields during normalization, before the state can be used or persisted, and
-never derives them from names or `StateIdentifier` values. This reader
-compatibility does not change the backup format version.
+Account, Group, and Log Module configuration Audit Reference Identifiers are
+restorable application state. The current forward contract for a future backup
+writer carries their canonical rendered values. The Restore reader preserves
+each valid supplied value exactly through the lifecycle-selected Application
+Database's persistence decoder. A compatible version-1 backup written before
+these fields existed remains accepted when the field is omitted; an explicitly
+present JSON `null` is malformed rather than a legacy omission. Restore assigns
+fresh independent random values to omitted fields during normalization, before
+the state can be used or persisted, and never derives them from names or
+`StateIdentifier` values. This reader compatibility does not change the backup
+format version.
 
 **[Restore](../../glossary.md#states-and-requests)** is exposed through a
 Restore-capable Client Module after the shared lifecycle contract selects and

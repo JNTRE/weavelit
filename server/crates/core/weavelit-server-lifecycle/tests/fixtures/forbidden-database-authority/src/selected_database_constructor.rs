@@ -6,5 +6,6 @@ fn main() {
         persistence: panic!("the private field must be unreachable"),
         audit_terminal_recovery_persistence: panic!("the private field must be unreachable"),
         log_configuration_generation_persistence: panic!("the private field must be unreachable"),
+        log_configuration_mutation_persistence: panic!("the private field must be unreachable"),
     };
 }

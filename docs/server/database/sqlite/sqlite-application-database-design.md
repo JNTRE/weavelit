@@ -65,7 +65,8 @@ The registry contains `0001_create_migration_ledger.sql`,
 `0007_add_audit_references.sql`, and
 `0008_add_audit_terminal_recovery.sql`, and
 `0009_add_log_configuration_generations.sql`, and
-`0010_migrate_totp_component_enablement.sql`. Each
+`0010_migrate_totp_component_enablement.sql`, and
+`0011_add_log_configuration_audit_references.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -168,6 +169,19 @@ Group projections through the backend-neutral checked constructor; a missing,
 extra, malformed, reused, orphaned, or wrongly associated reference is an
 `IntegrityFailure`.
 
+`0011_add_log_configuration_audit_references.sql` adds the separate `STRICT`
+`weavelit_log_configuration_audit_reference` table. Its owner is the existing
+Log Module configuration identifier, while its value has the same canonical
+random Audit Reference form and remains immutable. Reciprocal triggers reject
+reuse with account or Group references regardless of insertion order. The
+migration backfills every existing Log Module configuration from SQLite
+`randomblob`, and table creation, indexes, triggers, complete backfill, and the
+ledger row share one immediate transaction. A collision or later failure rolls
+the database back to the exact `0010` prefix. Init and Restore instead supply
+their already validated typed references in the application-state replacement
+transaction, and state reads require exact configuration coverage and global
+cross-kind uniqueness.
+
 ### Immutable Log Module Configuration Generations
 
 `0009_add_log_configuration_generations.sql` creates four `STRICT` tables for
@@ -191,8 +205,7 @@ Fresh Init and Restore completion seed the same version `1` rows after writing
 the supplied `ApplicationState` and before marking lifecycle state initialized.
 Seeding runs inside the completion operation's existing immediate transaction,
 so generation failure also rolls back every application-state row and retains
-the pending checkpoint. This delivery exposes no generation update, deletion,
-version-allocation, assignment-change, or current-pointer mutation operation.
+the pending checkpoint.
 
 The SQLite implementation returns its read-only store through
 `ApplicationDatabase::log_configuration_generations`. Current Audit lookup
@@ -203,6 +216,22 @@ current application-state rows. Exact historical lookup reads only the
 requested compound key. Both paths rebuild bounded contract types through
 database persistence authority and return payload-free `IntegrityFailure` for
 malformed or inconsistent rows; an absent exact historical key returns `None`.
+
+The backend also returns its internal mutation store through
+`ApplicationDatabase::log_configuration_mutations`. Preparation uses one read
+transaction to load and validate every current configuration, setting,
+assignment, immutable snapshot, and pointer. It returns an exact no-op without
+writing; otherwise it allocates one next version per distinct affected
+configuration and carries the complete expected and desired assignment sets.
+
+Commit uses `BEGIN IMMEDIATE`. It first rechecks the complete expected
+assignment topology and each affected current generation. A stale plan persists
+only its selected opaque denied terminal. A matching plan appends immutable
+snapshots, updates current enabled state, settings, and assignments, persists
+only its selected applied terminal, and updates generation pointers last. Every
+step and the selected terminal obligation commit together or roll back
+together. This internal store adds no public route, public identifier,
+destination credential storage, generation deletion, or supersession behavior.
 
 These four tables survive ordinary restart but remain outside
 `ApplicationState`. State reads and writes do not enumerate or import them, a

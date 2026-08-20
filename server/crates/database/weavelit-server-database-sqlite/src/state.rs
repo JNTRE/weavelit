@@ -4,9 +4,10 @@ use weavelit_server_database::{
     ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence, BoundedText,
     COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
     ConfigurationEntry, DatabaseError, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
-    GroupMembership, HumanAuthorizationSnapshot, LogAssignment, LogModuleConfiguration,
-    LogModuleSetting, LogType, MfaFactor, PasswordVerifier, ProtectedSecret, ProtectedValue,
-    RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier, WorkflowKind,
+    GroupMembership, HumanAuthorizationSnapshot, LogAssignment, LogConfigurationAuditReference,
+    LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, PasswordVerifier,
+    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
+    StateIdentifier, WorkflowKind,
 };
 
 use crate::SqliteDatabase;
@@ -42,6 +43,10 @@ const RECOVERY_PUBLIC_KEY_QUERY: &str = "SELECT public_key \
      FROM weavelit_recovery_public_key ORDER BY singleton LIMIT 2";
 const LOG_MODULE_CONFIGURATION_QUERY: &str = "SELECT configuration_id, module, name, enabled \
      FROM weavelit_log_module_configuration ORDER BY configuration_id";
+const LOG_CONFIGURATION_AUDIT_REFERENCE_QUERY: &str = "SELECT configuration_id, audit_reference \
+    FROM weavelit_log_configuration_audit_reference ORDER BY configuration_id";
+const LOG_CONFIGURATION_AUDIT_REFERENCE_LOOKUP: &str = "SELECT audit_reference \
+    FROM weavelit_log_configuration_audit_reference WHERE configuration_id = ?1";
 const LOG_MODULE_SETTING_QUERY: &str = "SELECT configuration_id, setting_key, setting_value \
      FROM weavelit_log_module_setting ORDER BY configuration_id, setting_key";
 const LOG_ASSIGNMENT_QUERY: &str = "SELECT log_type, configuration_id \
@@ -140,6 +145,22 @@ impl SqliteDatabase {
             group,
         )
         .map(|reference| reference.map(|value| GroupAuditReference::new(group, value)))
+    }
+
+    pub(super) fn load_log_configuration_audit_reference_atomic(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        configuration: StateIdentifier,
+    ) -> Result<Option<LogConfigurationAuditReference>, DatabaseError> {
+        read_audit_reference(
+            &self.connection,
+            persistence,
+            LOG_CONFIGURATION_AUDIT_REFERENCE_LOOKUP,
+            configuration,
+        )
+        .map(|reference| {
+            reference.map(|value| LogConfigurationAuditReference::new(configuration, value))
+        })
     }
 }
 
@@ -387,6 +408,17 @@ pub(super) fn write(
             )?;
         }
     }
+    for reference in state.log_configuration_audit_references() {
+        execute(
+            connection,
+            "INSERT INTO weavelit_log_configuration_audit_reference \
+             (configuration_id, audit_reference) VALUES (?1, ?2)",
+            params![
+                reference.configuration().as_bytes().as_slice(),
+                reference.audit_reference().to_string()
+            ],
+        )?;
+    }
     for assignment in state.log_assignments() {
         execute(
             connection,
@@ -584,6 +616,20 @@ pub(super) fn read(
     })
     .collect::<Result<Vec<_>, DatabaseError>>()?;
 
+    let log_configuration_audit_references = rows::<AuditReferenceRow>(
+        connection,
+        LOG_CONFIGURATION_AUDIT_REFERENCE_QUERY,
+        two_columns,
+    )?
+    .into_iter()
+    .map(|(configuration_id, value)| {
+        Ok(LogConfigurationAuditReference::new(
+            identifier(&configuration_id)?,
+            audit_reference(persistence, &value)?,
+        ))
+    })
+    .collect::<Result<Vec<_>, DatabaseError>>()?;
+
     let log_assignments = rows::<LogAssignmentRow>(connection, LOG_ASSIGNMENT_QUERY, two_columns)?
         .into_iter()
         .map(|(log_type, configuration_id)| {
@@ -635,6 +681,7 @@ pub(super) fn read(
         service_connections,
         recovery_public_key,
         log_module_configurations,
+        log_configuration_audit_references,
         log_assignments,
         completion_obligation,
     })

@@ -12,9 +12,9 @@ use weavelit_server_database::{
     ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
     DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference,
     GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogClassification,
-    LogConfigurationGenerationPersistence, LogConfigurationVersion, LogDetail,
-    LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore,
-    MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
+    LogConfigurationAuditReference, LogConfigurationGenerationPersistence, LogConfigurationVersion,
+    LogDetail, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget,
+    MfaStore, MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
     ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
     ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
     StateIdentifier, WorkflowCheckpoint, WorkflowKind,
@@ -32,7 +32,7 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 27] = [
+const EXPECTED_TABLES: [&str; 28] = [
     "weavelit_account",
     "weavelit_account_audit_reference",
     "weavelit_audit_terminal_obligation",
@@ -50,6 +50,7 @@ const EXPECTED_TABLES: [&str; 27] = [
     "weavelit_log_configuration_generation_log_type",
     "weavelit_log_configuration_generation_setting",
     "weavelit_log_assignment",
+    "weavelit_log_configuration_audit_reference",
     "weavelit_log_module_configuration",
     "weavelit_log_module_setting",
     "weavelit_migration_ledger",
@@ -300,6 +301,10 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 value: ConfigurationValue::new("unsupported").unwrap(),
             }],
         }],
+        log_configuration_audit_references: vec![LogConfigurationAuditReference::new(
+            identifier(6),
+            audit_reference(0xC6),
+        )],
         log_assignments: vec![
             LogAssignment {
                 log_type: LogType::System,
@@ -1159,6 +1164,13 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
     assert_eq!(loaded.state().groups()[1].name.as_str(), "運用-équipe");
     assert_eq!(loaded.state().account_audit_references().len(), 2);
     assert_eq!(loaded.state().group_audit_references().len(), 2);
+    assert_eq!(
+        loaded.state().log_configuration_audit_references(),
+        [LogConfigurationAuditReference::new(
+            identifier(6),
+            audit_reference(0xC6)
+        )]
+    );
     assert_eq!(loaded.state().group_grants().len(), 8);
     assert_eq!(
         loaded.state().password_verifiers()[0].verifier.as_str(),

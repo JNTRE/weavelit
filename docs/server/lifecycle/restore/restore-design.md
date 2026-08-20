@@ -314,7 +314,7 @@ Module destination remains unusable until an authorized Administrator re-enters
 its credentials through an
 **[Administration Plane](../../../glossary.md#applications-and-interfaces)**.
 
-Version-1 account and Group entries may carry an
+Version-1 account, Group, and Log Module configuration entries may carry an
 **[Audit Reference Identifier](../../../glossary.md#applications-and-interfaces)**
 in its exact canonical `ar-` plus 32-lowercase-hexadecimal representation.
 Lifecycle carries the selected Application Database's private-field persistence
@@ -324,7 +324,8 @@ The field may be omitted for compatibility with version-1 backups written
 before Audit References existed, but an explicitly present JSON `null` is
 malformed and is not treated as an omission. Normalization assigns every omitted
 value a fresh independent random nonzero 128-bit identifier before it returns
-usable state; generation never uses the entity name or `StateIdentifier`. The
+usable state; generation never uses the entity name or `StateIdentifier`. All
+three entity kinds share one uniqueness domain. The
 wire bound is derived from the canonical prefix and twice the identifier byte
 length and asserted to remain 35 bytes. This additive reader compatibility does
 not change either backup format version. Unavailable operating-system

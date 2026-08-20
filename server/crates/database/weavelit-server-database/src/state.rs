@@ -471,6 +471,36 @@ impl GroupAuditReference {
     }
 }
 
+/// Typed Audit Reference Identifier assigned to one Log Module configuration.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct LogConfigurationAuditReference {
+    configuration: StateIdentifier,
+    audit_reference: AuditReferenceIdentifier,
+}
+
+impl LogConfigurationAuditReference {
+    /// Associates one configuration with its independently generated audit reference.
+    pub const fn new(
+        configuration: StateIdentifier,
+        audit_reference: AuditReferenceIdentifier,
+    ) -> Self {
+        Self {
+            configuration,
+            audit_reference,
+        }
+    }
+
+    /// Returns the Log Module configuration this projection references.
+    pub const fn configuration(&self) -> StateIdentifier {
+        self.configuration
+    }
+
+    /// Returns the typed Audit Reference Identifier.
+    pub const fn audit_reference(&self) -> AuditReferenceIdentifier {
+        self.audit_reference
+    }
+}
+
 /// Membership of one account in one Group.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct GroupMembership {
@@ -788,6 +818,8 @@ pub struct ApplicationStateInput {
     pub recovery_public_key: RecoveryPublicKey,
     /// Configured Log Modules.
     pub log_module_configurations: Vec<LogModuleConfiguration>,
+    /// Stable Audit Reference Identifiers for Log Module configurations.
+    pub log_configuration_audit_references: Vec<LogConfigurationAuditReference>,
     /// Log type assignments.
     pub log_assignments: Vec<LogAssignment>,
     /// Post-commit completion obligation.
@@ -813,6 +845,7 @@ pub struct ApplicationState {
     service_connections: Vec<ServiceConnection>,
     recovery_public_key: RecoveryPublicKey,
     log_module_configurations: Vec<LogModuleConfiguration>,
+    log_configuration_audit_references: Vec<LogConfigurationAuditReference>,
     log_assignments: Vec<LogAssignment>,
     completion_obligation: CompletionObligation,
 }
@@ -834,6 +867,7 @@ impl ApplicationState {
             mut service_connections,
             recovery_public_key,
             mut log_module_configurations,
+            mut log_configuration_audit_references,
             mut log_assignments,
             completion_obligation,
         } = input;
@@ -853,6 +887,7 @@ impl ApplicationState {
             log_module_configuration.settings.sort();
         }
         log_module_configurations.sort();
+        log_configuration_audit_references.sort();
         log_assignments.sort();
 
         reject_adjacent_duplicates(&configuration, |left, right| {
@@ -897,6 +932,9 @@ impl ApplicationState {
                 left.key == right.key
             })?;
         }
+        reject_adjacent_duplicates(&log_configuration_audit_references, |left, right| {
+            left.configuration == right.configuration
+        })?;
 
         let account_identifiers = sorted_identifiers(&accounts, |account| account.identifier);
         let group_identifiers = sorted_identifiers(&groups, |group| group.identifier);
@@ -906,7 +944,14 @@ impl ApplicationState {
         let referenced_accounts =
             sorted_identifiers(&account_audit_references, |entry| entry.account);
         let referenced_groups = sorted_identifiers(&group_audit_references, |entry| entry.group);
-        if account_identifiers != referenced_accounts || group_identifiers != referenced_groups {
+        let referenced_log_configurations =
+            sorted_identifiers(&log_configuration_audit_references, |entry| {
+                entry.configuration
+            });
+        if account_identifiers != referenced_accounts
+            || group_identifiers != referenced_groups
+            || log_module_identifiers != referenced_log_configurations
+        {
             return Err(ContractInputError::UnknownReference);
         }
 
@@ -915,6 +960,11 @@ impl ApplicationState {
             .map(|entry| entry.audit_reference)
             .chain(
                 group_audit_references
+                    .iter()
+                    .map(|entry| entry.audit_reference),
+            )
+            .chain(
+                log_configuration_audit_references
                     .iter()
                     .map(|entry| entry.audit_reference),
             )
@@ -971,6 +1021,7 @@ impl ApplicationState {
             service_connections,
             recovery_public_key,
             log_module_configurations,
+            log_configuration_audit_references,
             log_assignments,
             completion_obligation,
         })
@@ -1039,6 +1090,11 @@ impl ApplicationState {
     /// Returns the configured Log Modules.
     pub fn log_module_configurations(&self) -> &[LogModuleConfiguration] {
         &self.log_module_configurations
+    }
+
+    /// Returns the Log Module configuration Audit Reference projections.
+    pub fn log_configuration_audit_references(&self) -> &[LogConfigurationAuditReference] {
+        &self.log_configuration_audit_references
     }
 
     /// Returns the log type assignments.
@@ -1244,6 +1300,10 @@ mod tests {
                     value: ConfigurationValue::new("unsupported").unwrap(),
                 }],
             }],
+            log_configuration_audit_references: vec![LogConfigurationAuditReference::new(
+                identifier(5),
+                audit_reference(0xC3),
+            )],
             log_assignments: vec![
                 LogAssignment {
                     log_type: LogType::System,
@@ -1432,6 +1492,7 @@ mod tests {
         assert_eq!(ordered.accounts().len(), 1);
         assert_eq!(ordered.account_audit_references().len(), 1);
         assert_eq!(ordered.group_audit_references().len(), 1);
+        assert_eq!(ordered.log_configuration_audit_references().len(), 1);
         assert_eq!(ordered.group_grants().len(), 2);
         assert_eq!(
             ordered.group_grants()[0].grant,
@@ -1529,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn every_account_and_group_requires_one_globally_unique_audit_reference() {
+    fn every_audited_entity_requires_one_globally_unique_audit_reference() {
         let mut missing_account = valid_input();
         missing_account.account_audit_references.clear();
 
@@ -1537,14 +1598,36 @@ mod tests {
         unknown_group.group_audit_references[0] =
             GroupAuditReference::new(identifier(9), audit_reference(0xB2));
 
-        for input in [missing_account, unknown_group] {
+        let mut missing_configuration = valid_input();
+        missing_configuration
+            .log_configuration_audit_references
+            .clear();
+
+        let mut unknown_configuration = valid_input();
+        unknown_configuration.log_configuration_audit_references[0] =
+            LogConfigurationAuditReference::new(identifier(9), audit_reference(0xC3));
+
+        for input in [
+            missing_account,
+            unknown_group,
+            missing_configuration,
+            unknown_configuration,
+        ] {
             assert_eq!(reject(input), ContractInputError::UnknownReference);
         }
 
-        let mut duplicate = valid_input();
-        duplicate.group_audit_references[0] =
+        let mut duplicate_group = valid_input();
+        duplicate_group.group_audit_references[0] =
             GroupAuditReference::new(identifier(2), audit_reference(0xA1));
-        assert_eq!(reject(duplicate), ContractInputError::DuplicateEntry);
+        assert_eq!(reject(duplicate_group), ContractInputError::DuplicateEntry);
+
+        let mut duplicate_configuration = valid_input();
+        duplicate_configuration.log_configuration_audit_references[0] =
+            LogConfigurationAuditReference::new(identifier(5), audit_reference(0xB2));
+        assert_eq!(
+            reject(duplicate_configuration),
+            ContractInputError::DuplicateEntry
+        );
     }
 
     #[test]
@@ -1596,6 +1679,12 @@ mod tests {
                 enabled: true,
                 settings: Vec::new(),
             });
+        duplicated
+            .log_configuration_audit_references
+            .push(LogConfigurationAuditReference::new(
+                identifier(0x30),
+                audit_reference(0xD4),
+            ));
         duplicated.log_assignments.push(LogAssignment {
             log_type: LogType::System,
             configuration: identifier(0x30),

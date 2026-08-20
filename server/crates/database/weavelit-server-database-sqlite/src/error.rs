@@ -10,6 +10,7 @@ pub(super) enum ErrorContext {
     Configure,
     Health,
     Inspect,
+    LogConfiguration,
     Migration,
     Mfa,
     Reconciliation,
@@ -32,6 +33,7 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
             | ErrorContext::Configure
             | ErrorContext::Health
             | ErrorContext::Inspect
+            | ErrorContext::LogConfiguration
             | ErrorContext::Migration
             | ErrorContext::Mfa
             | ErrorContext::Reconciliation

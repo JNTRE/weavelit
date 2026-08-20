@@ -10,10 +10,11 @@ catalog implementation, and destination storage remain defined by the
 This document does not define Audit Log retrieval, query, export, client
 presentation, destination-specific storage, or destination redaction.
 
-`weavelit-server-audit` implements this producer boundary. The first consuming
+`weavelit-server-audit` implements this producer boundary. Its first consuming
 **[Administration Plane](../../glossary.md#applications-and-interfaces)**
-workflow is the Server-owned, transport-independent TOTP MFA Module enablement
-change; other administration mutations remain future work.
+workflows are the Server-owned, transport-independent TOTP MFA Module
+enablement change and internal Log Module configuration change. Other
+administration mutations remain future work.
 
 ## Ownership And Invariants
 
@@ -67,15 +68,17 @@ partial or replacement record, or pass rejected input to a destination.
 The record's debug and error representations are payload-free. A record
 identifier is not a replacement for valid body content and must not be reused
 with different content. Related records reuse the owning workflow's correlation
-identifier while retaining distinct record identifiers. Audit construction does
-not accept a standalone Application Database `StateIdentifier`, name, or raw
-account or Group string. Account and Group fields consume the database
-contract's typed persisted Audit projections and render only their
-`audit_reference()` value as `account:ar-...` or `group:ar-...`; they never read
-or serialize the projection's state identifier. The producer renders every
-other safe target from its closed typed input. The shared envelope remains the
-schema authority for the typed phase, terminal result, and Attempt link
-invariant.
+identifier while retaining distinct record identifiers. Audit construction
+does not accept a standalone Application Database `StateIdentifier`, name, or
+raw account, Group, or Log Module configuration string. Account, Group, and Log
+Module configuration fields consume the database contract's typed persisted
+Audit projections. Account and Group targets render only their
+`audit_reference()` value as `account:ar-...` or `group:ar-...`; the
+configuration-change target renders the canonically ordered affected values as
+`log-configuration:ar-...`. None reads or serializes the projection's state
+identifier. The producer renders every other safe target from its closed typed
+input. The shared envelope remains the schema authority for the typed phase,
+terminal result, and Attempt link invariant.
 
 `AttemptRecordId` is an opaque typed capability. Only a complete Audit Attempt
 can mint it; callers cannot convert or clone an arbitrary `RecordId` into an
@@ -108,10 +111,10 @@ following values must never appear in an Audit Log, including inside a summary:
 
 The implemented producer accepts a typed `AuditActor`, one closed `AuditEvent`,
 an existing bounded workflow `CorrelationId`, and a Server-generated
-`EventTime`. Human principals, Responsible Owners, and all account and Group
-event fields directly consume `AccountAuditReference` or `GroupAuditReference`
-from the Application Database contract. Automation, backup, component, grant,
-configuration, module, policy, Operation, and Service Connection references
+`EventTime`. Human principals, Responsible Owners, and all account, Group, and
+Log Module configuration event fields directly consume their typed Audit
+Reference projections from the Application Database contract. Automation,
+backup, component, grant, policy, Operation, and Service Connection references
 accept only a bounded lowercase identifier grammar and reject raw 32-hex and
 UUID-shaped database identifiers. These inputs accept neither credential-bearing
 source types nor raw request values.
@@ -225,7 +228,9 @@ post-commit obligations:
 6. Prepare every bounded terminal the transaction may select. The TOTP
   enablement workflow prepares one success terminal containing only desired
   state and the previewed affected-Human-User count, plus one payload-free
-  denied terminal for a stale preview. Each directly identifies the
+  denied terminal for a stale preview. The Log Module configuration workflow
+  prepares one success terminal and one payload-free stale terminal after all
+  resultant destinations pass preflight. Each directly identifies the
   acknowledged Attempt. No final state or affected count appears in the
   Attempt or denied terminal.
 7. Begin the serialized application-state transaction, establish the
@@ -401,8 +406,8 @@ durability, backup, recovery, and compatibility remain owned by the Log Module
 design and its destination; this document does not promise indefinite survival
 or add a Server-wide retention mechanism.
 
-Focused validation for the producer, the TOTP enablement workflow, and future
-administration contracts
+Focused validation for the producer, the TOTP enablement workflow, the Log
+Module configuration workflow, and future administration contracts
 must prove:
 
 - every field rejects empty or over-bound UTF-8 input, including the 8 KiB
@@ -415,9 +420,9 @@ must prove:
   reset and MFA reset remain separate;
 - forbidden values cannot enter action, target, or detail through fixed,
   allowlisted, or structured summaries;
-- account and Group principal or target values contain only the persisted typed
-  `ar-...` projection even when the source entity has a broad Unicode name or a
-  distinct internal state identifier;
+- account, Group, and Log Module configuration principal or target values
+  contain only the persisted typed `ar-...` projection even when the source
+  entity has a broad Unicode name or a distinct internal state identifier;
 - every event accepts only its matching exhaustive outcome-detail variant,
   successful state details require their typed committed fact, denied and
   failed details carry none, and completion and correction summaries derive the

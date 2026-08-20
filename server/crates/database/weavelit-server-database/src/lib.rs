@@ -19,9 +19,13 @@ pub use audit_recovery::{
     ValidatedAuditTerminalObligationWrite,
 };
 pub use log_configuration::{
-    LogConfigurationGeneration, LogConfigurationGenerationError, LogConfigurationGenerationKey,
+    LogConfigurationAuditTerminalWrites, LogConfigurationGeneration,
+    LogConfigurationGenerationError, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
-    LogConfigurationVersion,
+    LogConfigurationMutationError, LogConfigurationMutationOutcome,
+    LogConfigurationMutationPersistence, LogConfigurationMutationRequest,
+    LogConfigurationMutationStore, LogConfigurationPreparation, LogConfigurationVersion,
+    PreparedLogConfigurationMutation,
 };
 pub use mfa::{
     MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementAuditTerminalWrites,
@@ -41,12 +45,13 @@ pub use state::{
     CompletionObligation, ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey,
     ConfigurationValue, CorrelationIdentifier, Description, Group, GroupAuditReference, GroupGrant,
     GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot, InitializedState, LogAssignment,
-    LogClassification, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
-    MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
-    MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH, MAX_LOG_DETAIL_LENGTH,
-    MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
-    MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier, ProtectedSecret,
-    ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier,
+    LogClassification, LogConfigurationAuditReference, LogDetail, LogModuleConfiguration,
+    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
+    MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH,
+    MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
+    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier,
+    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
+    StateIdentifier,
 };
 
 use std::{error::Error as StdError, fmt};
@@ -244,6 +249,13 @@ pub trait ApplicationDatabase: Send {
         group: StateIdentifier,
     ) -> Result<Option<GroupAuditReference>, DatabaseError>;
 
+    /// Loads the typed Audit Reference projection for one Log Module configuration.
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        configuration: StateIdentifier,
+    ) -> Result<Option<LogConfigurationAuditReference>, DatabaseError>;
+
     /// Loads only which components an administrator has disabled.
     ///
     /// This runs on every authorized request beside the account's grants, so
@@ -294,6 +306,11 @@ pub trait ApplicationDatabase: Send {
     fn log_configuration_generations(
         &mut self,
     ) -> Option<&mut dyn LogConfigurationGenerationStore> {
+        None
+    }
+
+    /// Returns Log Module configuration mutation storage, when available.
+    fn log_configuration_mutations(&mut self) -> Option<&mut dyn LogConfigurationMutationStore> {
         None
     }
 

@@ -127,9 +127,10 @@ profile, the allowlist policy, and the session representation it implements.
 
 `weavelit-server-administration` owns the transport-independent action gate
 after an Administration Plane decision: its closed action families, bounded
-component target, exact-session-bound compound admission, current-session MFA
-step-up proof and policy, live component enablement source, and authorized-action
-result. Trusted Server composition consumes the existing neutral
+component and Log Module configuration-change targets, exact-session-bound
+compound admission, current-session MFA step-up proof and policy, live
+component enablement source, and authorized-action result. Trusted Server
+composition consumes the existing neutral
 `AuthorizedAdministration` proof and binds it atomically to the same validated
 session's actor and exact digest; the action gate accepts only that compound
 admission. The crate reuses the neutral `AvailableComponents` inventory for
@@ -163,10 +164,11 @@ rather than constructing one.
 
 `weavelit-server-audit` is the only producer of complete, pre-redacted
 **[Audit Logs](../glossary.md#applications-and-interfaces)**. It accepts
-database-owned account and Group Audit projections, other closed typed facts,
-and a Server-supplied workflow correlation identifier. It depends on the shared
-Application Database contract only for those projection types and never reads a
-backend, lifecycle binding, entity name, or state identifier. It constructs
+database-owned account, Group, and Log Module configuration Audit projections,
+other closed typed facts, and a Server-supplied workflow correlation
+identifier. It depends on the shared Application Database contract only for
+those projection types and never reads a backend, lifecycle binding, entity
+name, or state identifier. It constructs
 bounded attempt, completion, and correction records with each terminal record
 directly linked to its precise Attempt. Exhaustive event-specific terminal
 details derive the result and carry committed state only through closed typed
@@ -191,13 +193,14 @@ converts validated projections, bindings, dispositions, and destination
 acknowledgements into private-field opaque database wrappers and validates
 opaque stored rows before destination access. The database contract has no Log
 or logging-authority dependency and cannot parse fields or mint those facts.
-Authority-gated reauthentication and confirmation proofs plus a preflighted
-replacement are inputs to Audit construction; Audit does not verify
-credentials, present a user interface, or change assignments. The future owning
-Server workflow must supply those other boundaries, retain old binding handles,
-durably sequence normal-operation recovery through the Application Database
-contract, and ensure that each terminal record reflects an authoritative
-mutation outcome.
+The executable's internal ordinary Log configuration workflow supplies
+authorization, resultant-destination preflight, exact current Audit generation
+resolution, mutation sequencing, and bounded post-commit recovery. Audit does
+not present a user interface, change assignments, or inspect configuration
+state. Authority-gated reauthentication and confirmation proofs plus a
+preflighted replacement remain inputs to future supersession work, whose owning
+Server workflow must retain old binding handles and satisfy the separately
+approved supersession boundary.
 
 `weavelit-server-log-authority` carries the capability that separates
 Server-owned logging authority from an ordinary Log Module. Rust has no
@@ -216,7 +219,8 @@ Server-owned selected-database decoding authority from an ordinary Application
 Database implementor. The dependency-free crate's privately represented
 `ServerDatabaseAuthority` is not reexported by the database contract or
 lifecycle crate. The database contract requires it at the
-`AuditReferencePersistence` and `AuditTerminalRecoveryPersistence` issuers;
+`AuditReferencePersistence`, `AuditTerminalRecoveryPersistence`, and
+`LogConfigurationMutationPersistence` issuers;
 the latter gates opaque persisted-row decoding and validated write,
 supersession, and acknowledgement-proof construction without importing any Log
 type. Lifecycle declares the direct production dependency that constructs a

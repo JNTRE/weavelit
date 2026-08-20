@@ -89,6 +89,7 @@ pub fn build_application_state(
         service_connections,
         recovery_public_key: backup.recovery_public_key().clone(),
         log_module_configurations: backup.log_module_configurations().to_vec(),
+        log_configuration_audit_references: backup.log_configuration_audit_references().to_vec(),
         log_assignments: backup.log_assignments().to_vec(),
         completion_obligation,
     })

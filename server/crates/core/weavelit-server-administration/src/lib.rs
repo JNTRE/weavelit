@@ -14,7 +14,8 @@ use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authorization::{AuthorizationDenied, AuthorizedAdministration};
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    ComponentEnablement, ComponentKind, Name, SessionTokenHash, StateIdentifier,
+    ComponentEnablement, ComponentKind, LogModuleSetting, LogType, Name, SessionTokenHash,
+    StateIdentifier,
 };
 
 /// Lifetime of one current-session MFA step-up proof.
@@ -138,6 +139,103 @@ impl ComponentEnablementChange {
     }
 }
 
+/// Desired destination for one Log Type after a configuration change.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct LogAssignmentChange {
+    log_type: LogType,
+    configuration: StateIdentifier,
+}
+
+impl LogAssignmentChange {
+    /// Binds one Log Type to its desired existing configuration.
+    #[must_use]
+    pub const fn new(log_type: LogType, configuration: StateIdentifier) -> Self {
+        Self {
+            log_type,
+            configuration,
+        }
+    }
+
+    /// Returns the Log Type whose assignment is being selected.
+    #[must_use]
+    pub const fn log_type(&self) -> LogType {
+        self.log_type
+    }
+
+    /// Returns the desired destination configuration.
+    #[must_use]
+    pub const fn configuration(&self) -> StateIdentifier {
+        self.configuration
+    }
+}
+
+/// One bounded, assignment-aware Log Module configuration change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogConfigurationChange {
+    primary: StateIdentifier,
+    enabled: Option<bool>,
+    settings: Option<Box<[LogModuleSetting]>>,
+    assignments: Box<[LogAssignmentChange]>,
+}
+
+impl LogConfigurationChange {
+    /// Validates and canonicalizes one complete requested change.
+    pub fn new(
+        primary: StateIdentifier,
+        enabled: Option<bool>,
+        mut settings: Option<Vec<LogModuleSetting>>,
+        mut assignments: Vec<LogAssignmentChange>,
+    ) -> Result<Self, AdministrationInputRejected> {
+        if enabled.is_none() && settings.is_none() && assignments.is_empty() {
+            return Err(AdministrationInputRejected);
+        }
+        if let Some(settings) = settings.as_mut() {
+            settings.sort_by(|left, right| left.key.cmp(&right.key));
+            if settings.windows(2).any(|pair| pair[0].key == pair[1].key) {
+                return Err(AdministrationInputRejected);
+            }
+        }
+        assignments.sort_unstable();
+        if assignments
+            .windows(2)
+            .any(|pair| pair[0].log_type == pair[1].log_type)
+        {
+            return Err(AdministrationInputRejected);
+        }
+
+        Ok(Self {
+            primary,
+            enabled,
+            settings: settings.map(Vec::into_boxed_slice),
+            assignments: assignments.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the existing logical configuration that anchors this change.
+    #[must_use]
+    pub const fn primary(&self) -> StateIdentifier {
+        self.primary
+    }
+
+    /// Returns the requested enabled state, when it is part of the change.
+    #[must_use]
+    pub const fn enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+
+    /// Returns the complete desired settings, when settings are part of the change.
+    #[must_use]
+    pub fn settings(&self) -> Option<&[LogModuleSetting]> {
+        self.settings.as_deref()
+    }
+
+    /// Returns the canonically ordered desired Log Type assignments.
+    #[must_use]
+    pub const fn assignments(&self) -> &[LogAssignmentChange] {
+        &self.assignments
+    }
+}
+
 /// Closed Administration Plane action families owned by this foundation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdministrationAction {
@@ -151,14 +249,17 @@ pub enum AdministrationAction {
     ComponentOperation(ComponentOperation),
     /// A requested enablement change for one known compiled-in component.
     ComponentEnablementChange(ComponentEnablementChange),
+    /// A requested internal Log Module configuration and assignment change.
+    LogConfigurationChange(LogConfigurationChange),
 }
 
 impl AdministrationAction {
     fn step_up_family(&self) -> Option<StepUpActionFamily> {
         match self {
-            Self::Account | Self::ComponentOperation(_) | Self::ComponentEnablementChange(_) => {
-                None
-            }
+            Self::Account
+            | Self::ComponentOperation(_)
+            | Self::ComponentEnablementChange(_)
+            | Self::LogConfigurationChange(_) => None,
             Self::MfaPolicy => Some(StepUpActionFamily::MfaPolicy),
             Self::GrantMutation => Some(StepUpActionFamily::GrantMutation),
         }
@@ -510,6 +611,13 @@ mod tests {
         StateIdentifier::from_bytes([byte; STATE_IDENTIFIER_LENGTH]).unwrap()
     }
 
+    fn setting(key: &str, value: &str) -> LogModuleSetting {
+        LogModuleSetting {
+            key: weavelit_server_database::ConfigurationKey::new(key).unwrap(),
+            value: weavelit_server_database::ConfigurationValue::new(value).unwrap(),
+        }
+    }
+
     fn session(byte: u8) -> SessionTokenHash {
         SessionTokenHash::from_bytes([byte; SESSION_DIGEST_LENGTH]).unwrap()
     }
@@ -687,6 +795,80 @@ mod tests {
             assert_eq!(change.enabled(), enabled);
         }
 
+        assert_eq!(enablement.reads(), 0);
+    }
+
+    #[test]
+    fn log_configuration_change_is_bounded_canonical_and_admitted_without_a_read() {
+        assert_eq!(
+            LogConfigurationChange::new(identifier(9), None, None, Vec::new()),
+            Err(AdministrationInputRejected)
+        );
+        assert_eq!(
+            LogConfigurationChange::new(
+                identifier(9),
+                None,
+                Some(vec![setting("path", "one"), setting("path", "two")]),
+                Vec::new(),
+            ),
+            Err(AdministrationInputRejected)
+        );
+        assert_eq!(
+            LogConfigurationChange::new(
+                identifier(9),
+                None,
+                None,
+                vec![
+                    LogAssignmentChange::new(LogType::Audit, identifier(9)),
+                    LogAssignmentChange::new(LogType::Audit, identifier(8)),
+                ],
+            ),
+            Err(AdministrationInputRejected)
+        );
+
+        let change = LogConfigurationChange::new(
+            identifier(9),
+            Some(false),
+            Some(vec![setting("z", "last"), setting("a", "first")]),
+            vec![
+                LogAssignmentChange::new(LogType::Audit, identifier(8)),
+                LogAssignmentChange::new(LogType::System, identifier(9)),
+            ],
+        )
+        .unwrap();
+        let authority = ServerAdministrationAuthority::new();
+        let enablement = TestEnablement::new(ComponentEnablement::default());
+        enablement.fail();
+        let mut plane = plane(TestClock::new(Duration::ZERO), enablement.clone());
+        let authorized = plane
+            .authorize(
+                administration_admission(&authority, 1, 11),
+                AdministrationRequest::new(AdministrationAction::LogConfigurationChange(change)),
+            )
+            .unwrap();
+
+        let AdministrationAction::LogConfigurationChange(change) = authorized.action() else {
+            panic!("the authorized action must retain the exact Log configuration change");
+        };
+        assert_eq!(change.primary(), identifier(9));
+        assert_eq!(change.enabled(), Some(false));
+        assert_eq!(
+            change
+                .settings()
+                .unwrap()
+                .iter()
+                .map(|setting| setting.key.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "z"]
+        );
+        assert_eq!(
+            change
+                .assignments()
+                .iter()
+                .map(LogAssignmentChange::log_type)
+                .collect::<Vec<_>>(),
+            [LogType::System, LogType::Audit]
+        );
         assert_eq!(enablement.reads(), 0);
     }
 

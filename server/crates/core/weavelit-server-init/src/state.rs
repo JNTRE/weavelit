@@ -11,8 +11,9 @@ use weavelit_server_database::{
     Account, AccountAuditReference, AccountPasswordVerifier, ApplicationState,
     ApplicationStateInput, AuditReferenceIdentifier, CompletionObligation, ComponentKind,
     ConfigurationEntry, ConfigurationKey, ConfigurationValue, Group, GroupAuditReference,
-    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogModuleConfiguration, LogType,
-    Name, PasswordVerifier, ProtectedSecret, STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogConfigurationAuditReference,
+    LogModuleConfiguration, LogType, Name, PasswordVerifier, ProtectedSecret,
+    STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
 use weavelit_server_lifecycle::{ProtectedValueKind, ProtectedValueSealer};
 
@@ -90,9 +91,13 @@ pub(crate) fn build_initial_state(
     ];
 
     let mut log_module_configurations = Vec::with_capacity(request.log_module_configurations.len());
+    let mut log_configuration_audit_references =
+        Vec::with_capacity(request.log_module_configurations.len());
     let mut protected_secrets = Vec::new();
     for configuration in &request.log_module_configurations {
         let identifier = state_identifier()?;
+        let audit_reference =
+            AuditReferenceIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
         for setting in &configuration.protected_settings {
             protected_secrets.push(ProtectedSecret {
                 component: configuration.module.clone(),
@@ -110,6 +115,10 @@ pub(crate) fn build_initial_state(
             enabled: configuration.enabled,
             settings: configuration.settings.clone(),
         });
+        log_configuration_audit_references.push(LogConfigurationAuditReference::new(
+            identifier,
+            audit_reference,
+        ));
     }
 
     let log_assignments = vec![
@@ -156,6 +165,7 @@ pub(crate) fn build_initial_state(
         service_connections: Vec::new(),
         recovery_public_key: checkpoint.recovery_public_key().clone(),
         log_module_configurations,
+        log_configuration_audit_references,
         log_assignments,
         completion_obligation,
     })

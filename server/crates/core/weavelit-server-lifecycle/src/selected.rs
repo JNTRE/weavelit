@@ -3,7 +3,8 @@ use std::{fmt, sync::Arc};
 use weavelit_server_database::{
     AccountAuditReference, ApplicationDatabase, AuditReferencePersistence,
     AuditTerminalRecoveryPersistence, DatabaseError, DeploymentIdentifier, GroupAuditReference,
-    InitializedState, LogConfigurationGenerationPersistence, StateIdentifier,
+    InitializedState, LogConfigurationAuditReference, LogConfigurationGenerationPersistence,
+    LogConfigurationMutationPersistence, StateIdentifier,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
@@ -17,6 +18,7 @@ pub struct SelectedDatabase {
     persistence: AuditReferencePersistence,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
     log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
+    log_configuration_mutation_persistence: Arc<LogConfigurationMutationPersistence>,
 }
 
 pub(crate) fn selected_database(database: Box<dyn ApplicationDatabase>) -> SelectedDatabase {
@@ -42,6 +44,9 @@ impl SelectedDatabase {
             ),
             log_configuration_generation_persistence: Arc::new(
                 LogConfigurationGenerationPersistence::from_server_authority(authority),
+            ),
+            log_configuration_mutation_persistence: Arc::new(
+                LogConfigurationMutationPersistence::from_server_authority(authority),
             ),
         }
     }
@@ -71,6 +76,14 @@ impl SelectedDatabase {
         Arc::clone(&self.log_configuration_generation_persistence)
     }
 
+    /// Returns Log Module configuration mutation persistence authority.
+    #[must_use]
+    pub fn log_configuration_mutation_persistence(
+        &self,
+    ) -> Arc<LogConfigurationMutationPersistence> {
+        Arc::clone(&self.log_configuration_mutation_persistence)
+    }
+
     /// Loads initialized state through this selected database's decoder.
     pub fn load_initialized_state(
         &mut self,
@@ -96,6 +109,15 @@ impl SelectedDatabase {
     ) -> Result<Option<GroupAuditReference>, DatabaseError> {
         self.database
             .load_group_audit_reference(&self.persistence, group)
+    }
+
+    /// Loads a Log Module configuration Audit Reference through this selected database's decoder.
+    pub fn load_log_configuration_audit_reference(
+        &mut self,
+        configuration: StateIdentifier,
+    ) -> Result<Option<LogConfigurationAuditReference>, DatabaseError> {
+        self.database
+            .load_log_configuration_audit_reference(&self.persistence, configuration)
     }
 
     /// Closes the selected database and consumes its decoder with it.

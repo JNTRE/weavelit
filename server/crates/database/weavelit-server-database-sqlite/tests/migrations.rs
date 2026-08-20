@@ -13,6 +13,7 @@ const AUDIT_TERMINAL_OBLIGATION_TABLE: &str = "weavelit_audit_terminal_obligatio
 const AUDIT_TERMINAL_SUPERSESSION_TABLE: &str = "weavelit_audit_terminal_supersession";
 const LOG_CONFIGURATION_GENERATION_TABLE: &str = "weavelit_log_configuration_generation";
 const LOG_CONFIGURATION_CURRENT_TABLE: &str = "weavelit_log_configuration_current_generation";
+const LOG_CONFIGURATION_AUDIT_REFERENCE_TABLE: &str = "weavelit_log_configuration_audit_reference";
 const RECONCILIATION_TABLE: &str = "weavelit_lifecycle_reconciliation";
 const SESSION_TABLE: &str = "weavelit_session";
 const UPDATE_TRIGGER: &str = "weavelit_migration_ledger_reject_update";
@@ -153,6 +154,23 @@ fn create_0009_database(path: &Path) {
         .unwrap();
 }
 
+fn create_0010_database(path: &Path) {
+    create_0009_database(path);
+    let connection = Connection::open(path).unwrap();
+    let sql = include_str!("../migrations/0010_migrate_totp_component_enablement.sql");
+    connection.execute_batch(sql).unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_migration_ledger \
+             (sequence_number, identifier, checksum) VALUES (10, ?1, ?2)",
+            params![
+                "0010_migrate_totp_component_enablement",
+                Sha256::digest(sql.as_bytes()).as_slice()
+            ],
+        )
+        .unwrap();
+}
+
 fn assert_integrity_failure_is_redacted(error: DatabaseError, path: &Path) {
     assert_eq!(error, DatabaseError::IntegrityFailure);
     let message = error.to_string();
@@ -173,7 +191,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     let first_schema = schema_rows(&connection);
     drop(connection);
 
-    assert_eq!(first_ledger.len(), 10);
+    assert_eq!(first_ledger.len(), 11);
     assert_eq!(first_ledger[0].0, 1);
     assert_eq!(first_ledger[0].1, "0001_create_migration_ledger");
     assert_eq!(first_ledger[1].0, 2);
@@ -197,6 +215,11 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[8].1, "0009_add_log_configuration_generations");
     assert_eq!(first_ledger[9].0, 10);
     assert_eq!(first_ledger[9].1, "0010_migrate_totp_component_enablement");
+    assert_eq!(first_ledger[10].0, 11);
+    assert_eq!(
+        first_ledger[10].1,
+        "0011_add_log_configuration_audit_references"
+    );
     assert_eq!(first_ledger[0].2.len(), 32);
     assert_eq!(first_ledger[1].2.len(), 32);
     assert_eq!(first_ledger[2].2.len(), 32);
@@ -207,6 +230,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[7].2.len(), 32);
     assert_eq!(first_ledger[8].2.len(), 32);
     assert_eq!(first_ledger[9].2.len(), 32);
+    assert_eq!(first_ledger[10].2.len(), 32);
     assert_eq!(
         first_ledger[0].2,
         Sha256::digest(include_bytes!(
@@ -277,6 +301,13 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         ))
         .to_vec()
     );
+    assert_eq!(
+        first_ledger[10].2,
+        Sha256::digest(include_bytes!(
+            "../migrations/0011_add_log_configuration_audit_references.sql"
+        ))
+        .to_vec()
+    );
     assert!(first_schema.iter().any(|(_, name, _)| name == LEDGER_TABLE));
     assert!(
         first_schema
@@ -317,6 +348,11 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         first_schema
             .iter()
             .any(|(_, name, _)| name == LOG_CONFIGURATION_CURRENT_TABLE)
+    );
+    assert!(
+        first_schema
+            .iter()
+            .any(|(_, name, _)| name == LOG_CONFIGURATION_AUDIT_REFERENCE_TABLE)
     );
 
     bootstrap(&path);
@@ -363,7 +399,7 @@ fn populated_0008_database_upgrades_and_backfills_version_one() {
     drop(SqliteDatabase::open(&path).unwrap());
 
     let connection = direct_connection(&path);
-    assert_eq!(ledger_rows(&connection).len(), 10);
+    assert_eq!(ledger_rows(&connection).len(), 11);
     let generation: (Vec<u8>, Vec<u8>, String, String, i64) = connection
         .query_row(
             "SELECT configuration_id, generation_version, module, name, enabled \
@@ -431,6 +467,100 @@ fn populated_0008_database_upgrades_and_backfills_version_one() {
 }
 
 #[test]
+fn populated_0010_database_backfills_immutable_globally_unique_configuration_references() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    create_0010_database(&path);
+    let connection = direct_connection(&path);
+    let configuration_id = [0x61_u8; 16];
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_module_configuration \
+             (configuration_id, module, name, enabled) \
+             VALUES (?1, 'log-sqlite', 'existing', 1)",
+            [configuration_id.as_slice()],
+        )
+        .unwrap();
+    drop(connection);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+
+    let connection = direct_connection(&path);
+    let reference: String = connection
+        .query_row(
+            "SELECT audit_reference FROM weavelit_log_configuration_audit_reference \
+             WHERE configuration_id = ?1",
+            [configuration_id.as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reference.len(), 35);
+    assert!(reference.starts_with("ar-"));
+    assert!(
+        reference[3..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    );
+    assert_ne!(&reference[3..], "00000000000000000000000000000000");
+    assert!(
+        connection
+            .execute(
+                "UPDATE weavelit_log_configuration_audit_reference \
+                 SET audit_reference = 'ar-11111111111111111111111111111111'",
+                [],
+            )
+            .is_err()
+    );
+
+    let account_id = [0x62_u8; 16];
+    connection
+        .execute(
+            "INSERT INTO weavelit_account \
+             (account_id, username, display_name, active, mfa_required) \
+             VALUES (?1, 'collision-account', NULL, 1, 0)",
+            [account_id.as_slice()],
+        )
+        .unwrap();
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_audit_reference \
+                 (account_id, audit_reference) VALUES (?1, ?2)",
+                params![account_id.as_slice(), reference],
+            )
+            .is_err()
+    );
+
+    let second_configuration = [0x63_u8; 16];
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_module_configuration \
+             (configuration_id, module, name, enabled) \
+             VALUES (?1, 'log-sqlite', 'second', 0)",
+            [second_configuration.as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_account_audit_reference \
+             (account_id, audit_reference) \
+             VALUES (?1, 'ar-22222222222222222222222222222222')",
+            [account_id.as_slice()],
+        )
+        .unwrap();
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_configuration_audit_reference \
+                 (configuration_id, audit_reference) \
+                 VALUES (?1, 'ar-22222222222222222222222222222222')",
+                [second_configuration.as_slice()],
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn initialized_legacy_totp_enablement_migrates_to_one_canonical_authority() {
     for (legacy, existing_canonical, expected) in [
         (Some("true"), None, "true"),
@@ -478,7 +608,7 @@ fn initialized_legacy_totp_enablement_migrates_to_one_canonical_authority() {
         drop(SqliteDatabase::open(&path).unwrap());
 
         let connection = direct_connection(&path);
-        assert_eq!(ledger_rows(&connection).len(), 10);
+        assert_eq!(ledger_rows(&connection).len(), 11);
         assert_eq!(
             connection
                 .query_row(
@@ -624,7 +754,7 @@ fn unknown_extra_history_is_rejected() {
     connection
         .execute(
             "INSERT INTO weavelit_migration_ledger \
-            (sequence_number, identifier, checksum) VALUES (11, '0011_unknown', ?1)",
+            (sequence_number, identifier, checksum) VALUES (12, '0012_unknown', ?1)",
             [vec![0_u8; 32]],
         )
         .unwrap();
@@ -649,7 +779,7 @@ fn missing_applied_history_is_rejected_without_new_ledger_row() {
     drop(connection);
 
     assert_integrity_failure_is_redacted(open_error(&path), &path);
-    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 9);
+    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 10);
 }
 
 #[test]

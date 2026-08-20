@@ -144,6 +144,12 @@ fn sealed_application_state() -> ApplicationState {
             enabled: true,
             settings: vec![],
         }],
+        log_configuration_audit_references: vec![
+            weavelit_server_database::LogConfigurationAuditReference::new(
+                configuration_identifier,
+                weavelit_server_database::AuditReferenceIdentifier::generate().unwrap(),
+            ),
+        ],
         log_assignments: LogType::ALL
             .into_iter()
             .map(|log_type| LogAssignment {

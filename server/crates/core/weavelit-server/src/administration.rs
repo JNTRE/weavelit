@@ -4,16 +4,21 @@
 
 use std::{error::Error as StdError, fmt};
 
-use weavelit_server_administration::{AdministrationAction, AuthorizedAdministrationAction};
+use weavelit_server_administration::{
+    AdministrationAction, AuthorizedAdministrationAction, LogConfigurationChange,
+};
 use weavelit_server_audit::{
-    AuditActor, AuditEvent, AuditOutcomeDetail, ComponentState, MfaModuleChange,
-    MfaModuleReference, StateChangeOutcome,
+    ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail, ComponentState,
+    LogConfigurationAuditReferences, MfaModuleChange, MfaModuleReference, StateChangeOutcome,
 };
 use weavelit_server_database::{
-    ComponentKind, DatabaseError, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome,
-    MfaModuleTarget, Name,
+    ComponentKind, DatabaseError, LogAssignment, LogConfigurationAuditTerminalWrites,
+    LogConfigurationMutationOutcome, LogConfigurationMutationRequest, LogConfigurationPreparation,
+    LogType, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, Name,
 };
-use weavelit_server_log::{CorrelationId, EventTime, LogRecordPersistenceView};
+use weavelit_server_log::{
+    AuditLogClassification, CorrelationId, EventTime, LogRecordPersistenceView,
+};
 
 use crate::{
     authentication::{correlation_identifier, system_clock},
@@ -25,6 +30,263 @@ use crate::{
 };
 
 const TOTP_MODULE: &str = weavelit_module_mfa_totp::MODULE_IDENTIFIER;
+
+/// Delivery state of one committed Log configuration terminal obligation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LogConfigurationChangeDelivery {
+    /// Exact destination delivery and database acknowledgement completed.
+    Acknowledged,
+    /// The durable obligation remains available for bounded restart recovery.
+    Pending,
+}
+
+/// Complete internal result of one authorized Log configuration workflow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LogConfigurationChangeResult {
+    /// The complete desired state already matched; nothing was recorded or written.
+    Unchanged,
+    /// The state and immutable generations committed.
+    Applied {
+        generation_count: usize,
+        delivery: LogConfigurationChangeDelivery,
+    },
+    /// The prepared state changed after the Attempt; only the stale terminal committed.
+    Stale {
+        delivery: LogConfigurationChangeDelivery,
+    },
+}
+
+/// Payload-free pre-commit refusal of a Log configuration workflow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LogConfigurationChangeError {
+    /// The consumed action was not a Log configuration change.
+    ActionNotSupported,
+    /// The requested or persisted topology could not safely produce a candidate.
+    ChangeRejected,
+    /// Audit preparation, recovery, delivery, or required persistence was unavailable.
+    AuditLogUnavailable,
+}
+
+impl fmt::Display for LogConfigurationChangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ActionNotSupported => formatter.write_str("administration action not supported"),
+            Self::ChangeRejected => formatter.write_str("Log Module configuration change rejected"),
+            Self::AuditLogUnavailable => {
+                ConsequentialOperationError::AuditLogUnavailable.fmt(formatter)
+            }
+        }
+    }
+}
+
+impl StdError for LogConfigurationChangeError {}
+
+/// Synchronous internal workflow for one authorized Log configuration change.
+pub(crate) struct LogConfigurationChangeWorkflow<'a> {
+    database: &'a OperationalDatabase,
+    audit: &'a OperationalAuditRecovery,
+}
+
+impl<'a> LogConfigurationChangeWorkflow<'a> {
+    pub(crate) const fn new(
+        database: &'a OperationalDatabase,
+        audit: &'a OperationalAuditRecovery,
+    ) -> Self {
+        Self { database, audit }
+    }
+
+    /// Consumes one exact authorization and applies its configuration change.
+    pub(crate) fn apply(
+        &self,
+        action: AuthorizedAdministrationAction,
+    ) -> Result<LogConfigurationChangeResult, LogConfigurationChangeError> {
+        let request = exact_log_configuration_change(&action)?;
+        if self.audit.drain_before_consequential_operation().active()
+            != AuditRecoverySequenceState::Ready
+        {
+            return Err(LogConfigurationChangeError::AuditLogUnavailable);
+        }
+        let prepared = match self
+            .database
+            .prepare_log_configuration_mutation(&request)
+            .map_err(log_configuration_unavailable)?
+        {
+            LogConfigurationPreparation::Unchanged => {
+                return Ok(LogConfigurationChangeResult::Unchanged);
+            }
+            LogConfigurationPreparation::Prepared(prepared) => prepared,
+            LogConfigurationPreparation::VersionExhausted
+            | LogConfigurationPreparation::Invalid => {
+                return Err(LogConfigurationChangeError::ChangeRejected);
+            }
+        };
+
+        self.audit
+            .preflight_log_configuration_mutation(&prepared)
+            .map_err(|_| LogConfigurationChangeError::ChangeRejected)?;
+        let expected_audit_configuration = prepared
+            .expected_assignments()
+            .iter()
+            .find(|assignment| assignment.log_type == LogType::Audit)
+            .ok_or(LogConfigurationChangeError::ChangeRejected)?
+            .configuration;
+        let expected_audit_generation = prepared
+            .expected_generation(expected_audit_configuration)
+            .ok_or(LogConfigurationChangeError::ChangeRejected)?
+            .key();
+        let actor = self
+            .database
+            .load_account_audit_reference(action.actor())
+            .map_err(log_configuration_unavailable)?
+            .ok_or(LogConfigurationChangeError::AuditLogUnavailable)?;
+        let references = prepared
+            .entries()
+            .iter()
+            .map(|entry| {
+                self.database
+                    .load_log_configuration_audit_reference(entry.expected().key().configuration())
+                    .map_err(log_configuration_unavailable)?
+                    .ok_or(LogConfigurationChangeError::AuditLogUnavailable)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let event = AuditEvent::DependencyLogModuleConfigurationChanged {
+            configurations: LogConfigurationAuditReferences::new(references)
+                .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?,
+        };
+
+        self.audit
+            .with_expected_current_destination(expected_audit_generation, |destination| {
+                self.apply_with_destination(action, prepared, actor, event, destination)
+            })
+            .map_err(log_configuration_unavailable)?
+    }
+
+    fn apply_with_destination(
+        &self,
+        _action: AuthorizedAdministrationAction,
+        prepared: weavelit_server_database::PreparedLogConfigurationMutation,
+        actor: weavelit_server_database::AccountAuditReference,
+        event: AuditEvent,
+        destination: &OperationalAuditGenerationDestination,
+    ) -> Result<LogConfigurationChangeResult, LogConfigurationChangeError> {
+        let correlation = CorrelationId::new(
+            correlation_identifier().ok_or(LogConfigurationChangeError::AuditLogUnavailable)?,
+        )
+        .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?;
+        let attempt = self
+            .audit
+            .producer()
+            .prepare_attempt(
+                event_time().map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?,
+                correlation,
+                AuditActor::Human(actor),
+                event,
+            )
+            .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?;
+        let LogRecordPersistenceView::Audit(attempt_record) = attempt.record().persistence_view()
+        else {
+            return Err(LogConfigurationChangeError::AuditLogUnavailable);
+        };
+        let attempt_identifier = *attempt_record.record_id().as_bytes();
+        let attempt_event_time = attempt_record.event_time().unix_milliseconds();
+        let attempt_correlation = attempt_record.correlation_id().as_str().to_owned();
+        let delivered_attempt = match attempt.deliver(destination.destination()) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                self.audit.reject_attempt_delivery(
+                    error,
+                    attempt_identifier,
+                    attempt_event_time,
+                    &attempt_correlation,
+                    destination.module(),
+                    AuditLogClassification::DependencyLogModuleConfigurationChanged,
+                );
+                return Err(LogConfigurationChangeError::AuditLogUnavailable);
+            }
+        };
+        let applied_terminal = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered_attempt,
+                event_time().map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?,
+                AuditOutcomeDetail::DependencyLogModuleConfigurationChanged(
+                    ActionOutcome::Succeeded,
+                ),
+            )
+            .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?;
+        let stale_terminal = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered_attempt,
+                event_time().map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?,
+                AuditOutcomeDetail::DependencyLogModuleConfigurationChanged(ActionOutcome::Denied),
+            )
+            .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?;
+        let persistence = self.database.audit_terminal_recovery_persistence();
+        let applied_write = applied_terminal
+            .recovery_obligation(persistence, destination.binding())
+            .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?;
+        let stale_write = stale_terminal
+            .recovery_obligation(persistence, destination.binding())
+            .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?;
+        let committed = self
+            .database
+            .commit_log_configuration_mutation(
+                &prepared,
+                &LogConfigurationAuditTerminalWrites::new(&applied_write, &stale_write),
+            )
+            .map_err(log_configuration_unavailable)?;
+        let delivery = if self.audit.drain_after_consequential_operation().active()
+            == AuditRecoverySequenceState::Ready
+        {
+            LogConfigurationChangeDelivery::Acknowledged
+        } else {
+            LogConfigurationChangeDelivery::Pending
+        };
+
+        Ok(match committed {
+            LogConfigurationMutationOutcome::Applied { generation_count } => {
+                LogConfigurationChangeResult::Applied {
+                    generation_count,
+                    delivery,
+                }
+            }
+            LogConfigurationMutationOutcome::Stale => {
+                LogConfigurationChangeResult::Stale { delivery }
+            }
+        })
+    }
+}
+
+fn exact_log_configuration_change(
+    action: &AuthorizedAdministrationAction,
+) -> Result<LogConfigurationMutationRequest, LogConfigurationChangeError> {
+    let AdministrationAction::LogConfigurationChange(change) = action.action() else {
+        return Err(LogConfigurationChangeError::ActionNotSupported);
+    };
+    log_configuration_request(change)
+}
+
+fn log_configuration_request(
+    change: &LogConfigurationChange,
+) -> Result<LogConfigurationMutationRequest, LogConfigurationChangeError> {
+    LogConfigurationMutationRequest::new(
+        change.primary(),
+        change.enabled(),
+        change.settings().map(<[_]>::to_vec),
+        change
+            .assignments()
+            .iter()
+            .map(|assignment| LogAssignment {
+                log_type: assignment.log_type(),
+                configuration: assignment.configuration(),
+            })
+            .collect(),
+    )
+    .map_err(|_| LogConfigurationChangeError::ActionNotSupported)
+}
 
 /// Target-bound preview of Human Users affected by one TOTP enablement change.
 pub(crate) struct MfaModuleEnablementPreview {
@@ -194,6 +456,7 @@ impl<'a> MfaModuleEnablementWorkflow<'a> {
                     attempt_event_time,
                     &attempt_correlation,
                     destination.module(),
+                    AuditLogClassification::AuthenticationMfaModuleEnablementChanged,
                 );
                 return Err(MfaModuleEnablementError::AuditLogUnavailable);
             }
@@ -303,6 +566,10 @@ fn audit_unavailable(_: DatabaseError) -> MfaModuleEnablementError {
     MfaModuleEnablementError::AuditLogUnavailable
 }
 
+fn log_configuration_unavailable(_: DatabaseError) -> LogConfigurationChangeError {
+    LogConfigurationChangeError::AuditLogUnavailable
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -319,6 +586,7 @@ mod tests {
     use weavelit_server_administration::{
         AdministrationClock, AdministrationPlane, AdministrationRequest,
         AuthorizedAdministrationAdmission, ComponentEnablementChange, ComponentEnablementSource,
+        LogAssignmentChange, LogConfigurationChange,
     };
     use weavelit_server_administration_authority::ServerAdministrationAuthority;
     use weavelit_server_authorization::{
@@ -327,8 +595,9 @@ mod tests {
     };
     use weavelit_server_components::{AvailableComponents, MfaFactorFormat};
     use weavelit_server_database::{
-        ComponentEnablement, GroupGrant, HumanAuthorizationSnapshot, SESSION_DIGEST_LENGTH,
-        SessionTokenHash, StateIdentifier,
+        ComponentEnablement, ConfigurationKey, ConfigurationValue, GroupGrant,
+        HumanAuthorizationSnapshot, LogModuleSetting, SESSION_DIGEST_LENGTH, SessionTokenHash,
+        StateIdentifier,
     };
     use weavelit_server_database_sqlite::SqliteDatabase;
     use weavelit_server_log::{
@@ -359,6 +628,7 @@ mod tests {
         records: Arc<Mutex<Vec<ObservedAuditRecord>>>,
         attempts: Arc<AtomicUsize>,
         fail_on_attempt: Option<usize>,
+        after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     }
 
     impl LogDestination for RecordingDestination {
@@ -380,6 +650,9 @@ mod tests {
                 target: view.body().target().to_owned(),
                 detail: view.body().detail().to_owned(),
             });
+            if let Some(after_delivery) = self.after_delivery.as_ref() {
+                after_delivery(attempt);
+            }
             Ok(acknowledgement)
         }
 
@@ -392,6 +665,7 @@ mod tests {
         records: Arc<Mutex<Vec<ObservedAuditRecord>>>,
         attempts: Arc<AtomicUsize>,
         fail_on_attempt: Option<usize>,
+        after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     }
 
     impl LogDestinationFactory for RecordingFactory {
@@ -407,6 +681,7 @@ mod tests {
                 records: Arc::clone(&self.records),
                 attempts: Arc::clone(&self.attempts),
                 fail_on_attempt: self.fail_on_attempt,
+                after_delivery: self.after_delivery.clone(),
             }))
         }
     }
@@ -467,6 +742,81 @@ mod tests {
                 [identifier(1).as_bytes().as_slice()],
             )
             .unwrap();
+        for (byte, configuration_name, configuration_reference, enabled) in [
+            (0x68, "primary", "ar-68686868686868686868686868686868", true),
+            (
+                0x69,
+                "secondary",
+                "ar-69696969696969696969696969696969",
+                false,
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO weavelit_log_module_configuration \
+                     (configuration_id, module, name, enabled) \
+                     VALUES (?1, 'recording', ?2, ?3)",
+                    params![
+                        identifier(byte).as_bytes().as_slice(),
+                        configuration_name,
+                        i64::from(enabled),
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO weavelit_log_configuration_audit_reference \
+                     (configuration_id, audit_reference) VALUES (?1, ?2)",
+                    params![
+                        identifier(byte).as_bytes().as_slice(),
+                        configuration_reference
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO weavelit_log_configuration_generation \
+                     (configuration_id, generation_version, module, name, enabled) \
+                     VALUES (?1, ?2, 'recording', ?3, ?4)",
+                    params![
+                        identifier(byte).as_bytes().as_slice(),
+                        1_u64.to_be_bytes().as_slice(),
+                        configuration_name,
+                        i64::from(enabled),
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO weavelit_log_configuration_current_generation \
+                     (configuration_id, generation_version) VALUES (?1, ?2)",
+                    params![
+                        identifier(byte).as_bytes().as_slice(),
+                        1_u64.to_be_bytes().as_slice(),
+                    ],
+                )
+                .unwrap();
+        }
+        for log_type in ["system", "audit"] {
+            connection
+                .execute(
+                    "INSERT INTO weavelit_log_assignment (log_type, configuration_id) \
+                     VALUES (?1, ?2)",
+                    params![log_type, identifier(0x68).as_bytes().as_slice()],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO weavelit_log_configuration_generation_log_type \
+                     (configuration_id, generation_version, log_type) VALUES (?1, ?2, ?3)",
+                    params![
+                        identifier(0x68).as_bytes().as_slice(),
+                        1_u64.to_be_bytes().as_slice(),
+                        log_type,
+                    ],
+                )
+                .unwrap();
+        }
         connection
             .execute(
                 "INSERT INTO weavelit_configuration (component, setting_key, setting_value) \
@@ -525,17 +875,30 @@ mod tests {
         Arc<Mutex<Vec<ObservedAuditRecord>>>,
         Arc<AtomicUsize>,
     ) {
+        recovery_with_hook(database, fail_on_attempt, None)
+    }
+
+    fn recovery_with_hook(
+        database: OperationalDatabase,
+        fail_on_attempt: Option<usize>,
+        after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    ) -> (
+        OperationalAuditRecovery,
+        Arc<Mutex<Vec<ObservedAuditRecord>>>,
+        Arc<AtomicUsize>,
+    ) {
         let records = Arc::new(Mutex::new(Vec::new()));
         let attempts = Arc::new(AtomicUsize::new(0));
         let module = LogModuleIdentifier::new("recording").unwrap();
         let catalog = Arc::new(
             LogModuleCatalog::new(vec![LogModuleRegistration::new(
                 "recording",
-                LogCapabilities::new(vec![LogRecordType::Audit]).unwrap(),
+                LogCapabilities::new(vec![LogRecordType::System, LogRecordType::Audit]).unwrap(),
                 Box::new(RecordingFactory {
                     records: Arc::clone(&records),
                     attempts: Arc::clone(&attempts),
                     fail_on_attempt,
+                    after_delivery,
                 }),
             )])
             .unwrap(),
@@ -615,6 +978,53 @@ mod tests {
         .unwrap()
     }
 
+    fn authorized_log_change(change: LogConfigurationChange) -> AuthorizedAdministrationAction {
+        let client_module = name(CLIENT_MODULE);
+        let authorization = authorize_administration(
+            &HumanAuthorizationSnapshot::new(
+                true,
+                vec![
+                    GroupGrant::ClientModule(client_module.clone()),
+                    GroupGrant::ServerAdministration,
+                ],
+            ),
+            &AuthorizationCatalog::new(
+                vec![ClientModuleDeclaration::new(
+                    client_module,
+                    true,
+                    &[Plane::Administration],
+                )],
+                vec![],
+                vec![],
+            )
+            .unwrap(),
+            AuthorizationRequest {
+                client_module: &name(CLIENT_MODULE),
+            },
+        )
+        .unwrap();
+        let authority = ServerAdministrationAuthority::new();
+        let admission = AuthorizedAdministrationAdmission::from_server_authority(
+            &authority,
+            authorization,
+            identifier(1),
+            SessionTokenHash::from_bytes([0x21; SESSION_DIGEST_LENGTH]).unwrap(),
+        );
+        AdministrationPlane::new(FixedClock, NoEnablementRead, AvailableComponents::default())
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::LogConfigurationChange(change)),
+            )
+            .unwrap()
+    }
+
+    fn log_setting(key: &str, value: &str) -> LogModuleSetting {
+        LogModuleSetting {
+            key: ConfigurationKey::new(key).unwrap(),
+            value: ConfigurationValue::new(value).unwrap(),
+        }
+    }
+
     fn enablement(path: &Path) -> String {
         Connection::open(path)
             .unwrap()
@@ -636,6 +1046,217 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn exact_log_configuration_no_op_emits_no_audit_or_generation() {
+        let surface = surface(false, false, false);
+        let action = authorized_log_change(
+            LogConfigurationChange::new(
+                identifier(0x68),
+                Some(true),
+                Some(Vec::new()),
+                vec![LogAssignmentChange::new(LogType::Audit, identifier(0x68))],
+            )
+            .unwrap(),
+        );
+        let (audit, records, attempts) = recovery(surface.database.clone(), None);
+        let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(action),
+            Ok(LogConfigurationChangeResult::Unchanged)
+        );
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            count(&surface.path, "weavelit_log_configuration_generation", ""),
+            2
+        );
+        assert_eq!(
+            count(&surface.path, "weavelit_audit_terminal_obligation", ""),
+            0
+        );
+    }
+
+    #[test]
+    fn invalid_settings_are_rejected_before_factory_delivery_or_audit_attempt() {
+        let surface = surface(false, false, false);
+        let action = authorized_log_change(
+            LogConfigurationChange::new(
+                identifier(0x68),
+                None,
+                Some(vec![log_setting("secret-path", "/sensitive")]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let (audit, records, attempts) = recovery(surface.database.clone(), None);
+        let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(action),
+            Err(LogConfigurationChangeError::ChangeRejected)
+        );
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert!(
+            !format!("{:?}", LogConfigurationChangeError::ChangeRejected).contains("/sensitive")
+        );
+    }
+
+    #[test]
+    fn audit_assignment_move_versions_both_endpoints_and_uses_only_typed_targets() {
+        let surface = surface(false, false, false);
+        let action = authorized_log_change(
+            LogConfigurationChange::new(
+                identifier(0x69),
+                Some(true),
+                None,
+                vec![LogAssignmentChange::new(LogType::Audit, identifier(0x69))],
+            )
+            .unwrap(),
+        );
+        let (audit, records, _) = recovery(surface.database.clone(), None);
+        let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(action),
+            Ok(LogConfigurationChangeResult::Applied {
+                generation_count: 2,
+                delivery: LogConfigurationChangeDelivery::Acknowledged,
+            })
+        );
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| {
+            record.classification == "dependency.log-module-configuration.changed"
+                && record.action == "change-log-module-configuration"
+                && record.target
+                    == "log-configuration:ar-68686868686868686868686868686868;log-configuration:ar-69696969696969696969696969696969"
+                && !record.target.contains("primary")
+                && !record.target.contains("secondary")
+                && !record.target.contains("recording")
+        }));
+        assert_eq!(
+            Connection::open(&surface.path)
+                .unwrap()
+                .query_row(
+                    "SELECT hex(generation_version) FROM \
+                     weavelit_log_configuration_current_generation \
+                     WHERE configuration_id = ?1",
+                    [identifier(0x69).as_bytes().as_slice()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "0000000000000002"
+        );
+    }
+
+    #[test]
+    fn committed_log_configuration_result_remains_success_when_terminal_delivery_is_pending() {
+        let surface = surface(false, false, false);
+        let action = authorized_log_change(
+            LogConfigurationChange::new(
+                identifier(0x69),
+                Some(true),
+                None,
+                vec![LogAssignmentChange::new(LogType::Audit, identifier(0x69))],
+            )
+            .unwrap(),
+        );
+        let (audit, records, attempts) = recovery(surface.database.clone(), Some(2));
+        let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(action),
+            Ok(LogConfigurationChangeResult::Applied {
+                generation_count: 2,
+                delivery: LogConfigurationChangeDelivery::Pending,
+            })
+        );
+        assert_eq!(records.lock().unwrap().len(), 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0"
+            ),
+            1
+        );
+
+        drop(audit);
+        let (restarted, recovered_records, _) = recovery(surface.database.clone(), None);
+        assert_eq!(
+            restarted.drain_for_activation().active(),
+            AuditRecoverySequenceState::Ready
+        );
+        assert_eq!(recovered_records.lock().unwrap().len(), 1);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn post_attempt_staleness_commits_only_denied_terminal_and_no_planned_state() {
+        let surface = surface(false, false, false);
+        let action = authorized_log_change(
+            LogConfigurationChange::new(
+                identifier(0x69),
+                Some(true),
+                None,
+                vec![LogAssignmentChange::new(LogType::Audit, identifier(0x69))],
+            )
+            .unwrap(),
+        );
+        let path = surface.path.clone();
+        let after_delivery: Arc<dyn Fn(usize) + Send + Sync> = Arc::new(move |attempt| {
+            if attempt == 1 {
+                Connection::open(&path)
+                    .unwrap()
+                    .execute(
+                        "UPDATE weavelit_log_module_configuration SET enabled = 1 \
+                         WHERE configuration_id = ?1",
+                        [identifier(0x69).as_bytes().as_slice()],
+                    )
+                    .unwrap();
+            }
+        });
+        let (audit, records, _) =
+            recovery_with_hook(surface.database.clone(), None, Some(after_delivery));
+        let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(action),
+            Ok(LogConfigurationChangeResult::Stale {
+                delivery: LogConfigurationChangeDelivery::Acknowledged,
+            })
+        );
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records[1].detail.contains("accountable action denied"));
+        assert_eq!(
+            count(&surface.path, "weavelit_log_configuration_generation", ""),
+            2
+        );
+        assert_eq!(
+            Connection::open(&surface.path)
+                .unwrap()
+                .query_row(
+                    "SELECT configuration_id FROM weavelit_log_assignment \
+                     WHERE log_type = 'audit'",
+                    [],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .unwrap(),
+            identifier(0x68).as_bytes()
+        );
     }
 
     #[test]

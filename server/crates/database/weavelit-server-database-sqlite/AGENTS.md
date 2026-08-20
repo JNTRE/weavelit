@@ -23,8 +23,8 @@ Apply instructions in this order:
 
 - `Cargo.toml`: Package manifest and exact production and test dependencies.
 - `migrations/`: Immutable embedded SQL migrations for the SQLite schema.
-- `src/`: Trusted-path connection setup, migrations, state inspection, atomic checkpoint and completion operations, application-state reading and writing, live session storage, MFA replay watermark storage, immutable Log Module configuration-generation persistence with current and historical reads, private Audit terminal recovery storage, and private error mapping.
-- `tests/`: Public-boundary connection, migration, inspection, checkpoint, application-state, live-session, MFA replay watermark, immutable Log Module configuration-generation seeding, reads, rollback, immutability, and fail-closed integrity tests, plus recovery-exclusion tests using isolated real SQLite files.
+- `src/`: Trusted-path connection setup, migrations, state inspection, atomic checkpoint and completion operations, application-state reading and writing, live session storage, MFA replay watermark storage, typed Log Module configuration Audit References, immutable Log Module configuration generations and atomic mutation, private Audit terminal recovery storage, and private error mapping.
+- `tests/`: Public-boundary connection, migration, inspection, checkpoint, application-state, live-session, MFA replay watermark, Log Module configuration Audit Reference and immutable-generation persistence, atomic mutation, rollback, and fail-closed integrity tests, plus recovery-exclusion tests using isolated real SQLite files.
 
 ## Working Rules
 

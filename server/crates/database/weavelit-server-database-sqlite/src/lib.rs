@@ -22,8 +22,9 @@ use weavelit_server_database::{
     AccountAuditReference, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
     AuditTerminalRecoveryStore, ComponentEnablement, DatabaseError, DatabaseInspection,
     DeploymentIdentifier, GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
-    LogConfigurationGenerationStore, MfaStore, ReconciliationDigest, ReconciliationStore,
-    SessionStore, StateIdentifier, WorkflowCheckpoint,
+    LogConfigurationAuditReference, LogConfigurationGenerationStore, LogConfigurationMutationStore,
+    MfaStore, ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier,
+    WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -86,6 +87,14 @@ impl ApplicationDatabase for SqliteDatabase {
         self.load_group_audit_reference_atomic(persistence, group)
     }
 
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        configuration: StateIdentifier,
+    ) -> Result<Option<LogConfigurationAuditReference>, DatabaseError> {
+        self.load_log_configuration_audit_reference_atomic(persistence, configuration)
+    }
+
     fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError> {
         self.load_component_enablement_atomic()
     }
@@ -109,6 +118,10 @@ impl ApplicationDatabase for SqliteDatabase {
     fn log_configuration_generations(
         &mut self,
     ) -> Option<&mut dyn LogConfigurationGenerationStore> {
+        Some(self)
+    }
+
+    fn log_configuration_mutations(&mut self) -> Option<&mut dyn LogConfigurationMutationStore> {
         Some(self)
     }
 

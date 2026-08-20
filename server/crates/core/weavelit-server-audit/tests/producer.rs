@@ -3,16 +3,16 @@ use std::{collections::VecDeque, fmt::Write as _, path::PathBuf};
 use weavelit_server_audit::{
     AccountStatus, ActionOutcome, AuditActor, AuditError, AuditEvent, AuditOutcomeDetail,
     AuditTerminalObligationReference, AutomationReference, BackupReference, ComponentReference,
-    ComponentState, GrantReference, LogConfigurationReference, LogModuleReference,
-    LogPolicyReference, MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState,
-    OperationReference, ServerAudit, ServiceConnectionReference, StateChangeOutcome,
+    ComponentState, GrantReference, LogConfigurationAuditReferences, LogPolicyReference,
+    MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState, OperationReference,
+    ServerAudit, ServiceConnectionReference, StateChangeOutcome,
 };
 use weavelit_server_database::{
     Account, AccountAuditReference, AuditReferenceIdentifier, AuditTerminalAcknowledgementProof,
     AuditTerminalObligation, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
     AuditTerminalRecoveryTransaction, AuditTerminalReplayBatchSize, AuditTerminalSupersession,
-    DatabaseError, Group, GroupAuditReference, Name, StateIdentifier,
-    StoredAuditDestinationBinding, ValidatedAuditTerminalObligationWrite,
+    DatabaseError, Group, GroupAuditReference, LogConfigurationAuditReference, Name,
+    StateIdentifier, StoredAuditDestinationBinding, ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_log::{
@@ -43,6 +43,13 @@ fn account(value: u8) -> AccountAuditReference {
 
 fn group(value: u8) -> GroupAuditReference {
     GroupAuditReference::new(
+        state_identifier(value),
+        AuditReferenceIdentifier::generate().expect("the fixture audit reference must generate"),
+    )
+}
+
+fn log_configuration(value: u8) -> LogConfigurationAuditReference {
+    LogConfigurationAuditReference::new(
         state_identifier(value),
         AuditReferenceIdentifier::generate().expect("the fixture audit reference must generate"),
     )
@@ -154,6 +161,9 @@ fn every_event_has_the_fixed_registered_taxonomy_action_and_safe_target() {
     let operators_value = group_target(operators);
     let administrators = group(0x22);
     let administrators_value = group_target(administrators);
+    let log_configuration = log_configuration(0x41);
+    let log_configuration_value =
+        format!("log-configuration:{}", log_configuration.audit_reference());
     let events = vec![
         (
             AuditEvent::LifecycleBackupCreated {
@@ -313,13 +323,13 @@ fn every_event_has_the_fixed_registered_taxonomy_action_and_safe_target() {
         ),
         (
             AuditEvent::DependencyLogModuleConfigurationChanged {
-                module: reference(LogModuleReference::new, "sqlite"),
-                configuration: reference(LogConfigurationReference::new, "primary-audit"),
+                configurations: LogConfigurationAuditReferences::new(vec![log_configuration])
+                    .unwrap(),
             },
             AuditOutcomeDetail::DependencyLogModuleConfigurationChanged(ActionOutcome::Succeeded),
             "dependency.log-module-configuration.changed",
             "change-log-module-configuration",
-            "log-module:sqlite;log-configuration:primary-audit".to_owned(),
+            log_configuration_value,
         ),
         (
             AuditEvent::DependencyServiceConnectionChanged {

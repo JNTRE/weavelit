@@ -68,9 +68,15 @@ fn the_committed_plaintext_normalizes() {
     let group_reference = backup.group_audit_references()[0]
         .audit_reference()
         .to_string();
+    let configuration_reference = backup.log_configuration_audit_references()[0]
+        .audit_reference()
+        .to_string();
     assert!(account_reference.starts_with("ar-"));
     assert!(group_reference.starts_with("ar-"));
+    assert!(configuration_reference.starts_with("ar-"));
     assert_ne!(account_reference, group_reference);
+    assert_ne!(account_reference, configuration_reference);
+    assert_ne!(group_reference, configuration_reference);
     assert!(!account_reference.contains(backup.accounts()[0].username.as_str()));
     assert!(!group_reference.contains(backup.groups()[0].name.as_str()));
 }
@@ -130,6 +136,7 @@ fn totp_enablement_normalizes_to_one_canonical_entry() {
 fn supplied_audit_references_survive_normalization_exactly() {
     const ACCOUNT_REFERENCE: &str = "ar-11111111111111111111111111111111";
     const GROUP_REFERENCE: &str = "ar-22222222222222222222222222222222";
+    const CONFIGURATION_REFERENCE: &str = "ar-44444444444444444444444444444444";
     let document = replaced(
         "\"username\":\"administrator\"",
         &format!("\"audit_reference\":\"{ACCOUNT_REFERENCE}\",\"username\":\"administrator\""),
@@ -137,6 +144,10 @@ fn supplied_audit_references_survive_normalization_exactly() {
     let document = document.replace(
         "\"name\":\"Administrators\"",
         &format!("\"audit_reference\":\"{GROUP_REFERENCE}\",\"name\":\"Administrators\""),
+    );
+    let document = document.replace(
+        "\"module\":\"sqlite\"",
+        &format!("\"audit_reference\":\"{CONFIGURATION_REFERENCE}\",\"module\":\"sqlite\""),
     );
 
     let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
@@ -153,6 +164,12 @@ fn supplied_audit_references_survive_normalization_exactly() {
             .to_string(),
         GROUP_REFERENCE
     );
+    assert_eq!(
+        backup.log_configuration_audit_references()[0]
+            .audit_reference()
+            .to_string(),
+        CONFIGURATION_REFERENCE
+    );
 }
 
 #[test]
@@ -162,6 +179,15 @@ fn malformed_or_reused_supplied_audit_references_are_invalid() {
         "\"audit_reference\":\"ar-00000000000000000000000000000000\",\"username\":\"administrator\"",
     );
     assert_eq!(reject(&malformed), ContentError::DomainInvalid);
+
+    let malformed_configuration = replaced(
+        "\"module\":\"sqlite\"",
+        "\"audit_reference\":\"ar-00000000000000000000000000000000\",\"module\":\"sqlite\"",
+    );
+    assert_eq!(
+        reject(&malformed_configuration),
+        ContentError::DomainInvalid
+    );
 
     const SHARED: &str = "ar-33333333333333333333333333333333";
     let duplicate = replaced(
@@ -173,6 +199,16 @@ fn malformed_or_reused_supplied_audit_references_are_invalid() {
         &format!("\"audit_reference\":\"{SHARED}\",\"name\":\"Administrators\""),
     );
     assert_eq!(reject(&duplicate), ContentError::DuplicateEntry);
+
+    let cross_kind = replaced(
+        "\"username\":\"administrator\"",
+        &format!("\"audit_reference\":\"{SHARED}\",\"username\":\"administrator\""),
+    );
+    let cross_kind = cross_kind.replace(
+        "\"module\":\"sqlite\"",
+        &format!("\"audit_reference\":\"{SHARED}\",\"module\":\"sqlite\""),
+    );
+    assert_eq!(reject(&cross_kind), ContentError::DuplicateEntry);
 }
 
 #[test]
@@ -188,6 +224,10 @@ fn explicit_null_audit_references_are_rejected_while_legacy_omission_is_accepted
         replaced(
             "\"name\":\"Administrators\"",
             "\"audit_reference\":null,\"name\":\"Administrators\"",
+        ),
+        replaced(
+            "\"module\":\"sqlite\"",
+            "\"audit_reference\":null,\"module\":\"sqlite\"",
         ),
     ] {
         assert_eq!(reject(&document), ContentError::Malformed);

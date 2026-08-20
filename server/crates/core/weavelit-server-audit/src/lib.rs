@@ -7,9 +7,9 @@ mod model;
 pub use model::{
     AccountStatus, ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail,
     AuditTerminalObligationReference, AutomationReference, BackupReference, ComponentReference,
-    ComponentState, GrantReference, LogConfigurationReference, LogModuleReference,
-    LogPolicyReference, MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState,
-    OperationReference, ServiceConnectionReference, StateChangeOutcome,
+    ComponentState, GrantReference, LogConfigurationAuditReferences, LogPolicyReference,
+    MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState, OperationReference,
+    ServiceConnectionReference, StateChangeOutcome,
 };
 
 use core::fmt;

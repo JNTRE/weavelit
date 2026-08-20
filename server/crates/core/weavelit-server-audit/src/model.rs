@@ -2,6 +2,7 @@ use core::fmt::{self, Write as _};
 
 use weavelit_server_database::{
     AccountAuditReference, AuditTerminalObligationIdentifier, GroupAuditReference,
+    LogConfigurationAuditReference,
 };
 use weavelit_server_log::{
     AuditLogBody, AuditLogClassification, AuditPrincipal, AuditTerminalCompleteness, LogResult,
@@ -45,8 +46,6 @@ safe_reference!(AutomationReference, "automation");
 safe_reference!(BackupReference, "backup");
 safe_reference!(ComponentReference, "component");
 safe_reference!(GrantReference, "grant");
-safe_reference!(LogConfigurationReference, "log-configuration");
-safe_reference!(LogModuleReference, "log-module");
 safe_reference!(LogPolicyReference, "log-policy");
 safe_reference!(MfaModuleReference, "mfa-module");
 safe_reference!(OperationReference, "operation");
@@ -75,6 +74,40 @@ impl AuditTerminalObligationReference {
 impl fmt::Debug for AuditTerminalObligationReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuditTerminalObligationReference(REDACTED)")
+    }
+}
+
+/// Non-empty canonical Audit-safe targets for affected Log Module configurations.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LogConfigurationAuditReferences(Box<[LogConfigurationAuditReference]>);
+
+impl LogConfigurationAuditReferences {
+    /// Validates and orders affected configuration references without accepting names or IDs.
+    pub fn new(mut references: Vec<LogConfigurationAuditReference>) -> Result<Self, AuditError> {
+        references.sort_by_key(LogConfigurationAuditReference::audit_reference);
+        if references.is_empty()
+            || references.windows(2).any(|pair| {
+                pair[0].configuration() == pair[1].configuration()
+                    || pair[0].audit_reference() == pair[1].audit_reference()
+            })
+        {
+            return Err(AuditError::InvalidReference);
+        }
+        Ok(Self(references.into_boxed_slice()))
+    }
+
+    fn render(&self) -> String {
+        self.0
+            .iter()
+            .map(|reference| format!("log-configuration:{}", reference.audit_reference()))
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+}
+
+impl fmt::Debug for LogConfigurationAuditReferences {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LogConfigurationAuditReferences(REDACTED)")
     }
 }
 
@@ -166,8 +199,7 @@ pub enum AuditEvent {
         obligation: AuditTerminalObligationReference,
     },
     DependencyLogModuleConfigurationChanged {
-        module: LogModuleReference,
-        configuration: LogConfigurationReference,
+        configurations: LogConfigurationAuditReferences,
     },
     DependencyServiceConnectionChanged {
         connection: ServiceConnectionReference,
@@ -334,10 +366,9 @@ impl AuditEvent {
                 operation,
             } => join_targets(automation.render(), operation.render()),
             Self::DependencyAuditTerminalSuperseded { obligation } => obligation.render(),
-            Self::DependencyLogModuleConfigurationChanged {
-                module,
-                configuration,
-            } => join_targets(module.render(), configuration.render()),
+            Self::DependencyLogModuleConfigurationChanged { configurations } => {
+                configurations.render()
+            }
             Self::DependencyServiceConnectionChanged { connection } => connection.render(),
             Self::ProviderOperation {
                 operation,

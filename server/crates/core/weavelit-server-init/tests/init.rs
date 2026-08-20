@@ -229,22 +229,55 @@ fn a_finalized_deployment_has_exactly_one_active_administrator_without_an_mfa_fa
 
     assert_eq!(state.account_audit_references().len(), 1);
     assert_eq!(state.group_audit_references().len(), 1);
+    assert_eq!(
+        state.log_configuration_audit_references().len(),
+        state.log_module_configurations().len()
+    );
     let account_reference = state.account_audit_references()[0];
     let group_reference = state.group_audit_references()[0];
     assert_eq!(account_reference.account(), account.identifier);
     assert_eq!(group_reference.group(), state.groups()[0].identifier);
-    assert_ne!(
-        account_reference.audit_reference(),
-        group_reference.audit_reference()
+    assert!(
+        state
+            .log_module_configurations()
+            .iter()
+            .all(|configuration| {
+                state
+                    .log_configuration_audit_references()
+                    .iter()
+                    .any(|reference| reference.configuration() == configuration.identifier)
+            })
     );
-    for reference in [
-        account_reference.audit_reference().to_string(),
-        group_reference.audit_reference().to_string(),
-    ] {
+
+    let mut audit_references = vec![
+        account_reference.audit_reference(),
+        group_reference.audit_reference(),
+    ];
+    audit_references.extend(
+        state
+            .log_configuration_audit_references()
+            .iter()
+            .map(|reference| reference.audit_reference()),
+    );
+    let expected_reference_count = audit_references.len();
+    audit_references.sort_unstable();
+    audit_references.dedup();
+    assert_eq!(audit_references.len(), expected_reference_count);
+
+    for reference in audit_references
+        .into_iter()
+        .map(|reference| reference.to_string())
+    {
         assert_eq!(reference.len(), 35);
         assert!(reference.starts_with("ar-"));
         assert!(!reference.contains(account.username.as_str()));
         assert!(!reference.contains(state.groups()[0].name.as_str()));
+        assert!(
+            state
+                .log_module_configurations()
+                .iter()
+                .all(|configuration| !reference.contains(configuration.name.as_str()))
+        );
     }
 }
 

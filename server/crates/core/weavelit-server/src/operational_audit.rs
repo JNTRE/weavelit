@@ -15,7 +15,8 @@ use weavelit_server_database::{
     AuditTerminalObligation, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
     AuditTerminalReplayBatchSize, DatabaseError, DeploymentIdentifier, InitializedState,
     LogAssignment, LogConfigurationGeneration, LogConfigurationGenerationKey,
-    LogModuleConfiguration, LogType, MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, StateIdentifier,
+    LogModuleConfiguration, LogType, MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE,
+    PreparedLogConfigurationMutation, StateIdentifier,
 };
 use weavelit_server_log::{
     AuditDestinationBinding, AuditTerminalReplayError, ConfiguredLogDestination,
@@ -188,6 +189,100 @@ impl OperationalAuditRecovery {
         Ok(operation(&destination))
     }
 
+    /// Resolves an exact still-current Audit generation and proves its commit path.
+    pub(crate) fn with_expected_current_destination<R>(
+        &self,
+        expected: LogConfigurationGenerationKey,
+        operation: impl FnOnce(&OperationalAuditGenerationDestination) -> R,
+    ) -> Result<R, DatabaseError> {
+        #[cfg(test)]
+        if let Some(destination) = self.destination_override.as_ref() {
+            if destination.binding.identifier() != expected.configuration().as_bytes()
+                || destination.binding.version() != expected.version().get()
+            {
+                return Err(DatabaseError::Unavailable);
+            }
+            destination
+                .destination
+                .preflight(LogRecordType::Audit)
+                .map_err(|_| DatabaseError::Unavailable)?;
+            return Ok(operation(destination));
+        }
+
+        let generation = self
+            .database
+            .load_current_audit_log_configuration_generation()?
+            .filter(|generation| generation.key() == expected)
+            .ok_or(DatabaseError::Unavailable)?;
+        let destination = OperationalAuditGenerationDestination::resolve(
+            &self.log_catalog,
+            &self.state_root,
+            self.deployment_identifier,
+            expected,
+            Some(&generation),
+            ServerLogAuthority::new(),
+        )
+        .map_err(|_| DatabaseError::Unavailable)?;
+        destination
+            .destination
+            .preflight(LogRecordType::Audit)
+            .map_err(|_| DatabaseError::Unavailable)?;
+        Ok(operation(&destination))
+    }
+
+    /// Validates every resultant configuration and preflights both assigned commit paths.
+    pub(crate) fn preflight_log_configuration_mutation(
+        &self,
+        mutation: &PreparedLogConfigurationMutation,
+    ) -> Result<(), DatabaseError> {
+        for generation in mutation.resultant_generations() {
+            let module = LogModuleIdentifier::new(generation.module().as_str())
+                .map_err(|_| DatabaseError::IntegrityFailure)?;
+            let settings = destination_settings(generation)?;
+            let declaration = self
+                .log_catalog
+                .declaration(&module)
+                .ok_or(DatabaseError::IntegrityFailure)?;
+            if !declaration.accepted_settings().accepts(&settings) {
+                return Err(DatabaseError::IntegrityFailure);
+            }
+        }
+
+        for assignment in mutation.desired_assignments() {
+            let generation = mutation
+                .resultant_generations()
+                .iter()
+                .find(|generation| generation.key().configuration() == assignment.configuration)
+                .filter(|generation| generation.enabled())
+                .ok_or(DatabaseError::IntegrityFailure)?;
+            let module = LogModuleIdentifier::new(generation.module().as_str())
+                .map_err(|_| DatabaseError::IntegrityFailure)?;
+            let settings = destination_settings(generation)?;
+            let record_type = log_record_type(assignment.log_type);
+            let declaration = self
+                .log_catalog
+                .declaration(&module)
+                .ok_or(DatabaseError::IntegrityFailure)?;
+            if !declaration.capabilities().supports(record_type)
+                || !declaration.accepted_settings().accepts(&settings)
+            {
+                return Err(DatabaseError::IntegrityFailure);
+            }
+            let context = TrustedLogModuleContext::from_server_authority(
+                &ServerLogAuthority::new(),
+                self.state_root.clone(),
+                *self.deployment_identifier.as_bytes(),
+            )
+            .with_settings(settings);
+            self.log_catalog
+                .create_destination(&module, &context)
+                .map_err(|_| DatabaseError::Unavailable)?
+                .preflight(record_type)
+                .map_err(|_| DatabaseError::Unavailable)?;
+        }
+        Ok(())
+    }
+
     /// Best-effort reports an Attempt delivery failure through existing System Log support.
     pub(crate) fn reject_attempt_delivery(
         &self,
@@ -196,6 +291,7 @@ impl OperationalAuditRecovery {
         event_time: u64,
         correlation_identifier: &str,
         destination_module: &LogModuleIdentifier,
+        classification: weavelit_server_log::AuditLogClassification,
     ) {
         let Ok(record_identifier) = StateIdentifier::from_bytes(record_identifier) else {
             return;
@@ -209,7 +305,7 @@ impl OperationalAuditRecovery {
             event_time,
             correlation_identifier,
             destination_module,
-            weavelit_server_log::AuditLogClassification::AuthenticationMfaModuleEnablementChanged,
+            classification,
         );
     }
 
@@ -588,6 +684,31 @@ impl fmt::Display for OperationalAuditGenerationResolutionError {
 
 impl std::error::Error for OperationalAuditGenerationResolutionError {}
 
+fn destination_settings(
+    generation: &LogConfigurationGeneration,
+) -> Result<DestinationSettings, DatabaseError> {
+    DestinationSettings::new(
+        generation
+            .settings()
+            .iter()
+            .map(|setting| {
+                (
+                    setting.key.as_str().to_owned(),
+                    setting.value.as_str().to_owned(),
+                )
+            })
+            .collect(),
+    )
+    .map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+const fn log_record_type(log_type: LogType) -> LogRecordType {
+    match log_type {
+        LogType::System => LogRecordType::System,
+        LogType::Audit => LogRecordType::Audit,
+    }
+}
+
 /// Best-effort System Log support retained independently of Audit resolution.
 struct OperationalAuditReporting {
     support: OperationalLogSupport,
@@ -962,6 +1083,15 @@ mod tests {
             _persistence: &AuditReferencePersistence,
             _group: StateIdentifier,
         ) -> Result<Option<GroupAuditReference>, DatabaseError> {
+            Err(DatabaseError::Unavailable)
+        }
+
+        fn load_log_configuration_audit_reference(
+            &mut self,
+            _persistence: &AuditReferencePersistence,
+            _configuration: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+        {
             Err(DatabaseError::Unavailable)
         }
 
@@ -2541,6 +2671,17 @@ mod tests {
                 Err(DatabaseError::Unavailable)
             }
 
+            fn load_log_configuration_audit_reference(
+                &mut self,
+                _persistence: &AuditReferencePersistence,
+                _configuration: StateIdentifier,
+            ) -> Result<
+                Option<weavelit_server_database::LogConfigurationAuditReference>,
+                DatabaseError,
+            > {
+                Err(DatabaseError::Unavailable)
+            }
+
             fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError> {
                 Err(DatabaseError::Unavailable)
             }
@@ -2680,6 +2821,17 @@ mod tests {
                 Err(DatabaseError::Unavailable)
             }
 
+            fn load_log_configuration_audit_reference(
+                &mut self,
+                _persistence: &AuditReferencePersistence,
+                _configuration: StateIdentifier,
+            ) -> Result<
+                Option<weavelit_server_database::LogConfigurationAuditReference>,
+                DatabaseError,
+            > {
+                Err(DatabaseError::Unavailable)
+            }
+
             fn load_component_enablement(&mut self) -> Result<ComponentEnablement, DatabaseError> {
                 Err(DatabaseError::Unavailable)
             }
@@ -2747,6 +2899,12 @@ mod tests {
                 enabled: true,
                 settings,
             }],
+            log_configuration_audit_references: vec![
+                weavelit_server_database::LogConfigurationAuditReference::new(
+                    configuration_identifier,
+                    weavelit_server_database::AuditReferenceIdentifier::generate().unwrap(),
+                ),
+            ],
             log_assignments: vec![
                 LogAssignment {
                     log_type: LogType::System,
