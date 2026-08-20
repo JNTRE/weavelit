@@ -64,6 +64,13 @@ fn the_decrypted_plaintext_matches_the_committed_expectation() {
             validated.backup().group_audit_references()[0].audit_reference()
         ),
     );
+    let expected = expected.replace(
+        "\"module\":\"sqlite\"",
+        &format!(
+            "\"audit_reference\":\"{}\",\"module\":\"sqlite\"",
+            validated.backup().log_configuration_audit_references()[0].audit_reference()
+        ),
+    );
     let direct = weavelit_server_restore::normalize(
         expected.as_bytes(),
         validated.backup().source_backend(),
