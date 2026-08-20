@@ -261,9 +261,13 @@ Log-owned authority.
 The read contract exposes only the current Audit generation and exact
 historical lookup. Construction requires database persistence authority, and
 the Application Database's optional accessor defaults to absent until a
-concrete backend implements the future persistence and migration delivery. The
-contract stage provides no mutation, version allocation, assignment change,
-supersession interface, public route, or user interface.
+concrete backend implements generation persistence. The MVP SQLite Application
+Database implements immutable snapshot, setting, membership, and current-pointer
+storage; version `1` is backfilled on migration or seeded atomically with fresh
+Init and Restore state. Its history survives restart but remains outside
+`ApplicationState`, backup content, and normalized Restore input. This delivery
+provides no mutation, version allocation, assignment change, supersession
+interface, public route, or user interface.
 
 Trusted Server runtime reconstructs an Audit destination only from one exact
 authority-materialized generation. Before module factory access, it verifies
@@ -272,8 +276,8 @@ module Audit capability, and the module's accepted-settings declaration. It
 then derives the binding and destination from that same snapshot and constructs
 one `ResolvedAuditDestination`. Missing or mismatched generation state cannot
 fall back to the current assignment or an independently supplied destination.
-The resolver remains inert until concrete generation persistence and explicit
-runtime integration are delivered.
+The resolver remains inert until its separately owned explicit runtime
+integration is delivered.
 
 ## Event Classification Taxonomy
 

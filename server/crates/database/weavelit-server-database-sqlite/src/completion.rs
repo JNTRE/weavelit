@@ -8,6 +8,7 @@ use weavelit_server_database::{
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::inspection::inspect_connection;
+use crate::log_configuration;
 use crate::mfa;
 use crate::reconciliation;
 use crate::session;
@@ -46,6 +47,7 @@ impl SqliteDatabase {
         mfa::clear(&transaction)?;
         reconciliation::replace(&transaction, reconciliation_digest)?;
         state::write(&transaction, application_state)?;
+        log_configuration::seed_initial_generations(&transaction)?;
         let replaced = transaction
             .execute(
                 "UPDATE weavelit_lifecycle_state \

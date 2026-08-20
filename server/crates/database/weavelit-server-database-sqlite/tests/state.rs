@@ -11,7 +11,8 @@ use weavelit_server_database::{
     COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation, ComponentEnablement,
     ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
     DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference,
-    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogClassification, LogDetail,
+    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogClassification,
+    LogConfigurationGenerationPersistence, LogConfigurationVersion, LogDetail,
     LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore,
     MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
     ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
@@ -31,7 +32,7 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 23] = [
+const EXPECTED_TABLES: [&str; 27] = [
     "weavelit_account",
     "weavelit_account_audit_reference",
     "weavelit_audit_terminal_obligation",
@@ -44,6 +45,10 @@ const EXPECTED_TABLES: [&str; 23] = [
     "weavelit_group_membership",
     "weavelit_lifecycle_state",
     "weavelit_lifecycle_reconciliation",
+    "weavelit_log_configuration_current_generation",
+    "weavelit_log_configuration_generation",
+    "weavelit_log_configuration_generation_log_type",
+    "weavelit_log_configuration_generation_setting",
     "weavelit_log_assignment",
     "weavelit_log_module_configuration",
     "weavelit_log_module_setting",
@@ -96,6 +101,14 @@ fn audit_reference_persistence() -> AuditReferencePersistence {
 
     *PERSISTENCE.get_or_init(|| {
         AuditReferencePersistence::from_server_authority(&ServerDatabaseAuthority::new())
+    })
+}
+
+fn log_configuration_generation_persistence() -> &'static LogConfigurationGenerationPersistence {
+    static PERSISTENCE: OnceLock<LogConfigurationGenerationPersistence> = OnceLock::new();
+
+    PERSISTENCE.get_or_init(|| {
+        LogConfigurationGenerationPersistence::from_server_authority(&ServerDatabaseAuthority::new())
     })
 }
 
@@ -408,10 +421,10 @@ fn assert_redacted(error: DatabaseError) {
 }
 
 /// Proves the same intent the previous exact-column-name test carried: that
-/// sessions, queryable Log destination records, Log Module credentials, and
-/// opaque terminal recovery rows are not part of restorable state and cannot
-/// ride in a backup. It no longer conflates that intent with "no session or
-/// recovery table exists", because both are required live operational data.
+/// sessions, queryable Log destination records, Log Module credentials,
+/// generation history, and opaque terminal recovery rows are not part of
+/// restorable state and cannot ride in a backup. It no longer conflates that
+/// intent with absence of live operational tables.
 #[test]
 fn live_operational_tables_remain_outside_restorable_state_and_log_destination_storage() {
     let temporary_directory = tempfile::tempdir().unwrap();
@@ -448,7 +461,10 @@ fn live_operational_tables_remain_outside_restorable_state_and_log_destination_s
     }
     let log_module_columns = column_names(&path)
         .into_iter()
-        .filter(|column| column.starts_with("weavelit_log_module_"))
+        .filter(|column| {
+            column.starts_with("weavelit_log_module_")
+                || column.starts_with("weavelit_log_configuration_")
+        })
         .collect::<Vec<_>>();
     for column in &log_module_columns {
         let lower_column = column.to_ascii_lowercase();
@@ -786,6 +802,334 @@ fn normalized_state_and_backup_content_carry_no_session_data() {
     assert!(!rendered.contains(SESSION_CLIENT_MODULE));
     assert!(!rendered.to_ascii_lowercase().contains("session"));
     assert!(!rendered.to_ascii_lowercase().contains("csrf"));
+}
+
+#[test]
+fn fresh_init_seeds_version_one_and_reads_history_across_restart() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(30);
+    let checkpoint = WorkflowCheckpoint::new(
+        deployment_identifier,
+        WorkflowKind::Init,
+        CheckpointMetadata::from_bytes(b"init-generation-checkpoint".as_slice()).unwrap(),
+    );
+    let mut database = SqliteDatabase::open(&path).unwrap();
+    database.create_checkpoint(&checkpoint).unwrap();
+    database
+        .complete_checkpoint(
+            &checkpoint,
+            &application_state(WorkflowKind::Init),
+            &reconciliation_digest(0x30),
+        )
+        .unwrap();
+
+    let persistence = log_configuration_generation_persistence();
+    let initial_key = persistence.key(identifier(6), LogConfigurationVersion::INITIAL);
+    let current = database
+        .log_configuration_generations()
+        .unwrap()
+        .load_current_audit_log_configuration_generation(persistence)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.key(), initial_key);
+    assert_eq!(current.module().as_str(), "log-sqlite");
+    assert_eq!(current.name().as_str(), "local");
+    assert!(current.enabled());
+    assert_eq!(current.settings().len(), 1);
+    assert_eq!(current.settings()[0].key.as_str(), "retention");
+    assert_eq!(current.settings()[0].value.as_str(), "unsupported");
+    assert_eq!(current.log_types(), [LogType::System, LogType::Audit]);
+    assert_eq!(
+        database
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(persistence, initial_key)
+            .unwrap(),
+        Some(current.clone())
+    );
+    drop(database);
+
+    let historical_version = LogConfigurationVersion::new(u64::MAX).unwrap();
+    let historical_bytes = historical_version.get().to_be_bytes();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation \
+             (configuration_id, generation_version, module, name, enabled) \
+             VALUES (?1, ?2, 'log-sqlite', 'historical-local', 0)",
+            rusqlite::params![
+                identifier(6).as_bytes().as_slice(),
+                historical_bytes.as_slice()
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation_setting \
+             (configuration_id, generation_version, setting_key, setting_value) \
+             VALUES (?1, ?2, 'retention', 'historical')",
+            rusqlite::params![
+                identifier(6).as_bytes().as_slice(),
+                historical_bytes.as_slice()
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation_log_type \
+             (configuration_id, generation_version, log_type) VALUES (?1, ?2, 'audit')",
+            rusqlite::params![
+                identifier(6).as_bytes().as_slice(),
+                historical_bytes.as_slice()
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    for _ in 0..2 {
+        let mut reopened = SqliteDatabase::open(&path).unwrap();
+        let historical_key = persistence.key(identifier(6), historical_version);
+        let historical = reopened
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(persistence, historical_key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(historical.key(), historical_key);
+        assert_eq!(historical.name().as_str(), "historical-local");
+        assert!(!historical.enabled());
+        assert_eq!(historical.log_types(), [LogType::Audit]);
+        assert_eq!(
+            reopened
+                .log_configuration_generations()
+                .unwrap()
+                .load_current_audit_log_configuration_generation(persistence)
+                .unwrap()
+                .unwrap()
+                .key(),
+            initial_key
+        );
+        assert_eq!(
+            reopened
+                .log_configuration_generations()
+                .unwrap()
+                .load_log_configuration_generation(
+                    persistence,
+                    persistence.key(identifier(6), LogConfigurationVersion::new(2).unwrap(),),
+                )
+                .unwrap(),
+            None
+        );
+        drop(reopened);
+    }
+}
+
+#[test]
+fn generation_seed_failure_rolls_back_the_complete_checkpoint() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(31);
+    let mut database = pending_database(&path, deployment_identifier);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER test_reject_generation_seed \
+             BEFORE INSERT ON weavelit_log_configuration_generation \
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+    assert_eq!(
+        database.complete_checkpoint(
+            &restore_checkpoint(deployment_identifier),
+            &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0x31),
+        ),
+        Err(DatabaseError::IntegrityFailure)
+    );
+    drop(database);
+
+    assert_no_state_rows(&path);
+    assert!(matches!(
+        SqliteDatabase::open(&path),
+        Err(DatabaseError::IntegrityFailure)
+    ));
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("DROP TRIGGER test_reject_generation_seed;")
+        .unwrap();
+    let reopened = SqliteDatabase::open(&path).unwrap();
+    assert_eq!(
+        reopened.inspect(deployment_identifier).unwrap(),
+        DatabaseInspection::Pending(restore_checkpoint(deployment_identifier))
+    );
+}
+
+#[test]
+fn current_generation_reads_fail_closed_for_inconsistent_persistence() {
+    let mutations = [
+        (
+            "malformed version",
+            "PRAGMA foreign_keys = OFF; PRAGMA ignore_check_constraints = ON; \
+             UPDATE weavelit_log_configuration_current_generation \
+             SET generation_version = zeroblob(8)",
+        ),
+        (
+            "missing current pointer",
+            "DELETE FROM weavelit_log_configuration_current_generation",
+        ),
+        (
+            "configuration identity",
+            "PRAGMA foreign_keys = OFF; \
+             DROP TRIGGER weavelit_log_configuration_generation_reject_update; \
+             UPDATE weavelit_log_configuration_generation \
+             SET configuration_id = x'07070707070707070707070707070707'",
+        ),
+        (
+            "module mismatch",
+            "UPDATE weavelit_log_module_configuration SET module = 'other-module'",
+        ),
+        (
+            "enabled mismatch",
+            "UPDATE weavelit_log_module_configuration SET enabled = 0",
+        ),
+        (
+            "settings mismatch",
+            "UPDATE weavelit_log_module_setting SET setting_value = 'changed'",
+        ),
+        (
+            "missing Audit membership",
+            "DROP TRIGGER weavelit_log_configuration_generation_log_type_reject_delete; \
+             DELETE FROM weavelit_log_configuration_generation_log_type \
+             WHERE log_type = 'audit'",
+        ),
+    ];
+
+    for (case, mutation) in mutations {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = restored_database(&path, deployment(32));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(mutation)
+            .unwrap();
+
+        assert_eq!(
+            database
+                .log_configuration_generations()
+                .unwrap()
+                .load_current_audit_log_configuration_generation(
+                    log_configuration_generation_persistence(),
+                ),
+            Err(DatabaseError::IntegrityFailure),
+            "for {case}"
+        );
+    }
+}
+
+#[test]
+fn exact_generation_read_rejects_malformed_settings() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = restored_database(&path, deployment(33));
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP TRIGGER weavelit_log_configuration_generation_setting_reject_update; \
+             PRAGMA ignore_check_constraints = ON; \
+             UPDATE weavelit_log_configuration_generation_setting SET setting_key = ''",
+        )
+        .unwrap();
+    let persistence = log_configuration_generation_persistence();
+
+    assert_eq!(
+        database
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(
+                persistence,
+                persistence.key(identifier(6), LogConfigurationVersion::INITIAL),
+            ),
+        Err(DatabaseError::IntegrityFailure)
+    );
+}
+
+#[test]
+fn normalized_restore_state_excludes_generation_history() {
+    let source_directory = tempfile::tempdir().unwrap();
+    let source_path = database_path(&source_directory);
+    let source_deployment = deployment(34);
+    let mut source = restored_database(&source_path, source_deployment);
+    let persistence = log_configuration_generation_persistence();
+    let historical_version = LogConfigurationVersion::new(2).unwrap();
+    let historical_bytes = historical_version.get().to_be_bytes();
+    Connection::open(&source_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation \
+             (configuration_id, generation_version, module, name, enabled) \
+             VALUES (?1, ?2, 'log-sqlite', 'source-history', 1)",
+            rusqlite::params![
+                identifier(6).as_bytes().as_slice(),
+                historical_bytes.as_slice()
+            ],
+        )
+        .unwrap();
+    let loaded = source
+        .load_initialized_state(&audit_reference_persistence(), source_deployment)
+        .unwrap();
+    assert!(
+        source
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(
+                persistence,
+                persistence.key(identifier(6), historical_version),
+            )
+            .unwrap()
+            .is_some()
+    );
+
+    let replacement_directory = tempfile::tempdir().unwrap();
+    let replacement_path = database_path(&replacement_directory);
+    let replacement_deployment = deployment(35);
+    let mut replacement = SqliteDatabase::open(&replacement_path).unwrap();
+    let checkpoint = restore_checkpoint(replacement_deployment);
+    replacement.create_checkpoint(&checkpoint).unwrap();
+    replacement
+        .complete_checkpoint(&checkpoint, loaded.state(), &reconciliation_digest(0x35))
+        .unwrap();
+
+    assert_eq!(
+        replacement
+            .load_initialized_state(&audit_reference_persistence(), replacement_deployment)
+            .unwrap()
+            .state(),
+        loaded.state()
+    );
+    assert_eq!(
+        replacement
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(
+                persistence,
+                persistence.key(identifier(6), historical_version),
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        Connection::open(&replacement_path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_configuration_generation",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
 }
 
 #[test]

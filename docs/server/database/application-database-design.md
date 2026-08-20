@@ -154,12 +154,12 @@ factor data, Service Connection credentials, the persisted recovery public key,
 non-secret Log Module configuration and settings, System Log and Audit Log
 assignments, and the workflow completion obligation.
 
-The aggregate has no session, Log Module destination data, normal-operation
-Audit terminal recovery obligation, or Log Module credential member. Active
-sessions, System Logs and Audit Logs, other Log Module destination data, live
-terminal recovery obligations, and Log Module authentication or connection
-credentials therefore cannot enter persisted application state through this
-contract.
+The aggregate has no session, Log Module destination data, immutable Log Module
+configuration-generation history, normal-operation Audit terminal recovery
+obligation, or Log Module credential member. Active sessions, System Logs and
+Audit Logs, other Log Module destination data, generation history, live terminal
+recovery obligations, and Log Module authentication or connection credentials
+therefore cannot enter persisted application state through this contract.
 
 Live sessions are still stored in the Application Database, through the separate
 `SessionStore` contract described in [Live Session Storage](#live-session-storage).
@@ -195,12 +195,23 @@ defaults to `None` as an explicit staged backend decision: existing backends
 remain source-compatible, and a caller requiring generation reconstruction
 must treat absence as unavailable rather than fall back to mutable state.
 
-The MVP SQLite backend does not implement this store in the contract-only
-stage. Its future persistence delivery owns the forward migration, immutable
-row storage, current-Audit selection, exact historical lookup, indexed access,
-restart evidence, and transactional behavior. That delivery must implement
-this interface without changing the existing Audit terminal recovery contract
-or making the Application Database depend on Log or logging-authority types.
+The MVP SQLite backend implements this store through deployment-local
+operational tables. Migration and checkpoint completion seed version `1` from
+the current restorable Log Module configuration, settings, and assignments.
+The store preserves immutable history across ordinary restart, validates the
+current Audit pointer and snapshot against current application state, and
+fails closed on malformed or inconsistent rows. Exact historical reads do not
+fall back to mutable state or another generation. This persistence does not
+change the Audit terminal recovery contract or make the Application Database
+depend on Log or logging-authority types.
+
+Generation history and its current pointers are not members of
+`ApplicationState`, backup content, or normalized Restore input. A replacement
+deployment receives only the restored current non-secret configuration and
+assignments, then creates its own version `1` snapshots in the same transaction
+that completes Restore. Source-deployment history is neither imported nor
+merged, and this operational persistence does not change the backup format or
+version.
 
 ### Live Audit Terminal Recovery
 
@@ -595,15 +606,17 @@ operational status, including local accounts, password verifiers, Groups and
 their grants, enabled-module state, protected MFA factor data, Service
 Connection credentials, and other application configuration. It excludes active
 sessions, which are invalidated on restore, live normal-operation Audit terminal
-recovery obligations, and the live lifecycle reconciliation digest. Neither
-operational store is application state: each completed Init or Restore
+recovery obligations, immutable Log Module configuration-generation history,
+and the live lifecycle reconciliation digest. None of these operational stores
+is application state: each completed Init or Restore
 atomically writes its own reconciliation digest outside `ApplicationState`, and
 normalized Restore input carries no source-deployment terminal obligation. A
 replacement deployment therefore starts with no obligation inherited from the
-backup. For Log Modules, a backup includes only
-non-secret configuration and assignments. System Logs and Audit Logs, other Log
-Module destination data, and Log Module authentication or connection credentials
-are outside this Application Database backup contract.
+backup and creates fresh version `1` Log Module configuration snapshots from
+the restored current configuration. For Log Modules, a backup includes only
+non-secret configuration and assignments. Generation history, System Logs and
+Audit Logs, other Log Module destination data, and Log Module authentication or
+connection credentials are outside this Application Database backup contract.
 
 Account and Group Audit Reference Identifiers are restorable application state.
 The current forward contract for a future backup writer carries their canonical

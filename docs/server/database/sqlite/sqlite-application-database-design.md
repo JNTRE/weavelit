@@ -63,7 +63,8 @@ The registry contains `0001_create_migration_ledger.sql`,
 `0005_add_mfa_policy_and_replay_watermark.sql`,
 `0006_add_lifecycle_reconciliation.sql`, and
 `0007_add_audit_references.sql`, and
-`0008_add_audit_terminal_recovery.sql`. Each
+`0008_add_audit_terminal_recovery.sql`, and
+`0009_add_log_configuration_generations.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -165,6 +166,49 @@ supplied by lifecycle's selected database wrapper and rebuild typed account and
 Group projections through the backend-neutral checked constructor; a missing,
 extra, malformed, reused, orphaned, or wrongly associated reference is an
 `IntegrityFailure`.
+
+### Immutable Log Module Configuration Generations
+
+`0009_add_log_configuration_generations.sql` creates four `STRICT` tables for
+deployment-local operational configuration history: immutable generation
+snapshots, immutable ordered non-secret settings, immutable Log Type
+memberships, and one current-generation pointer per application-owned Log
+Module configuration. The compound generation key is the existing nonzero
+16-byte configuration identifier plus a nonzero eight-byte big-endian version
+BLOB. The BLOB representation preserves the complete nonzero `u64` range
+without narrowing through SQLite's signed integer type.
+
+The migration backfills every existing configuration as version `1`, copies
+its current settings and Log Type assignments into that snapshot, and points
+the configuration at version `1`. Snapshot, setting, and membership tables
+reject updates and deletes through schema triggers. Their creation, complete
+backfill, immutable triggers, and migration-ledger entry share the migration's
+single immediate transaction; any failure rolls the schema, data, and ledger
+back to the exact `0008` prefix.
+
+Fresh Init and Restore completion seed the same version `1` rows after writing
+the supplied `ApplicationState` and before marking lifecycle state initialized.
+Seeding runs inside the completion operation's existing immediate transaction,
+so generation failure also rolls back every application-state row and retains
+the pending checkpoint. This delivery exposes no generation update, deletion,
+version-allocation, assignment-change, or current-pointer mutation operation.
+
+The SQLite implementation returns its read-only store through
+`ApplicationDatabase::log_configuration_generations`. Current Audit lookup
+starts from the current restorable Audit assignment, requires its current
+pointer and exact generation, and verifies configuration identity, version,
+module, name, enabled state, ordered settings, and Audit membership against the
+current application-state rows. Exact historical lookup reads only the
+requested compound key. Both paths rebuild bounded contract types through
+database persistence authority and return payload-free `IntegrityFailure` for
+malformed or inconsistent rows; an absent exact historical key returns `None`.
+
+These four tables survive ordinary restart but remain outside
+`ApplicationState`. State reads and writes do not enumerate or import them, a
+backup includes only current non-secret Log Module configuration and
+assignments, and Restore seeds fresh version `1` rows from that normalized
+input. Source-deployment generation history and pointers therefore never enter
+a replacement database, and the backup format and version remain unchanged.
 
 ### Future Temporary-Credential Migration
 
@@ -507,6 +551,16 @@ and WAL sidecar files automatically. They cover successful and idempotent
 migrations, restart persistence, migration and write rollback, invalid
 configuration, unavailable storage, incompatible migration history, and error
 and diagnostic redaction.
+
+Generation migration tests open a populated real database carrying the exact
+eight-entry migration prefix, prove version `1` backfill and the ninth checksum,
+and inject a final migration failure to prove schema, data, and ledger rollback.
+State tests prove fresh Init seeding, current and exact historical reads across
+restart including the full `u64` version range, immutable-row enforcement,
+completion rollback, and fail-closed malformed version, pointer, configuration,
+enabled-state, settings, and Audit-membership handling. A source-to-replacement
+test proves normalized Restore state excludes historical generations and that
+the replacement creates only its local version `1` snapshot.
 
 Migration tests apply the six-migration prefix to populated account and Group
 tables, then prove `0007` preserves broad Unicode names and state identifiers,

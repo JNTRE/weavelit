@@ -55,6 +55,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0008_add_audit_terminal_recovery",
         sql: include_str!("../migrations/0008_add_audit_terminal_recovery.sql"),
     },
+    Migration {
+        sequence: 9,
+        identifier: "0009_add_log_configuration_generations",
+        sql: include_str!("../migrations/0009_add_log_configuration_generations.sql"),
+    },
 ];
 
 struct AppliedMigration {
@@ -345,6 +350,60 @@ mod tests {
                 )
                 .unwrap(),
             7
+        );
+    }
+
+    #[test]
+    fn failed_log_configuration_generation_backfill_rolls_back_schema_and_ledger() {
+        const FAILING_MIGRATION: &str = concat!(
+            include_str!("../migrations/0009_add_log_configuration_generations.sql"),
+            "INSERT INTO missing_table VALUES (1);"
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..8]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_module_configuration \
+                 (configuration_id, module, name, enabled) \
+                 VALUES (?1, 'log-sqlite', 'existing', 1)",
+                [[0x61_u8; 16].as_slice()],
+            )
+            .unwrap();
+        let mut migrations = MIGRATIONS.to_vec();
+        migrations[8].sql = FAILING_MIGRATION;
+
+        assert_eq!(
+            apply_migrations(&mut connection, &migrations),
+            Err(DatabaseError::IntegrityFailure)
+        );
+        for table in [
+            "weavelit_log_configuration_generation",
+            "weavelit_log_configuration_generation_setting",
+            "weavelit_log_configuration_generation_log_type",
+            "weavelit_log_configuration_current_generation",
+        ] {
+            assert!(!table_exists_for_test(&connection, table));
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_migration_ledger",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            8
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT name FROM weavelit_log_module_configuration",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "existing"
         );
     }
 

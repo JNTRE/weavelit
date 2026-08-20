@@ -11,6 +11,8 @@ const LIFECYCLE_TABLE: &str = "weavelit_lifecycle_state";
 const ACCOUNT_TABLE: &str = "weavelit_account";
 const AUDIT_TERMINAL_OBLIGATION_TABLE: &str = "weavelit_audit_terminal_obligation";
 const AUDIT_TERMINAL_SUPERSESSION_TABLE: &str = "weavelit_audit_terminal_supersession";
+const LOG_CONFIGURATION_GENERATION_TABLE: &str = "weavelit_log_configuration_generation";
+const LOG_CONFIGURATION_CURRENT_TABLE: &str = "weavelit_log_configuration_current_generation";
 const RECONCILIATION_TABLE: &str = "weavelit_lifecycle_reconciliation";
 const SESSION_TABLE: &str = "weavelit_session";
 const UPDATE_TRIGGER: &str = "weavelit_migration_ledger_reject_update";
@@ -75,6 +77,65 @@ fn disable_ledger_immutability(connection: &Connection) {
         .unwrap();
 }
 
+fn create_0008_database(path: &Path) {
+    let connection = Connection::open(path).unwrap();
+    for (sequence, identifier, sql) in [
+        (
+            1_i64,
+            "0001_create_migration_ledger",
+            include_str!("../migrations/0001_create_migration_ledger.sql"),
+        ),
+        (
+            2,
+            "0002_create_lifecycle_state",
+            include_str!("../migrations/0002_create_lifecycle_state.sql"),
+        ),
+        (
+            3,
+            "0003_create_application_state",
+            include_str!("../migrations/0003_create_application_state.sql"),
+        ),
+        (
+            4,
+            "0004_create_session_store",
+            include_str!("../migrations/0004_create_session_store.sql"),
+        ),
+        (
+            5,
+            "0005_add_mfa_policy_and_replay_watermark",
+            include_str!("../migrations/0005_add_mfa_policy_and_replay_watermark.sql"),
+        ),
+        (
+            6,
+            "0006_add_lifecycle_reconciliation",
+            include_str!("../migrations/0006_add_lifecycle_reconciliation.sql"),
+        ),
+        (
+            7,
+            "0007_add_audit_references",
+            include_str!("../migrations/0007_add_audit_references.sql"),
+        ),
+        (
+            8,
+            "0008_add_audit_terminal_recovery",
+            include_str!("../migrations/0008_add_audit_terminal_recovery.sql"),
+        ),
+    ] {
+        connection.execute_batch(sql).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_migration_ledger \
+                 (sequence_number, identifier, checksum) VALUES (?1, ?2, ?3)",
+                params![
+                    sequence,
+                    identifier,
+                    Sha256::digest(sql.as_bytes()).as_slice()
+                ],
+            )
+            .unwrap();
+    }
+}
+
 fn assert_integrity_failure_is_redacted(error: DatabaseError, path: &Path) {
     assert_eq!(error, DatabaseError::IntegrityFailure);
     let message = error.to_string();
@@ -95,7 +156,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     let first_schema = schema_rows(&connection);
     drop(connection);
 
-    assert_eq!(first_ledger.len(), 8);
+    assert_eq!(first_ledger.len(), 9);
     assert_eq!(first_ledger[0].0, 1);
     assert_eq!(first_ledger[0].1, "0001_create_migration_ledger");
     assert_eq!(first_ledger[1].0, 2);
@@ -115,6 +176,8 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[6].1, "0007_add_audit_references");
     assert_eq!(first_ledger[7].0, 8);
     assert_eq!(first_ledger[7].1, "0008_add_audit_terminal_recovery");
+    assert_eq!(first_ledger[8].0, 9);
+    assert_eq!(first_ledger[8].1, "0009_add_log_configuration_generations");
     assert_eq!(first_ledger[0].2.len(), 32);
     assert_eq!(first_ledger[1].2.len(), 32);
     assert_eq!(first_ledger[2].2.len(), 32);
@@ -123,6 +186,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[5].2.len(), 32);
     assert_eq!(first_ledger[6].2.len(), 32);
     assert_eq!(first_ledger[7].2.len(), 32);
+    assert_eq!(first_ledger[8].2.len(), 32);
     assert_eq!(
         first_ledger[0].2,
         Sha256::digest(include_bytes!(
@@ -179,6 +243,13 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         ))
         .to_vec()
     );
+    assert_eq!(
+        first_ledger[8].2,
+        Sha256::digest(include_bytes!(
+            "../migrations/0009_add_log_configuration_generations.sql"
+        ))
+        .to_vec()
+    );
     assert!(first_schema.iter().any(|(_, name, _)| name == LEDGER_TABLE));
     assert!(
         first_schema
@@ -210,11 +281,173 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
             .iter()
             .any(|(_, name, _)| name == AUDIT_TERMINAL_SUPERSESSION_TABLE)
     );
+    assert!(
+        first_schema
+            .iter()
+            .any(|(_, name, _)| name == LOG_CONFIGURATION_GENERATION_TABLE)
+    );
+    assert!(
+        first_schema
+            .iter()
+            .any(|(_, name, _)| name == LOG_CONFIGURATION_CURRENT_TABLE)
+    );
 
     bootstrap(&path);
     let connection = direct_connection(&path);
     assert_eq!(ledger_rows(&connection), first_ledger);
     assert_eq!(schema_rows(&connection), first_schema);
+}
+
+#[test]
+fn populated_0008_database_upgrades_and_backfills_version_one() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    create_0008_database(&path);
+    let configuration_id = [0x61_u8; 16];
+    let connection = direct_connection(&path);
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_module_configuration \
+             (configuration_id, module, name, enabled) \
+             VALUES (?1, 'log-sqlite', 'existing', 1)",
+            [configuration_id.as_slice()],
+        )
+        .unwrap();
+    for (key, value) in [("path", "logs.db"), ("retention", "30d")] {
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_module_setting \
+                 (configuration_id, setting_key, setting_value) VALUES (?1, ?2, ?3)",
+                params![configuration_id.as_slice(), key, value],
+            )
+            .unwrap();
+    }
+    for log_type in ["system", "audit"] {
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_assignment (log_type, configuration_id) \
+                 VALUES (?1, ?2)",
+                params![log_type, configuration_id.as_slice()],
+            )
+            .unwrap();
+    }
+    drop(connection);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+
+    let connection = direct_connection(&path);
+    assert_eq!(ledger_rows(&connection).len(), 9);
+    let generation: (Vec<u8>, Vec<u8>, String, String, i64) = connection
+        .query_row(
+            "SELECT configuration_id, generation_version, module, name, enabled \
+             FROM weavelit_log_configuration_generation",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(generation.0, configuration_id);
+    assert_eq!(generation.1, 1_u64.to_be_bytes());
+    assert_eq!(generation.2, "log-sqlite");
+    assert_eq!(generation.3, "existing");
+    assert_eq!(generation.4, 1);
+    assert_eq!(
+        connection
+            .prepare(
+                "SELECT setting_key, setting_value \
+                 FROM weavelit_log_configuration_generation_setting ORDER BY setting_key",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?
+            )))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        [
+            ("path".to_owned(), "logs.db".to_owned()),
+            ("retention".to_owned(), "30d".to_owned())
+        ]
+    );
+    assert_eq!(
+        connection
+            .prepare(
+                "SELECT log_type FROM weavelit_log_configuration_generation_log_type \
+                 ORDER BY log_type",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        ["audit", "system"]
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT configuration_id, generation_version \
+                 FROM weavelit_log_configuration_current_generation",
+                [],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .unwrap(),
+        (configuration_id.to_vec(), 1_u64.to_be_bytes().to_vec())
+    );
+}
+
+#[test]
+fn generation_snapshots_settings_and_memberships_are_immutable() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    bootstrap(&path);
+    let connection = direct_connection(&path);
+    let configuration_id = [0x62_u8; 16];
+    let version = 1_u64.to_be_bytes();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation \
+             (configuration_id, generation_version, module, name, enabled) \
+             VALUES (?1, ?2, 'log-sqlite', 'immutable', 1)",
+            params![configuration_id.as_slice(), version.as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation_setting \
+             (configuration_id, generation_version, setting_key, setting_value) \
+             VALUES (?1, ?2, 'retention', '30d')",
+            params![configuration_id.as_slice(), version.as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation_log_type \
+             (configuration_id, generation_version, log_type) VALUES (?1, ?2, 'audit')",
+            params![configuration_id.as_slice(), version.as_slice()],
+        )
+        .unwrap();
+
+    for statement in [
+        "UPDATE weavelit_log_configuration_generation SET enabled = 0",
+        "DELETE FROM weavelit_log_configuration_generation",
+        "UPDATE weavelit_log_configuration_generation_setting SET setting_value = 'changed'",
+        "DELETE FROM weavelit_log_configuration_generation_setting",
+        "UPDATE weavelit_log_configuration_generation_log_type SET log_type = 'system'",
+        "DELETE FROM weavelit_log_configuration_generation_log_type",
+    ] {
+        assert!(
+            connection.execute(statement, []).is_err(),
+            "for {statement}"
+        );
+    }
 }
 
 #[test]
@@ -248,7 +481,7 @@ fn unknown_extra_history_is_rejected() {
     connection
         .execute(
             "INSERT INTO weavelit_migration_ledger \
-            (sequence_number, identifier, checksum) VALUES (9, '0009_unknown', ?1)",
+            (sequence_number, identifier, checksum) VALUES (10, '0010_unknown', ?1)",
             [vec![0_u8; 32]],
         )
         .unwrap();
@@ -273,7 +506,7 @@ fn missing_applied_history_is_rejected_without_new_ledger_row() {
     drop(connection);
 
     assert_integrity_failure_is_redacted(open_error(&path), &path);
-    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 7);
+    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 8);
 }
 
 #[test]

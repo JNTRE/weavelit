@@ -9,6 +9,7 @@ mod completion;
 mod connection;
 mod error;
 mod inspection;
+mod log_configuration;
 mod mfa;
 mod migrations;
 mod reconciliation;
@@ -21,8 +22,8 @@ use weavelit_server_database::{
     AccountAuditReference, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
     AuditTerminalRecoveryStore, ComponentEnablement, DatabaseError, DatabaseInspection,
     DeploymentIdentifier, GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
-    MfaStore, ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier,
-    WorkflowCheckpoint,
+    LogConfigurationGenerationStore, MfaStore, ReconciliationDigest, ReconciliationStore,
+    SessionStore, StateIdentifier, WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -102,6 +103,12 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore> {
+        Some(self)
+    }
+
+    fn log_configuration_generations(
+        &mut self,
+    ) -> Option<&mut dyn LogConfigurationGenerationStore> {
         Some(self)
     }
 
