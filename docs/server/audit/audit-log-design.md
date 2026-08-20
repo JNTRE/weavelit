@@ -291,31 +291,26 @@ retry schedule. Activation recovery does not prevent the Server from exposing
 read and authentication functions; a future consequential writer must inspect
 the active-sequence result before mutation.
 
-Every drain obtains one process-local permit, reloads initialized state, and
-resolves the current Audit assignment again. The initial committed assignment
-produces immutable binding version `1`, whose identity is the assigned Log
-Module configuration identifier. Trusted Server code derives that binding and
-the configured destination together and constructs one
-`ResolvedAuditDestination`; an independently supplied destination cannot be
-paired by comparing binding bytes alone.
+Every drain obtains one process-local permit and loads the exact current Audit
+configuration generation from the Application Database generation store. It
+requires enabled state, Audit Log membership, a compiled-in module with the
+Audit capability, and settings accepted by that module before recovery listing
+or module factory access. Missing, disabled, malformed, non-Audit,
+unknown-module, unsupported-capability, or undeclared-setting state fails with
+one payload-free recovery-required result. Audit destination resolution does
+not load or fall back to mutable `ApplicationState`.
 
-The runtime also contains an inert immutable-generation resolver for the future
-Application Database generation store. Given an authority-materialized exact
-generation and its selected key, it requires matching configuration identity
-and version, enabled state, Audit Log membership, a compiled-in module with the
-Audit capability, and settings accepted by that module before calling the
-module factory. Missing, disabled, mismatched, non-Audit, unknown-module,
-unsupported-capability, or undeclared-setting input fails with one payload-free
-error before factory access or delivery. Only the resolver constructs the
-`AuditDestinationBinding` and configured destination and joins them as one
-`ResolvedAuditDestination`, so a caller cannot pair a binding with an
-independently supplied handle.
-
-This generation resolver is not registered with the operational composer,
-recovery drain, route layer, configuration workflow, or writer. The active
-version-`1` initialized-state resolver and the R0/R2 terminal-recovery behavior
-remain unchanged until a concrete backend implements generation persistence and
-a separately approved integration activates that read path.
+For each retained active or late-delivery obligation, the runtime derives the
+exact generation key from that obligation's separately stored binding identity
+and version. It uses the loaded current generation only when that key matches
+exactly; otherwise it performs one exact historical generation read. A missing,
+corrupt, or mismatched required generation fails before the Log Module factory
+or destination is accessed. Trusted Server code derives the binding and
+configured destination together from that same snapshot and constructs one
+`ResolvedAuditDestination`; it does not try another generation, the mutable
+current assignment, or an independently supplied destination. The initial
+committed generation uses version `1`, and later current versions do not change
+the retained version named by an older obligation.
 
 The coordinator drains active obligations first and late-delivery obligations
 second. Each sequence is independently listed oldest first with at most the

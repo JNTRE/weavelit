@@ -29,8 +29,6 @@ use crate::{
     operational_logging::OperationalLogSupport,
 };
 
-const INITIAL_AUDIT_BINDING_VERSION: u64 = 1;
-
 /// Result of draining one independently ordered recovery sequence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AuditRecoverySequenceState {
@@ -74,7 +72,7 @@ pub(crate) struct OperationalAuditRecovery {
     deployment_identifier: DeploymentIdentifier,
     reporting: OperationalAuditReporting,
     #[cfg(test)]
-    destination_override: Option<OperationalAuditDestination>,
+    destination_override: Option<OperationalAuditGenerationDestination>,
     drain_permit: Mutex<()>,
     state: Mutex<OperationalAuditRecoveryState>,
 }
@@ -126,40 +124,49 @@ impl OperationalAuditRecovery {
             return self.drain_resolved(destination);
         }
 
-        let initialized = match self
+        let current_generation = match self
             .database
-            .load_initialized_state(self.deployment_identifier)
+            .load_current_audit_log_configuration_generation()
         {
-            Ok(initialized) => initialized,
-            Err(_) => {
+            Ok(Some(generation)) => generation,
+            Ok(None) | Err(_) => {
                 self.reporting.report(None);
                 return self.recovery_required();
             }
         };
-        let destination = match OperationalAuditDestination::resolve(
+        if OperationalAuditGenerationDestination::validate(
             &self.log_catalog,
-            &self.state_root,
-            &initialized,
-            ServerLogAuthority::new(),
-        ) {
-            Ok(destination) => destination,
-            Err(_) => {
-                self.reporting
-                    .report(assigned_module(&initialized, LogType::Audit).as_ref());
-                return self.recovery_required();
-            }
-        };
+            current_generation.key(),
+            Some(&current_generation),
+        )
+        .is_err()
+        {
+            self.reporting.report(None);
+            return self.recovery_required();
+        }
 
-        self.drain_resolved(&destination)
+        self.drain_generation_backed(&current_generation)
     }
 
+    #[cfg(test)]
     fn drain_resolved(
         &self,
-        destination: &OperationalAuditDestination,
+        destination: &OperationalAuditGenerationDestination,
     ) -> OperationalAuditRecoveryState {
         self.replace_state(OperationalAuditRecoveryState {
             active: self.drain_sequence(RecoverySequence::Active, destination),
             late_delivery: self.drain_sequence(RecoverySequence::LateDelivery, destination),
+        })
+    }
+
+    fn drain_generation_backed(
+        &self,
+        current_generation: &LogConfigurationGeneration,
+    ) -> OperationalAuditRecoveryState {
+        self.replace_state(OperationalAuditRecoveryState {
+            active: self.drain_generation_sequence(RecoverySequence::Active, current_generation),
+            late_delivery: self
+                .drain_generation_sequence(RecoverySequence::LateDelivery, current_generation),
         })
     }
 
@@ -176,10 +183,11 @@ impl OperationalAuditRecovery {
         })
     }
 
+    #[cfg(test)]
     fn drain_sequence(
         &self,
         sequence: RecoverySequence,
-        destination: &OperationalAuditDestination,
+        destination: &OperationalAuditGenerationDestination,
     ) -> AuditRecoverySequenceState {
         let batch_size = AuditTerminalReplayBatchSize::new(MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE)
             .expect("the contract maximum is a valid replay batch size");
@@ -235,6 +243,109 @@ impl OperationalAuditRecovery {
             AuditRecoverySequenceState::Ready
         }
     }
+
+    fn drain_generation_sequence(
+        &self,
+        sequence: RecoverySequence,
+        current_generation: &LogConfigurationGeneration,
+    ) -> AuditRecoverySequenceState {
+        let batch_size = AuditTerminalReplayBatchSize::new(MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE)
+            .expect("the contract maximum is a valid replay batch size");
+        let obligations = match self
+            .database
+            .with_audit_terminal_recovery(|persistence, store| {
+                sequence.list(store, persistence, batch_size)
+            }) {
+            Ok(obligations) => obligations,
+            Err(_) => {
+                self.reporting.report(None);
+                return AuditRecoverySequenceState::RecoveryRequired;
+            }
+        };
+        let batch_may_have_more = obligations.len() == batch_size.get();
+
+        for obligation in obligations {
+            let destination = match self
+                .resolve_obligation_destination(current_generation, obligation.binding())
+            {
+                Ok(destination) => destination,
+                Err(_) => {
+                    self.reporting.report(None);
+                    return AuditRecoverySequenceState::RecoveryRequired;
+                }
+            };
+            let persistence = self.database.audit_terminal_recovery_persistence();
+            let recovered = match self
+                .producer
+                .restore_terminal_recovery(persistence, &obligation)
+            {
+                Ok(recovered) => recovered,
+                Err(_) => {
+                    self.reporting.report(Some(destination.module()));
+                    return AuditRecoverySequenceState::RecoveryRequired;
+                }
+            };
+            let acknowledgement = match recovered.deliver(persistence, &destination.resolved()) {
+                Ok(acknowledgement) => acknowledgement,
+                Err(AuditTerminalReplayError::DeliveryPending(_)) => {
+                    self.reporting.report(Some(destination.module()));
+                    return AuditRecoverySequenceState::Pending;
+                }
+                Err(AuditTerminalReplayError::DestinationBindingChanged) => {
+                    self.reporting.report(Some(destination.module()));
+                    return AuditRecoverySequenceState::RecoveryRequired;
+                }
+            };
+            if self
+                .database
+                .with_audit_terminal_recovery(|_, store| acknowledgement.acknowledge(store))
+                .is_err()
+            {
+                self.reporting.report(Some(destination.module()));
+                return AuditRecoverySequenceState::RecoveryRequired;
+            }
+        }
+
+        if batch_may_have_more {
+            AuditRecoverySequenceState::Pending
+        } else {
+            AuditRecoverySequenceState::Ready
+        }
+    }
+
+    fn resolve_obligation_destination(
+        &self,
+        current_generation: &LogConfigurationGeneration,
+        binding: &weavelit_server_database::StoredAuditDestinationBinding,
+    ) -> Result<OperationalAuditGenerationDestination, OperationalAuditGenerationResolutionError>
+    {
+        let selected_key = self
+            .database
+            .log_configuration_generation_key(*binding.identifier(), binding.version())
+            .map_err(|_| OperationalAuditGenerationResolutionError)?;
+        if current_generation.key() == selected_key {
+            return OperationalAuditGenerationDestination::resolve(
+                &self.log_catalog,
+                &self.state_root,
+                self.deployment_identifier,
+                selected_key,
+                Some(current_generation),
+                ServerLogAuthority::new(),
+            );
+        }
+        let generation = self
+            .database
+            .load_log_configuration_generation(selected_key)
+            .map_err(|_| OperationalAuditGenerationResolutionError)?;
+        OperationalAuditGenerationDestination::resolve(
+            &self.log_catalog,
+            &self.state_root,
+            self.deployment_identifier,
+            selected_key,
+            generation.as_ref(),
+            ServerLogAuthority::new(),
+        )
+    }
 }
 
 impl fmt::Debug for OperationalAuditRecovery {
@@ -243,11 +354,7 @@ impl fmt::Debug for OperationalAuditRecovery {
     }
 }
 
-/// Inert resolver for one authority-selected immutable Audit configuration generation.
-///
-/// This is intentionally not registered with operational composition until a
-/// concrete backend implements the generation store in #148-B.
-#[allow(dead_code)]
+/// Resolver for one authority-selected immutable Audit configuration generation.
 struct OperationalAuditGenerationDestination {
     authority: ServerLogAuthority,
     binding: AuditDestinationBinding,
@@ -255,8 +362,15 @@ struct OperationalAuditGenerationDestination {
     destination: ConfiguredLogDestination,
 }
 
-#[allow(dead_code)]
 impl OperationalAuditGenerationDestination {
+    fn validate(
+        log_catalog: &LogModuleCatalog,
+        selected_key: LogConfigurationGenerationKey,
+        generation: Option<&LogConfigurationGeneration>,
+    ) -> Result<(), OperationalAuditGenerationResolutionError> {
+        Self::validated_configuration(log_catalog, selected_key, generation).map(|_| ())
+    }
+
     fn resolve(
         log_catalog: &LogModuleCatalog,
         state_root: &Path,
@@ -265,6 +379,38 @@ impl OperationalAuditGenerationDestination {
         generation: Option<&LogConfigurationGeneration>,
         authority: ServerLogAuthority,
     ) -> Result<Self, OperationalAuditGenerationResolutionError> {
+        let (module, settings) =
+            Self::validated_configuration(log_catalog, selected_key, generation)?;
+        let binding = AuditDestinationBinding::from_server_authority(
+            &authority,
+            *selected_key.configuration().as_bytes(),
+            selected_key.version().get(),
+        )
+        .map_err(|_| OperationalAuditGenerationResolutionError)?;
+        let context = TrustedLogModuleContext::from_server_authority(
+            &authority,
+            state_root.to_path_buf(),
+            *deployment_identifier.as_bytes(),
+        )
+        .with_settings(settings);
+        let destination = log_catalog
+            .create_destination(&module, &context)
+            .map_err(|_| OperationalAuditGenerationResolutionError)?;
+
+        Ok(Self {
+            authority,
+            binding,
+            module,
+            destination,
+        })
+    }
+
+    fn validated_configuration(
+        log_catalog: &LogModuleCatalog,
+        selected_key: LogConfigurationGenerationKey,
+        generation: Option<&LogConfigurationGeneration>,
+    ) -> Result<(LogModuleIdentifier, DestinationSettings), OperationalAuditGenerationResolutionError>
+    {
         let generation = generation.ok_or(OperationalAuditGenerationResolutionError)?;
         if generation.key() != selected_key
             || !generation.enabled()
@@ -296,29 +442,7 @@ impl OperationalAuditGenerationDestination {
         {
             return Err(OperationalAuditGenerationResolutionError);
         }
-
-        let binding = AuditDestinationBinding::from_server_authority(
-            &authority,
-            *selected_key.configuration().as_bytes(),
-            selected_key.version().get(),
-        )
-        .map_err(|_| OperationalAuditGenerationResolutionError)?;
-        let context = TrustedLogModuleContext::from_server_authority(
-            &authority,
-            state_root.to_path_buf(),
-            *deployment_identifier.as_bytes(),
-        )
-        .with_settings(settings);
-        let destination = log_catalog
-            .create_destination(&module, &context)
-            .map_err(|_| OperationalAuditGenerationResolutionError)?;
-
-        Ok(Self {
-            authority,
-            binding,
-            module,
-            destination,
-        })
+        Ok((module, settings))
     }
 
     fn module(&self) -> &LogModuleIdentifier {
@@ -393,8 +517,6 @@ impl OperationalAuditReporting {
 
 /// One configured destination resolved from a trusted assignment and configuration.
 struct OperationalLogDestination {
-    module: LogModuleIdentifier,
-    configuration_identifier: [u8; 16],
     destination: ConfiguredLogDestination,
 }
 
@@ -435,60 +557,7 @@ impl OperationalLogDestination {
         let destination = log_catalog
             .create_destination(&module, &context)
             .map_err(|_| OperationalAuditResolutionError)?;
-        Ok(Self {
-            module,
-            configuration_identifier: *configuration.identifier.as_bytes(),
-            destination,
-        })
-    }
-}
-
-/// Runtime-owned binding and destination derived from one committed assignment.
-struct OperationalAuditDestination {
-    authority: ServerLogAuthority,
-    binding: AuditDestinationBinding,
-    module: LogModuleIdentifier,
-    destination: ConfiguredLogDestination,
-}
-
-impl OperationalAuditDestination {
-    fn resolve(
-        log_catalog: &LogModuleCatalog,
-        state_root: &Path,
-        state: &InitializedState,
-        authority: ServerLogAuthority,
-    ) -> Result<Self, OperationalAuditResolutionError> {
-        let resolved = OperationalLogDestination::resolve(
-            log_catalog,
-            state_root,
-            state,
-            LogType::Audit,
-            &authority,
-        )?;
-        let binding = AuditDestinationBinding::from_server_authority(
-            &authority,
-            resolved.configuration_identifier,
-            INITIAL_AUDIT_BINDING_VERSION,
-        )
-        .map_err(|_| OperationalAuditResolutionError)?;
-        Ok(Self {
-            authority,
-            binding,
-            module: resolved.module,
-            destination: resolved.destination,
-        })
-    }
-
-    fn module(&self) -> &LogModuleIdentifier {
-        &self.module
-    }
-
-    fn resolved(&self) -> ResolvedAuditDestination<'_> {
-        ResolvedAuditDestination::from_server_authority(
-            &self.authority,
-            &self.binding,
-            &self.destination,
-        )
+        Ok(Self { destination })
     }
 }
 
@@ -526,12 +595,6 @@ fn unresolved_module() -> LogModuleIdentifier {
     LogModuleIdentifier::new("unresolved").expect("the fixed fallback module is valid")
 }
 
-impl fmt::Debug for OperationalAuditDestination {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("OperationalAuditDestination(REDACTED)")
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OperationalAuditResolutionError;
 
@@ -560,7 +623,7 @@ impl RecoverySequence {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{BTreeMap, VecDeque},
         path::{Path, PathBuf},
         sync::{
             Arc, Condvar, Mutex, PoisonError,
@@ -578,17 +641,18 @@ mod tests {
         AccountAuditReference, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
         AuditReferencePersistence, AuditTerminalAcknowledgementProof, AuditTerminalObligation,
         AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, AuditTerminalReplayBatchSize,
-        CompletionObligation, ComponentEnablement, ConfigurationKey, ConfigurationValue,
-        CorrelationIdentifier, DatabaseError, DatabaseInspection, DeploymentIdentifier,
-        GroupAuditReference, HumanAuthorizationSnapshot, InitializedState, LogAssignment,
-        LogClassification, LogConfigurationGeneration, LogConfigurationGenerationKey,
-        LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
-        LogConfigurationVersion, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
-        MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, MfaStore, Name, ReconciliationDigest,
-        ReconciliationStore, RecoveryPublicKey, SessionStore, StateIdentifier,
-        StoredAuditDestinationBinding, WorkflowCheckpoint, WorkflowKind,
+        CheckpointMetadata, CompletionObligation, ComponentEnablement, ConfigurationKey,
+        ConfigurationValue, CorrelationIdentifier, DatabaseError, DatabaseInspection,
+        DeploymentIdentifier, GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
+        LogAssignment, LogClassification, LogConfigurationGeneration,
+        LogConfigurationGenerationKey, LogConfigurationGenerationPersistence,
+        LogConfigurationGenerationStore, LogConfigurationVersion, LogDetail,
+        LogModuleConfiguration, LogModuleSetting, LogType, MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE,
+        MfaStore, Name, ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SessionStore,
+        StateIdentifier, StoredAuditDestinationBinding, WorkflowCheckpoint, WorkflowKind,
     };
     use weavelit_server_database_authority::ServerDatabaseAuthority;
+    use weavelit_server_database_sqlite::SqliteDatabase;
     use weavelit_server_lifecycle::ApplicationDatabase;
     use weavelit_server_log::{
         AuditDestinationBinding, CompleteLogRecord, ConfiguredLogDestination, CorrelationId,
@@ -600,9 +664,8 @@ mod tests {
     use weavelit_server_log_authority::ServerLogAuthority;
 
     use super::{
-        AuditRecoverySequenceState, OperationalAuditDestination,
-        OperationalAuditGenerationDestination, OperationalAuditRecovery,
-        OperationalAuditRecoveryState, OperationalAuditReporting, assigned_configuration,
+        AuditRecoverySequenceState, OperationalAuditGenerationDestination,
+        OperationalAuditRecovery, OperationalAuditRecoveryState, OperationalAuditReporting,
     };
     use crate::{operational::OperationalDatabase, operational_logging::OperationalLogSupport};
 
@@ -615,6 +678,11 @@ mod tests {
         late_delivery: VecDeque<AuditTerminalObligation>,
         initialized_state: Option<InitializedState>,
         initialized_state_loads: usize,
+        current_generation: Option<LogConfigurationGeneration>,
+        generations: BTreeMap<LogConfigurationGenerationKey, LogConfigurationGeneration>,
+        current_generation_reads: usize,
+        exact_generation_reads: Vec<LogConfigurationGenerationKey>,
+        fail_exact_generation_read: bool,
         active_list_calls: usize,
         late_list_calls: usize,
         acknowledgement_calls: usize,
@@ -626,6 +694,7 @@ mod tests {
     struct RecoveryDatabase {
         state: Arc<Mutex<StoreState>>,
         serves_recovery: bool,
+        serves_generations: bool,
     }
 
     impl AuditTerminalRecoveryStore for RecoveryDatabase {
@@ -689,6 +758,30 @@ mod tests {
                 return Ok(());
             }
             Err(DatabaseError::InvalidState)
+        }
+    }
+
+    impl LogConfigurationGenerationStore for RecoveryDatabase {
+        fn load_current_audit_log_configuration_generation(
+            &mut self,
+            _persistence: &LogConfigurationGenerationPersistence,
+        ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+            let mut state = self.state.lock().map_err(|_| DatabaseError::Unavailable)?;
+            state.current_generation_reads += 1;
+            Ok(state.current_generation.clone())
+        }
+
+        fn load_log_configuration_generation(
+            &mut self,
+            _persistence: &LogConfigurationGenerationPersistence,
+            key: LogConfigurationGenerationKey,
+        ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+            let mut state = self.state.lock().map_err(|_| DatabaseError::Unavailable)?;
+            state.exact_generation_reads.push(key);
+            if state.fail_exact_generation_read {
+                return Err(DatabaseError::IntegrityFailure);
+            }
+            Ok(state.generations.get(&key).cloned())
         }
     }
 
@@ -783,6 +876,13 @@ mod tests {
         fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore> {
             self.serves_recovery
                 .then_some(self as &mut dyn AuditTerminalRecoveryStore)
+        }
+
+        fn log_configuration_generations(
+            &mut self,
+        ) -> Option<&mut dyn LogConfigurationGenerationStore> {
+            self.serves_generations
+                .then_some(self as &mut dyn LogConfigurationGenerationStore)
         }
 
         fn close(self: Box<Self>) -> Result<(), DatabaseError> {
@@ -972,10 +1072,6 @@ mod tests {
         }
     }
 
-    struct SettingsFactory {
-        received: Arc<Mutex<Option<String>>>,
-    }
-
     struct GenerationResolverFactory {
         factory_calls: Arc<AtomicUsize>,
         delivery_calls: Arc<AtomicUsize>,
@@ -1019,27 +1115,6 @@ mod tests {
 
         fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
             Ok(())
-        }
-    }
-
-    impl LogDestinationFactory for SettingsFactory {
-        fn accepted_settings(&self) -> LogSettingsContract {
-            LogSettingsContract::new(vec!["endpoint".to_owned()]).unwrap()
-        }
-
-        fn create(
-            &self,
-            context: &LogModuleFactoryContext<'_>,
-        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
-            let endpoint = context
-                .settings()
-                .get("endpoint")
-                .ok_or(LogDestinationError::ConfigurationInvalid)?;
-            *self
-                .received
-                .lock()
-                .map_err(|_| LogDestinationError::Unavailable)? = Some(endpoint.to_owned());
-            Ok(Box::new(AcknowledgingDestination))
         }
     }
 
@@ -1115,7 +1190,7 @@ mod tests {
 
     struct DestinationFixture {
         binding: AuditDestinationBinding,
-        destination: OperationalAuditDestination,
+        destination: OperationalAuditGenerationDestination,
         delivered: Arc<Mutex<Vec<[u8; 16]>>>,
         attempts: Arc<AtomicUsize>,
         reenter: Arc<Mutex<Option<OperationalDatabase>>>,
@@ -1159,7 +1234,7 @@ mod tests {
             .unwrap();
         DestinationFixture {
             binding: binding.clone(),
-            destination: OperationalAuditDestination {
+            destination: OperationalAuditGenerationDestination {
                 authority,
                 binding,
                 module: LogModuleIdentifier::new("recording").unwrap(),
@@ -1175,19 +1250,20 @@ mod tests {
         OperationalDatabase::from_open(Box::new(RecoveryDatabase {
             state,
             serves_recovery: true,
+            serves_generations: true,
         }))
     }
 
     fn recovery(
         database: OperationalDatabase,
-        destination: OperationalAuditDestination,
+        destination: OperationalAuditGenerationDestination,
     ) -> OperationalAuditRecovery {
         recovery_with_reporting(database, destination, reporting_without_system())
     }
 
     fn recovery_with_reporting(
         database: OperationalDatabase,
-        destination: OperationalAuditDestination,
+        destination: OperationalAuditGenerationDestination,
         reporting: OperationalAuditReporting,
     ) -> OperationalAuditRecovery {
         let authority = ServerLogAuthority::new();
@@ -1199,6 +1275,26 @@ mod tests {
             deployment_identifier: DeploymentIdentifier::from_bytes([0x42; 16]).unwrap(),
             reporting,
             destination_override: Some(destination),
+            drain_permit: Mutex::new(()),
+            state: Mutex::new(OperationalAuditRecoveryState {
+                active: AuditRecoverySequenceState::RecoveryRequired,
+                late_delivery: AuditRecoverySequenceState::RecoveryRequired,
+            }),
+        }
+    }
+
+    fn generation_backed_recovery(
+        database: OperationalDatabase,
+        log_catalog: Arc<LogModuleCatalog>,
+    ) -> OperationalAuditRecovery {
+        OperationalAuditRecovery {
+            database,
+            producer: producer(&ServerLogAuthority::new()),
+            log_catalog,
+            state_root: PathBuf::from("/unused"),
+            deployment_identifier: DeploymentIdentifier::from_bytes([0x42; 16]).unwrap(),
+            reporting: reporting_without_system(),
+            destination_override: None,
             drain_permit: Mutex::new(()),
             state: Mutex::new(OperationalAuditRecoveryState {
                 active: AuditRecoverySequenceState::RecoveryRequired,
@@ -1377,6 +1473,18 @@ mod tests {
     #[test]
     fn each_drain_re_resolves_the_committed_assignment_after_repair() {
         let configuration_identifier = identifier(0x34);
+        let persistence = generation_persistence();
+        let key = persistence.key(configuration_identifier, LogConfigurationVersion::INITIAL);
+        let generation = persistence
+            .generation(
+                key,
+                Name::new("recording").unwrap(),
+                Name::new("audit-primary").unwrap(),
+                true,
+                Vec::new(),
+                vec![LogType::Audit],
+            )
+            .unwrap();
         let authority = ServerLogAuthority::new();
         let binding = AuditDestinationBinding::from_server_authority(
             &authority,
@@ -1424,14 +1532,284 @@ mod tests {
             recovery.drain_for_activation().active(),
             AuditRecoverySequenceState::RecoveryRequired
         );
-        store.lock().unwrap().initialized_state =
-            Some(initialized_state(configuration_identifier, "recording"));
+        store.lock().unwrap().current_generation = Some(generation);
         assert_eq!(
             recovery.drain_before_consequential_operation().active(),
             AuditRecoverySequenceState::Ready
         );
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
-        assert_eq!(store.lock().unwrap().initialized_state_loads, 2);
+        let store = store.lock().unwrap();
+        assert_eq!(store.current_generation_reads, 2);
+        assert_eq!(store.initialized_state_loads, 0);
+    }
+
+    #[test]
+    fn recovery_uses_current_and_retained_historical_generations_exactly() {
+        let persistence = generation_persistence();
+        let configuration = identifier(0x35);
+        let historical_key = persistence.key(configuration, LogConfigurationVersion::INITIAL);
+        let current_key = persistence.key(configuration, LogConfigurationVersion::new(2).unwrap());
+        let historical = persistence
+            .generation(
+                historical_key,
+                Name::new("historical-recording").unwrap(),
+                Name::new("audit-primary").unwrap(),
+                true,
+                Vec::new(),
+                vec![LogType::Audit],
+            )
+            .unwrap();
+        let current = persistence
+            .generation(
+                current_key,
+                Name::new("current-recording").unwrap(),
+                Name::new("audit-primary").unwrap(),
+                true,
+                Vec::new(),
+                vec![LogType::Audit],
+            )
+            .unwrap();
+        let current_binding = AuditDestinationBinding::from_server_authority(
+            &ServerLogAuthority::new(),
+            *configuration.as_bytes(),
+            current_key.version().get(),
+        )
+        .unwrap();
+        let historical_binding = AuditDestinationBinding::from_server_authority(
+            &ServerLogAuthority::new(),
+            *configuration.as_bytes(),
+            historical_key.version().get(),
+        )
+        .unwrap();
+        let current_delivered = Arc::new(Mutex::new(Vec::new()));
+        let current_attempts = Arc::new(AtomicUsize::new(0));
+        let historical_delivered = Arc::new(Mutex::new(Vec::new()));
+        let historical_attempts = Arc::new(AtomicUsize::new(0));
+        let catalog = Arc::new(
+            LogModuleCatalog::new(vec![
+                LogModuleRegistration::new(
+                    "current-recording",
+                    LogCapabilities::new(vec![LogRecordType::Audit]).unwrap(),
+                    Box::new(RecordingFactory {
+                        delivered: Arc::clone(&current_delivered),
+                        attempts: Arc::clone(&current_attempts),
+                        fail_on_attempt: None,
+                        reenter: Arc::new(Mutex::new(None)),
+                        arrivals: None,
+                        first_delivery_release: None,
+                    }),
+                ),
+                LogModuleRegistration::new(
+                    "historical-recording",
+                    LogCapabilities::new(vec![LogRecordType::Audit]).unwrap(),
+                    Box::new(RecordingFactory {
+                        delivered: Arc::clone(&historical_delivered),
+                        attempts: Arc::clone(&historical_attempts),
+                        fail_on_attempt: None,
+                        reenter: Arc::new(Mutex::new(None)),
+                        arrivals: None,
+                        first_delivery_release: None,
+                    }),
+                ),
+            ])
+            .unwrap(),
+        );
+        let active = obligation(&current_binding, 91);
+        let late = obligation(&historical_binding, 92);
+        let store = Arc::new(Mutex::new(StoreState {
+            active: VecDeque::from([active.clone()]),
+            late_delivery: VecDeque::from([late.clone()]),
+            current_generation: Some(current),
+            generations: BTreeMap::from([(historical_key, historical)]),
+            ..StoreState::default()
+        }));
+        let recovery = generation_backed_recovery(database(Arc::clone(&store)), catalog);
+
+        let state = recovery.drain_for_activation();
+
+        assert_eq!(state.active(), AuditRecoverySequenceState::Ready);
+        assert_eq!(state.late_delivery(), AuditRecoverySequenceState::Ready);
+        assert_eq!(current_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(historical_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *current_delivered.lock().unwrap(),
+            vec![*active.identifier().as_bytes()]
+        );
+        assert_eq!(
+            *historical_delivered.lock().unwrap(),
+            vec![*late.identifier().as_bytes()]
+        );
+        let store = store.lock().unwrap();
+        assert_eq!(store.current_generation_reads, 1);
+        assert_eq!(store.exact_generation_reads, vec![historical_key]);
+        assert_eq!(store.initialized_state_loads, 0);
+    }
+
+    #[test]
+    fn healthy_version_one_generation_activates_without_mutable_state_or_factory_access() {
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let delivery_calls = Arc::new(AtomicUsize::new(0));
+        let received = Arc::new(Mutex::new(None));
+        let catalog = Arc::new(generation_catalog(
+            vec![LogRecordType::Audit],
+            Arc::clone(&factory_calls),
+            Arc::clone(&delivery_calls),
+            Arc::clone(&received),
+        ));
+        let persistence = generation_persistence();
+        let key = persistence.key(identifier(0x36), LogConfigurationVersion::INITIAL);
+        let store = Arc::new(Mutex::new(StoreState {
+            current_generation: Some(generation(
+                &persistence,
+                key,
+                true,
+                vec![LogType::Audit],
+                "audit-primary",
+            )),
+            ..StoreState::default()
+        }));
+
+        let state = generation_backed_recovery(database(Arc::clone(&store)), catalog)
+            .drain_for_activation();
+
+        assert_eq!(state.active(), AuditRecoverySequenceState::Ready);
+        assert_eq!(state.late_delivery(), AuditRecoverySequenceState::Ready);
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(delivery_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(*received.lock().unwrap(), None);
+        let store = store.lock().unwrap();
+        assert_eq!(store.current_generation_reads, 1);
+        assert_eq!(store.active_list_calls, 1);
+        assert_eq!(store.late_list_calls, 1);
+        assert_eq!(store.initialized_state_loads, 0);
+    }
+
+    #[test]
+    fn missing_corrupt_or_mismatched_historical_generation_fails_before_factory_access() {
+        let persistence = generation_persistence();
+        let configuration = identifier(0x37);
+        let historical_key = persistence.key(configuration, LogConfigurationVersion::INITIAL);
+        let current_key = persistence.key(configuration, LogConfigurationVersion::new(2).unwrap());
+        let mismatched_key =
+            persistence.key(configuration, LogConfigurationVersion::new(3).unwrap());
+
+        for (historical, fail_exact_generation_read) in [
+            (None, false),
+            (None, true),
+            (
+                Some(generation(
+                    &persistence,
+                    mismatched_key,
+                    true,
+                    vec![LogType::Audit],
+                    "wrong-generation",
+                )),
+                false,
+            ),
+        ] {
+            let factory_calls = Arc::new(AtomicUsize::new(0));
+            let delivery_calls = Arc::new(AtomicUsize::new(0));
+            let received = Arc::new(Mutex::new(None));
+            let catalog = Arc::new(generation_catalog(
+                vec![LogRecordType::Audit],
+                Arc::clone(&factory_calls),
+                Arc::clone(&delivery_calls),
+                Arc::clone(&received),
+            ));
+            let retained_binding = AuditDestinationBinding::from_server_authority(
+                &ServerLogAuthority::new(),
+                *configuration.as_bytes(),
+                historical_key.version().get(),
+            )
+            .unwrap();
+            let mut generations = BTreeMap::new();
+            if let Some(historical) = historical {
+                generations.insert(historical_key, historical);
+            }
+            let store = Arc::new(Mutex::new(StoreState {
+                active: VecDeque::from([obligation(&retained_binding, 93)]),
+                current_generation: Some(generation(
+                    &persistence,
+                    current_key,
+                    true,
+                    vec![LogType::Audit],
+                    "current-generation",
+                )),
+                generations,
+                fail_exact_generation_read,
+                ..StoreState::default()
+            }));
+
+            let state = generation_backed_recovery(database(Arc::clone(&store)), catalog)
+                .drain_for_activation();
+
+            assert_eq!(state.active(), AuditRecoverySequenceState::RecoveryRequired);
+            assert_eq!(state.late_delivery(), AuditRecoverySequenceState::Ready);
+            assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(delivery_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(*received.lock().unwrap(), None);
+            let store = store.lock().unwrap();
+            assert_eq!(store.active.len(), 1);
+            assert_eq!(store.exact_generation_reads, vec![historical_key]);
+            assert_eq!(store.initialized_state_loads, 0);
+        }
+    }
+
+    #[test]
+    fn version_one_generation_activation_survives_sqlite_restart() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = temporary_directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("application.db");
+        let initialized = initialized_state_with_settings(
+            identifier(0x38),
+            "generation-test",
+            vec![LogModuleSetting {
+                key: ConfigurationKey::new("endpoint").unwrap(),
+                value: ConfigurationValue::new("restart-audit").unwrap(),
+            }],
+        );
+        let checkpoint = WorkflowCheckpoint::new(
+            initialized.deployment_identifier(),
+            WorkflowKind::Restore,
+            CheckpointMetadata::from_bytes(b"generation-restart".as_slice()).unwrap(),
+        );
+        let mut sqlite = SqliteDatabase::open(&path).unwrap();
+        sqlite.create_checkpoint(&checkpoint).unwrap();
+        sqlite
+            .complete_checkpoint(
+                &checkpoint,
+                initialized.state(),
+                &ReconciliationDigest::from_bytes([0x38; 32]),
+            )
+            .unwrap();
+        drop(sqlite);
+
+        for _ in 0..2 {
+            let factory_calls = Arc::new(AtomicUsize::new(0));
+            let delivery_calls = Arc::new(AtomicUsize::new(0));
+            let received = Arc::new(Mutex::new(None));
+            let catalog = Arc::new(generation_catalog(
+                vec![LogRecordType::Audit],
+                Arc::clone(&factory_calls),
+                Arc::clone(&delivery_calls),
+                Arc::clone(&received),
+            ));
+            let recovery = generation_backed_recovery(
+                OperationalDatabase::from_open(Box::new(SqliteDatabase::open(&path).unwrap())),
+                catalog,
+            );
+
+            let state = recovery.drain_for_activation();
+
+            assert_eq!(state.active(), AuditRecoverySequenceState::Ready);
+            assert_eq!(state.late_delivery(), AuditRecoverySequenceState::Ready);
+            assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(delivery_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(*received.lock().unwrap(), None);
+        }
     }
 
     #[test]
@@ -1681,49 +2059,6 @@ mod tests {
     }
 
     #[test]
-    fn resolver_pairs_version_one_binding_destination_and_committed_settings() {
-        let received = Arc::new(Mutex::new(None));
-        let catalog = LogModuleCatalog::new(vec![LogModuleRegistration::new(
-            "settings",
-            LogCapabilities::new(vec![LogRecordType::Audit]).unwrap(),
-            Box::new(SettingsFactory {
-                received: Arc::clone(&received),
-            }),
-        )])
-        .unwrap();
-        let configuration_identifier = identifier(0x41);
-        let state = initialized_state_with_settings(
-            configuration_identifier,
-            "settings",
-            vec![LogModuleSetting {
-                key: ConfigurationKey::new("endpoint").unwrap(),
-                value: ConfigurationValue::new("audit-primary").unwrap(),
-            }],
-        );
-
-        let destination = OperationalAuditDestination::resolve(
-            &catalog,
-            Path::new("/unused"),
-            &state,
-            ServerLogAuthority::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            destination.binding.identifier(),
-            configuration_identifier.as_bytes()
-        );
-        assert_eq!(destination.binding.version(), 1);
-        assert_eq!(received.lock().unwrap().as_deref(), Some("audit-primary"));
-        assert_eq!(destination.resolved().binding(), &destination.binding);
-
-        let assignment = LogAssignment {
-            log_type: LogType::Audit,
-            configuration: configuration_identifier,
-        };
-        assert!(assigned_configuration(&[], &[assignment], LogType::Audit).is_err());
-    }
-
-    #[test]
     fn generation_resolver_pairs_exact_binding_and_committed_settings_without_delivery() {
         let factory_calls = Arc::new(AtomicUsize::new(0));
         let delivery_calls = Arc::new(AtomicUsize::new(0));
@@ -1949,6 +2284,7 @@ mod tests {
         let database = OperationalDatabase::from_open(Box::new(RecoveryDatabase {
             state: store,
             serves_recovery: false,
+            serves_generations: false,
         }));
         assert!(database.with(|_| ()).is_ok());
         let recovery = recovery(database.clone(), destination);
@@ -1970,6 +2306,7 @@ mod tests {
         let database = OperationalDatabase::from_open(Box::new(RecoveryDatabase {
             state: Arc::new(Mutex::new(StoreState::default())),
             serves_recovery: false,
+            serves_generations: false,
         }));
         let persistence = generation_persistence();
         let key = persistence.key(
@@ -2275,13 +2612,6 @@ mod tests {
 
         let result_historical = database.load_log_configuration_generation(key);
         assert_eq!(result_historical, Ok(None));
-    }
-
-    fn initialized_state(
-        configuration_identifier: StateIdentifier,
-        module: &str,
-    ) -> InitializedState {
-        initialized_state_with_settings(configuration_identifier, module, Vec::new())
     }
 
     fn initialized_state_with_settings(

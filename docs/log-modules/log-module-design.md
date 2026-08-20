@@ -276,8 +276,14 @@ module Audit capability, and the module's accepted-settings declaration. It
 then derives the binding and destination from that same snapshot and constructs
 one `ResolvedAuditDestination`. Missing or mismatched generation state cannot
 fall back to the current assignment or an independently supplied destination.
-The resolver remains inert until its separately owned explicit runtime
-integration is delivered.
+The operational resolver actively loads and validates the exact current Audit
+generation for each recovery drain. Every active or late-delivery terminal
+obligation is then resolved through the exact generation named by its retained
+binding: the already loaded current snapshot only on an exact key match, or one
+exact historical read otherwise. Missing, corrupt, disabled, non-Audit, or
+mismatched required generations fail closed before module factory or destination
+access without trying mutable `ApplicationState`, another generation, or a
+caller-supplied destination.
 
 ## Event Classification Taxonomy
 

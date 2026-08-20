@@ -21,7 +21,7 @@ Apply instructions in this order:
 
 ## Asset Inventory
 
-- `audit_generation_resolver_authority.rs`: External compile fixture proving the inert Audit configuration-generation resolver remains Server-private.
+- `audit_generation_resolver_authority.rs`: External compile fixture proving the active Audit configuration-generation resolver remains Server-private.
 - `fixtures/forbidden-audit-generation-resolver/`: Standalone consumer that must fail when it imports the private resolver boundary.
 - `startup.rs`: Restricted startup, lifecycle composition, and process behavior integration tests.
 

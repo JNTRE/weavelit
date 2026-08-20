@@ -33,7 +33,7 @@ use weavelit_server_database::AuditReferencePersistence;
 use weavelit_server_database::{
     AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, LogConfigurationGeneration,
     LogConfigurationGenerationKey, LogConfigurationGenerationPersistence,
-    LogConfigurationGenerationStore,
+    LogConfigurationGenerationStore, LogConfigurationVersion, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
@@ -279,7 +279,6 @@ impl OperationalDatabase {
     }
 
     /// Loads the current Audit configuration generation from a capable backend.
-    #[allow(dead_code)]
     pub(crate) fn load_current_audit_log_configuration_generation(
         &self,
     ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
@@ -289,7 +288,6 @@ impl OperationalDatabase {
     }
 
     /// Loads one exact historical configuration generation from a capable backend.
-    #[allow(dead_code)]
     pub(crate) fn load_log_configuration_generation(
         &self,
         key: LogConfigurationGenerationKey,
@@ -297,6 +295,21 @@ impl OperationalDatabase {
         self.with_log_configuration_generations(|persistence, store| {
             store.load_log_configuration_generation(persistence, key)
         })
+    }
+
+    /// Converts one retained Audit binding into its exact generation key.
+    pub(crate) fn log_configuration_generation_key(
+        &self,
+        configuration: [u8; 16],
+        version: u64,
+    ) -> Result<LogConfigurationGenerationKey, DatabaseError> {
+        let configuration = StateIdentifier::from_bytes(configuration)
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        let version =
+            LogConfigurationVersion::new(version).ok_or(DatabaseError::IntegrityFailure)?;
+        Ok(self
+            .log_configuration_generation_persistence
+            .key(configuration, version))
     }
 
     fn with_log_configuration_generations<R>(

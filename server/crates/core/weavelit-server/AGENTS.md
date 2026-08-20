@@ -67,10 +67,9 @@ Apply instructions in this order:
   routes together with their transport registrations, activates bounded Audit
   terminal recovery, exposes the internal pre-consequential drain gate, and
   builds the mounted surface value the serving-mode switch accepts.
-- `src/operational_audit.rs`: Trusted Audit assignment resolution, the inert
-  immutable configuration-generation resolver, and the process-serialized,
-  bounded active-then-late terminal recovery drains that run at activation and
-  before consequential mutations.
+- `src/operational_audit.rs`: Trusted exact-generation Audit destination
+  resolution and the process-serialized, bounded active-then-late terminal
+  recovery drains that run at activation and before consequential mutations.
 - `src/operational_logging.rs`: Normal-operation support that best-effort
   records typed Audit Log destination and terminal-recovery failures in the
   System Log and maps only pre-mutation delivery failures to the stable
@@ -84,7 +83,7 @@ Apply instructions in this order:
   validation, and permit acquisition ahead of any body allocation.
 - `src/main.rs`: Thin executable entry point that reads state-root configuration
   and calls the library composition function.
-- `tests/audit_generation_resolver_authority.rs`: Compile-fail boundary proving the inert Audit configuration-generation resolver is not a public construction surface.
+- `tests/audit_generation_resolver_authority.rs`: Compile-fail boundary proving the active Audit configuration-generation resolver is not a public construction surface.
 - `tests/startup.rs`: Composition and process-level tests for restricted startup
   covering fresh start, restart persistence, selection, pending states, and
   fail-closed failure categories.

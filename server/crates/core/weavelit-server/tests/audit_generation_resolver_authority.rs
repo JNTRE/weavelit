@@ -1,4 +1,4 @@
-//! Proves an external consumer cannot access the inert Audit generation resolver.
+//! Proves an external consumer cannot access the active Audit generation resolver.
 
 use std::path::PathBuf;
 
