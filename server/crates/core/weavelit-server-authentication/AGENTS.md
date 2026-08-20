@@ -43,6 +43,7 @@ Apply instructions in this order:
 - `src/phc.rs`: PHC encoding of a salt and output at a known profile.
 - `src/engine.rs`: The `Argon2Engine` seam and its RustCrypto implementation.
 - `src/password.rs`: The equal-work password decision and rehash-on-drift.
+- `src/password_replacement.rs`: Bounded zeroizing replacement input, same-password refusal, and approved verifier preparation.
 - `src/session.rs`: Session and CSRF tokens, their digests, and redaction.
 - `src/temporary_password.rs`: Temporary-password generation, approved verifier
   preparation, one-response disclosure ownership, and the fixed lifetime.

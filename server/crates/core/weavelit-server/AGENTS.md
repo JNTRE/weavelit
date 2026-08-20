@@ -78,6 +78,8 @@ Apply instructions in this order:
   records typed Audit Log destination and terminal-recovery failures in the
   System Log and maps only pre-mutation delivery failures to the stable
   payload-free consequential-operation rejection.
+- `src/password_change.rs`: Internal restricted-session password replacement,
+  Audit sequencing, atomic writer orchestration, and fresh ordinary-session result.
 - `src/restore.rs`: Server-owned Restore orchestration that joins backup
   validation to the lifecycle typestate chain, the one-time ticket store and
   admission registrations behind the two-step submission protocol, the System

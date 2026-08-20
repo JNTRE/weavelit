@@ -2,16 +2,20 @@ use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehav
 use weavelit_server_database::{
     BoundedText, CredentialRevision, DatabaseError, MAX_NAME_LENGTH, NewSession,
     SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
-    STATE_IDENTIFIER_LENGTH, SessionCsrfHash, SessionInstant, SessionIssuance, SessionRejection,
-    SessionStore, SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
+    STATE_IDENTIFIER_LENGTH, SessionCsrfHash, SessionInstant, SessionIssuance, SessionPosture,
+    SessionRejection, SessionStore, SessionTokenHash, SessionValidation, StateIdentifier,
+    StoredSession,
 };
 
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 
-const SELECT_SESSION: &str = "SELECT token_hash, csrf_hash, account_id, client_module, \
-     issued_at_milliseconds, last_seen_at_milliseconds, absolute_expires_at_milliseconds \
-     FROM weavelit_session WHERE token_hash = ?1";
+const SELECT_SESSION: &str = "SELECT session.token_hash, session.csrf_hash, session.account_id, \
+    session.client_module, session.issued_at_milliseconds, session.last_seen_at_milliseconds, \
+    session.absolute_expires_at_milliseconds, account.must_change_password \
+    FROM weavelit_session AS session \
+    JOIN weavelit_account AS account ON account.account_id = session.account_id \
+    WHERE session.token_hash = ?1";
 const INSERT_SESSION: &str = "INSERT INTO weavelit_session \
      (token_hash, csrf_hash, account_id, client_module, issued_at_milliseconds, \
       last_seen_at_milliseconds, absolute_expires_at_milliseconds) \
@@ -36,7 +40,7 @@ const SELECT_ACCOUNT_ISSUANCE_STATE: &str = "SELECT active, credential_revision,
     temporary_credential_expires_at_milliseconds \
     FROM weavelit_account WHERE account_id = ?1";
 
-type SessionRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, i64, i64, i64);
+type SessionRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, i64, i64, i64, i64);
 
 /// Removes every live session.
 ///
@@ -278,15 +282,15 @@ pub(super) fn load(
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )
         .optional()
         .map_err(|error| map_sqlite_error(error, ErrorContext::Session))?;
 
-    let Some((stored_token, csrf, account, client_module, issued, last_seen, absolute)): Option<
-        SessionRow,
-    > = row
+    let Some((stored_token, csrf, account, client_module, issued, last_seen, absolute, posture)):
+        Option<SessionRow> = row
     else {
         return Ok(None);
     };
@@ -301,6 +305,11 @@ pub(super) fn load(
         identifier(&account)?,
         BoundedText::<MAX_NAME_LENGTH>::new(client_module)
             .map_err(|_| DatabaseError::IntegrityFailure)?,
+        if stored_boolean(posture)? {
+            SessionPosture::PasswordChangeRequired
+        } else {
+            SessionPosture::Ordinary
+        },
         instant(issued)?,
         instant(last_seen)?,
         instant(absolute)?,
@@ -317,6 +326,7 @@ fn advanced(
         *csrf_hash,
         session.account(),
         session.client_module().clone(),
+        session.posture(),
         session.issued_at(),
         now,
         session.absolute_expires_at(),

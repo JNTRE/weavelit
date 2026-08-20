@@ -69,6 +69,7 @@ pub mod init;
 pub mod operational;
 mod operational_audit;
 pub mod operational_logging;
+pub(crate) mod password_change;
 pub mod reconciliation;
 pub mod restore;
 pub mod transport;

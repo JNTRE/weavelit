@@ -14,6 +14,7 @@ pub(super) enum ErrorContext {
     LogConfiguration,
     Migration,
     Mfa,
+    PasswordChange,
     Reconciliation,
     Session,
     State,
@@ -38,6 +39,7 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
             | ErrorContext::LogConfiguration
             | ErrorContext::Migration
             | ErrorContext::Mfa
+            | ErrorContext::PasswordChange
             | ErrorContext::Reconciliation
             | ErrorContext::Session
             | ErrorContext::State => DatabaseError::IntegrityFailure,

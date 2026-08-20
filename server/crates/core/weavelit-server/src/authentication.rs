@@ -54,17 +54,21 @@ use weavelit_server_administration::{
 };
 use weavelit_server_authentication::{
     ACCEPTED_ARGON2_PROFILES, AccountCredentialIssuanceInput, Argon2Engine, Continuation,
-    ContinuationDigest, CsrfTokenDigest, PasswordAuthenticator, PasswordPolicy, PasswordVerdict,
-    RustCryptoArgon2, SessionSecrets, SessionTokenDigest, StoredCredential,
+    ContinuationDigest, CsrfTokenDigest, PasswordAuthenticator, PasswordPolicy,
+    PasswordReplacementError, PasswordReplacementInput, PasswordVerdict,
+    PreparedPasswordReplacement, RustCryptoArgon2, SessionSecrets, SessionTokenDigest,
+    StoredCredential,
 };
 #[cfg(test)]
 use weavelit_server_database::MfaEnablementOutcome;
 use weavelit_server_database::{
-    Account, AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck, ApplicationState,
-    ComponentKind, CredentialRevision, DatabaseError, DeploymentIdentifier, InitializedState,
-    LogType, MfaAcceptance, MfaDirectSession, MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore,
-    MfaTimeStep, Name, NewSession, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
-    SessionValidation, StateIdentifier, StoredSession,
+    Account, AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck,
+    AccountPasswordVerifier, ApplicationState, ComponentKind, CredentialRevision, DatabaseError,
+    DeploymentIdentifier, InitializedState, LogType, MfaAcceptance, MfaDirectSession,
+    MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
+    PasswordChangeMutation, PasswordChangeRecheck, PasswordVerifier, SessionCsrfHash,
+    SessionInstant, SessionPosture, SessionStore, SessionTokenHash, SessionValidation,
+    StateIdentifier, StoredSession,
 };
 use weavelit_server_lifecycle::{ProtectedValueAccess, ProtectedValueKind};
 use weavelit_server_log::{
@@ -788,6 +792,99 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                 factor,
             ),
         ))
+    }
+
+    /// Consumes one restricted session and prepares a distinct approved replacement verifier.
+    pub(crate) fn admit_password_change(
+        &self,
+        session: ValidatedSession,
+        input: PasswordReplacementInput,
+    ) -> Result<PasswordChangeAdmission, PasswordChangePreparationError> {
+        if session.is_ordinary() {
+            return Err(PasswordChangePreparationError::Denied);
+        }
+        let state = self
+            .initialized_state()
+            .map_err(|_| PasswordChangePreparationError::Unavailable)?;
+        let account = state
+            .state()
+            .accounts()
+            .iter()
+            .find(|candidate| candidate.identifier == session.account())
+            .filter(|account| account.active && account.must_change_password)
+            .ok_or(PasswordChangePreparationError::Denied)?;
+        let now = self
+            .now()
+            .map_err(|_| PasswordChangePreparationError::Unavailable)?;
+        if account
+            .temporary_credential_expiration
+            .is_none_or(|expiration| {
+                expiration.as_unix_milliseconds() <= now.as_unix_milliseconds()
+            })
+        {
+            return Err(PasswordChangePreparationError::Denied);
+        }
+        let current = state
+            .state()
+            .password_verifiers()
+            .iter()
+            .find(|verifier| verifier.account == account.identifier)
+            .ok_or(PasswordChangePreparationError::Denied)?;
+        let prepared = PreparedPasswordReplacement::prepare(
+            &self.authenticator,
+            current.verifier.as_str(),
+            input,
+        )
+        .map_err(password_replacement_error)?;
+        let expected_verifier = current.verifier.clone();
+        let replacement = AccountPasswordVerifier {
+            account: account.identifier,
+            verifier: PasswordVerifier::new(prepared.into_verifier().into_string())
+                .map_err(|_| PasswordChangePreparationError::Unavailable)?,
+        };
+        Ok(PasswordChangeAdmission {
+            account: account.identifier,
+            session: session.session_token_hash(),
+            client_module: session.client_module().clone(),
+            expected_revision: account.credential_revision,
+            expected_verifier,
+            replacement,
+        })
+    }
+
+    /// Creates the fresh ordinary session and final mutation after Audit Attempt acknowledgement.
+    pub(crate) fn prepare_password_change_mutation(
+        &self,
+        admission: PasswordChangeAdmission,
+    ) -> Result<(PasswordChangeMutation, SessionEstablished), PasswordChangePreparationError> {
+        let PasswordChangeAdmission {
+            account,
+            session,
+            client_module,
+            expected_revision,
+            expected_verifier,
+            replacement,
+        } = admission;
+        let next_revision = expected_revision
+            .checked_next()
+            .ok_or(PasswordChangePreparationError::Denied)?;
+        let (fresh_session, established) = self
+            .new_session(account, next_revision, &client_module)
+            .map_err(|_| PasswordChangePreparationError::Unavailable)?;
+        let mutation = PasswordChangeMutation::new(
+            PasswordChangeRecheck::new(
+                account,
+                session,
+                client_module,
+                expected_revision,
+                expected_verifier,
+                fresh_session.issued_at(),
+            ),
+            replacement,
+            fresh_session,
+        )
+        .map_err(|_| PasswordChangePreparationError::Unavailable)?;
+        Ok((mutation, established))
     }
 
     /// Issues and persists a session for an already-authenticated account.
@@ -1550,6 +1647,55 @@ impl std::fmt::Display for AccountCredentialIssuanceError {
 
 impl std::error::Error for AccountCredentialIssuanceError {}
 
+/// Prepared password replacement bound to one consumed restricted session.
+pub(crate) struct PasswordChangeAdmission {
+    account: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+    expected_revision: CredentialRevision,
+    expected_verifier: PasswordVerifier,
+    replacement: AccountPasswordVerifier,
+}
+
+impl PasswordChangeAdmission {
+    pub(crate) const fn account(&self) -> StateIdentifier {
+        self.account
+    }
+}
+
+impl std::fmt::Debug for PasswordChangeAdmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PasswordChangeAdmission(REDACTED)")
+    }
+}
+
+/// Payload-free password-change preparation failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PasswordChangePreparationError {
+    Denied,
+    Unavailable,
+}
+
+impl std::fmt::Display for PasswordChangePreparationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Denied => "password change denied",
+            Self::Unavailable => "password change unavailable",
+        })
+    }
+}
+
+impl std::error::Error for PasswordChangePreparationError {}
+
+fn password_replacement_error(error: PasswordReplacementError) -> PasswordChangePreparationError {
+    match error {
+        PasswordReplacementError::InvalidInput | PasswordReplacementError::SamePassword => {
+            PasswordChangePreparationError::Denied
+        }
+        PasswordReplacementError::Unavailable => PasswordChangePreparationError::Unavailable,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Continuations
 // ---------------------------------------------------------------------------
@@ -1672,6 +1818,7 @@ impl ContinuationStore {
 pub struct ValidatedSession {
     account: StateIdentifier,
     client_module: Name,
+    posture: SessionPosture,
     session_token_hash: SessionTokenHash,
 }
 
@@ -1680,6 +1827,7 @@ impl ValidatedSession {
         Self {
             account: session.account(),
             client_module: session.client_module().clone(),
+            posture: session.posture(),
             session_token_hash,
         }
     }
@@ -1694,6 +1842,11 @@ impl ValidatedSession {
     #[must_use]
     pub const fn client_module(&self) -> &Name {
         &self.client_module
+    }
+
+    /// Reports whether ordinary authorization may consume this session.
+    pub(crate) const fn is_ordinary(&self) -> bool {
+        matches!(self.posture, SessionPosture::Ordinary)
     }
 
     /// Returns the stored digest that identifies this exact validated session.
@@ -3662,6 +3815,22 @@ pub(crate) mod tests {
         )
     }
 
+    async fn restricted_session_from(
+        surface: &AuthSurface,
+        response: &BoundedResponse,
+    ) -> (String, String) {
+        assert_eq!(response.status, StatusCode::OK);
+        let head = rendered(response).await;
+        let session = cookie_value(&head, SESSION_COOKIE_NAME);
+        let csrf = cookie_value(&head, CSRF_COOKIE_NAME);
+        let validated = surface
+            .runtime
+            .validated_session(&session, &csrf)
+            .expect("the issued restricted session must validate");
+        assert!(!validated.is_ordinary());
+        (session, csrf)
+    }
+
     /// The transitions a correct, serialized engine has recorded once `entered`
     /// verifications have begun.
     fn serialized_transitions(entered: usize) -> Vec<Transition> {
@@ -5057,6 +5226,51 @@ pub(crate) mod tests {
         assert_eq!(before_expiry.session_count(), 1);
     }
 
+    #[tokio::test]
+    async fn direct_temporary_login_issues_a_restricted_session_that_can_log_out() {
+        let surface = AuthSurface::new();
+        surface.set_account_credential_state(true, 1, Some(ISSUED_AT + 60_000));
+
+        let response = login(&surface, ACTIVE_USERNAME, CORRECT_PASSWORD).await;
+        let (session, csrf) = restricted_session_from(&surface, &response).await;
+        let logout = request(
+            surface.surface(),
+            default_timeouts(),
+            session_head(AUTH_LOGOUT_ROUTE, &session, &csrf),
+            String::new(),
+        )
+        .await;
+
+        assert_eq!(logout.status, StatusCode::OK);
+        assert!(surface.runtime.validated_session(&session, &csrf).is_err());
+    }
+
+    #[tokio::test]
+    async fn temporary_login_after_totp_issues_a_restricted_session() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, true, true));
+        surface.set_clock(vector_milliseconds(0));
+        surface.set_account_credential_state(true, 1, Some(surface.clock() + 60_000));
+
+        let continuation = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+        let response = verify_code(&surface, &continuation, ENROLLED_VECTOR_CODE).await;
+
+        restricted_session_from(&surface, &response).await;
+    }
+
+    #[tokio::test]
+    async fn temporary_login_after_required_enrollment_issues_a_restricted_session() {
+        let surface = AuthSurface::with_mfa(mfa_fixture(true, false, true));
+        surface.set_account_credential_state(true, 1, Some(surface.clock() + 60_000));
+
+        let continuation = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+        let opened = opened_enrollment(&surface, &continuation).await;
+        let (secret, ticket) = opened_parts(&opened);
+        let code = current_code(&secret, surface.clock());
+        let response = confirm_code(&surface, &ticket, &code).await;
+
+        restricted_session_from(&surface, &response).await;
+    }
+
     // -----------------------------------------------------------------------
     // Replay and the continuation ticket
     // -----------------------------------------------------------------------
@@ -5869,6 +6083,13 @@ pub(crate) mod tests {
         let surface = AuthSurface::build(true, Some(destination), mfa_fixture(true, false, false));
         let (session, csrf) = established_session(&surface).await;
         surface.set_account_credential_state(true, 1, Some(surface.clock() + 1));
+        assert!(
+            !surface
+                .runtime
+                .validated_session(&session, &csrf)
+                .unwrap()
+                .is_ordinary()
+        );
 
         let refused =
             self_enrollment(&surface, Some(&session), Some(&csrf), CORRECT_PASSWORD).await;

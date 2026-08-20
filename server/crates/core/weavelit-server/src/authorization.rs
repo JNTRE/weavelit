@@ -298,6 +298,10 @@ impl AuthorizationRuntime {
             &AuthorizationCatalog,
         ) -> Result<T, AuthorizationDenied>,
     ) -> Result<T, AuthorizationRejection> {
+        if !session.is_ordinary() {
+            return Err(AuthorizationRejection);
+        }
+
         // A request that names a Client Module other than the one the session
         // was established for is denied: the session authorizes through the
         // surface it was issued to and no other.
@@ -741,6 +745,24 @@ mod tests {
             .expect("the enablement change must run");
     }
 
+    fn require_password_change(path: &Path, account: [u8; 16]) {
+        let connection = Connection::open(path).expect("the test connection must open");
+        connection
+            .execute(
+                "INSERT INTO weavelit_password_verifier (account_id, encoded_verifier) \
+                 VALUES (?1, '$argon2id$v=19$m=65536,t=3,p=1$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')",
+                [account.as_slice()],
+            )
+            .expect("the temporary account must have a verifier");
+        connection
+            .execute(
+                "UPDATE weavelit_account SET must_change_password = 1, \
+                 temporary_credential_expires_at_milliseconds = ?2 WHERE account_id = ?1",
+                rusqlite::params![account.as_slice(), ISSUED_AT + 60_000],
+            )
+            .expect("the temporary account state must be stored");
+    }
+
     struct AdministrationTestClock;
 
     impl AdministrationClock for AdministrationTestClock {
@@ -774,6 +796,25 @@ mod tests {
         )
         .authorize(admission, AdministrationActionRequest::new(action))
         .expect("the runtime-bound admission must authorize its matching action")
+    }
+
+    #[test]
+    fn password_change_required_sessions_are_rejected_by_ordinary_authorization() {
+        let surface = AuthorizationSurface::new();
+        require_password_change(&surface.database_path, OPERATOR_BYTES);
+        require_password_change(&surface.database_path, ADMINISTRATOR_BYTES);
+
+        let operator = surface.session(identifier(OPERATOR_BYTES), CLIENT_MODULE);
+        let administrator = surface.session(identifier(ADMINISTRATOR_BYTES), CLIENT_MODULE);
+
+        assert_eq!(
+            surface.authorize_operation(&operator),
+            Err(AuthorizationRejection)
+        );
+        assert!(matches!(
+            surface.authorize_administration(&administrator),
+            Err(AuthorizationRejection)
+        ));
     }
 
     #[test]

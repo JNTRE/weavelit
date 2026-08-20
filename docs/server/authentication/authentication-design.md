@@ -251,31 +251,49 @@ automatic re-disclosure.
    result is not automatically retried; a new reset creates a new credential
    and supersedes the old one.
 
-### Deferred Temporary Credential Consumption
+### Temporary Credential Consumption
 
-The current delivery does not add account-create, password-reset,
-password-change, or forced-change routes. The following consumption behavior
-remains required for that future transport and route work:
+The Server implements temporary-credential consumption as an internal,
+route-independent workflow. Account-create, password-reset, password-change,
+and forced-change routes, their request and response envelopes, cookie mapping,
+client presentation, and public identifier encoding remain outside this
+delivery.
 
-1. **Temporary-password sign-in:** Before expiry, the Server verifies the
-   temporary password against the retained verifier, checks the credential
-   revision and `must_change_password`, and refuses the session if the fixed
-   24-hour expiry has passed. The user must change the password before any
-   other operation, including MFA enrollment.
-2. **Forced-change gate:** All routes except logout and password-change routes
-   check `must_change_password` after the existing MFA step-up validation. If
-   it is set, the Server rejects the request with a stable error and directs
-   the user to the password-change route.
-3. **Password change:** The user changes the password using the current
-   temporary credential. In one transaction the Server verifies the current
-   credential revision, writes or replaces a new normal verifier, increments
-   or replaces the revision, clears the temporary metadata and
-   `must_change_password`, and issues a fresh session after required MFA.
+1. **Temporary-password sign-in:** Before expiry, direct, TOTP, and required
+   enrollment authentication paths may issue a session after all required MFA
+   work completes. The Application Database derives that session's private
+   `PasswordChangeRequired` posture from live Account state in the same
+   transaction that validates and touches the session. The posture is not
+   stored in the session row or exposed through the existing session response.
+2. **Forced-change gate:** The private `ValidatedSession` proof retains the
+   derived posture. Both ordinary authorization families accept only
+   `Ordinary`; logout accepts either posture. Optional session-based MFA
+   enrollment remains unavailable while password change is required.
+3. **Password preparation:** The internal workflow consumes the exact
+   restricted `ValidatedSession` by value and accepts one zeroizing non-empty
+   replacement of at most 1,024 bytes. It rejects a replacement that verifies
+   against the current temporary verifier, then creates only an approved-profile
+   replacement verifier. It requests neither the temporary password nor a new
+   TOTP code and does not advance an MFA replay watermark.
+4. **Password change:** After the active Audit recovery sequence is ready, the
+   workflow preflights the exact current Audit destination, obtains durable
+   acknowledgement for a secret-free `authentication.password.changed`
+   Attempt, and prepares success and denied terminals. One final transaction
+   rechecks the exact session digest, actor, Client Module, lifetime, active
+   Account, credential revision, `must_change_password`, unexpired temporary
+   metadata, and current verifier. Success advances the revision, replaces the
+   verifier, clears temporary state, revokes every old session, inserts one
+   fresh ordinary session and CSRF pair, and stores only the success terminal.
+   Any stale final state stores only the denied terminal. Audit persistence and
+   fresh-session collisions roll back every business effect.
+5. **Postcommit recovery:** A pending terminal after commit preserves both the
+   committed password change and its fresh session result for the caller while
+   leaving the exact terminal available to the bounded recovery drain.
 
-If a future design adds a password-change continuation ticket, it must be
-specified as a separate future contract. It must not be confused with the
-existing in-memory MFA continuation, and this design does not authorize
-persisting a password-change continuation.
+The workflow adds no password-change continuation ticket. A future design that
+adds one must specify it as a separate contract, must not confuse it with the
+existing in-memory MFA continuation, and must not infer authority to persist it
+from this internal workflow.
 
 **MFA-Ordering Invariant:** The forced-change gate MUST sit AFTER the MFA
 step-up gate in an atomic transaction. This ensures that if MFA is required, the

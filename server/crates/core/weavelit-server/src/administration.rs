@@ -1480,6 +1480,7 @@ pub(crate) mod tests {
     struct RecordingDestination {
         records: Arc<Mutex<Vec<ObservedAuditRecord>>>,
         attempts: Arc<AtomicUsize>,
+        fail_preflight: bool,
         fail_on_attempt: Option<usize>,
         after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     }
@@ -1510,13 +1511,18 @@ pub(crate) mod tests {
         }
 
         fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
-            Ok(())
+            if self.fail_preflight {
+                Err(LogDestinationError::Unavailable)
+            } else {
+                Ok(())
+            }
         }
     }
 
     struct RecordingFactory {
         records: Arc<Mutex<Vec<ObservedAuditRecord>>>,
         attempts: Arc<AtomicUsize>,
+        fail_preflight: bool,
         fail_on_attempt: Option<usize>,
         after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     }
@@ -1533,6 +1539,7 @@ pub(crate) mod tests {
             Ok(Box::new(RecordingDestination {
                 records: Arc::clone(&self.records),
                 attempts: Arc::clone(&self.attempts),
+                fail_preflight: self.fail_preflight,
                 fail_on_attempt: self.fail_on_attempt,
                 after_delivery: self.after_delivery.clone(),
             }))
@@ -1828,8 +1835,31 @@ pub(crate) mod tests {
         recovery_with_hook(database, fail_on_attempt, None)
     }
 
-    fn recovery_with_hook(
+    pub(crate) fn recovery_with_hook(
         database: OperationalDatabase,
+        fail_on_attempt: Option<usize>,
+        after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    ) -> (
+        OperationalAuditRecovery,
+        Arc<Mutex<Vec<ObservedAuditRecord>>>,
+        Arc<AtomicUsize>,
+    ) {
+        recovery_config(database, false, fail_on_attempt, after_delivery)
+    }
+
+    pub(crate) fn recovery_with_preflight_failure(
+        database: OperationalDatabase,
+    ) -> (
+        OperationalAuditRecovery,
+        Arc<Mutex<Vec<ObservedAuditRecord>>>,
+        Arc<AtomicUsize>,
+    ) {
+        recovery_config(database, true, None, None)
+    }
+
+    fn recovery_config(
+        database: OperationalDatabase,
+        fail_preflight: bool,
         fail_on_attempt: Option<usize>,
         after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     ) -> (
@@ -1847,6 +1877,7 @@ pub(crate) mod tests {
                 Box::new(RecordingFactory {
                     records: Arc::clone(&records),
                     attempts: Arc::clone(&attempts),
+                    fail_preflight,
                     fail_on_attempt,
                     after_delivery,
                 }),

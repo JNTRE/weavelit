@@ -334,11 +334,37 @@ creates its verifier, preserves its other Account state, and revokes every
 target session. Each outcome commits exactly one selected opaque Audit terminal
 with the business decision or rolls back both.
 
-The contract adds no route, response encoding, password-change writer, or
-request-idempotency store. The Application Database remains separate from the
-Audit Log destination. Refer to the
+The contract adds no route, response encoding, or request-idempotency store.
+The Application Database remains separate from the Audit Log destination. Refer to the
 [Authentication Design](../authentication/authentication-design.md#account-credential-issuance-writers)
 for expiry, disclosure, session, and reauthentication policy.
+
+### Password Change Writer
+
+`PasswordChangeWriterStore` owns the atomic replacement of one temporary
+credential through its exact restricted session. Its prepared mutation carries
+the account, session digest, issuing Client Module, expected credential
+revision, exact current verifier, replacement verifier, decision instant, and
+one fresh session and CSRF digest pair bound to the checked successor revision.
+It carries no plaintext password, temporary credential, TOTP code, factor,
+watermark, public identifier, response envelope, or cookie.
+
+The final transaction rechecks the exact session's ownership, Client Module,
+and lifetime together with the active Account, expected revision,
+`must_change_password`, unexpired temporary metadata, and exact current
+verifier. A match advances the revision, replaces the verifier, clears the
+temporary flag and expiry, revokes every account session including the proof
+session, inserts exactly the prepared fresh session, and stores only the
+selected success Audit terminal. A missing, revoked, stale, expired, disabled,
+ordinary, or verifier-mismatched state performs no credential or session
+mutation and stores only the selected denied terminal. A session-digest or
+Audit-terminal collision fails the transaction and commits nothing.
+
+This writer neither verifies a password nor advances an MFA replay watermark.
+The Server authentication boundary owns the non-forgeable restricted-session
+proof, same-password refusal, approved verifier preparation, fresh bearer
+ownership, and postcommit result. The writer adds no schema, migration, backup
+field, route, or public identifier contract.
 
 ### Account Status Writers
 

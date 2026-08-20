@@ -10,8 +10,8 @@ use tempfile::TempDir;
 use weavelit_server_database::{
     CredentialRevision, Name, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
     SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
-    SessionCsrfHash, SessionInstant, SessionIssuance, SessionRejection, SessionStore,
-    SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
+    SessionCsrfHash, SessionInstant, SessionIssuance, SessionPosture, SessionRejection,
+    SessionStore, SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -207,6 +207,30 @@ fn session_creation_is_bound_to_live_account_credential_state() {
             "{label}"
         );
     }
+}
+
+#[test]
+fn validation_derives_session_posture_from_live_account_state() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = opened(&path);
+    set_account_credential_state(&path, 0x41, true, 1, Some(ISSUED_AT + 1_000));
+    database.create(&new_session(TOKEN_BYTE, 0x41)).unwrap();
+    database.create(&new_session(0x33, 0x42)).unwrap();
+
+    let restricted = stored(
+        database
+            .validate_and_touch(&token(TOKEN_BYTE), &csrf(CSRF_BYTE), instant(ISSUED_AT + 1))
+            .unwrap(),
+    );
+    let ordinary = stored(
+        database
+            .validate_and_touch(&token(0x33), &csrf(CSRF_BYTE), instant(ISSUED_AT + 1))
+            .unwrap(),
+    );
+
+    assert_eq!(restricted.posture(), SessionPosture::PasswordChangeRequired);
+    assert_eq!(ordinary.posture(), SessionPosture::Ordinary);
 }
 
 /// Keeps one session continuously active up to `target` without ever letting

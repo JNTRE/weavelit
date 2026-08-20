@@ -8,6 +8,7 @@ mod account_writer;
 mod audit_recovery;
 mod log_configuration;
 mod mfa;
+mod password_change;
 mod reconciliation;
 mod session;
 mod state;
@@ -46,12 +47,16 @@ pub use mfa::{
     MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementAuditTerminalWrites,
     MfaEnablementOutcome, MfaEnrollment, MfaModuleTarget, MfaStore, MfaTimeStep,
 };
+pub use password_change::{
+    PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeMutationError,
+    PasswordChangeOutcome, PasswordChangeRecheck, PasswordChangeWriterStore,
+};
 pub use reconciliation::{RECONCILIATION_DIGEST_LENGTH, ReconciliationDigest, ReconciliationStore};
 pub use session::{
     MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
     SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
-    SessionCsrfHash, SessionInstant, SessionIssuance, SessionRejection, SessionStore,
-    SessionTokenHash, SessionValidation, StoredSession,
+    SessionCsrfHash, SessionInstant, SessionIssuance, SessionPosture, SessionRejection,
+    SessionStore, SessionTokenHash, SessionValidation, StoredSession,
 };
 pub use state::{
     ACCOUNT_PUBLIC_IDENTIFIER_LENGTH, AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX,
@@ -332,6 +337,11 @@ pub trait ApplicationDatabase: Send {
 
     /// Returns account credential mutation storage, when available.
     fn account_credential_writers(&mut self) -> Option<&mut dyn AccountCredentialWriterStore> {
+        None
+    }
+
+    /// Returns restricted-session password replacement storage, when available.
+    fn password_change_writers(&mut self) -> Option<&mut dyn PasswordChangeWriterStore> {
         None
     }
 

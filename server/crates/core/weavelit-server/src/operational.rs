@@ -40,7 +40,8 @@ use weavelit_server_database::{
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
     LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
-    MfaStore, PreparedLogConfigurationMutation, StateIdentifier,
+    MfaStore, PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeOutcome,
+    PreparedLogConfigurationMutation, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
@@ -361,6 +362,20 @@ impl OperationalDatabase {
                     .account_credential_writers()
                     .ok_or(DatabaseError::Unavailable)?,
             )
+        })?
+    }
+
+    /// Commits one restricted-session password change and selected Audit terminal.
+    pub(crate) fn change_password(
+        &self,
+        mutation: &PasswordChangeMutation,
+        audit_terminals: &PasswordChangeAuditTerminalWrites<'_>,
+    ) -> Result<PasswordChangeOutcome, DatabaseError> {
+        self.with(|database| {
+            database
+                .password_change_writers()
+                .ok_or(DatabaseError::Unavailable)?
+                .change_password(mutation, audit_terminals)
         })?
     }
 

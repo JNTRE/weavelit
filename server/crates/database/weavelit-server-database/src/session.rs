@@ -193,12 +193,22 @@ impl NewSession {
     }
 }
 
+/// The authorization posture derived from live Account credential state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionPosture {
+    /// The session may proceed to ordinary authorization.
+    Ordinary,
+    /// The session may be used only by password change or logout.
+    PasswordChangeRequired,
+}
+
 /// A stored session read back from the session store.
 #[derive(Debug)]
 pub struct StoredSession {
     csrf_hash: SessionCsrfHash,
     account: StateIdentifier,
     client_module: Name,
+    posture: SessionPosture,
     issued_at: SessionInstant,
     last_seen_at: SessionInstant,
     absolute_expires_at: SessionInstant,
@@ -210,6 +220,7 @@ impl StoredSession {
         csrf_hash: SessionCsrfHash,
         account: StateIdentifier,
         client_module: Name,
+        posture: SessionPosture,
         issued_at: SessionInstant,
         last_seen_at: SessionInstant,
         absolute_expires_at: SessionInstant,
@@ -218,6 +229,7 @@ impl StoredSession {
             csrf_hash,
             account,
             client_module,
+            posture,
             issued_at,
             last_seen_at,
             absolute_expires_at,
@@ -237,6 +249,11 @@ impl StoredSession {
     /// Returns the Client Module the session was issued to.
     pub const fn client_module(&self) -> &Name {
         &self.client_module
+    }
+
+    /// Returns the posture derived from the Account in the validation transaction.
+    pub const fn posture(&self) -> SessionPosture {
+        self.posture
     }
 
     /// Returns the moment the session was issued.
@@ -384,6 +401,7 @@ mod tests {
             SessionCsrfHash::from_bytes(CSRF_DIGEST).unwrap(),
             account(),
             Name::new("web-ui").unwrap(),
+            SessionPosture::Ordinary,
             instant(issued_at),
             instant(last_seen_at),
             instant(issued_at + SESSION_ABSOLUTE_LIFETIME_MILLISECONDS),

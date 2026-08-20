@@ -17,6 +17,7 @@ mod credential_issuance;
 mod engine;
 mod error;
 mod password;
+mod password_replacement;
 mod phc;
 mod profile;
 mod random;
@@ -31,6 +32,10 @@ pub use credential_issuance::AccountCredentialIssuanceInput;
 pub use engine::{Argon2Engine, RustCryptoArgon2};
 pub use error::AuthenticationError;
 pub use password::{PasswordAuthenticator, PasswordVerdict, ReplacementVerifier, StoredCredential};
+pub use password_replacement::{
+    MAX_PASSWORD_REPLACEMENT_BYTES, PasswordReplacementError, PasswordReplacementInput,
+    PreparedPasswordReplacement,
+};
 pub use profile::{
     ACCEPTED_ARGON2_PROFILES, Argon2Profile, CURRENT_ARGON2_PROFILE, MAX_VERIFICATION_MEMORY_KIB,
     PasswordPolicy,

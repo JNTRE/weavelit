@@ -300,6 +300,19 @@ duplicate or stale conflict, and final issuer denial each select exactly one
 opaque terminal obligation. The selected obligation and any watermark or
 business writes commit together or roll back together.
 
+The password-change writer also uses `BEGIN IMMEDIATE` and the existing Account,
+password-verifier, session, and Audit terminal tables. It joins the presented
+session to the live Account to derive `PasswordChangeRequired`, then rechecks
+the exact session digest, actor, Client Module, lifetime, active state,
+credential revision, unexpired temporary metadata, and current verifier. On a
+match it advances the revision, clears the flag and expiry, replaces the
+verifier, deletes every Account session, inserts the prepared fresh session at
+the successor revision, and persists the selected success terminal. A mismatch
+persists only the denied terminal. A verifier update anomaly, fresh-session
+collision, or terminal persistence failure rolls the complete transaction back.
+This writer adds no migration or backup-format field and does not read or write
+MFA replay watermarks.
+
 The account status writer uses the same existing account, public-identity,
 Audit-reference, session, and terminal-recovery tables; it adds no migration or
 backup field. Its `BEGIN IMMEDIATE` transaction rechecks issuer session
