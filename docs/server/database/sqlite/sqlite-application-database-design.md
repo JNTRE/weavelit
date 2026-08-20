@@ -66,7 +66,8 @@ The registry contains `0001_create_migration_ledger.sql`,
 `0008_add_audit_terminal_recovery.sql`, and
 `0009_add_log_configuration_generations.sql`, and
 `0010_migrate_totp_component_enablement.sql`, and
-`0011_add_log_configuration_audit_references.sql`. Each
+`0011_add_log_configuration_audit_references.sql`, and
+`0012_add_account_public_identities.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -181,6 +182,23 @@ the database back to the exact `0010` prefix. Init and Restore instead supply
 their already validated typed references in the application-state replacement
 transaction, and state reads require exact configuration coverage and global
 cross-kind uniqueness.
+
+`0012_add_account_public_identities.sql` creates the separate `STRICT`
+`weavelit_account_public_identity` table. Its account identifier is both the
+primary key and a foreign key to `weavelit_account`; its public identifier is an
+exact nonzero 16-byte BLOB protected by a unique index. Update and delete
+triggers make every association immutable. The migration backfills every
+existing account with SQLite `randomblob`, and table creation, index, triggers,
+complete backfill, and the ledger row share one immediate transaction. A zero
+value, collision, orphan, or later failure rolls the database back to the exact
+`0011` prefix.
+
+Init and Restore completion insert their already validated typed identities in
+the application-state replacement transaction. State reads require exact
+account coverage and global public-identifier uniqueness. Exact typed lookup
+returns only the matching account projection. The normal schema validation
+performed during database open rejects a missing or changed identity table,
+index, or immutability trigger with `IntegrityFailure` before readiness.
 
 ### Immutable Log Module Configuration Generations
 

@@ -9,15 +9,16 @@ use serde::{
 use weavelit_server_authentication::PasswordPolicy;
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX, Account, AccountAuditReference,
-    AccountPasswordVerifier, AuditReferenceIdentifier, AuditReferencePersistence,
-    COMPONENT_ENABLED_VALUE, ComponentKind, ConfigurationEntry, ConfigurationKey,
-    ConfigurationValue, Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership,
-    LogAssignment, LogConfigurationAuditReference, LogModuleConfiguration, LogModuleSetting,
-    LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
-    MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
-    MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name, PasswordVerifier, RecoveryPublicKey,
-    STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    ACCOUNT_PUBLIC_IDENTIFIER_LENGTH, AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX,
+    Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentifierPersistence, AccountPublicIdentity, AuditReferenceIdentifier,
+    AuditReferencePersistence, COMPONENT_ENABLED_VALUE, ComponentKind, ConfigurationEntry,
+    ConfigurationKey, ConfigurationValue, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
+    GroupMembership, LogAssignment, LogConfigurationAuditReference, LogModuleConfiguration,
+    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
+    MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
+    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name, PasswordVerifier,
+    RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     BackendIdentifier, MAX_IDENTIFIER_LENGTH, MAX_PROTECTED_PLAINTEXT_BYTES,
@@ -134,6 +135,7 @@ pub struct NormalizedBackup {
     configuration: Vec<ConfigurationEntry>,
     protected_secrets: Vec<BackupProtectedSecret>,
     accounts: Vec<Account>,
+    account_public_identities: Vec<AccountPublicIdentity>,
     account_audit_references: Vec<AccountAuditReference>,
     password_verifiers: Vec<AccountPasswordVerifier>,
     groups: Vec<Group>,
@@ -167,6 +169,11 @@ impl NormalizedBackup {
     /// Returns the local accounts.
     pub fn accounts(&self) -> &[Account] {
         &self.accounts
+    }
+
+    /// Returns the local-account public identity projections.
+    pub fn account_public_identities(&self) -> &[AccountPublicIdentity] {
+        &self.account_public_identities
     }
 
     /// Returns the local-account Audit Reference projections.
@@ -248,6 +255,12 @@ const fn encoded_length(bytes: usize) -> usize {
 const WIRE_IDENTIFIER_LENGTH: usize = encoded_length(STATE_IDENTIFIER_LENGTH);
 
 const _: () = assert!(WIRE_IDENTIFIER_LENGTH == 22);
+
+/// Encoded length of one backup-only Account Public Identifier.
+const WIRE_ACCOUNT_PUBLIC_IDENTIFIER_LENGTH: usize =
+    encoded_length(ACCOUNT_PUBLIC_IDENTIFIER_LENGTH);
+
+const _: () = assert!(WIRE_ACCOUNT_PUBLIC_IDENTIFIER_LENGTH == 22);
 
 /// Exact length of the canonical internal Audit Reference representation.
 const WIRE_AUDIT_REFERENCE_LENGTH: usize =
@@ -413,6 +426,7 @@ impl<'de, const MAX: usize> Deserialize<'de> for WireSecret<MAX> {
 }
 
 type WireBackendIdentifier = WireText<MAX_IDENTIFIER_LENGTH>;
+type WireAccountPublicIdentifier = WireText<WIRE_ACCOUNT_PUBLIC_IDENTIFIER_LENGTH>;
 type WireAuditReference = WireText<WIRE_AUDIT_REFERENCE_LENGTH>;
 type WireConfigurationKey = WireText<MAX_CONFIGURATION_KEY_LENGTH>;
 type WireConfigurationValue = WireText<MAX_CONFIGURATION_VALUE_LENGTH>;
@@ -430,6 +444,15 @@ where
     Source: Deserializer<'de>,
 {
     WireAuditReference::deserialize(source).map(Some)
+}
+
+fn deserialize_present_account_public_identifier<'de, Source>(
+    source: Source,
+) -> Result<Option<WireAccountPublicIdentifier>, Source::Error>
+where
+    Source: Deserializer<'de>,
+{
+    WireAccountPublicIdentifier::deserialize(source).map(Some)
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +499,12 @@ struct ProtectedSecretV1 {
 #[serde(deny_unknown_fields)]
 struct AccountV1 {
     identifier: WireIdentifier,
+    /// Absent in a compatible document written before Account Public Identifiers existed.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_account_public_identifier"
+    )]
+    public_id: Option<WireAccountPublicIdentifier>,
     /// Absent in a compatible document written before Audit References existed.
     #[serde(default, deserialize_with = "deserialize_present_audit_reference")]
     audit_reference: Option<WireAuditReference>,
@@ -598,6 +627,7 @@ enum LogTypeV1 {
 pub fn normalize(
     plaintext: &[u8],
     selected_backend: &BackendIdentifier,
+    account_public_identifier_persistence: &AccountPublicIdentifierPersistence,
     audit_reference_persistence: &AuditReferencePersistence,
     components: &AvailableComponents,
 ) -> Result<NormalizedBackup, ContentError> {
@@ -633,6 +663,10 @@ pub fn normalize(
     })?;
     let account_entries = map_collection(document.accounts, |entry| {
         let identifier = identifier(&entry.identifier)?;
+        let public_identifier = resolve_account_public_identifier(
+            entry.public_id,
+            account_public_identifier_persistence,
+        )?;
         let audit_reference =
             resolve_audit_reference(entry.audit_reference, audit_reference_persistence)?;
         Ok((
@@ -643,10 +677,18 @@ pub fn normalize(
                 active: entry.active,
                 mfa_required: entry.mfa_required,
             },
+            AccountPublicIdentity::new(identifier, public_identifier),
             AccountAuditReference::new(identifier, audit_reference),
         ))
     })?;
-    let (accounts, account_audit_references) = account_entries.into_iter().unzip();
+    let mut accounts = Vec::with_capacity(account_entries.len());
+    let mut account_public_identities = Vec::with_capacity(account_entries.len());
+    let mut account_audit_references = Vec::with_capacity(account_entries.len());
+    for (account, public_identity, audit_reference) in account_entries {
+        accounts.push(account);
+        account_public_identities.push(public_identity);
+        account_audit_references.push(audit_reference);
+    }
     let password_verifiers = map_collection(document.password_verifiers, |entry| {
         Ok(AccountPasswordVerifier {
             account: identifier(&entry.account)?,
@@ -738,6 +780,7 @@ pub fn normalize(
         configuration,
         protected_secrets,
         accounts,
+        account_public_identities,
         account_audit_references,
         password_verifiers,
         groups,
@@ -815,6 +858,7 @@ fn order(backup: &mut NormalizedBackup) {
     backup.configuration.sort();
     backup.protected_secrets.sort();
     backup.accounts.sort();
+    backup.account_public_identities.sort();
     backup.account_audit_references.sort();
     backup.password_verifiers.sort();
     backup.groups.sort();
@@ -842,6 +886,12 @@ fn reject_duplicates(backup: &NormalizedBackup) -> Result<(), ContentError> {
         left.identifier == right.identifier
     })?;
     reject_duplicate_keys(&backup.accounts, |account| account.username.clone())?;
+    reject_adjacent(&backup.account_public_identities, |left, right| {
+        left.account() == right.account()
+    })?;
+    reject_duplicate_keys(&backup.account_public_identities, |identity| {
+        identity.public_identifier()
+    })?;
     reject_adjacent(&backup.account_audit_references, |left, right| {
         left.account() == right.account()
     })?;
@@ -935,6 +985,25 @@ fn resolve_audit_reference(
             .map_err(|_| ContentError::DomainInvalid),
         None => {
             AuditReferenceIdentifier::generate().map_err(|_| ContentError::RandomnessUnavailable)
+        }
+    }
+}
+
+fn resolve_account_public_identifier(
+    persisted: Option<WireAccountPublicIdentifier>,
+    persistence: &AccountPublicIdentifierPersistence,
+) -> Result<AccountPublicIdentifier, ContentError> {
+    match persisted {
+        Some(value) => {
+            let bytes: [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] = decode_bytes(&value)?
+                .try_into()
+                .map_err(|_| ContentError::EncodingInvalid)?;
+            persistence
+                .decode(bytes)
+                .map_err(|_| ContentError::DomainInvalid)
+        }
+        None => {
+            AccountPublicIdentifier::generate().map_err(|_| ContentError::RandomnessUnavailable)
         }
     }
 }

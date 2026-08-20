@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use weavelit_server_authentication::{
     Argon2Engine as _, CURRENT_ARGON2_PROFILE, PasswordPolicy, RustCryptoArgon2,
 };
-use weavelit_server_database::AuditReferencePersistence;
+use weavelit_server_database::{AccountPublicIdentifierPersistence, AuditReferencePersistence};
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_restore::{
     AvailableComponents, BackendIdentifier, DeploymentIdentifier, LogSettingsFormat,
@@ -39,6 +39,11 @@ use x25519_dalek::{PublicKey, StaticSecret};
 /// Returns a decoder issued through test-only Server database authority.
 pub fn persistence() -> AuditReferencePersistence {
     AuditReferencePersistence::from_server_authority(&ServerDatabaseAuthority::new())
+}
+
+/// Returns Account Public Identifier persistence issued through test-only authority.
+pub fn account_public_identifier_persistence() -> AccountPublicIdentifierPersistence {
+    AccountPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
 }
 
 /// Fixed backup recovery secret used by every valid fixture.
@@ -385,6 +390,7 @@ fn padded_backup_plaintext(
     referenced: Referenced,
 ) -> Vec<u8> {
     let account = encode_identifier(0x01);
+    let account_public_identifier = encode_identifier(0x91);
     let group = encode_identifier(0x02);
     let factor = encode_identifier(0x03);
     let connection = encode_identifier(0x04);
@@ -424,7 +430,7 @@ fn padded_backup_plaintext(
             "\"recovery_public_key\":\"{recipient}\",",
             "\"configuration\":[{{\"component\":\"weavelit-server\",\"key\":\"site-name\",\"value\":\"Example\"}}{padding}],",
             "\"protected_secrets\":[{{\"component\":\"weavelit-server\",\"key\":\"at-rest-probe\",\"value\":\"{component_secret}\"}}],",
-            "\"accounts\":[{{\"identifier\":\"{account}\",\"username\":\"administrator\",\"display_name\":\"Site Administrator\",\"active\":true}}],",
+            "\"accounts\":[{{\"identifier\":\"{account}\",\"public_id\":\"{account_public_identifier}\",\"username\":\"administrator\",\"display_name\":\"Site Administrator\",\"active\":true}}],",
             "\"password_verifiers\":[{{\"account\":\"{account}\",\"verifier\":\"{verifier}\"}}],",
             "\"groups\":[{{\"identifier\":\"{group}\",\"name\":\"Administrators\",\"description\":\"Full access\"}}],",
             "\"group_memberships\":[{{\"group\":\"{group}\",\"account\":\"{account}\"}}],",
@@ -443,6 +449,7 @@ fn padded_backup_plaintext(
         padding = padding,
         component_secret = component_secret,
         account = account,
+        account_public_identifier = account_public_identifier,
         group = group,
         verifier = administrator_verifier(),
         mfa_factors = mfa_factors,
@@ -804,6 +811,7 @@ impl TestAuthority {
             target: Ok(RestoreTarget::new(
                 deployment(),
                 BackendIdentifier::new(backend).expect("the backend identifier is valid"),
+                account_public_identifier_persistence(),
                 persistence(),
             )),
         }

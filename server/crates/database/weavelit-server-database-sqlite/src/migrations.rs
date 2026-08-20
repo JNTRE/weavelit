@@ -70,6 +70,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0011_add_log_configuration_audit_references",
         sql: include_str!("../migrations/0011_add_log_configuration_audit_references.sql"),
     },
+    Migration {
+        sequence: 12,
+        identifier: "0012_add_account_public_identities",
+        sql: include_str!("../migrations/0012_add_account_public_identities.sql"),
+    },
 ];
 
 struct AppliedMigration {
@@ -520,6 +525,107 @@ mod tests {
                 .unwrap(),
             10
         );
+    }
+
+    #[test]
+    fn failed_account_public_identity_migration_rolls_back_data_schema_and_ledger() {
+        let failures = [
+            (
+                "zero public identifier",
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (x'22222222222222222222222222222222', 'second', NULL, 1, 0); \
+                 INSERT INTO weavelit_account_public_identity \
+                 (account_id, public_identifier) \
+                 VALUES (x'22222222222222222222222222222222', zeroblob(16));",
+            ),
+            (
+                "public identifier collision",
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (x'22222222222222222222222222222222', 'second', NULL, 1, 0); \
+                 INSERT INTO weavelit_account_public_identity \
+                 (account_id, public_identifier) \
+                 SELECT x'22222222222222222222222222222222', public_identifier \
+                 FROM weavelit_account_public_identity LIMIT 1;",
+            ),
+            (
+                "orphan account",
+                "INSERT INTO weavelit_account_public_identity \
+                 (account_id, public_identifier) \
+                 VALUES (x'33333333333333333333333333333333', \
+                         x'44444444444444444444444444444444');",
+            ),
+            (
+                "ledger insertion",
+                "CREATE TRIGGER reject_0012_ledger \
+                 BEFORE INSERT ON weavelit_migration_ledger \
+                 WHEN NEW.sequence_number = 12 \
+                 BEGIN SELECT RAISE(ABORT, 'reject ledger insertion'); END;",
+            ),
+        ];
+
+        for (failure, suffix) in failures {
+            let mut connection = Connection::open_in_memory().unwrap();
+            apply_migrations(&mut connection, &MIGRATIONS[..11]).unwrap();
+            let account_id = [0x11_u8; 16];
+            connection
+                .execute(
+                    "INSERT INTO weavelit_account \
+                     (account_id, username, display_name, active, mfa_required) \
+                     VALUES (?1, 'existing', 'Existing Account', 1, 0)",
+                    [account_id.as_slice()],
+                )
+                .unwrap();
+            let failing_sql = Box::leak(
+                format!(
+                    "{}{}",
+                    include_str!("../migrations/0012_add_account_public_identities.sql"),
+                    suffix
+                )
+                .into_boxed_str(),
+            );
+            let mut migrations = MIGRATIONS.to_vec();
+            migrations[11].sql = failing_sql;
+
+            assert_eq!(
+                apply_migrations(&mut connection, &migrations),
+                Err(DatabaseError::IntegrityFailure),
+                "{failure} must fail closed"
+            );
+            assert!(!table_exists_for_test(
+                &connection,
+                "weavelit_account_public_identity"
+            ));
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM weavelit_migration_ledger",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                11
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT username, display_name, active, mfa_required \
+                         FROM weavelit_account WHERE account_id = ?1",
+                        [account_id.as_slice()],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, i64>(3)?,
+                            ))
+                        },
+                    )
+                    .unwrap(),
+                ("existing".to_owned(), "Existing Account".to_owned(), 1, 0)
+            );
+        }
     }
 
     #[test]

@@ -393,6 +393,24 @@ representation. A password verifier is a bounded ASCII PHC string, and the
 recovery public key is the canonical lowercase `age1` recipient encoding
 defined by the [Server Restore Design](../lifecycle/restore/restore-design.md).
 
+Every account carries exactly one Account Public Identifier in normalized
+application state. It is an independently generated, nonzero 16-byte value
+that remains stable when application state is persisted or restored. It is
+distinct from the account's `StateIdentifier`, username, and Audit Reference
+Identifier and has no conversion from those values, public text codec, or
+ordinary raw-byte accessor. Its diagnostic representation and errors expose no
+identifier value.
+
+The Application Database contract generates new Account Public Identifiers
+from operating-system randomness through the same exact-pinned `getrandom`
+dependency and bounded eight-attempt all-zero rejection used for Audit
+Reference Identifier entropy. Persisted encoding and decoding require a
+separate `AccountPublicIdentifierPersistence` capability issued from
+`ServerDatabaseAuthority`. The checked aggregate requires exact account
+coverage and global Account Public Identifier uniqueness. The database contract
+can resolve one exact typed public identifier to its account projection; it
+exposes no enumeration, mutation, string-parsing, or public-route behavior.
+
 Every account, Group, and Log Module configuration carries exactly one
 **[Audit Reference Identifier](../../glossary.md#applications-and-interfaces)**
 in normalized application state. This identifier is an independent random,
@@ -655,6 +673,17 @@ the restored current configuration. For Log Modules, a backup includes only
 non-secret configuration and assignments. Generation history, System Logs and
 Audit Logs, other Log Module destination data, and Log Module authentication or
 connection credentials are outside this Application Database backup contract.
+
+Account Public Identifiers are restorable application state. The current
+forward contract for a future backup writer stores each value in its account's
+`public_id` field as canonical unpadded URL-safe Base64 for the exact 16 bytes.
+The Restore reader preserves each valid supplied value exactly through the
+lifecycle-selected Application Database's persistence decoder and rejects
+malformed, all-zero, or duplicate values without exposing them. A compatible
+version-1 backup written before this field existed remains accepted when the
+field is omitted; an explicitly present JSON `null` is malformed. Restore
+generates a fresh independent value for each omission during normalization and
+does not change the backup format version.
 
 Account, Group, and Log Module configuration Audit Reference Identifiers are
 restorable application state. The current forward contract for a future backup

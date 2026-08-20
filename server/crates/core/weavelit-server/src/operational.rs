@@ -28,8 +28,6 @@ use weavelit_module_client::{
     ReconciliationRejection, validate_reconciliation_request,
 };
 use weavelit_server_authentication::RustCryptoArgon2;
-#[cfg(test)]
-use weavelit_server_database::AuditReferencePersistence;
 use weavelit_server_database::{
     AccountAuditReference, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
     LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
@@ -39,6 +37,8 @@ use weavelit_server_database::{
     LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
     MfaStore, PreparedLogConfigurationMutation, StateIdentifier,
 };
+#[cfg(test)]
+use weavelit_server_database::{AccountPublicIdentifierPersistence, AuditReferencePersistence};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
     SelectedDatabase,
@@ -189,6 +189,7 @@ enum OperationalDatabaseHandle {
     #[cfg(test)]
     UnselectedTest {
         database: Box<dyn ApplicationDatabase>,
+        account_public_identifier_persistence: AccountPublicIdentifierPersistence,
         audit_reference_persistence: AuditReferencePersistence,
     },
 }
@@ -208,6 +209,8 @@ impl OperationalDatabase {
             database: Arc::new(Mutex::new(Some(
                 OperationalDatabaseHandle::UnselectedTest {
                     database,
+                    account_public_identifier_persistence:
+                        AccountPublicIdentifierPersistence::from_server_authority(&authority),
                     audit_reference_persistence: AuditReferencePersistence::from_server_authority(
                         &authority,
                     ),
@@ -291,6 +294,7 @@ impl OperationalDatabase {
             OperationalDatabaseHandle::UnselectedTest {
                 database,
                 audit_reference_persistence,
+                ..
             } => database.load_account_audit_reference(audit_reference_persistence, account),
         }
     }
@@ -312,6 +316,7 @@ impl OperationalDatabase {
             OperationalDatabaseHandle::UnselectedTest {
                 database,
                 audit_reference_persistence,
+                ..
             } => database
                 .load_log_configuration_audit_reference(audit_reference_persistence, configuration),
         }
@@ -438,8 +443,10 @@ impl OperationalDatabase {
             #[cfg(test)]
             OperationalDatabaseHandle::UnselectedTest {
                 database,
+                account_public_identifier_persistence,
                 audit_reference_persistence,
             } => database.load_initialized_state(
+                account_public_identifier_persistence,
                 audit_reference_persistence,
                 expected_deployment_identifier,
             ),
@@ -777,6 +784,7 @@ pub(crate) mod test_support {
 
         fn complete_checkpoint(
             &mut self,
+            _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
             _checkpoint: &WorkflowCheckpoint,
             _state: &ApplicationState,
             _reconciliation: &weavelit_server_database::ReconciliationDigest,
@@ -786,9 +794,19 @@ pub(crate) mod test_support {
 
         fn load_initialized_state(
             &mut self,
-            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+            _audit_reference_persistence: &weavelit_server_database::AuditReferencePersistence,
             _expected_deployment_identifier: DeploymentIdentifier,
         ) -> Result<InitializedState, DatabaseError> {
+            Err(DatabaseError::Unavailable)
+        }
+
+        fn load_account_public_identity(
+            &mut self,
+            _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+            _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+        ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError>
+        {
             Err(DatabaseError::Unavailable)
         }
 

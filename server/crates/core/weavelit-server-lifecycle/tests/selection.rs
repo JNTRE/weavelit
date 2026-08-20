@@ -138,6 +138,7 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn complete_checkpoint(
         &mut self,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
         _checkpoint: &WorkflowCheckpoint,
         _state: &ApplicationState,
         _reconciliation: &weavelit_server_database::ReconciliationDigest,
@@ -147,9 +148,18 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn load_initialized_state(
         &mut self,
-        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _audit_reference_persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_account_public_identity(
+        &mut self,
+        _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+    ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError> {
         Err(DatabaseError::NotInitialized)
     }
 

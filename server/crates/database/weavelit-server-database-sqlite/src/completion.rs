@@ -1,8 +1,8 @@
 use rusqlite::{TransactionBehavior, params};
 use weavelit_server_database::{
-    ApplicationState, AuditReferencePersistence, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, InitializedState, ReconciliationDigest, StateIdentifier,
-    WorkflowCheckpoint,
+    AccountPublicIdentifierPersistence, ApplicationState, AuditReferencePersistence, DatabaseError,
+    DatabaseInspection, DeploymentIdentifier, InitializedState, ReconciliationDigest,
+    StateIdentifier, WorkflowCheckpoint,
 };
 
 use crate::SqliteDatabase;
@@ -17,6 +17,7 @@ use crate::state;
 impl SqliteDatabase {
     pub(super) fn complete_checkpoint_atomic(
         &mut self,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
         checkpoint: &WorkflowCheckpoint,
         application_state: &ApplicationState,
         reconciliation_digest: &ReconciliationDigest,
@@ -46,7 +47,7 @@ impl SqliteDatabase {
         session::clear(&transaction)?;
         mfa::clear(&transaction)?;
         reconciliation::replace(&transaction, reconciliation_digest)?;
-        state::write(&transaction, application_state)?;
+        state::write(&transaction, public_identity_persistence, application_state)?;
         log_configuration::seed_initial_generations(&transaction)?;
         let replaced = transaction
             .execute(
@@ -67,7 +68,8 @@ impl SqliteDatabase {
 
     pub(super) fn load_initialized_state_atomic(
         &mut self,
-        persistence: &AuditReferencePersistence,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
+        audit_reference_persistence: &AuditReferencePersistence,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
         let transaction = self
@@ -79,7 +81,11 @@ impl SqliteDatabase {
             DatabaseInspection::Initialized {
                 deployment_identifier,
             } => {
-                let (application_state, acknowledged) = state::read(&transaction, persistence)?;
+                let (application_state, acknowledged) = state::read(
+                    &transaction,
+                    public_identity_persistence,
+                    audit_reference_persistence,
+                )?;
                 Ok(InitializedState::new(
                     deployment_identifier,
                     application_state,

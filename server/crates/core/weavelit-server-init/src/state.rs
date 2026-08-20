@@ -8,12 +8,12 @@
 
 use weavelit_server_authentication::PasswordVerifierFactory;
 use weavelit_server_database::{
-    Account, AccountAuditReference, AccountPasswordVerifier, ApplicationState,
-    ApplicationStateInput, AuditReferenceIdentifier, CompletionObligation, ComponentKind,
-    ConfigurationEntry, ConfigurationKey, ConfigurationValue, Group, GroupAuditReference,
-    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogConfigurationAuditReference,
-    LogModuleConfiguration, LogType, Name, PasswordVerifier, ProtectedSecret,
-    STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentity, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
+    CompletionObligation, ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
+    Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
+    LogConfigurationAuditReference, LogModuleConfiguration, LogType, Name, PasswordVerifier,
+    ProtectedSecret, STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
 use weavelit_server_lifecycle::{ProtectedValueKind, ProtectedValueSealer};
 
@@ -49,6 +49,8 @@ pub(crate) fn build_initial_state(
 
     let account_identifier = state_identifier()?;
     let group_identifier = state_identifier()?;
+    let account_public_identifier =
+        AccountPublicIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
     let account_audit_reference =
         AuditReferenceIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
     let group_audit_reference =
@@ -141,6 +143,10 @@ pub(crate) fn build_initial_state(
         }],
         protected_secrets,
         accounts: vec![account],
+        account_public_identities: vec![AccountPublicIdentity::new(
+            account_identifier,
+            account_public_identifier,
+        )],
         account_audit_references: vec![AccountAuditReference::new(
             account_identifier,
             account_audit_reference,

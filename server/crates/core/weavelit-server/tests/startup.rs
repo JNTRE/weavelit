@@ -128,6 +128,7 @@ fn sealed_application_state() -> ApplicationState {
         configuration: vec![],
         protected_secrets: vec![],
         accounts: vec![],
+        account_public_identities: vec![],
         account_audit_references: vec![],
         password_verifiers: vec![],
         groups: vec![],

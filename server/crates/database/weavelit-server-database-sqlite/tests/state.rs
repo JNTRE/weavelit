@@ -6,8 +6,9 @@ use std::{
 use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
-    Account, AccountAuditReference, AccountPasswordVerifier, ApplicationDatabase, ApplicationState,
-    ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
+    Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentifierPersistence, AccountPublicIdentity, ApplicationDatabase,
+    ApplicationState, ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
     COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation, ComponentEnablement,
     ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
     DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference,
@@ -32,9 +33,10 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 28] = [
+const EXPECTED_TABLES: [&str; 29] = [
     "weavelit_account",
     "weavelit_account_audit_reference",
+    "weavelit_account_public_identity",
     "weavelit_audit_terminal_obligation",
     "weavelit_audit_terminal_supersession",
     "weavelit_completion_obligation",
@@ -89,6 +91,20 @@ fn deployment(byte: u8) -> DeploymentIdentifier {
 
 fn identifier(byte: u8) -> StateIdentifier {
     StateIdentifier::from_bytes([byte; 16]).unwrap()
+}
+
+fn account_public_identifier(byte: u8) -> AccountPublicIdentifier {
+    account_public_identifier_persistence()
+        .decode([byte; 16])
+        .unwrap()
+}
+
+fn account_public_identifier_persistence() -> AccountPublicIdentifierPersistence {
+    static PERSISTENCE: OnceLock<AccountPublicIdentifierPersistence> = OnceLock::new();
+
+    *PERSISTENCE.get_or_init(|| {
+        AccountPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+    })
 }
 
 fn audit_reference(byte: u8) -> AuditReferenceIdentifier {
@@ -205,6 +221,10 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 active: false,
                 mfa_required: false,
             },
+        ],
+        account_public_identities: vec![
+            AccountPublicIdentity::new(identifier(1), account_public_identifier(0x91)),
+            AccountPublicIdentity::new(identifier(2), account_public_identifier(0x92)),
         ],
         account_audit_references: vec![
             AccountAuditReference::new(identifier(1), audit_reference(0xA1)),
@@ -326,6 +346,7 @@ fn restored_database(path: &Path, deployment_identifier: DeploymentIdentifier) -
     database.create_checkpoint(&checkpoint).unwrap();
     database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &checkpoint,
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -683,6 +704,7 @@ fn a_restore_clears_every_live_session_inside_the_state_replacement() {
 
     database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -692,7 +714,11 @@ fn a_restore_clears_every_live_session_inside_the_state_replacement() {
     assert_eq!(session_count(&path), 0);
     assert_eq!(
         database
-            .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+            .load_initialized_state(
+                &account_public_identifier_persistence(),
+                &audit_reference_persistence(),
+                deployment_identifier,
+            )
             .unwrap()
             .state(),
         &application_state(WorkflowKind::Restore)
@@ -735,6 +761,7 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
         .unwrap();
     database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -765,6 +792,7 @@ fn a_rejected_state_replacement_leaves_live_sessions_untouched() {
 
     let error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &WorkflowCheckpoint::new(
                 deployment_identifier,
                 WorkflowKind::Restore,
@@ -793,7 +821,11 @@ fn normalized_state_and_backup_content_carry_no_session_data() {
     database.create(&session(0x29, 0x2A)).unwrap();
 
     let loaded = database
-        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        )
         .unwrap();
     let rendered = format!("{:?}", loaded.state());
 
@@ -826,6 +858,7 @@ fn fresh_init_seeds_version_one_and_reads_history_across_restart() {
     database.create_checkpoint(&checkpoint).unwrap();
     database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &checkpoint,
             &application_state(WorkflowKind::Init),
             &reconciliation_digest(0x30),
@@ -950,6 +983,7 @@ fn generation_seed_failure_rolls_back_the_complete_checkpoint() {
 
     assert_eq!(
         database.complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0x31),
@@ -1085,7 +1119,11 @@ fn normalized_restore_state_excludes_generation_history() {
         )
         .unwrap();
     let loaded = source
-        .load_initialized_state(&audit_reference_persistence(), source_deployment)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            source_deployment,
+        )
         .unwrap();
     assert!(
         source
@@ -1106,12 +1144,21 @@ fn normalized_restore_state_excludes_generation_history() {
     let checkpoint = restore_checkpoint(replacement_deployment);
     replacement.create_checkpoint(&checkpoint).unwrap();
     replacement
-        .complete_checkpoint(&checkpoint, loaded.state(), &reconciliation_digest(0x35))
+        .complete_checkpoint(
+            &account_public_identifier_persistence(),
+            &checkpoint,
+            loaded.state(),
+            &reconciliation_digest(0x35),
+        )
         .unwrap();
 
     assert_eq!(
         replacement
-            .load_initialized_state(&audit_reference_persistence(), replacement_deployment)
+            .load_initialized_state(
+                &account_public_identifier_persistence(),
+                &audit_reference_persistence(),
+                replacement_deployment,
+            )
             .unwrap()
             .state(),
         loaded.state()
@@ -1150,13 +1197,21 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
 
     let mut database = SqliteDatabase::open(&path).unwrap();
     let loaded = database
-        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        )
         .unwrap();
 
     assert_eq!(loaded.deployment_identifier(), deployment_identifier);
     assert!(!loaded.completion_acknowledged());
     assert_eq!(loaded.state(), &expected);
     assert_eq!(loaded.state().accounts().len(), 2);
+    assert_eq!(
+        loaded.state().account_public_identities(),
+        expected.account_public_identities()
+    );
     assert_eq!(
         loaded.state().accounts()[1].username.as_str(),
         "管理者-équipe"
@@ -1200,6 +1255,41 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
             deployment_identifier
         }
     );
+}
+
+#[test]
+fn account_public_identity_is_persistent_unique_and_exactly_lookupable() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    drop(restored_database(&path, deployment(24)));
+    let mut database = SqliteDatabase::open(&path).unwrap();
+
+    let public_identifier = account_public_identifier(0x91);
+    let identity = database
+        .load_account_public_identity(&account_public_identifier_persistence(), public_identifier)
+        .unwrap()
+        .expect("the exact public identifier resolves to its account");
+
+    assert_eq!(identity.account(), identifier(1));
+    assert_eq!(identity.public_identifier(), public_identifier);
+    assert_eq!(
+        database.load_account_public_identity(
+            &account_public_identifier_persistence(),
+            account_public_identifier(0x99),
+        ),
+        Ok(None)
+    );
+
+    let connection = Connection::open(&path).unwrap();
+    let index_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema \
+             WHERE type = 'index' AND name = 'weavelit_account_public_identity_value'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert!(index_sql.contains("public_identifier"));
 }
 
 #[test]
@@ -1426,6 +1516,7 @@ fn completion_is_accepted_exactly_once() {
 
     let error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -1479,6 +1570,7 @@ fn mismatched_checkpoint_is_rejected_without_writing_state() {
     ] {
         let error = database
             .complete_checkpoint(
+                &account_public_identifier_persistence(),
                 &checkpoint,
                 &application_state(workflow),
                 &reconciliation_digest(0xA0),
@@ -1505,13 +1597,18 @@ fn deployment_mismatch_is_rejected_for_completion_load_and_acknowledgement() {
 
     let completion_error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(other),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
         )
         .unwrap_err();
     let load_error = database
-        .load_initialized_state(&audit_reference_persistence(), other)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            other,
+        )
         .unwrap_err();
     let acknowledgement_error = database
         .acknowledge_completion(other, identifier(RECORD_IDENTIFIER_BYTE))
@@ -1533,6 +1630,7 @@ fn completion_requires_a_pending_checkpoint_and_matching_obligation_workflow() {
 
     let uninitialized_error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -1543,6 +1641,7 @@ fn completion_requires_a_pending_checkpoint_and_matching_obligation_workflow() {
         .unwrap();
     let obligation_error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Init),
             &reconciliation_digest(0xA0),
@@ -1572,6 +1671,7 @@ fn transaction_failure_rolls_back_every_persisted_state_row() {
 
     let error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -1592,7 +1692,11 @@ fn transaction_failure_rolls_back_every_persisted_state_row() {
         DatabaseInspection::Pending(restore_checkpoint(deployment_identifier))
     );
     assert_eq!(
-        reopened.load_initialized_state(&audit_reference_persistence(), deployment_identifier),
+        reopened.load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        ),
         Err(DatabaseError::NotInitialized)
     );
 }
@@ -1604,13 +1708,19 @@ fn loading_uninitialized_or_pending_state_is_rejected() {
     let deployment_identifier = deployment(8);
     let mut database = SqliteDatabase::open(&path).unwrap();
 
-    let uninitialized =
-        database.load_initialized_state(&audit_reference_persistence(), deployment_identifier);
+    let uninitialized = database.load_initialized_state(
+        &account_public_identifier_persistence(),
+        &audit_reference_persistence(),
+        deployment_identifier,
+    );
     database
         .create_checkpoint(&restore_checkpoint(deployment_identifier))
         .unwrap();
-    let pending =
-        database.load_initialized_state(&audit_reference_persistence(), deployment_identifier);
+    let pending = database.load_initialized_state(
+        &account_public_identifier_persistence(),
+        &audit_reference_persistence(),
+        deployment_identifier,
+    );
 
     assert_eq!(uninitialized, Err(DatabaseError::NotInitialized));
     assert_eq!(pending, Err(DatabaseError::NotInitialized));
@@ -1619,6 +1729,12 @@ fn loading_uninitialized_or_pending_state_is_rejected() {
 #[test]
 fn malformed_persisted_state_fails_integrity_validation() {
     let mutations = [
+        "DROP TRIGGER weavelit_account_public_identity_reject_delete; \
+         DELETE FROM weavelit_account_public_identity WHERE account_id = \
+         x'01010101010101010101010101010101'",
+        "INSERT INTO weavelit_account_public_identity (account_id, public_identifier) \
+         VALUES (x'99999999999999999999999999999999', \
+                 x'89898989898989898989898989898989')",
         "DELETE FROM weavelit_account_audit_reference",
         "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
          VALUES (x'99999999999999999999999999999999', \
@@ -1646,10 +1762,16 @@ fn malformed_persisted_state_fails_integrity_validation() {
         connection.execute_batch(mutation).unwrap();
         drop(connection);
 
-        let error = SqliteDatabase::open(&path)
-            .unwrap()
-            .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
-            .unwrap_err();
+        let error = match SqliteDatabase::open(&path) {
+            Ok(mut database) => database
+                .load_initialized_state(
+                    &account_public_identifier_persistence(),
+                    &audit_reference_persistence(),
+                    deployment_identifier,
+                )
+                .unwrap_err(),
+            Err(error) => error,
+        };
 
         assert_eq!(error, DatabaseError::IntegrityFailure, "for {mutation}");
         assert_redacted(error);
@@ -1668,7 +1790,11 @@ fn completion_obligation_is_acknowledged_exactly_once() {
     let first = database.acknowledge_completion(deployment_identifier, record_identifier);
     let second = database.acknowledge_completion(deployment_identifier, record_identifier);
     let loaded = database
-        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        )
         .unwrap();
 
     assert_eq!(unknown_record, Err(DatabaseError::InvalidState));
@@ -1812,6 +1938,7 @@ fn recovery_obligations_and_supersessions_are_live_operational_data_excluded_fro
     // clear obligations/supersessions; they remain live operational data.
     database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -1850,7 +1977,11 @@ fn recovery_obligations_and_supersessions_are_live_operational_data_excluded_fro
     // `normalized_state_and_backup_paths_do_not_reference_recovery_tables` proves
     // that backup excludes recovery tables; this test verifies live persistence.
     let loaded = database
-        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        )
         .unwrap();
 
     // Verify the normalized state matches expected application state.

@@ -3897,6 +3897,15 @@ pub(crate) mod tests {
                 )
             })
             .collect();
+        let account_public_identities = accounts
+            .iter()
+            .map(|account| {
+                weavelit_server_database::AccountPublicIdentity::new(
+                    account.identifier,
+                    weavelit_server_database::AccountPublicIdentifier::generate().unwrap(),
+                )
+            })
+            .collect();
         let group_audit_references = groups
             .iter()
             .map(|group| {
@@ -3911,6 +3920,7 @@ pub(crate) mod tests {
             configuration,
             protected_secrets: vec![],
             accounts,
+            account_public_identities,
             account_audit_references,
             password_verifiers,
             groups,

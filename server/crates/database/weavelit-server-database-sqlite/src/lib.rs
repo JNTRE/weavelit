@@ -19,7 +19,8 @@ mod state;
 pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
-    AccountAuditReference, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
+    AccountAuditReference, AccountPublicIdentifier, AccountPublicIdentifierPersistence,
+    AccountPublicIdentity, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
     AuditTerminalRecoveryStore, ComponentEnablement, DatabaseError, DatabaseInspection,
     DeploymentIdentifier, GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
     LogConfigurationAuditReference, LogConfigurationGenerationStore, LogConfigurationMutationStore,
@@ -41,19 +42,38 @@ impl ApplicationDatabase for SqliteDatabase {
 
     fn complete_checkpoint(
         &mut self,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
         checkpoint: &WorkflowCheckpoint,
         state: &ApplicationState,
         reconciliation: &ReconciliationDigest,
     ) -> Result<(), DatabaseError> {
-        self.complete_checkpoint_atomic(checkpoint, state, reconciliation)
+        self.complete_checkpoint_atomic(
+            public_identity_persistence,
+            checkpoint,
+            state,
+            reconciliation,
+        )
     }
 
     fn load_initialized_state(
         &mut self,
-        persistence: &AuditReferencePersistence,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
+        audit_reference_persistence: &AuditReferencePersistence,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
-        self.load_initialized_state_atomic(persistence, expected_deployment_identifier)
+        self.load_initialized_state_atomic(
+            public_identity_persistence,
+            audit_reference_persistence,
+            expected_deployment_identifier,
+        )
+    }
+
+    fn load_account_public_identity(
+        &mut self,
+        persistence: &AccountPublicIdentifierPersistence,
+        public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountPublicIdentity>, DatabaseError> {
+        self.load_account_public_identity_atomic(persistence, public_identifier)
     }
 
     fn acknowledge_completion(

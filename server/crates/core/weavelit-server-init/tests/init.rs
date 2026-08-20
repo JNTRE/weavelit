@@ -227,6 +227,11 @@ fn a_finalized_deployment_has_exactly_one_active_administrator_without_an_mfa_fa
     assert_eq!(state.password_verifiers()[0].account, account.identifier);
     assert!(state.service_connections().is_empty());
 
+    assert_eq!(state.account_public_identities().len(), 1);
+    assert_eq!(
+        state.account_public_identities()[0].account(),
+        account.identifier
+    );
     assert_eq!(state.account_audit_references().len(), 1);
     assert_eq!(state.group_audit_references().len(), 1);
     assert_eq!(

@@ -4,7 +4,10 @@ mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use support::{committed, committed_text, components, persistence, validate};
+use support::{
+    account_public_identifier_persistence, committed, committed_text, components, persistence,
+    validate,
+};
 use weavelit_server_restore::{
     LogType, RequestBudget, RequestDeadline, RestoreError, RestoreRequest, RestoreValidator,
     TransferBounds,
@@ -30,6 +33,7 @@ fn a_valid_backup_normalizes_to_the_replacement_deployment() {
     assert_eq!(backup.configuration().len(), 2);
     assert_eq!(backup.protected_secrets().len(), 1);
     assert_eq!(backup.accounts().len(), 1);
+    assert_eq!(backup.account_public_identities().len(), 1);
     assert_eq!(backup.password_verifiers().len(), 1);
     assert_eq!(backup.groups().len(), 1);
     assert_eq!(backup.group_memberships().len(), 1);
@@ -74,6 +78,7 @@ fn the_decrypted_plaintext_matches_the_committed_expectation() {
     let direct = weavelit_server_restore::normalize(
         expected.as_bytes(),
         validated.backup().source_backend(),
+        &account_public_identifier_persistence(),
         &persistence(),
         &components(),
     )

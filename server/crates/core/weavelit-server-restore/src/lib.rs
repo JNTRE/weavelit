@@ -38,7 +38,8 @@ pub use ticket::{
 };
 pub use weavelit_server_components::{AvailableComponents, LogSettingsFormat, MfaFactorFormat};
 pub use weavelit_server_database::{
-    Account, AccountAuditReference, AccountPasswordVerifier, AuditReferenceIdentifier,
+    Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentifierPersistence, AccountPublicIdentity, AuditReferenceIdentifier,
     AuditReferencePersistence, ConfigurationEntry, ConfigurationKey, DeploymentIdentifier, Group,
     GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
     LogModuleConfiguration, LogModuleSetting, LogType, Name, PasswordVerifier, RecoveryPublicKey,
@@ -67,6 +68,7 @@ pub trait RestoreAuthority {
 pub struct RestoreTarget {
     deployment_identifier: DeploymentIdentifier,
     selected_backend: BackendIdentifier,
+    account_public_identifier_persistence: AccountPublicIdentifierPersistence,
     audit_reference_persistence: AuditReferencePersistence,
 }
 
@@ -75,11 +77,13 @@ impl RestoreTarget {
     pub const fn new(
         deployment_identifier: DeploymentIdentifier,
         selected_backend: BackendIdentifier,
+        account_public_identifier_persistence: AccountPublicIdentifierPersistence,
         audit_reference_persistence: AuditReferencePersistence,
     ) -> Self {
         Self {
             deployment_identifier,
             selected_backend,
+            account_public_identifier_persistence,
             audit_reference_persistence,
         }
     }
@@ -92,6 +96,13 @@ impl RestoreTarget {
     /// Returns the selected Application Database backend.
     pub const fn selected_backend(&self) -> &BackendIdentifier {
         &self.selected_backend
+    }
+
+    /// Returns the selected Application Database's Account Public Identifier persistence.
+    pub const fn account_public_identifier_persistence(
+        &self,
+    ) -> &AccountPublicIdentifierPersistence {
+        &self.account_public_identifier_persistence
     }
 
     /// Returns the selected Application Database's persistence decoder.
@@ -208,6 +219,7 @@ impl RestoreValidator {
         let backup = normalize(
             &plaintext,
             target.selected_backend(),
+            target.account_public_identifier_persistence(),
             target.audit_reference_persistence(),
             &self.components,
         )?;

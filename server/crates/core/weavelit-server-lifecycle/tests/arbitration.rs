@@ -210,6 +210,7 @@ fn workflow_application_state(workflow: WorkflowKind) -> ApplicationState {
         configuration: vec![],
         protected_secrets: vec![],
         accounts: vec![],
+        account_public_identities: vec![],
         account_audit_references: vec![],
         password_verifiers: vec![],
         groups: vec![],
@@ -293,6 +294,7 @@ impl ApplicationDatabase for LyingDatabase {
 
     fn complete_checkpoint(
         &mut self,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
         _checkpoint: &WorkflowCheckpoint,
         state: &ApplicationState,
         _reconciliation: &weavelit_server_database::ReconciliationDigest,
@@ -303,7 +305,8 @@ impl ApplicationDatabase for LyingDatabase {
 
     fn load_initialized_state(
         &mut self,
-        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _audit_reference_persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, weavelit_server_database::DatabaseError> {
         let state = self
@@ -316,6 +319,17 @@ impl ApplicationDatabase for LyingDatabase {
             state,
             false,
         ))
+    }
+
+    fn load_account_public_identity(
+        &mut self,
+        _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::AccountPublicIdentity>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
     }
 
     fn acknowledge_completion(
@@ -1495,6 +1509,7 @@ impl ApplicationDatabase for DriftingDatabase {
 
     fn complete_checkpoint(
         &mut self,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
         _checkpoint: &WorkflowCheckpoint,
         _state: &ApplicationState,
         _reconciliation: &weavelit_server_database::ReconciliationDigest,
@@ -1504,10 +1519,22 @@ impl ApplicationDatabase for DriftingDatabase {
 
     fn load_initialized_state(
         &mut self,
-        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _audit_reference_persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, weavelit_server_database::DatabaseError> {
         Err(weavelit_server_database::DatabaseError::InvalidState)
+    }
+
+    fn load_account_public_identity(
+        &mut self,
+        _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+    ) -> Result<
+        Option<weavelit_server_database::AccountPublicIdentity>,
+        weavelit_server_database::DatabaseError,
+    > {
+        Ok(None)
     }
 
     fn acknowledge_completion(

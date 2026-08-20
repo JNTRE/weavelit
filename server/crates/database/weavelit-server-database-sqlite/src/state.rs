@@ -1,8 +1,9 @@
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use weavelit_server_database::{
-    Account, AccountAuditReference, AccountPasswordVerifier, ApplicationState,
-    ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence, BoundedText,
-    COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
+    ACCOUNT_PUBLIC_IDENTIFIER_LENGTH, Account, AccountAuditReference, AccountPasswordVerifier,
+    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountPublicIdentity,
+    ApplicationState, ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
+    BoundedText, COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
     ConfigurationEntry, DatabaseError, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
     GroupMembership, HumanAuthorizationSnapshot, LogAssignment, LogConfigurationAuditReference,
     LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, PasswordVerifier,
@@ -19,6 +20,10 @@ const PROTECTED_SECRET_QUERY: &str = "SELECT component, secret_key, protected_va
      FROM weavelit_protected_secret ORDER BY component, secret_key";
 const ACCOUNT_QUERY: &str = "SELECT account_id, username, display_name, active, mfa_required \
      FROM weavelit_account ORDER BY account_id";
+const ACCOUNT_PUBLIC_IDENTITY_QUERY: &str = "SELECT account_id, public_identifier \
+    FROM weavelit_account_public_identity ORDER BY account_id";
+const ACCOUNT_PUBLIC_IDENTITY_LOOKUP: &str = "SELECT account_id \
+    FROM weavelit_account_public_identity WHERE public_identifier = ?1";
 const ACCOUNT_AUDIT_REFERENCE_QUERY: &str = "SELECT account_id, audit_reference \
     FROM weavelit_account_audit_reference ORDER BY account_id";
 const ACCOUNT_AUDIT_REFERENCE_LOOKUP: &str = "SELECT audit_reference \
@@ -81,6 +86,7 @@ const DISABLED_COMPONENT_QUERY: &str = "SELECT component, setting_key \
 type ConfigurationRow = (String, String, String);
 type ProtectedSecretRow = (String, String, Vec<u8>);
 type AccountRow = (Vec<u8>, String, Option<String>, i64, i64);
+type AccountPublicIdentityRow = (Vec<u8>, Vec<u8>);
 type AuditReferenceRow = (Vec<u8>, String);
 type PasswordVerifierRow = (Vec<u8>, String);
 type GroupRow = (Vec<u8>, String, Option<String>);
@@ -96,6 +102,32 @@ type HumanAuthorizationGrantRow = (String, String);
 type DisabledComponentRow = (String, String);
 
 impl SqliteDatabase {
+    pub(super) fn load_account_public_identity_atomic(
+        &mut self,
+        persistence: &AccountPublicIdentifierPersistence,
+        public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountPublicIdentity>, DatabaseError> {
+        let persisted = persistence.encode(&public_identifier);
+        let account = self
+            .connection
+            .query_row(
+                ACCOUNT_PUBLIC_IDENTITY_LOOKUP,
+                params![persisted.as_slice()],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+
+        account
+            .map(|account| {
+                Ok(AccountPublicIdentity::new(
+                    identifier(&account)?,
+                    public_identifier,
+                ))
+            })
+            .transpose()
+    }
+
     /// Reads one account's active flag and joined Group grants consistently.
     ///
     /// Both reads run inside one transaction, so a concurrent membership or
@@ -248,6 +280,7 @@ fn read_human_authorization(
 
 pub(super) fn write(
     connection: &Connection,
+    public_identity_persistence: &AccountPublicIdentifierPersistence,
     state: &ApplicationState,
 ) -> Result<(), DatabaseError> {
     for entry in state.configuration() {
@@ -286,6 +319,18 @@ pub(super) fn write(
                 account.display_name.as_ref().map(BoundedText::as_str),
                 i64::from(account.active),
                 i64::from(account.mfa_required),
+            ],
+        )?;
+    }
+    for identity in state.account_public_identities() {
+        let public_identifier = public_identity_persistence.encode(&identity.public_identifier());
+        execute(
+            connection,
+            "INSERT INTO weavelit_account_public_identity \
+             (account_id, public_identifier) VALUES (?1, ?2)",
+            params![
+                identity.account().as_bytes().as_slice(),
+                public_identifier.as_slice(),
             ],
         )?;
     }
@@ -449,7 +494,8 @@ pub(super) fn write(
 
 pub(super) fn read(
     connection: &Connection,
-    persistence: &AuditReferencePersistence,
+    public_identity_persistence: &AccountPublicIdentifierPersistence,
+    audit_reference_persistence: &AuditReferencePersistence,
 ) -> Result<(ApplicationState, bool), DatabaseError> {
     let configuration = rows::<ConfigurationRow>(connection, CONFIGURATION_QUERY, three_columns)?
         .into_iter()
@@ -489,13 +535,24 @@ pub(super) fn read(
         )
         .collect::<Result<Vec<_>, DatabaseError>>()?;
 
+    let account_public_identities =
+        rows::<AccountPublicIdentityRow>(connection, ACCOUNT_PUBLIC_IDENTITY_QUERY, two_columns)?
+            .into_iter()
+            .map(|(account_id, public_identifier)| {
+                Ok(AccountPublicIdentity::new(
+                    identifier(&account_id)?,
+                    account_public_identifier(public_identity_persistence, &public_identifier)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
+
     let account_audit_references =
         rows::<AuditReferenceRow>(connection, ACCOUNT_AUDIT_REFERENCE_QUERY, two_columns)?
             .into_iter()
             .map(|(account_id, value)| {
                 Ok(AccountAuditReference::new(
                     identifier(&account_id)?,
-                    audit_reference(persistence, &value)?,
+                    audit_reference(audit_reference_persistence, &value)?,
                 ))
             })
             .collect::<Result<Vec<_>, DatabaseError>>()?;
@@ -529,7 +586,7 @@ pub(super) fn read(
             .map(|(group_id, value)| {
                 Ok(GroupAuditReference::new(
                     identifier(&group_id)?,
-                    audit_reference(persistence, &value)?,
+                    audit_reference(audit_reference_persistence, &value)?,
                 ))
             })
             .collect::<Result<Vec<_>, DatabaseError>>()?;
@@ -625,7 +682,7 @@ pub(super) fn read(
     .map(|(configuration_id, value)| {
         Ok(LogConfigurationAuditReference::new(
             identifier(&configuration_id)?,
-            audit_reference(persistence, &value)?,
+            audit_reference(audit_reference_persistence, &value)?,
         ))
     })
     .collect::<Result<Vec<_>, DatabaseError>>()?;
@@ -671,6 +728,7 @@ pub(super) fn read(
         configuration,
         protected_secrets,
         accounts,
+        account_public_identities,
         account_audit_references,
         password_verifiers,
         groups,
@@ -843,6 +901,18 @@ fn audit_reference(
 ) -> Result<AuditReferenceIdentifier, DatabaseError> {
     persistence
         .decode(value)
+        .map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+fn account_public_identifier(
+    persistence: &AccountPublicIdentifierPersistence,
+    value: &[u8],
+) -> Result<AccountPublicIdentifier, DatabaseError> {
+    let bytes: [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] = value
+        .try_into()
+        .map_err(|_| DatabaseError::IntegrityFailure)?;
+    persistence
+        .decode(bytes)
         .map_err(|_| DatabaseError::IntegrityFailure)
 }
 

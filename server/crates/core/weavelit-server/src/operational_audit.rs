@@ -1031,6 +1031,7 @@ mod tests {
 
         fn complete_checkpoint(
             &mut self,
+            _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
             _checkpoint: &WorkflowCheckpoint,
             _state: &ApplicationState,
             _reconciliation: &ReconciliationDigest,
@@ -1040,7 +1041,8 @@ mod tests {
 
         fn load_initialized_state(
             &mut self,
-            _persistence: &AuditReferencePersistence,
+            _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+            _audit_reference_persistence: &AuditReferencePersistence,
             expected_deployment_identifier: DeploymentIdentifier,
         ) -> Result<InitializedState, DatabaseError> {
             let mut state = self.state.lock().map_err(|_| DatabaseError::Unavailable)?;
@@ -1053,6 +1055,15 @@ mod tests {
                 return Err(DatabaseError::InvalidState);
             }
             Ok(initialized)
+        }
+
+        fn load_account_public_identity(
+            &mut self,
+            _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+            _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+        ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError>
+        {
+            Err(DatabaseError::Unavailable)
         }
 
         fn acknowledge_completion(
@@ -2018,6 +2029,9 @@ mod tests {
         sqlite.create_checkpoint(&checkpoint).unwrap();
         sqlite
             .complete_checkpoint(
+                &weavelit_server_database::AccountPublicIdentifierPersistence::from_server_authority(
+                    &weavelit_server_database_authority::ServerDatabaseAuthority::new(),
+                ),
                 &checkpoint,
                 initialized.state(),
                 &ReconciliationDigest::from_bytes([0x38; 32]),
@@ -2625,6 +2639,7 @@ mod tests {
 
             fn complete_checkpoint(
                 &mut self,
+                _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
                 _checkpoint: &WorkflowCheckpoint,
                 _state: &ApplicationState,
                 _reconciliation: &ReconciliationDigest,
@@ -2634,9 +2649,19 @@ mod tests {
 
             fn load_initialized_state(
                 &mut self,
-                _persistence: &AuditReferencePersistence,
+                _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+                _audit_reference_persistence: &AuditReferencePersistence,
                 _expected_deployment_identifier: DeploymentIdentifier,
             ) -> Result<InitializedState, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_account_public_identity(
+                &mut self,
+                _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+                _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+            ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError>
+            {
                 Err(DatabaseError::Unavailable)
             }
 
@@ -2775,6 +2800,7 @@ mod tests {
 
             fn complete_checkpoint(
                 &mut self,
+                _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
                 _checkpoint: &WorkflowCheckpoint,
                 _state: &ApplicationState,
                 _reconciliation: &ReconciliationDigest,
@@ -2784,9 +2810,19 @@ mod tests {
 
             fn load_initialized_state(
                 &mut self,
-                _persistence: &AuditReferencePersistence,
+                _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+                _audit_reference_persistence: &AuditReferencePersistence,
                 _expected_deployment_identifier: DeploymentIdentifier,
             ) -> Result<InitializedState, DatabaseError> {
+                Err(DatabaseError::Unavailable)
+            }
+
+            fn load_account_public_identity(
+                &mut self,
+                _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+                _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+            ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError>
+            {
                 Err(DatabaseError::Unavailable)
             }
 
@@ -2883,6 +2919,7 @@ mod tests {
             configuration: Vec::new(),
             protected_secrets: Vec::new(),
             accounts: Vec::new(),
+            account_public_identities: Vec::new(),
             account_audit_references: Vec::new(),
             password_verifiers: Vec::new(),
             groups: Vec::new(),

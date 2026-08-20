@@ -79,6 +79,7 @@ pub fn build_application_state(
         configuration: backup.configuration().to_vec(),
         protected_secrets,
         accounts: backup.accounts().to_vec(),
+        account_public_identities: backup.account_public_identities().to_vec(),
         account_audit_references: backup.account_audit_references().to_vec(),
         password_verifiers: backup.password_verifiers().to_vec(),
         groups: backup.groups().to_vec(),

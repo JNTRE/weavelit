@@ -1,10 +1,11 @@
 use std::{fmt, sync::Arc};
 
 use weavelit_server_database::{
-    AccountAuditReference, ApplicationDatabase, AuditReferencePersistence,
+    AccountAuditReference, AccountPublicIdentifier, AccountPublicIdentifierPersistence,
+    AccountPublicIdentity, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
     AuditTerminalRecoveryPersistence, DatabaseError, DeploymentIdentifier, GroupAuditReference,
     InitializedState, LogConfigurationAuditReference, LogConfigurationGenerationPersistence,
-    LogConfigurationMutationPersistence, StateIdentifier,
+    LogConfigurationMutationPersistence, ReconciliationDigest, StateIdentifier, WorkflowCheckpoint,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
@@ -15,7 +16,8 @@ use weavelit_server_database_authority::ServerDatabaseAuthority;
 /// selected handle and prevent callers from replacing either half.
 pub struct SelectedDatabase {
     database: Box<dyn ApplicationDatabase>,
-    persistence: AuditReferencePersistence,
+    account_public_identity_persistence: AccountPublicIdentifierPersistence,
+    audit_reference_persistence: AuditReferencePersistence,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
     log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
     log_configuration_mutation_persistence: Arc<LogConfigurationMutationPersistence>,
@@ -38,7 +40,11 @@ impl SelectedDatabase {
     ) -> Self {
         Self {
             database,
-            persistence: AuditReferencePersistence::from_server_authority(authority),
+            account_public_identity_persistence:
+                AccountPublicIdentifierPersistence::from_server_authority(authority),
+            audit_reference_persistence: AuditReferencePersistence::from_server_authority(
+                authority,
+            ),
             audit_terminal_recovery_persistence: Arc::new(
                 AuditTerminalRecoveryPersistence::from_server_authority(authority),
             ),
@@ -59,7 +65,15 @@ impl SelectedDatabase {
     /// Returns the decoder bound to this selected database.
     #[must_use]
     pub const fn audit_reference_persistence(&self) -> AuditReferencePersistence {
-        self.persistence
+        self.audit_reference_persistence
+    }
+
+    /// Returns Account Public Identifier persistence bound to this selected database.
+    #[must_use]
+    pub const fn account_public_identifier_persistence(
+        &self,
+    ) -> AccountPublicIdentifierPersistence {
+        self.account_public_identity_persistence
     }
 
     /// Returns the opaque recovery decoder bound to this selected database.
@@ -89,8 +103,37 @@ impl SelectedDatabase {
         &mut self,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
-        self.database
-            .load_initialized_state(&self.persistence, expected_deployment_identifier)
+        self.database.load_initialized_state(
+            &self.account_public_identity_persistence,
+            &self.audit_reference_persistence,
+            expected_deployment_identifier,
+        )
+    }
+
+    /// Atomically replaces one matching checkpoint with complete application state.
+    pub fn complete_checkpoint(
+        &mut self,
+        checkpoint: &WorkflowCheckpoint,
+        state: &ApplicationState,
+        reconciliation: &ReconciliationDigest,
+    ) -> Result<(), DatabaseError> {
+        self.database.complete_checkpoint(
+            &self.account_public_identity_persistence,
+            checkpoint,
+            state,
+            reconciliation,
+        )
+    }
+
+    /// Loads one account by its exact typed public identifier.
+    pub fn load_account_public_identity(
+        &mut self,
+        public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountPublicIdentity>, DatabaseError> {
+        self.database.load_account_public_identity(
+            &self.account_public_identity_persistence,
+            public_identifier,
+        )
     }
 
     /// Loads an account Audit Reference through this selected database's decoder.
@@ -99,7 +142,7 @@ impl SelectedDatabase {
         account: StateIdentifier,
     ) -> Result<Option<AccountAuditReference>, DatabaseError> {
         self.database
-            .load_account_audit_reference(&self.persistence, account)
+            .load_account_audit_reference(&self.audit_reference_persistence, account)
     }
 
     /// Loads a Group Audit Reference through this selected database's decoder.
@@ -108,7 +151,7 @@ impl SelectedDatabase {
         group: StateIdentifier,
     ) -> Result<Option<GroupAuditReference>, DatabaseError> {
         self.database
-            .load_group_audit_reference(&self.persistence, group)
+            .load_group_audit_reference(&self.audit_reference_persistence, group)
     }
 
     /// Loads a Log Module configuration Audit Reference through this selected database's decoder.
@@ -116,8 +159,10 @@ impl SelectedDatabase {
         &mut self,
         configuration: StateIdentifier,
     ) -> Result<Option<LogConfigurationAuditReference>, DatabaseError> {
-        self.database
-            .load_log_configuration_audit_reference(&self.persistence, configuration)
+        self.database.load_log_configuration_audit_reference(
+            &self.audit_reference_persistence,
+            configuration,
+        )
     }
 
     /// Closes the selected database and consumes its decoder with it.

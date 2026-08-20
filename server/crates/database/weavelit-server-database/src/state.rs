@@ -14,6 +14,121 @@ use crate::{ContractInputError, DeploymentIdentifier, WorkflowKind};
 /// Number of bytes in an application-state entity identifier.
 pub const STATE_IDENTIFIER_LENGTH: usize = 16;
 
+/// Number of random bytes in an Account Public Identifier.
+pub const ACCOUNT_PUBLIC_IDENTIFIER_LENGTH: usize = 16;
+
+const ACCOUNT_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS: usize = 8;
+
+/// Failure to generate or decode an internal Account Public Identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountPublicIdentifierError {
+    /// Operating-system randomness was unavailable.
+    RandomnessUnavailable,
+    /// A persisted identifier was not the required nonzero binary value.
+    InvalidPersistedValue,
+}
+
+impl fmt::Display for AccountPublicIdentifierError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::RandomnessUnavailable => "account public identity is unavailable",
+            Self::InvalidPersistedValue => "persisted account public identity is invalid",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for AccountPublicIdentifierError {}
+
+/// Independent opaque identifier used as one account's stable public identity.
+///
+/// The private representation prevents conversion from a state identifier,
+/// Audit Reference, string, or caller-provided bytes. Only a selected
+/// Application Database binding can issue the capability that accesses a
+/// persisted binary value.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AccountPublicIdentifier([u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH]);
+
+impl AccountPublicIdentifier {
+    /// Generates an identifier from operating-system randomness without a fallback.
+    pub fn generate() -> Result<Self, AccountPublicIdentifierError> {
+        Self::generate_with(|bytes| {
+            getrandom::fill(bytes).map_err(|_| AccountPublicIdentifierError::RandomnessUnavailable)
+        })
+    }
+
+    fn from_persisted_bytes(
+        bytes: [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH],
+    ) -> Result<Self, AccountPublicIdentifierError> {
+        if bytes == [0; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] {
+            return Err(AccountPublicIdentifierError::InvalidPersistedValue);
+        }
+        Ok(Self(bytes))
+    }
+
+    fn generate_with(
+        mut fill: impl FnMut(
+            &mut [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH],
+        ) -> Result<(), AccountPublicIdentifierError>,
+    ) -> Result<Self, AccountPublicIdentifierError> {
+        for _ in 0..ACCOUNT_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS {
+            let mut bytes = [0_u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH];
+            fill(&mut bytes)?;
+            if bytes != [0; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] {
+                return Ok(Self(bytes));
+            }
+        }
+
+        Err(AccountPublicIdentifierError::RandomnessUnavailable)
+    }
+}
+
+impl fmt::Debug for AccountPublicIdentifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AccountPublicIdentifier(REDACTED)")
+    }
+}
+
+/// Capability to access Account Public Identifier values in trusted persistence.
+///
+/// The private field prevents ordinary callers from constructing this value. It
+/// is issued only to Server lifecycle code that holds database authority after
+/// selecting or reopening the real Application Database.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct AccountPublicIdentifierPersistence {
+    _private: (),
+}
+
+impl AccountPublicIdentifierPersistence {
+    /// Issues persistence access to the Server-owned database selection authority.
+    #[must_use]
+    pub const fn from_server_authority(_authority: &ServerDatabaseAuthority) -> Self {
+        Self { _private: () }
+    }
+
+    /// Decodes an exact nonzero 16-byte value from trusted persistence.
+    pub fn decode(
+        &self,
+        bytes: [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH],
+    ) -> Result<AccountPublicIdentifier, AccountPublicIdentifierError> {
+        AccountPublicIdentifier::from_persisted_bytes(bytes)
+    }
+
+    /// Returns the exact binary value for trusted persistence.
+    pub const fn encode(
+        &self,
+        identifier: &AccountPublicIdentifier,
+    ) -> [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] {
+        identifier.0
+    }
+}
+
+impl fmt::Debug for AccountPublicIdentifierPersistence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AccountPublicIdentifierPersistence(REDACTED)")
+    }
+}
+
 /// Number of random bytes in an Audit Reference Identifier.
 pub const AUDIT_REFERENCE_IDENTIFIER_LENGTH: usize = 16;
 
@@ -395,6 +510,33 @@ pub struct Account {
     /// data, so a Restore reinstates the requirement together with the account
     /// it constrains.
     pub mfa_required: bool,
+}
+
+/// Stable public identity assigned to one local account.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct AccountPublicIdentity {
+    account: StateIdentifier,
+    public_identifier: AccountPublicIdentifier,
+}
+
+impl AccountPublicIdentity {
+    /// Associates one account with its independently generated public identifier.
+    pub const fn new(account: StateIdentifier, public_identifier: AccountPublicIdentifier) -> Self {
+        Self {
+            account,
+            public_identifier,
+        }
+    }
+
+    /// Returns the account this projection references.
+    pub const fn account(&self) -> StateIdentifier {
+        self.account
+    }
+
+    /// Returns the typed Account Public Identifier.
+    pub const fn public_identifier(&self) -> AccountPublicIdentifier {
+        self.public_identifier
+    }
 }
 
 /// Typed Audit Reference Identifier assigned to one local account.
@@ -798,6 +940,8 @@ pub struct ApplicationStateInput {
     pub protected_secrets: Vec<ProtectedSecret>,
     /// Local accounts.
     pub accounts: Vec<Account>,
+    /// Stable public identities for local accounts.
+    pub account_public_identities: Vec<AccountPublicIdentity>,
     /// Stable Audit Reference Identifiers for local accounts.
     pub account_audit_references: Vec<AccountAuditReference>,
     /// Password verifiers.
@@ -835,6 +979,7 @@ pub struct ApplicationState {
     configuration: Vec<ConfigurationEntry>,
     protected_secrets: Vec<ProtectedSecret>,
     accounts: Vec<Account>,
+    account_public_identities: Vec<AccountPublicIdentity>,
     account_audit_references: Vec<AccountAuditReference>,
     password_verifiers: Vec<AccountPasswordVerifier>,
     groups: Vec<Group>,
@@ -857,6 +1002,7 @@ impl ApplicationState {
             mut configuration,
             mut protected_secrets,
             mut accounts,
+            mut account_public_identities,
             mut account_audit_references,
             mut password_verifiers,
             mut groups,
@@ -875,6 +1021,7 @@ impl ApplicationState {
         configuration.sort();
         protected_secrets.sort();
         accounts.sort();
+        account_public_identities.sort();
         account_audit_references.sort();
         password_verifiers.sort();
         groups.sort();
@@ -898,6 +1045,12 @@ impl ApplicationState {
         })?;
         reject_adjacent_duplicates(&accounts, |left, right| left.identifier == right.identifier)?;
         reject_duplicate_keys(&accounts, |account| account.username.clone())?;
+        reject_adjacent_duplicates(&account_public_identities, |left, right| {
+            left.account == right.account
+        })?;
+        reject_duplicate_keys(&account_public_identities, |identity| {
+            identity.public_identifier
+        })?;
         reject_adjacent_duplicates(&account_audit_references, |left, right| {
             left.account == right.account
         })?;
@@ -941,6 +1094,8 @@ impl ApplicationState {
         let log_module_identifiers =
             sorted_identifiers(&log_module_configurations, |entry| entry.identifier);
 
+        let publicly_identified_accounts =
+            sorted_identifiers(&account_public_identities, |entry| entry.account);
         let referenced_accounts =
             sorted_identifiers(&account_audit_references, |entry| entry.account);
         let referenced_groups = sorted_identifiers(&group_audit_references, |entry| entry.group);
@@ -948,7 +1103,8 @@ impl ApplicationState {
             sorted_identifiers(&log_configuration_audit_references, |entry| {
                 entry.configuration
             });
-        if account_identifiers != referenced_accounts
+        if account_identifiers != publicly_identified_accounts
+            || account_identifiers != referenced_accounts
             || group_identifiers != referenced_groups
             || log_module_identifiers != referenced_log_configurations
         {
@@ -1011,6 +1167,7 @@ impl ApplicationState {
             configuration,
             protected_secrets,
             accounts,
+            account_public_identities,
             account_audit_references,
             password_verifiers,
             groups,
@@ -1040,6 +1197,11 @@ impl ApplicationState {
     /// Returns the local accounts.
     pub fn accounts(&self) -> &[Account] {
         &self.accounts
+    }
+
+    /// Returns the local-account public identity projections.
+    pub fn account_public_identities(&self) -> &[AccountPublicIdentity] {
+        &self.account_public_identities
     }
 
     /// Returns the local-account Audit Reference projections.
@@ -1199,12 +1361,71 @@ mod tests {
         StateIdentifier::from_bytes([byte; STATE_IDENTIFIER_LENGTH]).unwrap()
     }
 
+    fn account_public_identifier(byte: u8) -> AccountPublicIdentifier {
+        AccountPublicIdentifier::from_persisted_bytes([byte; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH])
+            .unwrap()
+    }
+
     fn audit_reference(byte: u8) -> AuditReferenceIdentifier {
         AuditReferenceIdentifier::from_persisted_value(&format!(
             "ar-{}",
             format!("{byte:02x}").repeat(AUDIT_REFERENCE_IDENTIFIER_LENGTH)
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn account_public_identifier_generation_is_nonzero_and_redacted() {
+        let mut attempts = 0;
+        let generated = AccountPublicIdentifier::generate_with(|bytes| {
+            attempts += 1;
+            if attempts == 2 {
+                bytes.fill(0x5a);
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert_eq!(
+            format!("{generated:?}"),
+            "AccountPublicIdentifier(REDACTED)"
+        );
+    }
+
+    #[test]
+    fn account_public_identifier_generation_fails_closed() {
+        assert_eq!(
+            AccountPublicIdentifier::generate_with(|_| {
+                Err(AccountPublicIdentifierError::RandomnessUnavailable)
+            }),
+            Err(AccountPublicIdentifierError::RandomnessUnavailable)
+        );
+        assert_eq!(
+            AccountPublicIdentifier::generate_with(|_| Ok(())),
+            Err(AccountPublicIdentifierError::RandomnessUnavailable)
+        );
+    }
+
+    #[test]
+    fn account_public_identifier_persistence_is_authority_gated() {
+        let persistence = AccountPublicIdentifierPersistence::from_server_authority(
+            &ServerDatabaseAuthority::new(),
+        );
+        let identifier = account_public_identifier(0x31);
+
+        assert_eq!(
+            persistence.decode(persistence.encode(&identifier)),
+            Ok(identifier)
+        );
+        assert_eq!(
+            persistence.decode([0; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH]),
+            Err(AccountPublicIdentifierError::InvalidPersistedValue)
+        );
+        assert_eq!(
+            format!("{persistence:?}"),
+            "AccountPublicIdentifierPersistence(REDACTED)"
+        );
     }
 
     fn name(value: &str) -> Name {
@@ -1246,6 +1467,10 @@ mod tests {
                 active: true,
                 mfa_required: false,
             }],
+            account_public_identities: vec![AccountPublicIdentity::new(
+                identifier(1),
+                account_public_identifier(0x91),
+            )],
             account_audit_references: vec![AccountAuditReference::new(
                 identifier(1),
                 audit_reference(0xA1),
@@ -1490,6 +1715,15 @@ mod tests {
 
         assert_eq!(ApplicationState::new(reversed).unwrap(), ordered);
         assert_eq!(ordered.accounts().len(), 1);
+        assert_eq!(ordered.account_public_identities().len(), 1);
+        assert_eq!(
+            ordered.account_public_identities()[0].account(),
+            identifier(1)
+        );
+        assert_eq!(
+            ordered.account_public_identities()[0].public_identifier(),
+            account_public_identifier(0x91)
+        );
         assert_eq!(ordered.account_audit_references().len(), 1);
         assert_eq!(ordered.group_audit_references().len(), 1);
         assert_eq!(ordered.log_configuration_audit_references().len(), 1);
@@ -1626,6 +1860,55 @@ mod tests {
             LogConfigurationAuditReference::new(identifier(5), audit_reference(0xB2));
         assert_eq!(
             reject(duplicate_configuration),
+            ContractInputError::DuplicateEntry
+        );
+    }
+
+    #[test]
+    fn every_account_requires_one_unique_public_identity() {
+        let mut missing = valid_input();
+        missing.account_public_identities.clear();
+        assert_eq!(reject(missing), ContractInputError::UnknownReference);
+
+        let mut unknown = valid_input();
+        unknown.account_public_identities[0] =
+            AccountPublicIdentity::new(identifier(0x22), account_public_identifier(0x91));
+        assert_eq!(reject(unknown), ContractInputError::UnknownReference);
+
+        let mut duplicate_account = valid_input();
+        duplicate_account
+            .account_public_identities
+            .push(AccountPublicIdentity::new(
+                identifier(1),
+                account_public_identifier(0x92),
+            ));
+        assert_eq!(
+            reject(duplicate_account),
+            ContractInputError::DuplicateEntry
+        );
+
+        let mut duplicate_identifier = valid_input();
+        duplicate_identifier.accounts.push(Account {
+            identifier: identifier(0x22),
+            username: name("second-admin"),
+            display_name: None,
+            active: true,
+            mfa_required: false,
+        });
+        duplicate_identifier
+            .account_public_identities
+            .push(AccountPublicIdentity::new(
+                identifier(0x22),
+                account_public_identifier(0x91),
+            ));
+        duplicate_identifier
+            .account_audit_references
+            .push(AccountAuditReference::new(
+                identifier(0x22),
+                audit_reference(0xA2),
+            ));
+        assert_eq!(
+            reject(duplicate_identifier),
             ContractInputError::DuplicateEntry
         );
     }

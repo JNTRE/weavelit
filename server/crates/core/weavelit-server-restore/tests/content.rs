@@ -3,7 +3,10 @@
 mod support;
 
 use base64::Engine as _;
-use support::{FIXTURE_TOTP_SECRET, committed, committed_text, components, persistence};
+use support::{
+    FIXTURE_TOTP_SECRET, account_public_identifier_persistence, committed, committed_text,
+    components, persistence,
+};
 use weavelit_server_database::MAX_NAME_LENGTH;
 use weavelit_server_restore::{
     Account, AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
@@ -20,6 +23,7 @@ fn normalize(
     normalize_with_persistence(
         plaintext,
         selected_backend,
+        &account_public_identifier_persistence(),
         &persistence(),
         available_components,
     )
@@ -31,6 +35,21 @@ fn sqlite() -> BackendIdentifier {
 
 fn plaintext() -> String {
     committed_text("valid-plaintext.json")
+}
+
+const FIXTURE_ACCOUNT_PUBLIC_ID: &str = "kpOUlZaXmJmam5ydnp-goQ";
+
+fn persisted_public_id(backup: &NormalizedBackup) -> [u8; 16] {
+    account_public_identifier_persistence()
+        .encode(&backup.account_public_identities()[0].public_identifier())
+}
+
+fn decoded_public_id(value: &str) -> [u8; 16] {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .unwrap()
+        .try_into()
+        .unwrap()
 }
 
 fn replaced(from: &str, to: &str) -> String {
@@ -79,6 +98,71 @@ fn the_committed_plaintext_normalizes() {
     assert_ne!(group_reference, configuration_reference);
     assert!(!account_reference.contains(backup.accounts()[0].username.as_str()));
     assert!(!group_reference.contains(backup.groups()[0].name.as_str()));
+}
+
+#[test]
+fn supplied_account_public_id_survives_normalization_exactly() {
+    let backup = normalize(plaintext().as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_eq!(backup.account_public_identities().len(), 1);
+    assert_eq!(
+        backup.account_public_identities()[0].account(),
+        backup.accounts()[0].identifier
+    );
+    assert_eq!(
+        persisted_public_id(&backup),
+        decoded_public_id(FIXTURE_ACCOUNT_PUBLIC_ID)
+    );
+}
+
+#[test]
+fn omitted_account_public_id_generates_a_fresh_nonzero_value() {
+    let legacy = replaced(
+        &format!("\"public_id\":\"{FIXTURE_ACCOUNT_PUBLIC_ID}\","),
+        "",
+    );
+    let first = normalize(legacy.as_bytes(), &sqlite(), &components()).unwrap();
+    let second = normalize(legacy.as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_ne!(persisted_public_id(&first), [0; 16]);
+    assert_ne!(persisted_public_id(&second), [0; 16]);
+    assert_ne!(persisted_public_id(&first), persisted_public_id(&second));
+}
+
+#[test]
+fn invalid_supplied_account_public_ids_are_rejected_without_payloads() {
+    let wrong_length = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x51_u8; 15]);
+    for (candidate, expected) in [
+        ("not_base64url", ContentError::EncodingInvalid),
+        ("kpOUlZaXmJmam5ydnp-goQ=", ContentError::Malformed),
+        (wrong_length.as_str(), ContentError::EncodingInvalid),
+        ("AAAAAAAAAAAAAAAAAAAAAA", ContentError::DomainInvalid),
+    ] {
+        let document = replaced(FIXTURE_ACCOUNT_PUBLIC_ID, candidate);
+        let error = reject(&document);
+        assert_eq!(error, expected);
+        assert!(!error.to_string().contains(candidate));
+        assert_eq!(
+            RestoreError::from(error).category_reason(),
+            ("backup_invalid", "backup_invalid")
+        );
+    }
+
+    let explicit_null = replaced(
+        &format!("\"public_id\":\"{FIXTURE_ACCOUNT_PUBLIC_ID}\""),
+        "\"public_id\":null",
+    );
+    assert_eq!(reject(&explicit_null), ContentError::Malformed);
+}
+
+#[test]
+fn duplicate_account_public_ids_are_rejected() {
+    let duplicate = format!(
+        "{{\"identifier\":\"AAAAAAAAAAAAAAAAAAAAAQ\",\"public_id\":\"{FIXTURE_ACCOUNT_PUBLIC_ID}\",\"username\":\"second\",\"display_name\":null,\"active\":true}},"
+    );
+    let document = replaced("\"accounts\":[", &format!("\"accounts\":[{duplicate}"));
+
+    assert_eq!(reject(&document), ContentError::DuplicateEntry);
 }
 
 #[test]

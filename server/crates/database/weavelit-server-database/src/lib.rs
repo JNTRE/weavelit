@@ -39,8 +39,10 @@ pub use session::{
     SessionValidation, StoredSession,
 };
 pub use state::{
-    AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX, Account, AccountAuditReference,
-    AccountPasswordVerifier, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
+    ACCOUNT_PUBLIC_IDENTIFIER_LENGTH, AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX,
+    Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentifierError, AccountPublicIdentifierPersistence, AccountPublicIdentity,
+    ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
     AuditReferenceIdentifierError, AuditReferencePersistence, BoundedText, COMPONENT_ENABLED_VALUE,
     CompletionObligation, ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey,
     ConfigurationValue, CorrelationIdentifier, Description, Group, GroupAuditReference, GroupGrant,
@@ -203,6 +205,7 @@ pub trait ApplicationDatabase: Send {
     /// Atomically replaces the exact pending checkpoint with complete state once.
     fn complete_checkpoint(
         &mut self,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
         checkpoint: &WorkflowCheckpoint,
         state: &ApplicationState,
         reconciliation: &ReconciliationDigest,
@@ -211,9 +214,17 @@ pub trait ApplicationDatabase: Send {
     /// Loads complete initialized state bound to the expected deployment.
     fn load_initialized_state(
         &mut self,
-        persistence: &AuditReferencePersistence,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
+        audit_reference_persistence: &AuditReferencePersistence,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError>;
+
+    /// Loads the account projection for one exact typed public identifier.
+    fn load_account_public_identity(
+        &mut self,
+        persistence: &AccountPublicIdentifierPersistence,
+        public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountPublicIdentity>, DatabaseError>;
 
     /// Marks the persisted completion obligation acknowledged exactly once.
     fn acknowledge_completion(
