@@ -15,9 +15,10 @@ Apply instructions in this order:
 ## Purpose and Scope
 
 - This crate owns the closed administration action families, bounded component
-  target, exact-session-bound compound admission, current-session MFA step-up
-  proof and five-minute policy, live component-enablement check, non-forgeable
-  authorized-action result, and reason-free denial boundary.
+  targets and desired enablement state, exact-session-bound compound admission,
+  current-session MFA step-up proof and five-minute policy, live component-operation
+  enablement check, non-forgeable authorized-action result, and reason-free denial
+  boundary.
 - It does not own session or TOTP verification, transport routes, Client Module
   translation, Application Database mutations, Audit Log production, or any
   concrete account, Group, grant, component, Operation, or logging workflow.
@@ -30,7 +31,7 @@ Apply instructions in this order:
 - `Cargo.toml`: Package metadata, narrow contract dependencies, and the JSON
   diagnostic test dependency.
 - `src/lib.rs`: Administration actions, requests, results, step-up policy,
-  live enablement contract, and direct tests.
+  component inventory and live enablement contracts, and direct tests.
 - `tests/contract_boundary.rs`: Driver pinning external compile failures at the
   violating source spans.
 - `tests/fixtures/forbidden-administration/`: Detached crate that attempts to
@@ -50,10 +51,13 @@ Apply instructions in this order:
   the authority package may bind a validated session or mint a proof after MFA
   verification.
 - MUST keep `MfaPolicy` and `GrantMutation` as the complete step-up-required set;
-  ordinary `Account` and `ComponentOperation` actions do not require step-up.
-- MUST read `ComponentEnablement` through the source on every component or Operation
-  check after confirming the target exists in `AvailableComponents`. Never
-  retain an enablement snapshot on the plane, session, or result.
+  `Account`, `ComponentOperation`, and `ComponentEnablementChange` actions do not
+  require step-up.
+- MUST read `ComponentEnablement` through the source on every `ComponentOperation`
+  check after confirming the target exists in `AvailableComponents`. A
+  `ComponentEnablementChange` MUST instead validate exact inventory membership and
+  MUST NOT read current enablement. Never retain an enablement snapshot on the
+  plane, session, or result.
 - MUST map a missing, mismatched, rolled-back, or expired proof, an unavailable
   enablement read, and a disabled target to the same `AuthorizationDenied`.
 - MUST run this package's tests during development and `make -C server check` before

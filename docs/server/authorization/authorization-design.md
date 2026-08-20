@@ -233,6 +233,7 @@ weaker rule.
 | `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
 | `GrantMutation` | Required, scoped to `GrantMutation` | Covers future Group membership and grant mutations. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
+| `ComponentEnablementChange` | Not required | The exact kind and name must identify a compiled-in Client Module, Service Module, MFA Module, or Operation. The descriptor retains the requested enabled state without reading current enablement. |
 
 Credential issuance is future policy, not an existing accepted
 `AdministrationAction` descriptor or type. Future account-create and
@@ -249,10 +250,13 @@ not make ordinary account reads or status operations pay this
 issuance-specific gate.
 
 `ComponentOperation` means an administration action performed through an
-already enabled target. It is not the future enablement mutation itself. A
-future enable/disable workflow must add its own closed action descriptor and
-preserve the [MFA re-enable exception](#mfa-re-enablement-exception), so a
-disabled target cannot prevent the authorized action that re-enables it.
+already enabled target. It is not an enablement mutation. A
+`ComponentEnablementChange` instead carries the exact component kind, bounded
+name, and desired enabled state. The gate retains that descriptor for a future
+workflow but performs no mutation, persistence, Audit Log delivery, or
+configuration generation. It preserves the
+[MFA re-enable exception](#mfa-re-enablement-exception), so a disabled target
+cannot prevent the authorized action that re-enables it.
 
 ### Current-Session Step-Up Proof
 
@@ -285,7 +289,7 @@ session. The future MFA-policy and grant-mutation contracts then borrow the
 returned proof through `AdministrationRequest`; ordinary account contracts do
 not request one.
 
-### Live Component Enablement And Denial
+### Component Inventory, Live Enablement, And Denial
 
 A `ComponentOperation` carries `ComponentKind` and the Application Database
 contract's bounded `Name`; empty, control-character, or over-bound input is
@@ -300,15 +304,23 @@ unavailable projection read returns the same `AuthorizationDenied` as every
 unknown target and every missing, mismatched, rolled-back, or expired step-up
 proof.
 
+A `ComponentEnablementChange` applies the same bounded name and exact
+`(ComponentKind, Name)` inventory-membership check, then retains the requested
+boolean state in the authorized action. It never asks `ComponentEnablementSource`
+for the current projection, so an already-disabled target can be admitted for
+re-enablement. An unknown or wrong-kind target still returns
+`AuthorizationDenied` before any workflow can receive the action.
+
 Inventory membership and enablement are keyed by the compound
 `(ComponentKind, Name)` identity. A valid name under the wrong kind is unknown,
 and disabling one kind leaves the same name under every other kind enabled.
 
-`Account` and `MfaPolicy` actions do not read component enablement. Rejecting an
-unknown target before the enablement read is an accepted stable-value ordering
-that avoids unnecessary database work and pins observable dependency calls; it
-does not promise constant-time behavior between unknown, disabled, unavailable,
-or otherwise denied targets.
+`Account`, `MfaPolicy`, `GrantMutation`, and `ComponentEnablementChange` actions
+do not read component enablement. Rejecting an unknown target before a live
+enablement read is an accepted stable-value ordering that avoids unnecessary
+database work and pins observable dependency calls; it does not promise
+constant-time behavior between unknown, disabled, unavailable, or otherwise
+denied targets.
 
 The contract adds no reason-bearing error. Input construction has one stable,
 payload-free `AdministrationInputRejected`; every policy and enablement refusal
@@ -393,6 +405,8 @@ own enablement is not represented in the catalog this decision evaluates
 against at all, so a disabled MFA Module cannot deny the Administration Plane
 function that re-enables it: that function is authorized the same way every
 other Administration Plane function is, with no reference to any component's
+enablement. The `ComponentEnablementChange` action gate then requires only exact
+membership in the compiled-in component inventory, not the target's current
 enablement. This satisfies the Administration Plane requirement in the
 [Technical Specification](../../spec.md#multifactor-authentication) that
 Administrators be able to configure MFA Module enablement, and is consistent

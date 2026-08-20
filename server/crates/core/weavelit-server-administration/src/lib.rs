@@ -3,8 +3,8 @@
 //! A caller can reach the single [`AdministrationPlane::authorize`] entry only
 //! with the compound admission produced by the Server authorization runtime.
 //! The contract additionally enforces current-session MFA step-up for the two
-//! designated action families and reads persisted component enablement on every
-//! targeted component or Operation check.
+//! designated action families, reads persisted component enablement for every
+//! component Operation, and admits enablement changes only for compiled-in targets.
 
 #![forbid(unsafe_code)]
 
@@ -88,6 +88,56 @@ impl ComponentOperation {
     }
 }
 
+/// One bounded compiled-in component and its desired enablement state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComponentEnablementChange {
+    kind: ComponentKind,
+    name: Name,
+    enabled: bool,
+}
+
+impl ComponentEnablementChange {
+    /// Validates a component target against the shared persisted-name bound.
+    pub fn new(
+        kind: ComponentKind,
+        name: impl Into<Box<str>>,
+        enabled: bool,
+    ) -> Result<Self, AdministrationInputRejected> {
+        Ok(Self {
+            kind,
+            name: Name::new(name).map_err(|_| AdministrationInputRejected)?,
+            enabled,
+        })
+    }
+
+    /// Returns the persisted component kind.
+    #[must_use]
+    pub const fn kind(&self) -> ComponentKind {
+        self.kind
+    }
+
+    /// Returns the bounded component name.
+    #[must_use]
+    pub const fn name(&self) -> &Name {
+        &self.name
+    }
+
+    /// Returns the desired enablement state.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn is_available(&self, components: &AvailableComponents) -> bool {
+        match self.kind {
+            ComponentKind::ClientModule => components.has_client_module(&self.name),
+            ComponentKind::ServiceModule => components.has_service_module(&self.name),
+            ComponentKind::Operation => components.has_operation(&self.name),
+            ComponentKind::MfaModule => components.has_mfa_module(&self.name),
+        }
+    }
+}
+
 /// Closed Administration Plane action families owned by this foundation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdministrationAction {
@@ -99,12 +149,16 @@ pub enum AdministrationAction {
     GrantMutation,
     /// An action whose target component or named Operation must be enabled.
     ComponentOperation(ComponentOperation),
+    /// A requested enablement change for one known compiled-in component.
+    ComponentEnablementChange(ComponentEnablementChange),
 }
 
 impl AdministrationAction {
     fn step_up_family(&self) -> Option<StepUpActionFamily> {
         match self {
-            Self::Account | Self::ComponentOperation(_) => None,
+            Self::Account | Self::ComponentOperation(_) | Self::ComponentEnablementChange(_) => {
+                None
+            }
             Self::MfaPolicy => Some(StepUpActionFamily::MfaPolicy),
             Self::GrantMutation => Some(StepUpActionFamily::GrantMutation),
         }
@@ -336,7 +390,8 @@ where
     /// Every denial returns the existing reason-free [`AuthorizationDenied`]:
     /// a missing, mismatched, rolled-back, or expired step-up proof; an
     /// unavailable enablement read; and a disabled target are indistinguishable.
-    /// Account and policy-only actions perform no component-enablement read.
+    /// Enablement changes validate inventory membership without reading current
+    /// enablement. Account and policy-only actions also perform no such read.
     pub fn authorize(
         &mut self,
         admission: AuthorizedAdministrationAdmission,
@@ -358,6 +413,12 @@ where
             if !enablement.is_enabled(target.kind(), target.name()) {
                 return Err(AuthorizationDenied);
             }
+        }
+
+        if let AdministrationAction::ComponentEnablementChange(target) = &request.action
+            && !target.is_available(&self.components)
+        {
+            return Err(AuthorizationDenied);
         }
 
         Ok(AuthorizedAdministrationAction {
@@ -548,6 +609,112 @@ mod tests {
         assert_eq!(authorized.actor(), identifier(1));
         assert_eq!(authorized.client_module().as_str(), CLIENT_MODULE);
         assert_eq!(authorized.action(), &AdministrationAction::Account);
+        assert_eq!(enablement.reads(), 0);
+    }
+
+    #[test]
+    fn disabled_totp_reenable_needs_no_enablement_read_or_step_up() {
+        let authority = ServerAdministrationAuthority::new();
+        let enablement = TestEnablement::new(ComponentEnablement::new([(
+            ComponentKind::MfaModule,
+            Name::new("totp").unwrap(),
+        )]));
+        enablement.fail();
+        let mut plane = plane(TestClock::new(Duration::ZERO), enablement.clone());
+
+        let authorized = plane
+            .authorize(
+                administration_admission(&authority, 1, 11),
+                AdministrationRequest::new(AdministrationAction::ComponentEnablementChange(
+                    ComponentEnablementChange::new(ComponentKind::MfaModule, "totp", true).unwrap(),
+                )),
+            )
+            .unwrap();
+
+        let AdministrationAction::ComponentEnablementChange(change) = authorized.action() else {
+            panic!("the authorized action must retain the enablement change");
+        };
+        assert_eq!(change.kind(), ComponentKind::MfaModule);
+        assert_eq!(change.name().as_str(), "totp");
+        assert!(change.enabled());
+        assert_eq!(enablement.reads(), 0);
+
+        assert_eq!(
+            plane
+                .authorize(
+                    administration_admission(&authority, 1, 11),
+                    AdministrationRequest::new(AdministrationAction::ComponentOperation(
+                        ComponentOperation::new(ComponentKind::MfaModule, "totp").unwrap(),
+                    )),
+                )
+                .unwrap_err(),
+            AuthorizationDenied
+        );
+        assert_eq!(
+            enablement.reads(),
+            1,
+            "ComponentOperation must keep reading enablement and fail closed"
+        );
+    }
+
+    #[test]
+    fn component_enablement_change_retains_each_requested_state() {
+        let authority = ServerAdministrationAuthority::new();
+        let enablement = TestEnablement::new(ComponentEnablement::default());
+        let mut plane = plane(TestClock::new(Duration::ZERO), enablement.clone());
+
+        for enabled in [true, false] {
+            let authorized = plane
+                .authorize(
+                    administration_admission(&authority, 1, 11),
+                    AdministrationRequest::new(AdministrationAction::ComponentEnablementChange(
+                        ComponentEnablementChange::new(
+                            ComponentKind::ServiceModule,
+                            "zendesk",
+                            enabled,
+                        )
+                        .unwrap(),
+                    )),
+                )
+                .unwrap();
+
+            let AdministrationAction::ComponentEnablementChange(change) = authorized.action()
+            else {
+                panic!("the authorized action must retain the enablement change");
+            };
+            assert_eq!(change.kind(), ComponentKind::ServiceModule);
+            assert_eq!(change.name().as_str(), "zendesk");
+            assert_eq!(change.enabled(), enabled);
+        }
+
+        assert_eq!(enablement.reads(), 0);
+    }
+
+    #[test]
+    fn component_enablement_change_denies_unknown_or_wrong_kind_without_a_read() {
+        let authority = ServerAdministrationAuthority::new();
+        let enablement = TestEnablement::new(ComponentEnablement::default());
+        let mut plane = plane(TestClock::new(Duration::ZERO), enablement.clone());
+
+        for (kind, name) in [
+            (ComponentKind::MfaModule, "webauthn"),
+            (ComponentKind::ServiceModule, "totp"),
+        ] {
+            assert_eq!(
+                plane
+                    .authorize(
+                        administration_admission(&authority, 1, 11),
+                        AdministrationRequest::new(
+                            AdministrationAction::ComponentEnablementChange(
+                                ComponentEnablementChange::new(kind, name, true).unwrap(),
+                            ),
+                        ),
+                    )
+                    .unwrap_err(),
+                AuthorizationDenied
+            );
+        }
+
         assert_eq!(enablement.reads(), 0);
     }
 
@@ -804,14 +971,16 @@ mod tests {
 
     #[test]
     fn component_input_is_bounded_and_rejection_is_payload_free() {
-        let rejected = ComponentOperation::new(
-            ComponentKind::Operation,
-            "sensitive".repeat(MAX_NAME_LENGTH + 1),
-        )
-        .unwrap_err();
+        let oversized_name = "sensitive".repeat(MAX_NAME_LENGTH + 1);
+        let rejected =
+            ComponentOperation::new(ComponentKind::Operation, oversized_name.clone()).unwrap_err();
+        let change_rejected =
+            ComponentEnablementChange::new(ComponentKind::MfaModule, oversized_name, true)
+                .unwrap_err();
 
         assert_eq!(rejected.to_string(), "administration input rejected");
         assert_eq!(format!("{rejected:?}"), "AdministrationInputRejected");
+        assert_eq!(change_rejected, rejected);
     }
 
     #[test]
