@@ -109,7 +109,12 @@ Route groups:
     codes are defined by the shared `weavelit-module-client` crate; only their
     values differ.
   - `/api/v1/auth/session` validates the session cookie already presented and
-    reports whether it is still active, issuing no new cookie.
+    reports whether it is still active, issuing no new cookie. Its successful
+    result carries the existing lowercase-hexadecimal `account_id` for
+    compatibility and the account's independent `public_id`, encoded as exactly
+    22 unpadded Base64url characters. New account-administration targets accept
+    only `public_id`; `account_id` remains limited to this additive session
+    result.
   - `/api/v1/auth/logout` revokes the presented session and clears both
     cookies.
   - `/api/v1/auth/mfa/verify` submits a `code` against the `continuation` a

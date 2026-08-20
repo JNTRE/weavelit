@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::num::NonZeroU64;
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
 use crate::{ContractInputError, DeploymentIdentifier, WorkflowKind};
@@ -124,6 +125,12 @@ impl AccountPublicIdentifier {
         Self::generate_with(|bytes| {
             getrandom::fill(bytes).map_err(|_| AccountPublicIdentifierError::RandomnessUnavailable)
         })
+    }
+
+    /// Returns the canonical unpadded Base64url public representation.
+    #[must_use]
+    pub fn as_base64url(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.0)
     }
 
     fn from_persisted_bytes(
@@ -1492,6 +1499,14 @@ mod tests {
         assert_eq!(
             AccountPublicIdentifier::generate_with(|_| Ok(())),
             Err(AccountPublicIdentifierError::RandomnessUnavailable)
+        );
+    }
+
+    #[test]
+    fn account_public_identifier_uses_canonical_unpadded_base64url() {
+        assert_eq!(
+            account_public_identifier(0x31).as_base64url(),
+            "MTExMTExMTExMTExMTExMQ"
         );
     }
 

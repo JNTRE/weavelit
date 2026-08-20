@@ -400,7 +400,11 @@ test("an operator signs in to a restored deployment and the session survives a r
     expect(probeHeaders[CSRF_HEADER], "the client echoed the issued CSRF value").toBe(csrfValue);
     const probeResponse = await (probe as Request).response();
     expect(await probeResponse?.json()).toEqual({
-      result: { account_id: expect.stringMatching(/^[0-9a-f]+$/), client_module: "web-ui" },
+      result: {
+        account_id: expect.stringMatching(/^[0-9a-f]+$/),
+        public_id: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+        client_module: "web-ui",
+      },
       correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
 

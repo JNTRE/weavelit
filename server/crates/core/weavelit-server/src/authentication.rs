@@ -1417,11 +1417,19 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
 
         task::spawn_blocking(move || {
             let session = self.authorized_session(&session_token, &csrf_token)?.1;
+            let state = self.initialized_state()?;
+            let public_id = state
+                .state()
+                .account_public_identities()
+                .iter()
+                .find(|identity| identity.account() == session.account())
+                .map(|identity| identity.public_identifier().as_base64url())
+                .ok_or(AuthenticationRejection::SessionInvalid)?;
             Ok(SessionIdentity {
-                // Only the account and the issuing Client Module. No Group,
-                // grant, or other authorization decision is reported or
-                // cached, because authorization is evaluated live.
+                // No Group, grant, or other authorization decision is
+                // reported or cached, because authorization is evaluated live.
                 account_id: hexadecimal(session.account().as_bytes()),
+                public_id,
                 client_module: session.client_module().as_str().to_owned(),
             })
         })
@@ -4467,11 +4475,22 @@ pub(crate) mod tests {
     // Session validation
     // -----------------------------------------------------------------------
 
-    /// Validation reports the account and Client Module and nothing else.
+    /// Validation reports the account's identifiers and Client Module only.
     #[tokio::test]
-    async fn session_validation_reports_only_the_account_and_client_module() {
+    async fn session_validation_reports_internal_and_public_account_identifiers() {
         let surface = AuthSurface::new();
         let (session, csrf) = established_session(&surface).await;
+        let public_id = surface
+            .runtime
+            .initialized_state()
+            .expect("the sealed state must load")
+            .state()
+            .account_public_identities()
+            .iter()
+            .find(|identity| identity.account() == active_account())
+            .expect("the active account must have a public identity")
+            .public_identifier()
+            .as_base64url();
         let response = request(
             surface.surface(),
             default_timeouts(),
@@ -4485,7 +4504,8 @@ pub(crate) mod tests {
         assert_eq!(
             body_text(&response),
             format!(
-                "{{\"result\":{{\"account_id\":\"{}\",\"client_module\":\"{CLIENT_MODULE}\"}},\
+                "{{\"result\":{{\"account_id\":\"{}\",\"public_id\":\"{public_id}\",\
+                 \"client_module\":\"{CLIENT_MODULE}\"}},\
                  \"correlation_id\":\"{}\"}}",
                 hexadecimal(&ACTIVE_ACCOUNT_BYTES),
                 correlation_of(&response)
