@@ -7,11 +7,11 @@ use weavelit_server_database::{
     AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountPublicIdentity,
     ApplicationState, ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
     BoundedText, COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
-    ConfigurationEntry, DatabaseError, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
-    GroupMembership, HumanAuthorizationSnapshot, LogAssignment, LogConfigurationAuditReference,
-    LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, PasswordVerifier,
-    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
-    StateIdentifier, WorkflowKind,
+    ConfigurationEntry, CredentialRevision, DatabaseError, Group, GroupAuditReference, GroupGrant,
+    GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot, LogAssignment,
+    LogConfigurationAuditReference, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor,
+    PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH,
+    ServiceConnection, StateIdentifier, TemporaryCredentialExpiration, WorkflowKind,
 };
 
 use crate::SqliteDatabase;
@@ -21,7 +21,8 @@ const CONFIGURATION_QUERY: &str = "SELECT component, setting_key, setting_value 
      FROM weavelit_configuration ORDER BY component, setting_key";
 const PROTECTED_SECRET_QUERY: &str = "SELECT component, secret_key, protected_value \
      FROM weavelit_protected_secret ORDER BY component, secret_key";
-const ACCOUNT_QUERY: &str = "SELECT account_id, username, display_name, active, mfa_required \
+const ACCOUNT_QUERY: &str = "SELECT account_id, username, display_name, active, mfa_required, \
+    credential_revision, must_change_password, temporary_credential_expires_at_milliseconds \
      FROM weavelit_account ORDER BY account_id";
 const ACCOUNT_PUBLIC_IDENTITY_QUERY: &str = "SELECT account_id, public_identifier \
     FROM weavelit_account_public_identity ORDER BY account_id";
@@ -107,7 +108,16 @@ const DISABLED_COMPONENT_QUERY: &str = "SELECT component, setting_key \
 
 type ConfigurationRow = (String, String, String);
 type ProtectedSecretRow = (String, String, Vec<u8>);
-type AccountRow = (Vec<u8>, String, Option<String>, i64, i64);
+type AccountRow = (
+    Vec<u8>,
+    String,
+    Option<String>,
+    i64,
+    i64,
+    Vec<u8>,
+    i64,
+    Option<i64>,
+);
 type AccountPublicIdentityRow = (Vec<u8>, Vec<u8>);
 type AccountAdministrationRow = (Vec<u8>, String, Option<String>, i64, i64);
 type AuditReferenceRow = (Vec<u8>, String);
@@ -414,17 +424,24 @@ pub(super) fn write(
         )?;
     }
     for account in state.accounts() {
+        let credential_revision = account.credential_revision.to_stored_bytes();
         execute(
             connection,
             "INSERT INTO weavelit_account \
-             (account_id, username, display_name, active, mfa_required) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             (account_id, username, display_name, active, mfa_required, credential_revision, \
+              must_change_password, temporary_credential_expires_at_milliseconds) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 account.identifier.as_bytes().as_slice(),
                 account.username.as_str(),
                 account.display_name.as_ref().map(BoundedText::as_str),
                 i64::from(account.active),
                 i64::from(account.mfa_required),
+                credential_revision.as_slice(),
+                i64::from(account.must_change_password),
+                account
+                    .temporary_credential_expiration
+                    .map(TemporaryCredentialExpiration::as_unix_milliseconds),
             ],
         )?;
     }
@@ -626,20 +643,48 @@ pub(super) fn read(
             })
             .collect::<Result<Vec<_>, DatabaseError>>()?;
 
-    let accounts = rows::<AccountRow>(connection, ACCOUNT_QUERY, five_columns)?
-        .into_iter()
-        .map(
-            |(account_id, username, display_name, active, mfa_required)| {
-                Ok(Account {
-                    identifier: identifier(&account_id)?,
-                    username: text(username)?,
-                    display_name: display_name.map(text).transpose()?,
-                    active: boolean(active)?,
-                    mfa_required: boolean(mfa_required)?,
-                })
-            },
-        )
-        .collect::<Result<Vec<_>, DatabaseError>>()?;
+    let accounts = rows::<AccountRow>(connection, ACCOUNT_QUERY, |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+        ))
+    })?
+    .into_iter()
+    .map(
+        |(
+            account_id,
+            username,
+            display_name,
+            active,
+            mfa_required,
+            credential_revision,
+            must_change_password,
+            temporary_credential_expiration,
+        )| {
+            Ok(Account {
+                identifier: identifier(&account_id)?,
+                username: text(username)?,
+                display_name: display_name.map(text).transpose()?,
+                active: boolean(active)?,
+                mfa_required: boolean(mfa_required)?,
+                credential_revision: decode_credential_revision(&credential_revision)?,
+                must_change_password: boolean(must_change_password)?,
+                temporary_credential_expiration: temporary_credential_expiration
+                    .map(|value| {
+                        TemporaryCredentialExpiration::from_unix_milliseconds(value)
+                            .map_err(|_| DatabaseError::IntegrityFailure)
+                    })
+                    .transpose()?,
+            })
+        },
+    )
+    .collect::<Result<Vec<_>, DatabaseError>>()?;
 
     let account_public_identities =
         rows::<AccountPublicIdentityRow>(connection, ACCOUNT_PUBLIC_IDENTITY_QUERY, two_columns)?
@@ -999,6 +1044,13 @@ fn identifier(bytes: &[u8]) -> Result<StateIdentifier, DatabaseError> {
         .try_into()
         .map_err(|_| DatabaseError::IntegrityFailure)?;
     StateIdentifier::from_bytes(bytes).map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+fn decode_credential_revision(bytes: &[u8]) -> Result<CredentialRevision, DatabaseError> {
+    let bytes = bytes
+        .try_into()
+        .map_err(|_| DatabaseError::IntegrityFailure)?;
+    CredentialRevision::from_stored_bytes(bytes).map_err(|_| DatabaseError::IntegrityFailure)
 }
 
 fn audit_reference(

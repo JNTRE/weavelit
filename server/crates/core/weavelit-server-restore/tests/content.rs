@@ -7,7 +7,7 @@ use support::{
     FIXTURE_TOTP_SECRET, account_public_identifier_persistence, committed, committed_text,
     components, persistence,
 };
-use weavelit_server_database::MAX_NAME_LENGTH;
+use weavelit_server_database::{CredentialRevision, MAX_NAME_LENGTH};
 use weavelit_server_restore::{
     Account, AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
     GroupGrant, LogSettingsFormat, MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS,
@@ -98,6 +98,91 @@ fn the_committed_plaintext_normalizes() {
     assert_ne!(group_reference, configuration_reference);
     assert!(!account_reference.contains(backup.accounts()[0].username.as_str()));
     assert!(!group_reference.contains(backup.groups()[0].name.as_str()));
+    assert_eq!(
+        backup.accounts()[0].credential_revision,
+        CredentialRevision::INITIAL
+    );
+    assert!(!backup.accounts()[0].must_change_password);
+    assert_eq!(backup.accounts()[0].temporary_credential_expiration, None);
+}
+
+#[test]
+fn supplied_temporary_credential_metadata_survives_normalization() {
+    let document = replaced(
+        "\"active\":true}",
+        "\"active\":true,\"credential_revision\":18446744073709551615,\
+         \"must_change_password\":true,\
+         \"temporary_credential_expires_at_milliseconds\":9223372036854775807}",
+    );
+
+    let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
+    let account = &backup.accounts()[0];
+    assert_eq!(
+        account.credential_revision,
+        CredentialRevision::from_value(u64::MAX).unwrap()
+    );
+    assert!(account.must_change_password);
+    assert_eq!(
+        account
+            .temporary_credential_expiration
+            .unwrap()
+            .as_unix_milliseconds(),
+        i64::MAX
+    );
+}
+
+#[test]
+fn invalid_temporary_credential_metadata_is_uniformly_backup_invalid() {
+    let mutations = [
+        (
+            "zero revision",
+            "\"active\":true,\"credential_revision\":0}",
+        ),
+        (
+            "malformed revision",
+            "\"active\":true,\"credential_revision\":\"secret-revision\"}",
+        ),
+        (
+            "negative expiration",
+            "\"active\":true,\"must_change_password\":true,\
+             \"temporary_credential_expires_at_milliseconds\":-1}",
+        ),
+        (
+            "flag without expiration",
+            "\"active\":true,\"must_change_password\":true}",
+        ),
+        (
+            "expiration without flag",
+            "\"active\":true,\
+             \"temporary_credential_expires_at_milliseconds\":1}",
+        ),
+    ];
+
+    for (label, replacement) in mutations {
+        let document = replaced("\"active\":true}", replacement);
+        let error = reject(&document);
+        assert_eq!(
+            RestoreError::from(error).category_reason(),
+            ("backup_invalid", "backup_invalid"),
+            "{label}"
+        );
+        assert!(!error.to_string().contains("secret-revision"), "{label}");
+    }
+
+    let temporary_without_verifier = replaced(
+        "\"active\":true}",
+        "\"active\":true,\"must_change_password\":true,\
+         \"temporary_credential_expires_at_milliseconds\":1}",
+    )
+    .replace(
+        "\"password_verifiers\":[{\"account\":\"AgMEBQYHCAkKCwwNDg8QEQ\",\"verifier\":\"$argon2id$v=19$m=65536,t=3,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ\"}]",
+        "\"password_verifiers\":[]",
+    );
+    let error = reject(&temporary_without_verifier);
+    assert_eq!(
+        RestoreError::from(error).category_reason(),
+        ("backup_invalid", "backup_invalid")
+    );
 }
 
 #[test]

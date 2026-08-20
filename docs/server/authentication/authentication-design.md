@@ -87,10 +87,13 @@ An unknown account, an inactive account, an account with no stored verifier, and
 an account whose stored verifier is outside the allowlist are all denied only
 after one real Argon2 verification against a decoy verifier built at the current
 profile. Every denial therefore performs the same verification work as a wrong
-password and is indistinguishable from it. The decoy is a valid PHC string with
-a random salt and a random output, so no submitted password can match it. A
-denial is not reported as an error, so no caller can separate "no such account"
-from "wrong password" by inspecting a failure value.
+password and is indistinguishable from it. An expired temporary credential is
+also denied only after its retained verifier receives that same verification
+work; expiry is evaluated after the verifier result, never as an early return.
+The decoy is a valid PHC string with a random salt and a random output, so no
+submitted password can match it. A denial is not reported as an error, so no
+caller can separate "no such account" from "wrong password" by inspecting a
+failure value.
 
 An account with no stored verifier is a modeled credential state rather than an
 error or a data defect. The password decision represents it explicitly, denies
@@ -108,7 +111,8 @@ elapsed time.
 
 The route layer preserves this indistinguishability at the wire. An unknown
 account, an inactive account, an account with no stored verifier, an account
-whose stored verifier is outside the allowlist, and a wrong password all
+whose stored verifier is outside the allowlist, an expired temporary
+credential, a stale verified credential revision, and a wrong password all
 produce the identical `401` response: the same stable error code, the same
 response body shape, the same absence of any cookie, and no response header
 that varies by cause.

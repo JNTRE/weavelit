@@ -696,6 +696,9 @@ fn account_and_group_targets_use_only_persisted_audit_projections() {
         display_name: Some(Name::new("Équipe Opérations 東京").unwrap()),
         active: true,
         mfa_required: true,
+        credential_revision: weavelit_server_database::CredentialRevision::INITIAL,
+        must_change_password: false,
+        temporary_credential_expiration: None,
     };
     let source_group = Group {
         identifier: state_identifier(0x72),

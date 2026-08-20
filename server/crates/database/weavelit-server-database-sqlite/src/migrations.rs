@@ -75,6 +75,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0012_add_account_public_identities",
         sql: include_str!("../migrations/0012_add_account_public_identities.sql"),
     },
+    Migration {
+        sequence: 13,
+        identifier: "0013_add_account_credential_state",
+        sql: include_str!("../migrations/0013_add_account_credential_state.sql"),
+    },
 ];
 
 struct AppliedMigration {
@@ -626,6 +631,64 @@ mod tests {
                 ("existing".to_owned(), "Existing Account".to_owned(), 1, 0)
             );
         }
+    }
+
+    #[test]
+    fn failed_account_credential_state_migration_rolls_back_columns_and_ledger() {
+        const FAILING_MIGRATION: &str = concat!(
+            include_str!("../migrations/0013_add_account_credential_state.sql"),
+            "INSERT INTO missing_table VALUES (1);"
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..12]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (?1, 'existing', NULL, 1, 0)",
+                [[0x11_u8; 16].as_slice()],
+            )
+            .unwrap();
+        let mut migrations = MIGRATIONS.to_vec();
+        migrations[12].sql = FAILING_MIGRATION;
+
+        assert_eq!(
+            apply_migrations(&mut connection, &migrations),
+            Err(DatabaseError::IntegrityFailure)
+        );
+        let columns = connection
+            .prepare("SELECT name FROM pragma_table_info('weavelit_account') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!columns.iter().any(|name| name == "credential_revision"));
+        assert!(!columns.iter().any(|name| name == "must_change_password"));
+        assert!(
+            !columns
+                .iter()
+                .any(|name| name == "temporary_credential_expires_at_milliseconds")
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_migration_ledger",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            12
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT username FROM weavelit_account", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "existing"
+        );
     }
 
     #[test]

@@ -37,8 +37,8 @@ pub use reconciliation::{RECONCILIATION_DIGEST_LENGTH, ReconciliationDigest, Rec
 pub use session::{
     MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
     SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
-    SessionCsrfHash, SessionInstant, SessionRejection, SessionStore, SessionTokenHash,
-    SessionValidation, StoredSession,
+    SessionCsrfHash, SessionInstant, SessionIssuance, SessionRejection, SessionStore,
+    SessionTokenHash, SessionValidation, StoredSession,
 };
 pub use state::{
     ACCOUNT_PUBLIC_IDENTIFIER_LENGTH, AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX,
@@ -46,16 +46,17 @@ pub use state::{
     AccountPublicIdentifierError, AccountPublicIdentifierPersistence, AccountPublicIdentity,
     ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
     AuditReferenceIdentifierError, AuditReferencePersistence, BoundedText, COMPONENT_ENABLED_VALUE,
-    CompletionObligation, ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey,
-    ConfigurationValue, CorrelationIdentifier, Description, Group, GroupAuditReference, GroupGrant,
-    GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot, InitializedState, LogAssignment,
+    CREDENTIAL_REVISION_LENGTH, CompletionObligation, ComponentEnablement, ComponentKind,
+    ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
+    CredentialRevision, Description, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
+    GroupMembership, HumanAuthorizationSnapshot, InitializedState, LogAssignment,
     LogClassification, LogConfigurationAuditReference, LogDetail, LogModuleConfiguration,
     LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
     MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH,
     MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
     MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier,
     ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
-    StateIdentifier,
+    StateIdentifier, TemporaryCredentialExpiration,
 };
 
 use std::{error::Error as StdError, fmt};
@@ -370,6 +371,12 @@ pub enum ContractInputError {
     InvalidSessionDigest,
     /// The session instant is negative or outside the accepted range.
     InvalidSessionInstant,
+    /// The account credential revision is the reserved zero value.
+    InvalidCredentialRevision,
+    /// The temporary credential expiration is before the Unix epoch.
+    InvalidTemporaryCredentialExpiration,
+    /// Temporary credential metadata is incomplete or lacks a verifier.
+    InvalidTemporaryCredentialState,
     /// The MFA time step is outside the representable range.
     InvalidMfaTimeStep,
     /// The completion-record event time is negative.
@@ -399,6 +406,11 @@ impl fmt::Display for ContractInputError {
             Self::InvalidRecoveryPublicKey => "recovery public key is invalid",
             Self::InvalidSessionDigest => "session digest is invalid",
             Self::InvalidSessionInstant => "session instant is invalid",
+            Self::InvalidCredentialRevision => "credential revision is invalid",
+            Self::InvalidTemporaryCredentialExpiration => {
+                "temporary credential expiration is invalid"
+            }
+            Self::InvalidTemporaryCredentialState => "temporary credential state is invalid",
             Self::InvalidMfaTimeStep => "mfa time step is invalid",
             Self::InvalidEventTime => "completion event time is invalid",
             Self::DuplicateEntry => "application state contains a duplicate entry",

@@ -57,10 +57,11 @@ use weavelit_server_authentication::{
 #[cfg(test)]
 use weavelit_server_database::MfaEnablementOutcome;
 use weavelit_server_database::{
-    Account, ApplicationState, ComponentKind, DatabaseError, DeploymentIdentifier,
-    InitializedState, LogType, MfaAcceptance, MfaDirectSession, MfaEnrollment, MfaFactor,
-    MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession, SessionCsrfHash, SessionInstant,
-    SessionStore, SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
+    Account, ApplicationState, ComponentKind, CredentialRevision, DatabaseError,
+    DeploymentIdentifier, InitializedState, LogType, MfaAcceptance, MfaDirectSession,
+    MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
+    SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash, SessionValidation,
+    StateIdentifier, StoredSession,
 };
 use weavelit_server_lifecycle::{ProtectedValueAccess, ProtectedValueKind};
 use weavelit_server_log::{
@@ -493,9 +494,17 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         let state = self.initialized_state()?;
 
         match self.verify_password(state.state(), username, password.as_bytes()) {
-            PasswordOutcome::Verified { account } => {
-                self.admit(state.state(), account, &client_module, correlation_id)
-            }
+            PasswordOutcome::Verified {
+                account,
+                credential_revision,
+                ..
+            } => self.admit(
+                state.state(),
+                account,
+                credential_revision,
+                &client_module,
+                correlation_id,
+            ),
             PasswordOutcome::Denied => {
                 // Delivery is attempted before the denial is returned, and every
                 // failure inside is absorbed, so the System Log records the
@@ -526,6 +535,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         &self,
         state: &ApplicationState,
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: &Name,
         correlation_id: &str,
     ) -> Result<LoginOutcome, AuthenticationRejection> {
@@ -538,10 +548,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             .is_some_and(|candidate| candidate.mfa_required);
 
         match (enabled, enrolled, required) {
-            (true, true, _) => self.second_factor(account, client_module),
-            (true, false, true) => self.enrollment(account, client_module),
+            (true, true, _) => self.second_factor(account, credential_revision, client_module),
+            (true, false, true) => self.enrollment(account, credential_revision, client_module),
             (false, _, true) => Err(self.deny(correlation_id)),
-            (true | false, _, false) => self.issue_session(account, client_module, correlation_id),
+            (true | false, _, false) => {
+                self.issue_session(account, credential_revision, client_module, correlation_id)
+            }
         }
     }
 
@@ -553,10 +565,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     fn second_factor(
         &self,
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: &Name,
     ) -> Result<LoginOutcome, AuthenticationRejection> {
         self.continuation(PendingClaim::SecondFactor {
             account,
+            credential_revision,
             client_module: client_module.clone(),
         })
         .map(|continuation| LoginOutcome::SecondFactorRequired { continuation })
@@ -566,10 +580,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     fn enrollment(
         &self,
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: &Name,
     ) -> Result<LoginOutcome, AuthenticationRejection> {
         self.continuation(PendingClaim::Enrollment {
             account,
+            credential_revision,
             client_module: client_module.clone(),
         })
         .map(|continuation| LoginOutcome::EnrollmentRequired { continuation })
@@ -609,7 +625,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                 .map_or((StoredCredential::NoVerifier, None), |verifier| {
                     (
                         StoredCredential::Verifier(verifier.verifier.as_str()),
-                        Some(account.identifier),
+                        Some(account),
                     )
                 }),
         };
@@ -618,10 +634,24 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             // A verified decoy is unreachable, so `authenticated` is always
             // present here; the match makes that unreachable case deny rather
             // than authenticate an account this Server never resolved.
-            Ok(PasswordVerdict::Verified { .. }) => authenticated
-                .map_or(PasswordOutcome::Denied, |account| {
-                    PasswordOutcome::Verified { account }
-                }),
+            Ok(PasswordVerdict::Verified { .. }) => {
+                let Some(account) = authenticated else {
+                    return PasswordOutcome::Denied;
+                };
+                if let Some(expiration) = account.temporary_credential_expiration {
+                    let Some(now) = (self.clock)() else {
+                        return PasswordOutcome::Denied;
+                    };
+                    if expiration.as_unix_milliseconds() <= now {
+                        return PasswordOutcome::Denied;
+                    }
+                }
+                PasswordOutcome::Verified {
+                    account: account.identifier,
+                    credential_revision: account.credential_revision,
+                    must_change_password: account.must_change_password,
+                }
+            }
             Ok(PasswordVerdict::Denied) | Err(_) => PasswordOutcome::Denied,
         }
     }
@@ -648,16 +678,22 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     fn issue_session(
         &self,
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: &Name,
         correlation_id: &str,
     ) -> Result<LoginOutcome, AuthenticationRejection> {
         let target = totp_target()?;
-        let (session, established) = self.new_session(account, client_module)?;
+        let (session, established) =
+            self.new_session(account, credential_revision, client_module)?;
 
-        match self.with_mfa(|store| store.issue_direct_session(&target, account, &session))? {
+        match self.with_mfa(|store| store.issue_direct_session(&target, &session))? {
             MfaDirectSession::Issued => Ok(LoginOutcome::SessionEstablished(established)),
-            MfaDirectSession::SecondFactorRequired => self.second_factor(account, client_module),
-            MfaDirectSession::EnrollmentRequired => self.enrollment(account, client_module),
+            MfaDirectSession::SecondFactorRequired => {
+                self.second_factor(account, credential_revision, client_module)
+            }
+            MfaDirectSession::EnrollmentRequired => {
+                self.enrollment(account, credential_revision, client_module)
+            }
             MfaDirectSession::Denied => Err(self.deny(correlation_id)),
         }
     }
@@ -672,6 +708,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     fn new_session(
         &self,
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: &Name,
     ) -> Result<(NewSession, SessionEstablished), AuthenticationRejection> {
         let unavailable = AuthenticationRejection::ServiceUnavailable;
@@ -683,6 +720,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             SessionTokenHash::from_bytes(*session_digest.as_bytes()).map_err(|_| unavailable)?,
             SessionCsrfHash::from_bytes(*csrf_digest.as_bytes()).map_err(|_| unavailable)?,
             account,
+            credential_revision,
             client_module.clone(),
             self.now()?,
         );
@@ -734,6 +772,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         // attempt whether or not the code was right.
         let Some(PendingClaim::SecondFactor {
             account,
+            credential_revision,
             client_module,
         }) = self.continuations.claim(continuation)
         else {
@@ -741,6 +780,9 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         };
 
         let state = self.initialized_state()?;
+        if !account_credential_is_current(state.state(), account, credential_revision, now) {
+            return Err(self.deny(correlation_id));
+        }
         // Enablement is not decided here. It is read inside the transaction
         // that records the accepted step and writes the session, because a
         // decision taken on state loaded now would let a module disabled while
@@ -757,7 +799,8 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         let step = MfaTimeStep::from_step(step.as_u64())
             .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
         let target = totp_target()?;
-        let (session, established) = self.new_session(account, &client_module)?;
+        let (session, established) =
+            self.new_session(account, credential_revision, &client_module)?;
 
         // The enablement, the watermark that decides replay, and the session
         // are one atomic decision, so a code presented twice inside its own
@@ -768,7 +811,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             .with_mfa(|store| store.accept_step(&target, factor.identifier, step, &session))?
         {
             MfaAcceptance::Accepted => Ok(established),
-            MfaAcceptance::Replayed | MfaAcceptance::ModuleDisabled => {
+            MfaAcceptance::Rejected | MfaAcceptance::Replayed | MfaAcceptance::ModuleDisabled => {
                 Err(self.deny(correlation_id))
             }
         }
@@ -797,6 +840,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
         let Some(PendingClaim::Enrollment {
             account,
+            credential_revision,
             client_module,
         }) = self.continuations.claim(continuation)
         else {
@@ -804,6 +848,10 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         };
 
         let state = self.initialized_state()?;
+        let now = self.milliseconds()?;
+        if !account_credential_is_current(state.state(), account, credential_revision, now) {
+            return Err(self.deny(correlation_id));
+        }
         if !module_enabled(state.state()) {
             return Err(self.deny(correlation_id));
         }
@@ -816,7 +864,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             return Err(self.deny(correlation_id));
         };
 
-        self.open_secret(account, client_module, &username)
+        self.open_secret(account, credential_revision, client_module, &username)
     }
 
     /// Opens an enrollment for an account that is already signed in.
@@ -867,13 +915,18 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         // longer holds still costs exactly one verification.
         let username = account_username(state.state(), session.account());
         let submitted = username.as_ref().map_or("", Name::as_str);
-        let verified = match self.verify_password(state.state(), submitted, password.as_bytes()) {
-            PasswordOutcome::Verified { account } if account == session.account() => account,
-            PasswordOutcome::Verified { .. } | PasswordOutcome::Denied => {
-                self.record_denial(correlation_id);
-                return Err(AuthenticationRejection::AuthenticationFailed);
-            }
-        };
+        let (verified, credential_revision) =
+            match self.verify_password(state.state(), submitted, password.as_bytes()) {
+                PasswordOutcome::Verified {
+                    account,
+                    credential_revision,
+                    must_change_password: false,
+                } if account == session.account() => (account, credential_revision),
+                PasswordOutcome::Verified { .. } | PasswordOutcome::Denied => {
+                    self.record_denial(correlation_id);
+                    return Err(AuthenticationRejection::AuthenticationFailed);
+                }
+            };
 
         if !module_enabled(state.state()) || enrolled_factor(state.state(), verified).is_some() {
             return Err(self.deny(correlation_id));
@@ -882,7 +935,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             return Err(self.deny(correlation_id));
         };
 
-        self.open_secret(verified, session.client_module().clone(), &username)
+        self.open_secret(
+            verified,
+            credential_revision,
+            session.client_module().clone(),
+            &username,
+        )
     }
 
     /// Generates one enrollment secret and the ticket that confirms it.
@@ -902,6 +960,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     fn open_secret(
         &self,
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: Name,
         username: &Name,
     ) -> Result<MfaEnrollmentOpened, AuthenticationRejection> {
@@ -920,6 +979,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
 
         let enrollment = self.continuations.issue(PendingClaim::EnrollmentConfirm {
             account,
+            credential_revision,
             client_module,
             secret: bytes,
         })?;
@@ -959,12 +1019,18 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         let now = self.milliseconds()?;
         let Some(PendingClaim::EnrollmentConfirm {
             account,
+            credential_revision,
             client_module,
             secret,
         }) = self.continuations.claim(enrollment)
         else {
             return Err(self.deny(correlation_id));
         };
+
+        let state = self.initialized_state()?;
+        if !account_credential_is_current(state.state(), account, credential_revision, now) {
+            return Err(self.deny(correlation_id));
+        }
 
         let unavailable = AuthenticationRejection::ServiceUnavailable;
         let Some(step) =
@@ -995,12 +1061,13 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         // transaction, so an enrollment opened while the module was enabled and
         // confirmed after it was disabled persists no factor and issues no
         // session.
-        let (session, established) = self.new_session(account, &client_module)?;
+        let (session, established) =
+            self.new_session(account, credential_revision, &client_module)?;
         match self.with_mfa(|store| store.enroll(&target, &factor, step, &session))? {
             MfaEnrollment::Enrolled => Ok(established),
-            MfaEnrollment::AlreadyEnrolled | MfaEnrollment::ModuleDisabled => {
-                Err(self.deny(correlation_id))
-            }
+            MfaEnrollment::AlreadyEnrolled
+            | MfaEnrollment::ModuleDisabled
+            | MfaEnrollment::Rejected => Err(self.deny(correlation_id)),
         }
     }
 
@@ -1292,6 +1359,10 @@ enum PasswordOutcome {
     Verified {
         /// The account the verifier belongs to.
         account: StateIdentifier,
+        /// The exact credential generation that was verified.
+        credential_revision: CredentialRevision,
+        /// Whether the verified credential must be replaced before ordinary use.
+        must_change_password: bool,
     },
     /// The submission was denied, for a reason this value cannot report.
     Denied,
@@ -1310,16 +1381,19 @@ enum PendingClaim {
     /// A verified password waiting for a code from an enrolled factor.
     SecondFactor {
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: Name,
     },
     /// A verified password that must enroll a factor before it may proceed.
     Enrollment {
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: Name,
     },
     /// An opened enrollment waiting for a code proving its secret was stored.
     EnrollmentConfirm {
         account: StateIdentifier,
+        credential_revision: CredentialRevision,
         client_module: Name,
         /// Held only here until a code confirms it, so an abandoned enrollment
         /// leaves nothing durable behind.
@@ -1564,6 +1638,22 @@ fn enrolled_factor(state: &ApplicationState, account: StateIdentifier) -> Option
         .mfa_factors()
         .iter()
         .find(|factor| factor.account == account && factor.module.as_str() == TOTP_MODULE)
+}
+
+fn account_credential_is_current(
+    state: &ApplicationState,
+    account: StateIdentifier,
+    credential_revision: CredentialRevision,
+    now: i64,
+) -> bool {
+    state.accounts().iter().any(|candidate| {
+        candidate.identifier == account
+            && candidate.active
+            && candidate.credential_revision == credential_revision
+            && candidate
+                .temporary_credential_expiration
+                .is_none_or(|expiration| expiration.as_unix_milliseconds() > now)
+    })
 }
 
 /// Returns the username one account is addressed by, when the state holds it.
@@ -2008,6 +2098,25 @@ pub(crate) mod tests {
         (Arc::new(destination), delivered)
     }
 
+    fn assert_fixed_authentication_failure_records(
+        delivered: &Arc<Mutex<Vec<DeliveredRecord>>>,
+        expected: usize,
+        forbidden: &[&str],
+    ) {
+        let records = delivered
+            .lock()
+            .expect("the delivered record log must not poison");
+        assert_eq!(records.len(), expected);
+        for record in records.iter() {
+            assert_eq!(record.classification, "authentication.failure");
+            assert_eq!(record.detail, "local password authentication denied");
+            let diagnostic = format!("{record:?}");
+            for value in forbidden {
+                assert!(!diagnostic.contains(value), "log leaked {value:?}");
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Harness
     // -----------------------------------------------------------------------
@@ -2140,6 +2249,31 @@ pub(crate) mod tests {
             self.clock.load(Ordering::SeqCst)
         }
 
+        fn set_account_credential_state(
+            &self,
+            active: bool,
+            revision: u64,
+            expiration: Option<i64>,
+        ) {
+            let changed = rusqlite::Connection::open(&self.database)
+                .expect("the test connection must open")
+                .execute(
+                    "UPDATE weavelit_account SET active = ?2, credential_revision = ?3, \
+                     must_change_password = ?4, \
+                     temporary_credential_expires_at_milliseconds = ?5 \
+                     WHERE account_id = ?1",
+                    rusqlite::params![
+                        ACTIVE_ACCOUNT_BYTES.as_slice(),
+                        i64::from(active),
+                        revision.to_be_bytes().as_slice(),
+                        i64::from(expiration.is_some()),
+                        expiration,
+                    ],
+                )
+                .expect("the account credential state change must run");
+            assert_eq!(changed, 1, "the sealed active account must have changed");
+        }
+
         /// Returns the username the sealed active account answers to.
         fn username(&self) -> &str {
             &self.username
@@ -2237,6 +2371,9 @@ pub(crate) mod tests {
                     display_name: None,
                     active: true,
                     mfa_required: fixture.required,
+                    credential_revision: CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
                 },
                 Account {
                     identifier: inactive,
@@ -2244,6 +2381,9 @@ pub(crate) mod tests {
                     display_name: None,
                     active: false,
                     mfa_required: false,
+                    credential_revision: CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
                 },
             ],
             password_verifiers: vec![
@@ -3826,6 +3966,26 @@ pub(crate) mod tests {
                 })
                 .expect("the session count must be read")
         }
+
+        fn watermark_count(&self) -> i64 {
+            rusqlite::Connection::open(&self.database)
+                .expect("the test connection must open")
+                .query_row(
+                    "SELECT count(*) FROM weavelit_mfa_replay_watermark",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("the watermark count must be read")
+        }
+
+        fn factor_count(&self) -> i64 {
+            rusqlite::Connection::open(&self.database)
+                .expect("the test connection must open")
+                .query_row("SELECT count(*) FROM weavelit_mfa_factor", [], |row| {
+                    row.get(0)
+                })
+                .expect("the factor count must be read")
+        }
     }
 
     /// A requirement imposed after the truth table read it issues no session.
@@ -3864,6 +4024,7 @@ pub(crate) mod tests {
             let admitted = surface.runtime.admit(
                 admitting.state(),
                 active_account(),
+                CredentialRevision::INITIAL,
                 &name(CLIENT_MODULE),
                 TEST_CORRELATION,
             );
@@ -3890,6 +4051,40 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn account_changes_before_direct_session_write_issue_nothing() {
+        for (label, active, revision, expires_now) in [
+            ("inactive", false, 1, false),
+            ("stale revision", true, 2, false),
+            ("exact expiry", true, 1, true),
+        ] {
+            let surface = AuthSurface::with_mfa(mfa_fixture(false, false, false));
+            let admitting = surface
+                .runtime
+                .initialized_state()
+                .expect("the password-time state must load");
+            surface.set_account_credential_state(
+                active,
+                revision,
+                expires_now.then_some(surface.clock()),
+            );
+
+            let admitted = surface.runtime.admit(
+                admitting.state(),
+                active_account(),
+                CredentialRevision::INITIAL,
+                &name(CLIENT_MODULE),
+                TEST_CORRELATION,
+            );
+
+            assert!(
+                matches!(admitted, Err(AuthenticationRejection::AuthenticationFailed)),
+                "{label}"
+            );
+            assert_eq!(surface.session_count(), 0, "{label}");
+        }
+    }
+
     /// An uncontended not-required login still issues its session directly.
     ///
     /// This is the `(disabled, not enrolled, not required)` row of the table,
@@ -3908,6 +4103,7 @@ pub(crate) mod tests {
         let admitted = surface.runtime.admit(
             admitting.state(),
             active_account(),
+            CredentialRevision::INITIAL,
             &name(CLIENT_MODULE),
             TEST_CORRELATION,
         );
@@ -3947,6 +4143,7 @@ pub(crate) mod tests {
         let admitted = surface.runtime.admit(
             admitting.state(),
             active_account(),
+            CredentialRevision::INITIAL,
             &name(CLIENT_MODULE),
             TEST_CORRELATION,
         );
@@ -3984,6 +4181,7 @@ pub(crate) mod tests {
         let admitted = surface.runtime.admit(
             admitting.state(),
             active_account(),
+            CredentialRevision::INITIAL,
             &name(CLIENT_MODULE),
             TEST_CORRELATION,
         );
@@ -4052,6 +4250,43 @@ pub(crate) mod tests {
             vec![1; 5],
             "every login path must perform exactly one verification"
         );
+    }
+
+    #[tokio::test]
+    async fn temporary_password_expiry_is_checked_after_equal_work_and_is_exact() {
+        let (destination, delivered) = recording_log(false);
+        let expired = AuthSurface::with_log(destination);
+        expired.set_account_credential_state(true, 1, Some(ISSUED_AT));
+
+        let refused = login(&expired, ACTIVE_USERNAME, CORRECT_PASSWORD).await;
+        let refused_wire = rendered(&refused).await;
+        let refused_correlation = correlation_of(&refused);
+        let wrong = login(&expired, ACTIVE_USERNAME, WRONG_PASSWORD).await;
+        let wrong_correlation = correlation_of(&wrong);
+
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        assert!(refused.cookies.is_none());
+        assert!(!refused_wire.contains("Set-Cookie"));
+        assert!(!refused_wire.contains("continuation"));
+        assert_eq!(
+            normalized(&refused_wire, &refused_correlation),
+            normalized(&rendered(&wrong).await, &wrong_correlation)
+        );
+        assert_eq!(expired.engine.verifications(), 2);
+        assert_eq!(expired.session_count(), 0);
+        assert_fixed_authentication_failure_records(
+            &delivered,
+            2,
+            &[CORRECT_PASSWORD, WRONG_PASSWORD, ACTIVE_USERNAME],
+        );
+
+        let before_expiry = AuthSurface::new();
+        before_expiry.set_account_credential_state(true, 1, Some(ISSUED_AT + 1));
+        let accepted = login(&before_expiry, ACTIVE_USERNAME, CORRECT_PASSWORD).await;
+        assert_eq!(accepted.status, StatusCode::OK);
+        assert_eq!(set_cookie_lines(&rendered(&accepted).await).len(), 2);
+        assert_eq!(before_expiry.engine.verifications(), 1);
+        assert_eq!(before_expiry.session_count(), 1);
     }
 
     // -----------------------------------------------------------------------
@@ -4145,6 +4380,54 @@ pub(crate) mod tests {
                 revoked_sessions: 1
             }
         );
+    }
+
+    #[tokio::test]
+    async fn stale_second_factor_continuations_are_indistinguishable_and_write_nothing() {
+        for (label, active, revision, expires_now) in [
+            ("inactive", false, 1, false),
+            ("stale revision", true, 2, false),
+            ("exact expiry", true, 1, true),
+        ] {
+            let (destination, delivered) = recording_log(false);
+            let surface =
+                AuthSurface::build(true, Some(destination), mfa_fixture(true, true, true));
+            surface.set_clock(vector_milliseconds(0));
+            let continuation = stopped_login(&surface, MFA_REQUIRED_CODE).await;
+            surface.set_account_credential_state(
+                active,
+                revision,
+                expires_now.then_some(surface.clock()),
+            );
+
+            let refused = verify_code(&surface, &continuation, ENROLLED_VECTOR_CODE).await;
+            let refused_wire = rendered(&refused).await;
+            let refused_correlation = correlation_of(&refused);
+            let wrong = login(&surface, ACTIVE_USERNAME, WRONG_PASSWORD).await;
+            let wrong_correlation = correlation_of(&wrong);
+
+            assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{label}");
+            assert!(refused.cookies.is_none(), "{label}");
+            assert!(!refused_wire.contains("Set-Cookie"), "{label}");
+            assert_eq!(
+                normalized(&refused_wire, &refused_correlation),
+                normalized(&rendered(&wrong).await, &wrong_correlation),
+                "{label}"
+            );
+            assert_eq!(surface.session_count(), 0, "{label}");
+            assert_eq!(surface.watermark_count(), 0, "{label}");
+            assert_eq!(surface.factor_count(), 1, "{label}");
+            assert_fixed_authentication_failure_records(
+                &delivered,
+                2,
+                &[
+                    CORRECT_PASSWORD,
+                    WRONG_PASSWORD,
+                    ENROLLED_VECTOR_CODE,
+                    &continuation,
+                ],
+            );
+        }
     }
 
     /// An invalid code consumes the continuation it was presented with.
@@ -4519,6 +4802,52 @@ pub(crate) mod tests {
         stopped_login(&surface, MFA_REQUIRED_CODE).await;
     }
 
+    #[tokio::test]
+    async fn stale_enrollment_confirmations_are_indistinguishable_and_write_nothing() {
+        for (label, active, revision, expires_now) in [
+            ("inactive", false, 1, false),
+            ("stale revision", true, 2, false),
+            ("exact expiry", true, 1, true),
+        ] {
+            let (destination, delivered) = recording_log(false);
+            let surface =
+                AuthSurface::build(true, Some(destination), mfa_fixture(true, false, true));
+            let stopped = stopped_login(&surface, MFA_ENROLLMENT_REQUIRED_CODE).await;
+            let opened = opened_enrollment(&surface, &stopped).await;
+            assert_eq!(opened.status, StatusCode::OK, "{label}");
+            let (disclosed, ticket) = opened_parts(&opened);
+            let code = current_code(&disclosed, surface.clock());
+            surface.set_account_credential_state(
+                active,
+                revision,
+                expires_now.then_some(surface.clock()),
+            );
+
+            let refused = confirm_code(&surface, &ticket, &code).await;
+            let refused_wire = rendered(&refused).await;
+            let refused_correlation = correlation_of(&refused);
+            let wrong = login(&surface, ACTIVE_USERNAME, WRONG_PASSWORD).await;
+            let wrong_correlation = correlation_of(&wrong);
+
+            assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{label}");
+            assert!(refused.cookies.is_none(), "{label}");
+            assert!(!refused_wire.contains("Set-Cookie"), "{label}");
+            assert_eq!(
+                normalized(&refused_wire, &refused_correlation),
+                normalized(&rendered(&wrong).await, &wrong_correlation),
+                "{label}"
+            );
+            assert_eq!(surface.factor_count(), 0, "{label}");
+            assert_eq!(surface.watermark_count(), 0, "{label}");
+            assert_eq!(surface.session_count(), 0, "{label}");
+            assert_fixed_authentication_failure_records(
+                &delivered,
+                2,
+                &[CORRECT_PASSWORD, WRONG_PASSWORD, &code, &ticket],
+            );
+        }
+    }
+
     /// A confirmed enrollment binds exactly the secret it disclosed.
     ///
     /// The secret is rebuilt from the response that disclosed it, so the code
@@ -4764,6 +5093,41 @@ pub(crate) mod tests {
         assert_eq!(expired.status, StatusCode::UNAUTHORIZED);
         assert!(body_text(&expired).contains("session_invalid"));
         assert_eq!(surface.engine.verifications(), verified + 2);
+    }
+
+    #[tokio::test]
+    async fn must_change_accounts_cannot_open_optional_self_enrollment() {
+        let (destination, delivered) = recording_log(false);
+        let surface = AuthSurface::build(true, Some(destination), mfa_fixture(true, false, false));
+        let (session, csrf) = established_session(&surface).await;
+        surface.set_account_credential_state(true, 1, Some(surface.clock() + 1));
+
+        let refused =
+            self_enrollment(&surface, Some(&session), Some(&csrf), CORRECT_PASSWORD).await;
+        let refused_wire = rendered(&refused).await;
+        let refused_correlation = correlation_of(&refused);
+        let wrong = login(&surface, ACTIVE_USERNAME, WRONG_PASSWORD).await;
+        let wrong_correlation = correlation_of(&wrong);
+
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        assert!(refused.cookies.is_none());
+        assert!(!refused_wire.contains("Set-Cookie"));
+        assert!(!refused_wire.contains("secret"));
+        assert!(!refused_wire.contains("enrollment"));
+        assert!(!refused_wire.contains("continuation"));
+        assert_eq!(
+            normalized(&refused_wire, &refused_correlation),
+            normalized(&rendered(&wrong).await, &wrong_correlation)
+        );
+        assert_eq!(surface.session_count(), 1);
+        assert_eq!(surface.factor_count(), 0);
+        assert_eq!(surface.watermark_count(), 0);
+        assert_eq!(surface.engine.verifications(), 3);
+        assert_fixed_authentication_failure_records(
+            &delivered,
+            2,
+            &[CORRECT_PASSWORD, WRONG_PASSWORD, &session, &csrf],
+        );
     }
 
     /// A self-enrollment discloses fresh data and enrolls once it is confirmed.

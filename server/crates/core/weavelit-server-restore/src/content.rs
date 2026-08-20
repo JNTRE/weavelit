@@ -13,12 +13,13 @@ use weavelit_server_database::{
     Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
     AccountPublicIdentifierPersistence, AccountPublicIdentity, AuditReferenceIdentifier,
     AuditReferencePersistence, COMPONENT_ENABLED_VALUE, ComponentKind, ConfigurationEntry,
-    ConfigurationKey, ConfigurationValue, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
-    GroupMembership, LogAssignment, LogConfigurationAuditReference, LogModuleConfiguration,
-    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
-    MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
-    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name, PasswordVerifier,
-    RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    ConfigurationKey, ConfigurationValue, CredentialRevision, Group, GroupAuditReference,
+    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogConfigurationAuditReference,
+    LogModuleConfiguration, LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH,
+    MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH,
+    MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name,
+    PasswordVerifier, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    TemporaryCredentialExpiration,
 };
 use weavelit_server_lifecycle::{
     BackendIdentifier, MAX_IDENTIFIER_LENGTH, MAX_PROTECTED_PLAINTEXT_BYTES,
@@ -455,6 +456,10 @@ where
     WireAccountPublicIdentifier::deserialize(source).map(Some)
 }
 
+const fn initial_credential_revision() -> u64 {
+    1
+}
+
 // ---------------------------------------------------------------------------
 // Version 1 wire model
 // ---------------------------------------------------------------------------
@@ -517,6 +522,15 @@ struct AccountV1 {
     /// factor, which is what such a document actually described.
     #[serde(default)]
     mfa_required: bool,
+    /// Absent in a compatible document written before credential generations existed.
+    #[serde(default = "initial_credential_revision")]
+    credential_revision: u64,
+    /// Absent in a compatible document carrying an ordinary credential.
+    #[serde(default)]
+    must_change_password: bool,
+    /// Absent or null for an ordinary credential.
+    #[serde(default)]
+    temporary_credential_expires_at_milliseconds: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -676,6 +690,16 @@ pub fn normalize(
                 display_name: entry.display_name.map(name).transpose()?,
                 active: entry.active,
                 mfa_required: entry.mfa_required,
+                credential_revision: CredentialRevision::from_value(entry.credential_revision)
+                    .map_err(|_| ContentError::DomainInvalid)?,
+                must_change_password: entry.must_change_password,
+                temporary_credential_expiration: entry
+                    .temporary_credential_expires_at_milliseconds
+                    .map(|value| {
+                        TemporaryCredentialExpiration::from_unix_milliseconds(value)
+                            .map_err(|_| ContentError::DomainInvalid)
+                    })
+                    .transpose()?,
             },
             AccountPublicIdentity::new(identifier, public_identifier),
             AccountAuditReference::new(identifier, audit_reference),
@@ -798,6 +822,7 @@ pub fn normalize(
     order(&mut backup);
     reject_duplicates(&backup)?;
     reject_unresolved_references(&backup)?;
+    reject_invalid_account_credential_state(&backup)?;
     reject_invalid_assignments(&backup)?;
     reject_unavailable_components(&backup, components)?;
     reject_unreadable_module_data(&backup, components)?;
@@ -970,6 +995,25 @@ fn reject_unresolved_references(backup: &NormalizedBackup) -> Result<(), Content
     }
     for factor in &backup.mfa_factors {
         require(&accounts, factor.account)?;
+    }
+
+    Ok(())
+}
+
+fn reject_invalid_account_credential_state(backup: &NormalizedBackup) -> Result<(), ContentError> {
+    for account in &backup.accounts {
+        let has_expiration = account.temporary_credential_expiration.is_some();
+        if account.must_change_password != has_expiration {
+            return Err(ContentError::DomainInvalid);
+        }
+        if has_expiration
+            && backup
+                .password_verifiers
+                .binary_search_by_key(&account.identifier, |verifier| verifier.account)
+                .is_err()
+        {
+            return Err(ContentError::DomainInvalid);
+        }
     }
 
     Ok(())

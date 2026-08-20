@@ -54,6 +54,8 @@ impl MfaTimeStep {
 pub enum MfaAcceptance {
     /// The step advanced the factor's watermark and the session was issued.
     Accepted,
+    /// Account state no longer permits the verified credential to issue a session.
+    Rejected,
     /// The step did not advance the watermark, so the code is a replay.
     Replayed,
     /// The MFA Module was disabled when the code was presented.
@@ -96,6 +98,8 @@ pub enum MfaEnrollment {
     AlreadyEnrolled,
     /// The MFA Module was disabled when the enrollment was presented.
     ModuleDisabled,
+    /// Account state no longer permits the verified credential to issue a session.
+    Rejected,
 }
 
 /// The two names one MFA Module is addressed by.
@@ -227,7 +231,6 @@ pub trait MfaStore {
     fn issue_direct_session(
         &mut self,
         target: &MfaModuleTarget,
-        account: StateIdentifier,
         session: &NewSession,
     ) -> Result<MfaDirectSession, DatabaseError>;
 

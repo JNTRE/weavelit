@@ -11,9 +11,9 @@ use weavelit_server_database::{
     Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
     AccountPublicIdentity, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
     CompletionObligation, ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
-    Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
-    LogConfigurationAuditReference, LogModuleConfiguration, LogType, Name, PasswordVerifier,
-    ProtectedSecret, STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    CredentialRevision, Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership,
+    LogAssignment, LogConfigurationAuditReference, LogModuleConfiguration, LogType, Name,
+    PasswordVerifier, ProtectedSecret, STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
 use weavelit_server_lifecycle::{ProtectedValueKind, ProtectedValueSealer};
 
@@ -65,6 +65,9 @@ pub(crate) fn build_initial_state(
         // requiring one here would lock the deployment out of its own first
         // sign-in. Enrollment is a later, separately authorized act.
         mfa_required: false,
+        credential_revision: CredentialRevision::INITIAL,
+        must_change_password: false,
+        temporary_credential_expiration: None,
     };
 
     let created = verifier_factory

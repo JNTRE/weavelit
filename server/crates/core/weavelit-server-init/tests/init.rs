@@ -219,6 +219,12 @@ fn a_finalized_deployment_has_exactly_one_active_administrator_without_an_mfa_fa
         !account.mfa_required,
         "Init creates the first user without an enrolled factor, so requiring one would lock the deployment out"
     );
+    assert_eq!(
+        account.credential_revision,
+        weavelit_server_database::CredentialRevision::INITIAL
+    );
+    assert!(!account.must_change_password);
+    assert_eq!(account.temporary_credential_expiration, None);
     assert!(
         state.mfa_factors().is_empty(),
         "Init must enroll no MFA factor"

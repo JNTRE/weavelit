@@ -111,6 +111,9 @@ impl MfaStore for SqliteDatabase {
         // disablement's own revocation could not have reached: that revocation
         // removes the sessions that exist when it commits, and this one would
         // not have existed yet.
+        if !session::account_allows_issuance(&transaction, session)? {
+            return Ok(MfaAcceptance::Rejected);
+        }
         if !enabled(&transaction, target)? {
             return Ok(MfaAcceptance::ModuleDisabled);
         }
@@ -135,7 +138,6 @@ impl MfaStore for SqliteDatabase {
     fn issue_direct_session(
         &mut self,
         target: &MfaModuleTarget,
-        account: StateIdentifier,
         session: &NewSession,
     ) -> Result<MfaDirectSession, DatabaseError> {
         let transaction = self
@@ -151,6 +153,10 @@ impl MfaStore for SqliteDatabase {
         //
         // An account this transaction no longer finds is admitted to nothing,
         // for the same reason a required account whose Module is disabled is.
+        if !session::account_allows_issuance(&transaction, session)? {
+            return Ok(MfaDirectSession::Denied);
+        }
+        let account = session.account();
         let Some(required) = requirement(&transaction, account)? else {
             return Ok(MfaDirectSession::Denied);
         };
@@ -192,6 +198,11 @@ impl MfaStore for SqliteDatabase {
         // issued behind one.
         //
         // Every refusal below returns without committing, so it writes nothing.
+        if factor.account != session.account()
+            || !session::account_allows_issuance(&transaction, session)?
+        {
+            return Ok(MfaEnrollment::Rejected);
+        }
         if !enabled(&transaction, target)? {
             return Ok(MfaEnrollment::ModuleDisabled);
         }

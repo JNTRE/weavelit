@@ -1,9 +1,9 @@
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
-    BoundedText, DatabaseError, MAX_NAME_LENGTH, NewSession, SESSION_DIGEST_LENGTH,
-    SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT, STATE_IDENTIFIER_LENGTH,
-    SessionCsrfHash, SessionInstant, SessionRejection, SessionStore, SessionTokenHash,
-    SessionValidation, StateIdentifier, StoredSession,
+    BoundedText, CredentialRevision, DatabaseError, MAX_NAME_LENGTH, NewSession,
+    SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
+    STATE_IDENTIFIER_LENGTH, SessionCsrfHash, SessionInstant, SessionIssuance, SessionRejection,
+    SessionStore, SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
 };
 
 use crate::SqliteDatabase;
@@ -32,6 +32,9 @@ const DELETE_EXPIRED_SESSIONS: &str = "DELETE FROM weavelit_session WHERE token_
       OR ?1 >= last_seen_at_milliseconds + ?2 \
       LIMIT ?3)";
 const DELETE_EVERY_SESSION: &str = "DELETE FROM weavelit_session";
+const SELECT_ACCOUNT_ISSUANCE_STATE: &str = "SELECT active, credential_revision, \
+    temporary_credential_expires_at_milliseconds \
+    FROM weavelit_account WHERE account_id = ?1";
 
 type SessionRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, i64, i64, i64);
 
@@ -48,11 +51,15 @@ pub(super) fn clear(connection: &Connection) -> Result<(), DatabaseError> {
 }
 
 impl SessionStore for SqliteDatabase {
-    fn create(&mut self, session: &NewSession) -> Result<(), DatabaseError> {
+    fn create(&mut self, session: &NewSession) -> Result<SessionIssuance, DatabaseError> {
         let transaction = immediate(&mut self.connection)?;
+        if !account_allows_issuance(&transaction, session)? {
+            return Ok(SessionIssuance::Rejected);
+        }
         insert(&transaction, session)?;
 
-        commit(transaction)
+        commit(transaction)?;
+        Ok(SessionIssuance::Issued)
     }
 
     fn validate_and_touch(
@@ -159,6 +166,34 @@ pub(super) fn insert(
             session.absolute_expires_at().as_unix_milliseconds(),
         ],
     )
+}
+
+/// Checks the account state a verified credential is allowed to issue against.
+///
+/// Callers run this before any decision-specific write in the same immediate
+/// transaction. Absence and every ineligible state are one reason-free false
+/// result; malformed persisted state remains an integrity failure.
+pub(super) fn account_allows_issuance(
+    transaction: &Transaction<'_>,
+    session: &NewSession,
+) -> Result<bool, DatabaseError> {
+    let state: Option<(i64, Vec<u8>, Option<i64>)> = transaction
+        .query_row(
+            SELECT_ACCOUNT_ISSUANCE_STATE,
+            params![session.account().as_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Session))?;
+    let Some((active, revision, expiration)) = state else {
+        return Ok(false);
+    };
+    let active = stored_boolean(active)?;
+    let revision = credential_revision(&revision)?;
+    let unexpired =
+        expiration.is_none_or(|value| value > session.issued_at().as_unix_milliseconds());
+
+    Ok(active && revision == session.expected_credential_revision() && unexpired)
 }
 
 /// Clears up to [`SESSION_PURGE_BATCH_LIMIT`] sessions expired at `now`.
@@ -335,6 +370,21 @@ fn identifier(bytes: &[u8]) -> Result<StateIdentifier, DatabaseError> {
         .try_into()
         .map_err(|_| DatabaseError::IntegrityFailure)?;
     StateIdentifier::from_bytes(bytes).map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+fn credential_revision(bytes: &[u8]) -> Result<CredentialRevision, DatabaseError> {
+    let bytes = bytes
+        .try_into()
+        .map_err(|_| DatabaseError::IntegrityFailure)?;
+    CredentialRevision::from_stored_bytes(bytes).map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+fn stored_boolean(value: i64) -> Result<bool, DatabaseError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DatabaseError::IntegrityFailure),
+    }
 }
 
 fn instant(value: i64) -> Result<SessionInstant, DatabaseError> {

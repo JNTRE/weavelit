@@ -189,6 +189,23 @@ fn create_0011_database(path: &Path) {
         .unwrap();
 }
 
+fn create_0012_database(path: &Path) {
+    create_0011_database(path);
+    let connection = Connection::open(path).unwrap();
+    let sql = include_str!("../migrations/0012_add_account_public_identities.sql");
+    connection.execute_batch(sql).unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_migration_ledger \
+             (sequence_number, identifier, checksum) VALUES (12, ?1, ?2)",
+            params![
+                "0012_add_account_public_identities",
+                Sha256::digest(sql.as_bytes()).as_slice()
+            ],
+        )
+        .unwrap();
+}
+
 fn assert_integrity_failure_is_redacted(error: DatabaseError, path: &Path) {
     assert_eq!(error, DatabaseError::IntegrityFailure);
     let message = error.to_string();
@@ -209,7 +226,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     let first_schema = schema_rows(&connection);
     drop(connection);
 
-    assert_eq!(first_ledger.len(), 12);
+    assert_eq!(first_ledger.len(), 13);
     assert_eq!(first_ledger[0].0, 1);
     assert_eq!(first_ledger[0].1, "0001_create_migration_ledger");
     assert_eq!(first_ledger[1].0, 2);
@@ -240,6 +257,8 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     );
     assert_eq!(first_ledger[11].0, 12);
     assert_eq!(first_ledger[11].1, "0012_add_account_public_identities");
+    assert_eq!(first_ledger[12].0, 13);
+    assert_eq!(first_ledger[12].1, "0013_add_account_credential_state");
     assert_eq!(first_ledger[0].2.len(), 32);
     assert_eq!(first_ledger[1].2.len(), 32);
     assert_eq!(first_ledger[2].2.len(), 32);
@@ -252,6 +271,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[9].2.len(), 32);
     assert_eq!(first_ledger[10].2.len(), 32);
     assert_eq!(first_ledger[11].2.len(), 32);
+    assert_eq!(first_ledger[12].2.len(), 32);
     assert_eq!(
         first_ledger[0].2,
         Sha256::digest(include_bytes!(
@@ -333,6 +353,13 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         first_ledger[11].2,
         Sha256::digest(include_bytes!(
             "../migrations/0012_add_account_public_identities.sql"
+        ))
+        .to_vec()
+    );
+    assert_eq!(
+        first_ledger[12].2,
+        Sha256::digest(include_bytes!(
+            "../migrations/0013_add_account_credential_state.sql"
         ))
         .to_vec()
     );
@@ -435,7 +462,7 @@ fn populated_0008_database_upgrades_and_backfills_version_one() {
     connection
         .pragma_update(None, "foreign_keys", true)
         .unwrap();
-    assert_eq!(ledger_rows(&connection).len(), 12);
+    assert_eq!(ledger_rows(&connection).len(), 13);
     let generation: (Vec<u8>, Vec<u8>, String, String, i64) = connection
         .query_row(
             "SELECT configuration_id, generation_version, module, name, enabled \
@@ -633,7 +660,7 @@ fn populated_0011_database_backfills_immutable_unique_account_public_identities(
     drop(SqliteDatabase::open(&path).unwrap());
 
     let connection = direct_connection(&path);
-    assert_eq!(ledger_rows(&connection).len(), 12);
+    assert_eq!(ledger_rows(&connection).len(), 13);
     let identities = connection
         .prepare(
             "SELECT account_id, public_identifier \
@@ -763,6 +790,133 @@ fn populated_0011_database_backfills_immutable_unique_account_public_identities(
 }
 
 #[test]
+fn populated_0012_database_backfills_credential_state_and_preserves_sessions() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    create_0012_database(&path);
+    let account_id = [0x51_u8; 16];
+    let token_hash = [0x61_u8; 32];
+    let csrf_hash = [0x62_u8; 32];
+    let connection = direct_connection(&path);
+    connection
+        .execute(
+            "INSERT INTO weavelit_account \
+             (account_id, username, display_name, active, mfa_required) \
+             VALUES (?1, 'legacy-account', 'Legacy Account', 1, 1)",
+            [account_id.as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_session \
+             (token_hash, csrf_hash, account_id, client_module, issued_at_milliseconds, \
+              last_seen_at_milliseconds, absolute_expires_at_milliseconds) \
+             VALUES (?1, ?2, ?3, 'web-ui', 1000, 1000, 43201000)",
+            params![
+                token_hash.as_slice(),
+                csrf_hash.as_slice(),
+                account_id.as_slice()
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+
+    let connection = direct_connection(&path);
+    assert_eq!(ledger_rows(&connection).len(), 13);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT username, active, mfa_required, credential_revision, \
+                 must_change_password, temporary_credential_expires_at_milliseconds \
+                 FROM weavelit_account WHERE account_id = ?1",
+                [account_id.as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                    ))
+                },
+            )
+            .unwrap(),
+        (
+            "legacy-account".to_owned(),
+            1,
+            1,
+            1_u64.to_be_bytes().to_vec(),
+            0,
+            None,
+        )
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT csrf_hash, account_id, issued_at_milliseconds, \
+                 absolute_expires_at_milliseconds FROM weavelit_session WHERE token_hash = ?1",
+                [token_hash.as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .unwrap(),
+        (csrf_hash.to_vec(), account_id.to_vec(), 1_000, 43_201_000)
+    );
+
+    for statement in [
+        "UPDATE weavelit_account SET credential_revision = zeroblob(8)",
+        "UPDATE weavelit_account SET credential_revision = x'01020304050607'",
+        "UPDATE weavelit_account SET credential_revision = 1",
+        "UPDATE weavelit_account SET must_change_password = 1",
+        "UPDATE weavelit_account SET temporary_credential_expires_at_milliseconds = 0",
+        "UPDATE weavelit_account SET must_change_password = 1, \
+         temporary_credential_expires_at_milliseconds = -1",
+    ] {
+        assert!(
+            connection.execute(statement, []).is_err(),
+            "for {statement}"
+        );
+    }
+    connection
+        .execute(
+            "UPDATE weavelit_account SET credential_revision = ?1, must_change_password = 1, \
+             temporary_credential_expires_at_milliseconds = 0",
+            [u64::MAX.to_be_bytes().as_slice()],
+        )
+        .unwrap();
+    drop(connection);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+    let connection = direct_connection(&path);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT credential_revision, must_change_password, \
+                 temporary_credential_expires_at_milliseconds FROM weavelit_account",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .unwrap(),
+        (u64::MAX.to_be_bytes().to_vec(), 1, Some(0))
+    );
+}
+
+#[test]
 fn initialized_legacy_totp_enablement_migrates_to_one_canonical_authority() {
     for (legacy, existing_canonical, expected) in [
         (Some("true"), None, "true"),
@@ -810,7 +964,7 @@ fn initialized_legacy_totp_enablement_migrates_to_one_canonical_authority() {
         drop(SqliteDatabase::open(&path).unwrap());
 
         let connection = direct_connection(&path);
-        assert_eq!(ledger_rows(&connection).len(), 12);
+        assert_eq!(ledger_rows(&connection).len(), 13);
         assert_eq!(
             connection
                 .query_row(
@@ -956,7 +1110,7 @@ fn unknown_extra_history_is_rejected() {
     connection
         .execute(
             "INSERT INTO weavelit_migration_ledger \
-            (sequence_number, identifier, checksum) VALUES (13, '0013_unknown', ?1)",
+            (sequence_number, identifier, checksum) VALUES (14, '0014_unknown', ?1)",
             [vec![0_u8; 32]],
         )
         .unwrap();
@@ -981,7 +1135,7 @@ fn missing_applied_history_is_rejected_without_new_ledger_row() {
     drop(connection);
 
     assert_integrity_failure_is_redacted(open_error(&path), &path);
-    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 11);
+    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 12);
 }
 
 #[test]

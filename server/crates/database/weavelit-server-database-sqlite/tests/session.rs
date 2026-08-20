@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
-    Name, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS, SESSION_DIGEST_LENGTH,
-    SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT, SessionCsrfHash, SessionInstant,
-    SessionRejection, SessionStore, SessionTokenHash, SessionValidation, StateIdentifier,
-    StoredSession,
+    CredentialRevision, Name, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
+    SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
+    SessionCsrfHash, SessionInstant, SessionIssuance, SessionRejection, SessionStore,
+    SessionTokenHash, SessionValidation, StateIdentifier, StoredSession,
 };
 use weavelit_server_database_sqlite::SqliteDatabase;
 
@@ -52,17 +52,44 @@ fn new_session(token_byte: u8, account_byte: u8) -> NewSession {
 /// Issuing is what purges expired rows, so the instant a session is issued at
 /// is also the instant every other session's lifetime is judged against.
 fn issued_at(token_byte: u8, account_byte: u8, milliseconds: i64) -> NewSession {
+    issued_at_with_revision(
+        token_byte,
+        account_byte,
+        milliseconds,
+        CredentialRevision::INITIAL,
+    )
+}
+
+fn issued_at_with_revision(
+    token_byte: u8,
+    account_byte: u8,
+    milliseconds: i64,
+    revision: CredentialRevision,
+) -> NewSession {
     NewSession::new(
         token(token_byte),
         csrf(CSRF_BYTE),
         account(account_byte),
+        revision,
         Name::new("web-ui").unwrap(),
         instant(milliseconds),
     )
 }
 
 fn opened(path: &Path) -> SqliteDatabase {
-    SqliteDatabase::open(path).unwrap()
+    let database = SqliteDatabase::open(path).unwrap();
+    let connection = Connection::open(path).unwrap();
+    for byte in [0x41_u8, 0x42] {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (?1, ?2, NULL, 1, 0)",
+                rusqlite::params![account(byte).as_bytes().as_slice(), format!("user-{byte}")],
+            )
+            .unwrap();
+    }
+    database
 }
 
 fn stored(validation: SessionValidation) -> StoredSession {
@@ -88,6 +115,98 @@ fn session_count(path: &Path) -> i64 {
             row.get(0)
         })
         .unwrap()
+}
+
+fn set_account_credential_state(
+    path: &Path,
+    account_byte: u8,
+    active: bool,
+    revision: u64,
+    expiration: Option<i64>,
+) {
+    let connection = Connection::open(path).unwrap();
+    if expiration.is_some() {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO weavelit_password_verifier \
+                 (account_id, encoded_verifier) VALUES (?1, '$test')",
+                [account(account_byte).as_bytes().as_slice()],
+            )
+            .unwrap();
+    }
+    connection
+        .execute(
+            "UPDATE weavelit_account SET active = ?2, credential_revision = ?3, \
+             must_change_password = ?4, temporary_credential_expires_at_milliseconds = ?5 \
+             WHERE account_id = ?1",
+            rusqlite::params![
+                account(account_byte).as_bytes().as_slice(),
+                i64::from(active),
+                revision.to_be_bytes().as_slice(),
+                i64::from(expiration.is_some()),
+                expiration,
+            ],
+        )
+        .unwrap();
+}
+
+#[test]
+fn session_creation_is_bound_to_live_account_credential_state() {
+    let cases = [
+        ("absent", 0x43, None, 1, SessionIssuance::Rejected),
+        (
+            "inactive",
+            0x41,
+            Some((false, 1, None)),
+            1,
+            SessionIssuance::Rejected,
+        ),
+        (
+            "stale revision",
+            0x41,
+            Some((true, 2, None)),
+            1,
+            SessionIssuance::Rejected,
+        ),
+        (
+            "at exact expiry",
+            0x41,
+            Some((true, 1, Some(ISSUED_AT))),
+            1,
+            SessionIssuance::Rejected,
+        ),
+        (
+            "before expiry",
+            0x41,
+            Some((true, 1, Some(ISSUED_AT + 1))),
+            1,
+            SessionIssuance::Issued,
+        ),
+    ];
+
+    for (label, account_byte, stored, expected_revision, expected) in cases {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = opened(&path);
+        if let Some((active, revision, expiration)) = stored {
+            set_account_credential_state(&path, account_byte, active, revision, expiration);
+        }
+        let issuance = database
+            .create(&issued_at_with_revision(
+                TOKEN_BYTE,
+                account_byte,
+                ISSUED_AT,
+                CredentialRevision::from_value(expected_revision).unwrap(),
+            ))
+            .unwrap();
+
+        assert_eq!(issuance, expected, "{label}");
+        assert_eq!(
+            session_count(&path),
+            i64::from(expected == SessionIssuance::Issued),
+            "{label}"
+        );
+    }
 }
 
 /// Keeps one session continuously active up to `target` without ever letting

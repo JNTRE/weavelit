@@ -67,7 +67,8 @@ The registry contains `0001_create_migration_ledger.sql`,
 `0009_add_log_configuration_generations.sql`, and
 `0010_migrate_totp_component_enablement.sql`, and
 `0011_add_log_configuration_audit_references.sql`, and
-`0012_add_account_public_identities.sql`. Each
+`0012_add_account_public_identities.sql`, and
+`0013_add_account_credential_state.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -267,28 +268,24 @@ assignments, and Restore seeds fresh version `1` rows from that normalized
 input. Source-deployment generation history and pointers therefore never enter
 a replacement database, and the backup format and version remain unchanged.
 
-### Future Temporary-Credential Migration
+### Account Credential State Migration
 
-The future migration for temporary account credentials must be forward-only and
-transactional. It adds, rather than preserves, `must_change_password`, a
-credential revision, and fixed 24-hour expiry metadata to the account-owned
-schema. It stores only the Argon2 verifier and bounded metadata; plaintext
-temporary passwords, response buffers, delivery content, and continuation
-bearer values have no SQLite column. No password-change ticket is authorized
-by this design; if a future design adds one, its exact state and storage
-requirements must be approved separately.
+`0013_add_account_credential_state.sql` adds an exact nonzero eight-byte
+big-endian `credential_revision` BLOB, a `0` or `1`
+`must_change_password` integer, and an optional nonnegative
+`temporary_credential_expires_at_milliseconds` integer to
+`weavelit_account`. Existing rows receive revision `1`, a false flag, and no
+expiry. Column constraints and insert and update triggers require the flag and
+expiry to be present or absent together. The backend rebuilds their checked
+contract types on read, and `ApplicationState` additionally requires every
+temporary account to have a password verifier.
 
-Future account creation, reset, and password change use one `BEGIN IMMEDIATE`
-compare-and-set transaction over the expected credential revision. The
-transaction writes or replaces the verifier and temporary metadata, increments
-or replaces the revision, and revokes target sessions where applicable. It
-does not store Audit records or participate in Audit sequencing; post-commit
-recovery remains with the Audit design and owning workflow. A
-stale revision rolls back all credential and session writes and returns a
-stable secret-free conflict. The migration and transaction design do not
-create a retrieval endpoint and do not change Init semantics. Refer to
-[Authentication Design](../../authentication/authentication-design.md#future-account-credential-issuance)
-for the approved expiry, revision, session, and reauthentication policy.
+The migration stores only the existing Argon2 verifier and bounded metadata;
+plaintext temporary passwords, response buffers, delivery content, and
+continuation bearer values have no SQLite column. It adds no account mutation
+writer, Audit terminal workflow, route, retrieval endpoint, or password-change
+ticket. Future account creation, reset, and password change require separately
+approved compare-and-set transactions and Audit behavior.
 
 ## Live Session Schema
 
@@ -319,6 +316,14 @@ constant time; the accept decision rests on that constant-time comparison rather
 on the storage engine's own byte comparison. A row whose stored bytes cannot be
 rebuilt into the contract's types is refused as `IntegrityFailure` rather than
 accepted.
+
+Session insertion reads the account's active flag, credential revision, and
+temporary-credential expiry in the same immediate transaction that would write
+the session. An absent or inactive account, a stale expected revision, or an
+expiry at or before the session issue instant returns one reason-free rejection
+and commits no session. Direct MFA admission, accepted TOTP steps, and confirmed
+enrollment use the same check before any session, replay watermark, or factor
+write, so a concurrent account-state change rolls back the whole operation.
 
 Inserting a session first deletes rows already expired at the new session's
 issue instant, in the same transaction. The delete is bounded to a named batch

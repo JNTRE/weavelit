@@ -162,7 +162,9 @@ initialized before the requesting client proves possession of the private key:
    Group, and every Log Module configuration distinct, independently random
    **[Audit Reference Identifiers](../../../glossary.md#applications-and-interfaces)**;
    no value is derived from a submitted username, Group or configuration name,
-   or internal state identifier. The
+   or internal state identifier. The first account receives initial credential
+   revision `1`, an ordinary credential with no temporary expiry, and no forced
+   password-change flag. The
    committed state includes the non-secret Init completion-event fields as a
    pending obligation. That same atomic replacement also writes the
    reconciliation digest minted during preparation into the Application
@@ -389,7 +391,8 @@ reach clients or logs.
 `weavelit-server-init` has direct tests for normalized-request validation,
 recovery-key generation, one-time delivery, constant-time proof comparison,
 Init-checkpoint validation,
-atomic new-state creation, durable System Log completion during a
+atomic new-state creation including the initial ordinary-credential defaults,
+durable System Log completion during a
 valid run, retained-partial-state classification, absence of restart retry,
 reset, deletion, recreation, reconciliation, and sealing, redaction, rollback,
 concurrency under a lifecycle mutation permit, direct invocation of every

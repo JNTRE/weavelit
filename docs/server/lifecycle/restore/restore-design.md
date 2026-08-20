@@ -332,6 +332,18 @@ not change either backup format version. Unavailable operating-system
 randomness stops normalization as the existing payload-free `restore_failed`
 internal outcome rather than misclassifying valid legacy content as invalid.
 
+Version-1 account entries may also carry a nonzero credential revision, a
+`must_change_password` flag, and a nonnegative absolute temporary-credential
+expiry in Unix milliseconds. Omission remains compatible with backups written
+before those fields existed and supplies revision `1`, a false flag, and no
+expiry. A supplied flag and expiry must be present together, and temporary
+metadata requires a supplied verifier for that account. Zero or malformed
+revisions, negative or malformed expiries, inconsistent combinations, and a
+temporary account without a verifier are all the existing payload-free
+`backup_invalid` outcome. Valid supplied metadata survives normalization
+exactly, and this additive compatibility does not change the backup format
+version.
+
 Restore binds all normalized state to the replacement deployment identifier.
 It creates no active session, accepts no session from the artifact, and ensures
 that credentials from the prior deployment cannot resume a Server session. It
@@ -619,7 +631,9 @@ Its content tests also prove exact preservation of supplied account and Group
 Audit Reference Identifiers through the injected selected-database persistence
 decoder, fresh independent generation from operating-system randomness,
 canonical and duplicate rejection, explicit-null rejection, and independent
-generation for committed legacy fixtures.
+generation for committed legacy fixtures. They also prove credential revision
+and temporary-metadata preservation, legacy defaults, paired-field validation,
+the verifier requirement, and uniform invalid-backup rejection.
 Fixture-based tests use immutable raw `.wlitbackup` files, their canonical
 private-key line, the expected decrypted plaintext, and a canonical JSON
 manifest recording each fixture's exact byte lengths and SHA-256 digests. Every

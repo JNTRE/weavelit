@@ -13,7 +13,7 @@ use std::fmt;
 
 use subtle::ConstantTimeEq as _;
 
-use crate::{ContractInputError, DatabaseError, Name, StateIdentifier};
+use crate::{ContractInputError, CredentialRevision, DatabaseError, Name, StateIdentifier};
 
 /// Bytes in a stored session or CSRF digest.
 pub const SESSION_DIGEST_LENGTH: usize = 32;
@@ -128,6 +128,7 @@ pub struct NewSession {
     token_hash: SessionTokenHash,
     csrf_hash: SessionCsrfHash,
     account: StateIdentifier,
+    expected_credential_revision: CredentialRevision,
     client_module: Name,
     issued_at: SessionInstant,
 }
@@ -142,6 +143,7 @@ impl NewSession {
         token_hash: SessionTokenHash,
         csrf_hash: SessionCsrfHash,
         account: StateIdentifier,
+        expected_credential_revision: CredentialRevision,
         client_module: Name,
         issued_at: SessionInstant,
     ) -> Self {
@@ -149,6 +151,7 @@ impl NewSession {
             token_hash,
             csrf_hash,
             account,
+            expected_credential_revision,
             client_module,
             issued_at,
         }
@@ -167,6 +170,11 @@ impl NewSession {
     /// Returns the account the session authenticates.
     pub const fn account(&self) -> StateIdentifier {
         self.account
+    }
+
+    /// Returns the credential revision the caller verified.
+    pub const fn expected_credential_revision(&self) -> CredentialRevision {
+        self.expected_credential_revision
     }
 
     /// Returns the Client Module the session was issued to.
@@ -288,6 +296,15 @@ pub enum SessionValidation {
     Rejected(SessionRejection),
 }
 
+/// The reason-free result of attempting to issue one session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionIssuance {
+    /// The account remained eligible and the session was written.
+    Issued,
+    /// The account was absent, inactive, stale, or temporarily expired.
+    Rejected,
+}
+
 /// Durable live-session operations available during normal operation.
 ///
 /// Every operation is atomic on its own. None of them reads, caches, or
@@ -307,7 +324,7 @@ pub trait SessionStore {
     /// maintenance this operation's own correctness does not depend on, and the
     /// rows it fails to remove are already unusable, so it must not turn an
     /// otherwise valid login into a refusal.
-    fn create(&mut self, session: &NewSession) -> Result<(), DatabaseError>;
+    fn create(&mut self, session: &NewSession) -> Result<SessionIssuance, DatabaseError>;
 
     /// Validates a presented session pair and advances its activity when usable.
     ///
@@ -426,8 +443,14 @@ mod tests {
             SessionTokenHash::from_bytes(SESSION_DIGEST).unwrap(),
             SessionCsrfHash::from_bytes(CSRF_DIGEST).unwrap(),
             account(),
+            CredentialRevision::INITIAL,
             Name::new("web-ui").unwrap(),
             instant(1_700_000_000_000),
+        );
+
+        assert_eq!(
+            session.expected_credential_revision(),
+            CredentialRevision::INITIAL
         );
 
         assert_eq!(

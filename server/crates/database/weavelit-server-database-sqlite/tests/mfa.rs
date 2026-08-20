@@ -4,9 +4,10 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
     ApplicationDatabase, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
-    AuditTerminalReplayBatchSize, COMPONENT_ENABLED_VALUE, DatabaseError, MfaAcceptance,
-    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, MfaStore, MfaTimeStep,
-    Name, NewSession, SESSION_DIGEST_LENGTH, SessionCsrfHash, SessionInstant, SessionTokenHash,
+    AuditTerminalReplayBatchSize, COMPONENT_ENABLED_VALUE, CredentialRevision, DatabaseError,
+    MfaAcceptance, MfaDirectSession, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome,
+    MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
+    ProtectedValue, SESSION_DIGEST_LENGTH, SessionCsrfHash, SessionInstant, SessionTokenHash,
     StateIdentifier, StoredAuditDestinationBinding, ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
@@ -43,12 +44,17 @@ fn target() -> MfaModuleTarget {
 /// Each carries its own token digest, because an acceptance writes the session
 /// in the transaction that records the step.
 fn session(byte: u8) -> NewSession {
+    session_at(byte, CredentialRevision::INITIAL, ISSUED_AT)
+}
+
+fn session_at(byte: u8, revision: CredentialRevision, issued_at: i64) -> NewSession {
     NewSession::new(
         SessionTokenHash::from_bytes([byte; SESSION_DIGEST_LENGTH]).unwrap(),
         SessionCsrfHash::from_bytes([CSRF_BYTE; SESSION_DIGEST_LENGTH]).unwrap(),
         factor(byte),
+        revision,
         Name::new("web-ui").unwrap(),
-        SessionInstant::from_unix_milliseconds(ISSUED_AT).unwrap(),
+        SessionInstant::from_unix_milliseconds(issued_at).unwrap(),
     )
 }
 
@@ -58,8 +64,24 @@ fn session(byte: u8) -> NewSession {
 /// expects a code to be accepted enables the module first, exactly as a
 /// deployment that verifies second factors has.
 fn enabled_database(path: &Path) -> SqliteDatabase {
-    let database = SqliteDatabase::open(path).unwrap();
+    let database = opened_with_accounts(path);
     set_enablement(path, COMPONENT_ENABLED_VALUE);
+    database
+}
+
+fn opened_with_accounts(path: &Path) -> SqliteDatabase {
+    let database = SqliteDatabase::open(path).unwrap();
+    let connection = Connection::open(path).unwrap();
+    for byte in [1_u8, 2] {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (?1, ?2, NULL, 1, 0)",
+                rusqlite::params![factor(byte).as_bytes().as_slice(), format!("user-{byte}")],
+            )
+            .unwrap();
+    }
     database
 }
 
@@ -82,6 +104,196 @@ fn session_count(path: &Path) -> i64 {
             row.get(0)
         })
         .unwrap()
+}
+
+fn factor_count(path: &Path) -> i64 {
+    Connection::open(path)
+        .unwrap()
+        .query_row("SELECT count(*) FROM weavelit_mfa_factor", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+fn set_account_credential_state(
+    path: &Path,
+    account_byte: u8,
+    active: bool,
+    revision: u64,
+    expiration: Option<i64>,
+) {
+    let connection = Connection::open(path).unwrap();
+    if expiration.is_some() {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO weavelit_password_verifier \
+                 (account_id, encoded_verifier) VALUES (?1, '$test')",
+                [factor(account_byte).as_bytes().as_slice()],
+            )
+            .unwrap();
+    }
+    connection
+        .execute(
+            "UPDATE weavelit_account SET active = ?2, credential_revision = ?3, \
+             must_change_password = ?4, temporary_credential_expires_at_milliseconds = ?5 \
+             WHERE account_id = ?1",
+            rusqlite::params![
+                factor(account_byte).as_bytes().as_slice(),
+                i64::from(active),
+                revision.to_be_bytes().as_slice(),
+                i64::from(expiration.is_some()),
+                expiration,
+            ],
+        )
+        .unwrap();
+}
+
+type StoredCredentialState = (bool, u64, Option<i64>);
+type IssuerCase = (&'static str, u8, Option<StoredCredentialState>, u64, bool);
+
+fn issuer_cases() -> [IssuerCase; 5] {
+    [
+        ("absent", 3, None, 1, false),
+        ("inactive", 1, Some((false, 1, None)), 1, false),
+        ("stale revision", 1, Some((true, 2, None)), 1, false),
+        (
+            "at exact expiry",
+            1,
+            Some((true, 1, Some(ISSUED_AT))),
+            1,
+            false,
+        ),
+        (
+            "before expiry",
+            1,
+            Some((true, 1, Some(ISSUED_AT + 1))),
+            1,
+            true,
+        ),
+    ]
+}
+
+#[test]
+fn direct_session_issuance_rechecks_account_credential_state() {
+    for (label, account_byte, stored, expected_revision, accepted) in issuer_cases() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = enabled_database(&path);
+        if let Some((active, revision, expiration)) = stored {
+            set_account_credential_state(&path, account_byte, active, revision, expiration);
+        }
+
+        let outcome = database
+            .issue_direct_session(
+                &target(),
+                &session_at(
+                    account_byte,
+                    CredentialRevision::from_value(expected_revision).unwrap(),
+                    ISSUED_AT,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            if accepted {
+                MfaDirectSession::Issued
+            } else {
+                MfaDirectSession::Denied
+            },
+            "{label}"
+        );
+        assert_eq!(session_count(&path), i64::from(accepted), "{label}");
+    }
+}
+
+#[test]
+fn totp_issuance_rejects_account_changes_before_watermark_or_session_writes() {
+    for (label, account_byte, stored, expected_revision, accepted) in issuer_cases() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = enabled_database(&path);
+        if let Some((active, revision, expiration)) = stored {
+            set_account_credential_state(&path, account_byte, active, revision, expiration);
+        }
+
+        let outcome = database
+            .accept_step(
+                &target(),
+                factor(account_byte),
+                step(41_152_263),
+                &session_at(
+                    account_byte,
+                    CredentialRevision::from_value(expected_revision).unwrap(),
+                    ISSUED_AT,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            if accepted {
+                MfaAcceptance::Accepted
+            } else {
+                MfaAcceptance::Rejected
+            },
+            "{label}"
+        );
+        assert_eq!(session_count(&path), i64::from(accepted), "{label}");
+        assert_eq!(
+            stored_step(&path, factor(account_byte)),
+            accepted.then_some(41_152_263),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn enrollment_issuance_rejects_account_changes_before_factor_watermark_or_session_writes() {
+    for (label, account_byte, stored, expected_revision, accepted) in issuer_cases() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = enabled_database(&path);
+        if let Some((active, revision, expiration)) = stored {
+            set_account_credential_state(&path, account_byte, active, revision, expiration);
+        }
+        let enrolled_factor = MfaFactor {
+            identifier: factor(account_byte.wrapping_add(0x40)),
+            account: factor(account_byte),
+            module: Name::new("totp").unwrap(),
+            protected_factor_data: ProtectedValue::new([0x55_u8; 20]).unwrap(),
+        };
+
+        let outcome = database
+            .enroll(
+                &target(),
+                &enrolled_factor,
+                step(41_152_263),
+                &session_at(
+                    account_byte,
+                    CredentialRevision::from_value(expected_revision).unwrap(),
+                    ISSUED_AT,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            if accepted {
+                MfaEnrollment::Enrolled
+            } else {
+                MfaEnrollment::Rejected
+            },
+            "{label}"
+        );
+        assert_eq!(factor_count(&path), i64::from(accepted), "{label}");
+        assert_eq!(session_count(&path), i64::from(accepted), "{label}");
+        assert_eq!(
+            stored_step(&path, enrolled_factor.identifier),
+            accepted.then_some(41_152_263),
+            "{label}"
+        );
+    }
 }
 
 fn stored_step(path: &Path, factor: StateIdentifier) -> Option<i64> {
@@ -111,7 +323,7 @@ fn insert_enrolled_account(path: &Path, byte: u8) {
     let connection = Connection::open(path).unwrap();
     connection
         .execute(
-            "INSERT INTO weavelit_account \
+            "INSERT OR IGNORE INTO weavelit_account \
              (account_id, username, display_name, active, mfa_required) \
              VALUES (?1, ?2, NULL, 1, 0)",
             rusqlite::params![factor(byte).as_bytes().as_slice(), format!("user-{byte}")],
@@ -339,7 +551,7 @@ fn a_step_presented_after_the_module_was_disabled_is_refused_and_issues_no_sessi
 fn a_step_is_refused_when_no_enablement_entry_exists() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
-    let mut database = SqliteDatabase::open(&path).unwrap();
+    let mut database = opened_with_accounts(&path);
 
     let acceptance = database
         .accept_step(&target(), factor(1), step(41_152_263), &session(1))

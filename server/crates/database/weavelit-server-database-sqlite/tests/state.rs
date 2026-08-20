@@ -11,14 +11,15 @@ use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
     AuditReferencePersistence, COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation,
     ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
-    CorrelationIdentifier, DatabaseError, DatabaseInspection, DeploymentIdentifier, Group,
-    GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
-    LogClassification, LogConfigurationAuditReference, LogConfigurationGenerationPersistence,
-    LogConfigurationVersion, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
-    MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession, PasswordVerifier,
-    ProtectedSecret, ProtectedValue, ReconciliationDigest, ReconciliationStore, RecoveryPublicKey,
-    SESSION_DIGEST_LENGTH, ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore,
-    SessionTokenHash, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
+    CorrelationIdentifier, CredentialRevision, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
+    GroupMembership, LogAssignment, LogClassification, LogConfigurationAuditReference,
+    LogConfigurationGenerationPersistence, LogConfigurationVersion, LogDetail,
+    LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore,
+    MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
+    ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
+    ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
+    StateIdentifier, TemporaryCredentialExpiration, WorkflowCheckpoint, WorkflowKind,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_database_sqlite::SqliteDatabase;
@@ -142,6 +143,7 @@ fn session(token_byte: u8, csrf_byte: u8) -> NewSession {
         SessionTokenHash::from_bytes([token_byte; SESSION_DIGEST_LENGTH]).unwrap(),
         SessionCsrfHash::from_bytes([csrf_byte; SESSION_DIGEST_LENGTH]).unwrap(),
         identifier(1),
+        CredentialRevision::from_value(u64::MAX).unwrap(),
         name(SESSION_CLIENT_MODULE),
         SessionInstant::from_unix_milliseconds(1_000).unwrap(),
     )
@@ -165,6 +167,31 @@ fn watermark_count(path: &Path) -> i64 {
             |row| row.get(0),
         )
         .unwrap()
+}
+
+fn insert_session_issuance_account(path: &Path) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "INSERT INTO weavelit_account \
+             (account_id, username, display_name, active, mfa_required, credential_revision) \
+             VALUES (?1, 'session-owner', NULL, 1, 0, ?2)",
+            rusqlite::params![
+                identifier(1).as_bytes().as_slice(),
+                u64::MAX.to_be_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
+}
+
+fn remove_session_issuance_account(path: &Path) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "DELETE FROM weavelit_account WHERE account_id = ?1",
+            [identifier(1).as_bytes().as_slice()],
+        )
+        .unwrap();
 }
 
 fn restore_checkpoint(deployment_identifier: DeploymentIdentifier) -> WorkflowCheckpoint {
@@ -213,6 +240,12 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 display_name: Some(name("First Admin")),
                 active: true,
                 mfa_required: true,
+                credential_revision: CredentialRevision::from_value(u64::MAX).unwrap(),
+                must_change_password: true,
+                temporary_credential_expiration: Some(
+                    TemporaryCredentialExpiration::from_unix_milliseconds(1_700_000_000_000)
+                        .unwrap(),
+                ),
             },
             Account {
                 identifier: identifier(2),
@@ -220,6 +253,9 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 display_name: Some(name("運用担当")),
                 active: false,
                 mfa_required: false,
+                credential_revision: CredentialRevision::INITIAL,
+                must_change_password: false,
+                temporary_credential_expiration: None,
             },
         ],
         account_public_identities: vec![
@@ -698,9 +734,11 @@ fn a_restore_clears_every_live_session_inside_the_state_replacement() {
     let path = database_path(&temporary_directory);
     let deployment_identifier = deployment(12);
     let mut database = pending_database(&path, deployment_identifier);
+    insert_session_issuance_account(&path);
     database.create(&session(0x21, 0x22)).unwrap();
     database.create(&session(0x23, 0x24)).unwrap();
     assert_eq!(session_count(&path), 2);
+    remove_session_issuance_account(&path);
 
     database
         .complete_checkpoint(
@@ -735,6 +773,7 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
     let path = database_path(&temporary_directory);
     let deployment_identifier = deployment(13);
     let mut database = pending_database(&path, deployment_identifier);
+    insert_session_issuance_account(&path);
     // Accepting a step is one decision with the Module's enabled state and the
     // session it issues, so the Module is enabled here and each acceptance
     // carries its own session.
@@ -747,6 +786,7 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
         .accept_step(&totp_target(), identifier(7), step, &session(0x33, 0x34))
         .unwrap();
     assert_eq!(watermark_count(&path), 2);
+    remove_session_issuance_account(&path);
 
     // The replacement writes the restored state's own configuration into a
     // table it expects to be empty, so the entry that enabled the Module for
@@ -788,7 +828,9 @@ fn a_rejected_state_replacement_leaves_live_sessions_untouched() {
     let path = database_path(&temporary_directory);
     let deployment_identifier = deployment(13);
     let mut database = pending_database(&path, deployment_identifier);
+    insert_session_issuance_account(&path);
     database.create(&session(0x25, 0x26)).unwrap();
+    remove_session_issuance_account(&path);
 
     let error = database
         .complete_checkpoint(
@@ -1208,6 +1250,18 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
     assert!(!loaded.completion_acknowledged());
     assert_eq!(loaded.state(), &expected);
     assert_eq!(loaded.state().accounts().len(), 2);
+    assert_eq!(
+        loaded.state().accounts()[0].credential_revision,
+        CredentialRevision::from_value(u64::MAX).unwrap()
+    );
+    assert!(loaded.state().accounts()[0].must_change_password);
+    assert_eq!(
+        loaded.state().accounts()[0]
+            .temporary_credential_expiration
+            .unwrap()
+            .as_unix_milliseconds(),
+        1_700_000_000_000
+    );
     assert_eq!(
         loaded.state().account_public_identities(),
         expected.account_public_identities()

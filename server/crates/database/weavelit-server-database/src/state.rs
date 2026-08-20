@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::num::NonZeroU64;
 
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
@@ -17,7 +18,75 @@ pub const STATE_IDENTIFIER_LENGTH: usize = 16;
 /// Number of random bytes in an Account Public Identifier.
 pub const ACCOUNT_PUBLIC_IDENTIFIER_LENGTH: usize = 16;
 
+/// Bytes in the persisted big-endian representation of a credential revision.
+pub const CREDENTIAL_REVISION_LENGTH: usize = size_of::<u64>();
+
 const ACCOUNT_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS: usize = 8;
+
+/// Monotonically increasing generation of one account's credential state.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CredentialRevision(NonZeroU64);
+
+impl CredentialRevision {
+    /// Initial revision assigned when an account is created or legacy state is loaded.
+    pub const INITIAL: Self = Self(NonZeroU64::MIN);
+
+    /// Creates a revision and rejects the reserved zero value.
+    pub fn from_value(value: u64) -> Result<Self, ContractInputError> {
+        NonZeroU64::new(value)
+            .map(Self)
+            .ok_or(ContractInputError::InvalidCredentialRevision)
+    }
+
+    /// Decodes the exact eight-byte big-endian persistence representation.
+    pub fn from_stored_bytes(
+        bytes: [u8; CREDENTIAL_REVISION_LENGTH],
+    ) -> Result<Self, ContractInputError> {
+        Self::from_value(u64::from_be_bytes(bytes))
+    }
+
+    /// Returns the exact eight-byte big-endian persistence representation.
+    pub const fn to_stored_bytes(self) -> [u8; CREDENTIAL_REVISION_LENGTH] {
+        self.0.get().to_be_bytes()
+    }
+
+    /// Returns the next revision, or `None` when this revision is maximal.
+    pub fn checked_next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+}
+
+impl fmt::Debug for CredentialRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialRevision(REDACTED)")
+    }
+}
+
+/// Nonnegative UTC Unix millisecond instant bounding a temporary credential.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TemporaryCredentialExpiration(i64);
+
+impl TemporaryCredentialExpiration {
+    /// Creates an expiration and rejects instants before the Unix epoch.
+    pub fn from_unix_milliseconds(value: i64) -> Result<Self, ContractInputError> {
+        if value < 0 {
+            return Err(ContractInputError::InvalidTemporaryCredentialExpiration);
+        }
+
+        Ok(Self(value))
+    }
+
+    /// Returns the expiration in UTC Unix milliseconds.
+    pub const fn as_unix_milliseconds(self) -> i64 {
+        self.0
+    }
+}
+
+impl fmt::Debug for TemporaryCredentialExpiration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TemporaryCredentialExpiration(REDACTED)")
+    }
+}
 
 /// Failure to generate or decode an internal Account Public Identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -510,6 +579,12 @@ pub struct Account {
     /// data, so a Restore reinstates the requirement together with the account
     /// it constrains.
     pub mfa_required: bool,
+    /// Generation of the credential state verified for session issuance.
+    pub credential_revision: CredentialRevision,
+    /// Whether the account must replace its current temporary credential.
+    pub must_change_password: bool,
+    /// Fixed absolute expiration of the current temporary credential.
+    pub temporary_credential_expiration: Option<TemporaryCredentialExpiration>,
 }
 
 /// Stable public identity assigned to one local account.
@@ -1131,6 +1206,19 @@ impl ApplicationState {
         for verifier in &password_verifiers {
             require_reference(&account_identifiers, verifier.account)?;
         }
+        for account in &accounts {
+            let has_expiration = account.temporary_credential_expiration.is_some();
+            if account.must_change_password != has_expiration {
+                return Err(ContractInputError::InvalidTemporaryCredentialState);
+            }
+            if has_expiration
+                && password_verifiers
+                    .binary_search_by_key(&account.identifier, |verifier| verifier.account)
+                    .is_err()
+            {
+                return Err(ContractInputError::InvalidTemporaryCredentialState);
+            }
+        }
         for membership in &group_memberships {
             require_reference(&group_identifiers, membership.group)?;
             require_reference(&account_identifiers, membership.account)?;
@@ -1466,6 +1554,9 @@ mod tests {
                 display_name: Some(name("First Admin")),
                 active: true,
                 mfa_required: false,
+                credential_revision: CredentialRevision::INITIAL,
+                must_change_password: false,
+                temporary_credential_expiration: None,
             }],
             account_public_identities: vec![AccountPublicIdentity::new(
                 identifier(1),
@@ -1553,6 +1644,91 @@ mod tests {
             StateIdentifier::from_bytes([0; STATE_IDENTIFIER_LENGTH]),
             Err(ContractInputError::InvalidStateIdentifier)
         );
+    }
+
+    #[test]
+    fn credential_revision_is_nonzero_checked_big_endian_and_redacted() {
+        assert_eq!(
+            CredentialRevision::from_value(0),
+            Err(ContractInputError::InvalidCredentialRevision)
+        );
+        assert_eq!(
+            CredentialRevision::INITIAL.to_stored_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 1]
+        );
+
+        let revision = CredentialRevision::from_value(0x0102_0304_0506_0708).unwrap();
+        assert_eq!(
+            revision.to_stored_bytes(),
+            [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
+        assert_eq!(
+            CredentialRevision::from_stored_bytes(revision.to_stored_bytes()),
+            Ok(revision)
+        );
+        assert_eq!(
+            revision.checked_next().unwrap().to_stored_bytes(),
+            0x0102_0304_0506_0709_u64.to_be_bytes()
+        );
+        assert_eq!(
+            CredentialRevision::from_value(u64::MAX)
+                .unwrap()
+                .checked_next(),
+            None
+        );
+        assert_eq!(format!("{revision:?}"), "CredentialRevision(REDACTED)");
+    }
+
+    #[test]
+    fn temporary_credential_expiration_is_nonnegative_and_redacted() {
+        assert_eq!(
+            TemporaryCredentialExpiration::from_unix_milliseconds(-1),
+            Err(ContractInputError::InvalidTemporaryCredentialExpiration)
+        );
+        let expiration = TemporaryCredentialExpiration::from_unix_milliseconds(i64::MAX).unwrap();
+        assert_eq!(expiration.as_unix_milliseconds(), i64::MAX);
+        assert_eq!(
+            format!("{expiration:?}"),
+            "TemporaryCredentialExpiration(REDACTED)"
+        );
+    }
+
+    #[test]
+    fn temporary_credential_state_is_paired_and_requires_a_verifier() {
+        let expiration = TemporaryCredentialExpiration::from_unix_milliseconds(1).unwrap();
+
+        let mut missing_expiration = valid_input();
+        missing_expiration.accounts[0].must_change_password = true;
+        assert_eq!(
+            reject(missing_expiration),
+            ContractInputError::InvalidTemporaryCredentialState
+        );
+
+        let mut unexpected_expiration = valid_input();
+        unexpected_expiration.accounts[0].temporary_credential_expiration = Some(expiration);
+        assert_eq!(
+            reject(unexpected_expiration),
+            ContractInputError::InvalidTemporaryCredentialState
+        );
+
+        let mut missing_verifier = valid_input();
+        missing_verifier.accounts[0].must_change_password = true;
+        missing_verifier.accounts[0].temporary_credential_expiration = Some(expiration);
+        missing_verifier.password_verifiers.clear();
+        assert_eq!(
+            reject(missing_verifier),
+            ContractInputError::InvalidTemporaryCredentialState
+        );
+
+        let mut temporary = valid_input();
+        temporary.accounts[0].must_change_password = true;
+        temporary.accounts[0].temporary_credential_expiration = Some(expiration);
+        ApplicationState::new(temporary).expect("paired temporary metadata is valid");
+
+        let mut ordinary_passwordless = valid_input();
+        ordinary_passwordless.password_verifiers.clear();
+        ApplicationState::new(ordinary_passwordless)
+            .expect("ordinary passwordless account state remains valid");
     }
 
     #[test]
@@ -1748,6 +1924,9 @@ mod tests {
             display_name: None,
             active: true,
             mfa_required: false,
+            credential_revision: CredentialRevision::INITIAL,
+            must_change_password: false,
+            temporary_credential_expiration: None,
         });
 
         let mut duplicate_username = valid_input();
@@ -1757,6 +1936,9 @@ mod tests {
             display_name: None,
             active: true,
             mfa_required: false,
+            credential_revision: CredentialRevision::INITIAL,
+            must_change_password: false,
+            temporary_credential_expiration: None,
         });
 
         let mut duplicate_group_name = valid_input();
@@ -1894,6 +2076,9 @@ mod tests {
             display_name: None,
             active: true,
             mfa_required: false,
+            credential_revision: CredentialRevision::INITIAL,
+            must_change_password: false,
+            temporary_credential_expiration: None,
         });
         duplicate_identifier
             .account_public_identities

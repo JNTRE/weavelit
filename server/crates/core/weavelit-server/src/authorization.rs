@@ -549,11 +549,13 @@ mod tests {
                 SessionCsrfHash::from_bytes(*csrf_digest.as_bytes())
                     .expect("the csrf digest must be accepted"),
                 account,
+                weavelit_server_database::CredentialRevision::INITIAL,
                 name(client_module),
                 SessionInstant::from_unix_milliseconds(ISSUED_AT)
                     .expect("the test instant must be accepted"),
             );
-            self.database
+            let issuance = self
+                .database
                 .with(|database| {
                     database
                         .sessions()
@@ -562,6 +564,7 @@ mod tests {
                 })
                 .expect("the database lane must be usable")
                 .expect("the session must be stored");
+            assert_eq!(issuance, weavelit_server_database::SessionIssuance::Issued);
 
             let validated = self
                 .authentication
@@ -646,6 +649,9 @@ mod tests {
                     display_name: None,
                     active: true,
                     mfa_required: false,
+                    credential_revision: weavelit_server_database::CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
                 },
                 Account {
                     identifier: identifier(ADMINISTRATOR_BYTES),
@@ -653,6 +659,9 @@ mod tests {
                     display_name: None,
                     active: true,
                     mfa_required: false,
+                    credential_revision: weavelit_server_database::CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
                 },
             ],
             groups: vec![

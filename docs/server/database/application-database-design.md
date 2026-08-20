@@ -307,30 +307,25 @@ contract defines no in-place Restore clearing operation. Obligations are also
 absent from every Log Module destination backup unless and until that
 destination has acknowledged the replayed record.
 
-### Future Temporary-Credential State
+### Account Credential State Foundation
 
-The future account-create, password-reset, and password-change contract must
-keep temporary-credential state backend-neutral and plaintext-free. An account
-record carries a monotonically increasing credential revision, a bounded
-temporary-credential expiry instant, and the `must_change_password` flag; it
-carries no temporary password, response content, delivery content, or
-continuation bearer. Creation and reset must atomically compare the expected
-revision, write only the new verifier and temporary metadata, revoke target
-sessions, and increment or replace the revision. Password change must
-atomically verify the expected revision, replace the verifier, clear temporary
-metadata and the flag, and increment or replace the revision. Refer to
+Every account record carries a nonzero monotonically increasing credential
+revision, a `must_change_password` flag, and an optional nonnegative absolute
+temporary-credential expiry instant. Revision `1` is the initial and legacy
+default. The flag is true exactly when the expiry is present, and temporary
+metadata is valid only for an account that has a password verifier. An ordinary
+credential has a false flag and no expiry. The aggregate carries no temporary
+password, response content, delivery content, or continuation bearer.
+
+This foundation adds no account-create, password-reset, password-change, or
+other account mutation operation. Those future operations must atomically
+compare the expected revision, update the verifier and metadata, advance the
+revision, and revoke sessions where their approved workflow requires it. They
+also require their own Audit design and implementation; the credential-state
+foundation does not add an Audit terminal workflow or make the Application
+Database an Audit Log destination. Refer to
 [Authentication Design](../authentication/authentication-design.md#future-account-credential-issuance)
-for the approved expiry, revision, session, and reauthentication policy.
-
-The future account transaction covers credential metadata, session revocation,
-and the opaque terminal recovery obligation atomically. Audit Attempt delivery,
-terminal construction, replay sequencing, and record interpretation remain
-owned by the Audit design and the owning workflow; the Application Database
-does not participate in temporary credential issuance or act as an Audit Log
-destination. A compare-and-set conflict commits neither a new credential,
-terminal obligation, nor plaintext and returns a stable secret-free result. The
-fixed temporary-credential expiry is 24 hours. These are future contract
-obligations; they do not alter Init or permit a password-retrieval operation.
+for the approved future expiry, revision, session, and reauthentication policy.
 
 ## Live Session Storage
 
@@ -362,7 +357,14 @@ lifetime. A session refused for a backwards clock is not destroyed, because the
 clock rather than the session is what is wrong.
 
 The contract provides atomic `create`, `validate_and_touch`, `rotate_csrf`,
-`revoke`, and `revoke_for_account` operations.
+`revoke`, and `revoke_for_account` operations. A new session carries the exact
+credential revision its caller verified. Before `create` writes, the store
+checks in the same transaction that the account still exists, is active, still
+has that revision, and has no temporary-credential expiry at or before the
+session issue instant. Every ineligible state returns the same reason-free
+rejection and writes no session. The direct, second-factor, and enrollment
+session operations apply the same check before any session, replay watermark,
+or factor write.
 `validate_and_touch` and `rotate_csrf` remove a session they find expired.
 `validate_and_touch` takes the presented CSRF digest and compares it inside the
 same transaction that resolves the session, and it advances the recorded
@@ -686,6 +688,14 @@ the restored current configuration. For Log Modules, a backup includes only
 non-secret configuration and assignments. Generation history, System Logs and
 Audit Logs, other Log Module destination data, and Log Module authentication or
 connection credentials are outside this Application Database backup contract.
+
+Account credential revisions, `must_change_password` flags, and temporary
+credential expiry instants are restorable application state. The version-1
+Restore reader accepts these fields additively: omission means revision `1`, a
+false flag, and no expiry. Supplied temporary metadata must be paired and must
+belong to an account with a supplied password verifier; zero revisions,
+negative expiries, malformed values, and inconsistent combinations are invalid
+backup content. This compatibility does not change the backup format version.
 
 Account Public Identifiers are restorable application state. The current
 forward contract for a future backup writer stores each value in its account's
