@@ -571,7 +571,7 @@ fn log_configuration_unavailable(_: DatabaseError) -> LogConfigurationChangeErro
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         path::{Path, PathBuf},
         sync::{
@@ -920,7 +920,7 @@ mod tests {
         )
     }
 
-    fn authorized_change(enabled: bool) -> AuthorizedAdministrationAction {
+    pub(crate) fn authorized_change(enabled: bool) -> AuthorizedAdministrationAction {
         let client_module = name(CLIENT_MODULE);
         let authorization = authorize_administration(
             &HumanAuthorizationSnapshot::new(

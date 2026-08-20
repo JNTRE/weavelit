@@ -2980,7 +2980,7 @@ pub(crate) mod tests {
         RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
     };
     use weavelit_server_database::{
-        ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
+        Account, ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
         LogClassification, LogDetail, LogModuleConfiguration, LogType, Name, ReconciliationDigest,
         RecoveryPublicKey,
     };
@@ -2989,6 +2989,13 @@ pub(crate) mod tests {
         DeploymentIdentifier, InitializedState, LifecycleClassification, LifecycleProjection,
         LifecycleState, LifecycleStore, StateIdentifier, TrustedBackendContext, WorkflowKind,
     };
+    use weavelit_server_log::{
+        CompleteLogRecord, ConfiguredLogDestination, DurableAcknowledgement, LogCapabilities,
+        LogDestination, LogDestinationError, LogDestinationFactory, LogModuleFactoryContext,
+        LogModuleIdentifier, LogModuleRegistration, LogRecordType, LogSettingsContract,
+        TrustedLogModuleContext,
+    };
+    use weavelit_server_log_authority::ServerLogAuthority;
     use weavelit_server_restore::{
         AvailableComponents, RequestBudget, RequestDeadline, RestoreError,
     };
@@ -3004,13 +3011,14 @@ pub(crate) mod tests {
         SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode, ServingModeSwitch, ShutdownBudget,
         ShutdownSignal, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedRequestHead,
         WipedRequestHeadDropObserver, WipedResponseBytes, WipedResponseBytesDropObserver,
-        WorkflowArbiter, accept_and_drain_connections, bounded_response_from_axum,
-        classify_restricted_startup, close_active_database, fallback_router,
-        gateway_timeout_response,
+        WorkflowArbiter, accept_and_drain_connections,
+        administration::{MfaModuleEnablementDelivery, MfaModuleEnablementError},
+        bounded_response_from_axum, classify_restricted_startup, close_active_database,
+        fallback_router, gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
-        operational_audit::AuditRecoverySequenceState,
+        operational_audit::{AuditRecoverySequenceState, OperationalAuditRecovery},
         parse_http_request, processing_response, raw_header_section_bytes,
         read_default_profile_request, read_request_head_until, redacted_response,
         request_timeout_response,
@@ -3034,6 +3042,78 @@ pub(crate) mod tests {
 
     /// The exact accepted Application Database selection body.
     const SELECTION_BODY: &str = "{\"backend\":\"sqlite\",\"settings\":{}}";
+
+    struct PendingAfterAttemptFactory {
+        deliveries: Arc<AtomicUsize>,
+    }
+
+    impl LogDestinationFactory for PendingAfterAttemptFactory {
+        fn accepted_settings(&self) -> LogSettingsContract {
+            LogSettingsContract::none()
+        }
+
+        fn create(
+            &self,
+            _context: &LogModuleFactoryContext<'_>,
+        ) -> Result<Box<dyn LogDestination>, LogDestinationError> {
+            Ok(Box::new(PendingAfterAttemptDestination {
+                deliveries: Arc::clone(&self.deliveries),
+            }))
+        }
+    }
+
+    struct PendingAfterAttemptDestination {
+        deliveries: Arc<AtomicUsize>,
+    }
+
+    impl LogDestination for PendingAfterAttemptDestination {
+        fn deliver(
+            &self,
+            _record: &CompleteLogRecord,
+            acknowledgement: DurableAcknowledgement,
+        ) -> Result<DurableAcknowledgement, LogDestinationError> {
+            let delivery = self.deliveries.fetch_add(1, Ordering::SeqCst) + 1;
+            if delivery > 1 {
+                return Err(LogDestinationError::Unavailable);
+            }
+            Ok(acknowledgement)
+        }
+
+        fn preflight(&self, _record_type: LogRecordType) -> Result<(), LogDestinationError> {
+            Ok(())
+        }
+    }
+
+    fn pending_after_attempt_recovery(
+        database: crate::operational::OperationalDatabase,
+    ) -> (OperationalAuditRecovery, Arc<AtomicUsize>) {
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let module = LogModuleIdentifier::new("pending-after-attempt").unwrap();
+        let catalog = Arc::new(
+            weavelit_server_log::LogModuleCatalog::new(vec![LogModuleRegistration::new(
+                module.as_str(),
+                LogCapabilities::new(vec![LogRecordType::Audit]).unwrap(),
+                Box::new(PendingAfterAttemptFactory {
+                    deliveries: Arc::clone(&deliveries),
+                }),
+            )])
+            .unwrap(),
+        );
+        let destination: ConfiguredLogDestination = catalog
+            .create_destination(
+                &module,
+                &TrustedLogModuleContext::from_server_authority(
+                    &ServerLogAuthority::new(),
+                    PathBuf::from("/unused"),
+                    [0x42; 16],
+                ),
+            )
+            .unwrap();
+        (
+            OperationalAuditRecovery::for_test(database, catalog, module, destination),
+            deliveries,
+        )
+    }
 
     /// Composes and publishes the serving mode a listener starts a startup on.
     ///
@@ -3971,6 +4051,146 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(unavailable_records, 0);
+    }
+
+    #[tokio::test]
+    async fn pending_audit_recovery_blocks_writes_without_unmounting_operational_routes() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let account = StateIdentifier::from_bytes([1; 16]).unwrap();
+        seal_deployment_with(
+            &state_root,
+            &sealed_application_state_with(
+                vec![Account {
+                    identifier: account,
+                    username: Name::new("administrator").unwrap(),
+                    display_name: None,
+                    active: true,
+                    mfa_required: false,
+                }],
+                Vec::new(),
+            ),
+        );
+        let startup = classify_restricted_startup(&state_root).unwrap();
+        let database = startup.application_database().unwrap().clone();
+        let (audit_recovery, deliveries) = pending_after_attempt_recovery(database.clone());
+
+        let setup_action = crate::administration::tests::authorized_change(true);
+        let setup =
+            crate::administration::MfaModuleEnablementWorkflow::new(&database, &audit_recovery);
+        let setup_preview = setup.preview(&setup_action).unwrap();
+        assert_eq!(
+            setup.apply(setup_action, setup_preview).unwrap().delivery,
+            MfaModuleEnablementDelivery::Pending
+        );
+        assert_eq!(deliveries.load(Ordering::SeqCst), 2);
+
+        let composer = OperationalComposer::with_audit_recovery_for_test(
+            operational_runtime(&startup, UNBOUND_LISTENER.parse().unwrap()),
+            startup.initialized_state().unwrap(),
+            database,
+            audit_recovery,
+        );
+        assert_eq!(
+            composer.activation_audit_recovery_state().active(),
+            AuditRecoverySequenceState::Pending
+        );
+        assert_eq!(deliveries.load(Ordering::SeqCst), 3);
+
+        let application_database = state_root.join(APPLICATION_DATABASE_FILE);
+        let connection = rusqlite::Connection::open(&application_database).unwrap();
+        let enabled_before: String = connection
+            .query_row(
+                "SELECT setting_value FROM weavelit_configuration \
+                 WHERE component = 'totp' AND setting_key = 'mfa-module.enabled'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let pending_before: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_audit_terminal_obligation \
+                 WHERE acknowledged = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled_before, "true");
+        assert_eq!(pending_before, 1);
+
+        let blocked_action = crate::administration::tests::authorized_change(false);
+        let blocked = composer.mfa_module_enablement_workflow();
+        let blocked_preview = blocked.preview(&blocked_action).unwrap();
+        let error = blocked.apply(blocked_action, blocked_preview).unwrap_err();
+        assert_eq!(error, MfaModuleEnablementError::AuditLogUnavailable);
+        assert_eq!(
+            error.to_string(),
+            "Audit Log unavailable; operation rejected."
+        );
+        assert_eq!(format!("{error:?}"), "AuditLogUnavailable");
+        assert_eq!(deliveries.load(Ordering::SeqCst), 4);
+
+        let enabled_after: String = connection
+            .query_row(
+                "SELECT setting_value FROM weavelit_configuration \
+                 WHERE component = 'totp' AND setting_key = 'mfa-module.enabled'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let pending_after: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_audit_terminal_obligation \
+                 WHERE acknowledged = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled_after, enabled_before);
+        assert_eq!(pending_after, pending_before);
+
+        let mount = composer.mount();
+        for target in [LIFECYCLE_RECONCILIATION_ROUTE, AUTH_SESSION_ROUTE] {
+            assert!(
+                mount
+                    .surface()
+                    .registry()
+                    .registered_routes()
+                    .contains(&(Method::PUT, target)),
+                "{target} must remain registered"
+            );
+            let response = mount
+                .surface()
+                .router()
+                .clone()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{target}"
+            );
+            assert_eq!(response.headers().get("allow").unwrap(), "PUT", "{target}");
+            assert_eq!(
+                response_body(response).await,
+                if target == LIFECYCLE_RECONCILIATION_ROUTE {
+                    "{\"error\":\"method_not_allowed\"}"
+                } else {
+                    ""
+                },
+                "{target}"
+            );
+        }
+        let asset = mount
+            .surface()
+            .router()
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(asset.status(), StatusCode::OK);
     }
 
     #[test]

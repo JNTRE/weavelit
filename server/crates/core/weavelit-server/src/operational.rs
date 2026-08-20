@@ -594,6 +594,34 @@ impl OperationalComposer {
         }
     }
 
+    /// Composes with a test-controlled recovery coordinator before activation.
+    #[cfg(test)]
+    pub(crate) fn with_audit_recovery_for_test(
+        runtime: Arc<OperationalRuntime>,
+        state: &InitializedState,
+        database: OperationalDatabase,
+        audit_recovery: OperationalAuditRecovery,
+    ) -> Self {
+        runtime.active_database.activate(database.clone());
+        let activation_audit_recovery_state = audit_recovery.drain_for_activation();
+        let authentication = AuthenticationRuntime::new(
+            database.clone(),
+            state,
+            runtime.client_modules.clone(),
+            runtime.state_root.clone(),
+            &runtime.log_catalog,
+            Arc::clone(&runtime.protection),
+        );
+
+        Self {
+            runtime,
+            database,
+            audit_recovery,
+            activation_audit_recovery_state,
+            authentication,
+        }
+    }
+
     /// Removes authentication only for a composition test.
     #[cfg(test)]
     pub(crate) fn without_authentication(mut self) -> Self {
