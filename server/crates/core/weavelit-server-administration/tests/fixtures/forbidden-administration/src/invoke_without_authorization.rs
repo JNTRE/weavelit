@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use weavelit_server_administration::{
-    AdministrationAction, AdministrationClock, AdministrationPlane, AdministrationRequest,
-    ComponentEnablementSource,
+    AccountAdministrationRead, AdministrationAction, AdministrationClock, AdministrationPlane,
+    AdministrationRequest, ComponentEnablementSource,
 };
 use weavelit_server_authorization::AuthorizationDenied;
 use weavelit_server_database::ComponentEnablement;
@@ -28,7 +28,9 @@ impl ComponentEnablementSource for Enablement {
 fn bypass(plane: &mut AdministrationPlane<Clock, Enablement>) {
     let _ = plane.authorize(
         (),
-        AdministrationRequest::new(AdministrationAction::Account),
+        AdministrationRequest::new(AdministrationAction::Account(
+            AccountAdministrationRead::List,
+        )),
     );
 }
 

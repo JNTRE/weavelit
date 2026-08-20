@@ -408,8 +408,21 @@ Reference Identifier entropy. Persisted encoding and decoding require a
 separate `AccountPublicIdentifierPersistence` capability issued from
 `ServerDatabaseAuthority`. The checked aggregate requires exact account
 coverage and global Account Public Identifier uniqueness. The database contract
-can resolve one exact typed public identifier to its account projection; it
-exposes no enumeration, mutation, string-parsing, or public-route behavior.
+exposes an optional `AccountAdministrationStore` for deterministic list reads
+and one exact typed public-identifier lookup. Both return only an
+`AccountAdministrationProjection` containing the Account Public Identifier,
+username, optional display name, active state, and MFA-required state. The
+projection fields are private and have no extension field. It carries no state
+identifier, Audit Reference Identifier, password verifier, MFA factor, session,
+temporary credential value, or temporary credential metadata.
+
+Every list or exact lookup validates complete account-to-public-identifier
+coverage and every stored identifier before returning output. Invalid coverage,
+malformed values, or duplicate identifiers fail with a payload-free database
+integrity error rather than omitting an account or substituting an internal
+identifier. An unknown valid typed public identifier returns absence. The
+contract defines no mutation, string parsing or encoding, public route,
+response, cursor, or pagination behavior.
 
 Every account, Group, and Log Module configuration carries exactly one
 **[Audit Reference Identifier](../../glossary.md#applications-and-interfaces)**

@@ -2,6 +2,7 @@
 
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
+mod account_administration;
 mod audit_recovery;
 mod log_configuration;
 mod mfa;
@@ -9,6 +10,7 @@ mod reconciliation;
 mod session;
 mod state;
 
+pub use account_administration::{AccountAdministrationProjection, AccountAdministrationStore};
 pub use audit_recovery::{
     AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH, AuditTerminalAcknowledgementProof,
     AuditTerminalObligation, AuditTerminalObligationIdentifier, AuditTerminalRecoveryContractError,
@@ -308,6 +310,11 @@ pub trait ApplicationDatabase: Send {
     /// durable terminal obligations. The method is required rather than
     /// defaulted so every backend deliberately declares its support.
     fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore>;
+
+    /// Returns bounded account administration reads, when available.
+    fn account_administration(&mut self) -> Option<&mut dyn AccountAdministrationStore> {
+        None
+    }
 
     /// Returns immutable Log Module configuration generation reads, when available.
     ///

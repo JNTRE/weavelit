@@ -390,7 +390,7 @@ mod tests {
     use rusqlite::Connection;
     use weavelit_module_client::typed_json::TypedJsonEnvelope;
     use weavelit_server_administration::{
-        AdministrationAction, AdministrationClock, AdministrationPlane,
+        AccountAdministrationRead, AdministrationAction, AdministrationClock, AdministrationPlane,
         AdministrationRequest as AdministrationActionRequest, AuthorizedAdministrationAction,
         ComponentEnablementSource, ComponentOperation,
     };
@@ -909,7 +909,7 @@ mod tests {
             surface
                 .authorize_administration(&administrator)
                 .expect("the administrator must receive a compound admission"),
-            AdministrationAction::Account,
+            AdministrationAction::Account(AccountAdministrationRead::List),
             surface.enablement(),
         );
         let component = authorize_administration_action(
@@ -957,7 +957,7 @@ mod tests {
                 surface
                     .authorize_administration(&administrator)
                     .expect("an administrator must still reach the Administration Plane"),
-                AdministrationAction::Account,
+                AdministrationAction::Account(AccountAdministrationRead::List),
                 surface.enablement(),
             )
             .client_module()

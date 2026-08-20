@@ -5,16 +5,18 @@
 use std::{error::Error as StdError, fmt};
 
 use weavelit_server_administration::{
-    AdministrationAction, AuthorizedAdministrationAction, LogConfigurationChange,
+    AccountAdministrationRead, AdministrationAction, AuthorizedAdministrationAction,
+    LogConfigurationChange,
 };
 use weavelit_server_audit::{
     ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail, ComponentState,
     LogConfigurationAuditReferences, MfaModuleChange, MfaModuleReference, StateChangeOutcome,
 };
 use weavelit_server_database::{
-    ComponentKind, DatabaseError, LogAssignment, LogConfigurationAuditTerminalWrites,
-    LogConfigurationMutationOutcome, LogConfigurationMutationRequest, LogConfigurationPreparation,
-    LogType, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, Name,
+    AccountAdministrationProjection, ComponentKind, DatabaseError, LogAssignment,
+    LogConfigurationAuditTerminalWrites, LogConfigurationMutationOutcome,
+    LogConfigurationMutationRequest, LogConfigurationPreparation, LogType,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, Name,
 };
 use weavelit_server_log::{
     AuditLogClassification, CorrelationId, EventTime, LogRecordPersistenceView,
@@ -30,6 +32,68 @@ use crate::{
 };
 
 const TOTP_MODULE: &str = weavelit_module_mfa_totp::MODULE_IDENTIFIER;
+
+/// Complete internal result of one authorized account administration read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AccountAdministrationReadResult {
+    /// Every account in deterministic store order.
+    List(Vec<AccountAdministrationProjection>),
+    /// The exact account, or safe absence when the public identifier is unknown.
+    View(Option<AccountAdministrationProjection>),
+}
+
+/// Payload-free refusal of an account administration read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountAdministrationReadError {
+    /// The consumed action was not an account read.
+    ActionNotSupported,
+    /// The selected Application Database could not safely serve the read.
+    Unavailable,
+}
+
+impl fmt::Display for AccountAdministrationReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ActionNotSupported => formatter.write_str("administration action not supported"),
+            Self::Unavailable => formatter.write_str("account administration is unavailable"),
+        }
+    }
+}
+
+impl StdError for AccountAdministrationReadError {}
+
+/// Read-only workflow for one exact authorized account administration action.
+pub(crate) struct AccountAdministrationReadWorkflow<'a> {
+    database: &'a OperationalDatabase,
+}
+
+impl<'a> AccountAdministrationReadWorkflow<'a> {
+    pub(crate) const fn new(database: &'a OperationalDatabase) -> Self {
+        Self { database }
+    }
+
+    /// Consumes one exact authorization and returns only the bounded projection.
+    pub(crate) fn read(
+        &self,
+        action: AuthorizedAdministrationAction,
+    ) -> Result<AccountAdministrationReadResult, AccountAdministrationReadError> {
+        let AdministrationAction::Account(read) = action.action() else {
+            return Err(AccountAdministrationReadError::ActionNotSupported);
+        };
+        let read = *read;
+
+        self.database
+            .with_account_administration(|persistence, store| match read {
+                AccountAdministrationRead::List => store
+                    .list_account_administration_projections(persistence)
+                    .map(AccountAdministrationReadResult::List),
+                AccountAdministrationRead::View(public_identifier) => store
+                    .load_account_administration_projection(persistence, public_identifier)
+                    .map(AccountAdministrationReadResult::View),
+            })
+            .map_err(|_| AccountAdministrationReadError::Unavailable)
+    }
+}
 
 /// Delivery state of one committed Log configuration terminal obligation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -584,7 +648,7 @@ pub(crate) mod tests {
     use rusqlite::{Connection, params};
     use tempfile::TempDir;
     use weavelit_server_administration::{
-        AdministrationClock, AdministrationPlane, AdministrationRequest,
+        AccountAdministrationRead, AdministrationClock, AdministrationPlane, AdministrationRequest,
         AuthorizedAdministrationAdmission, ComponentEnablementChange, ComponentEnablementSource,
         LogAssignmentChange, LogConfigurationChange,
     };
@@ -595,10 +659,11 @@ pub(crate) mod tests {
     };
     use weavelit_server_components::{AvailableComponents, MfaFactorFormat};
     use weavelit_server_database::{
-        ComponentEnablement, ConfigurationKey, ConfigurationValue, GroupGrant,
-        HumanAuthorizationSnapshot, LogModuleSetting, SESSION_DIGEST_LENGTH, SessionTokenHash,
-        StateIdentifier,
+        AccountPublicIdentifier, AccountPublicIdentifierPersistence, ComponentEnablement,
+        ConfigurationKey, ConfigurationValue, GroupGrant, HumanAuthorizationSnapshot,
+        LogModuleSetting, SESSION_DIGEST_LENGTH, SessionTokenHash, StateIdentifier,
     };
+    use weavelit_server_database_authority::ServerDatabaseAuthority;
     use weavelit_server_database_sqlite::SqliteDatabase;
     use weavelit_server_log::{
         CompleteLogRecord, ConfiguredLogDestination, DurableAcknowledgement, LogCapabilities,
@@ -718,6 +783,12 @@ pub(crate) mod tests {
         Name::new(value).unwrap()
     }
 
+    fn account_public_identifier(byte: u8) -> AccountPublicIdentifier {
+        AccountPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+            .decode([byte; 16])
+            .unwrap()
+    }
+
     fn surface(enabled: bool, enrolled: bool, session: bool) -> Surface {
         let directory = tempfile::tempdir().unwrap();
         let path = directory
@@ -740,6 +811,16 @@ pub(crate) mod tests {
                 "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
                  VALUES (?1, 'ar-11111111111111111111111111111111')",
                 [identifier(1).as_bytes().as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_public_identity (account_id, public_identifier) \
+                 VALUES (?1, ?2)",
+                params![
+                    identifier(1).as_bytes().as_slice(),
+                    [0x91_u8; 16].as_slice()
+                ],
             )
             .unwrap();
         for (byte, configuration_name, configuration_reference, enabled) in [
@@ -978,6 +1059,46 @@ pub(crate) mod tests {
         .unwrap()
     }
 
+    fn authorized_account_read(read: AccountAdministrationRead) -> AuthorizedAdministrationAction {
+        let client_module = name(CLIENT_MODULE);
+        let authorization = authorize_administration(
+            &HumanAuthorizationSnapshot::new(
+                true,
+                vec![
+                    GroupGrant::ClientModule(client_module.clone()),
+                    GroupGrant::ServerAdministration,
+                ],
+            ),
+            &AuthorizationCatalog::new(
+                vec![ClientModuleDeclaration::new(
+                    client_module,
+                    true,
+                    &[Plane::Administration],
+                )],
+                vec![],
+                vec![],
+            )
+            .unwrap(),
+            AuthorizationRequest {
+                client_module: &name(CLIENT_MODULE),
+            },
+        )
+        .unwrap();
+        let authority = ServerAdministrationAuthority::new();
+        let admission = AuthorizedAdministrationAdmission::from_server_authority(
+            &authority,
+            authorization,
+            identifier(1),
+            SessionTokenHash::from_bytes([0x21; SESSION_DIGEST_LENGTH]).unwrap(),
+        );
+        AdministrationPlane::new(FixedClock, NoEnablementRead, AvailableComponents::default())
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Account(read)),
+            )
+            .unwrap()
+    }
+
     fn authorized_log_change(change: LogConfigurationChange) -> AuthorizedAdministrationAction {
         let client_module = name(CLIENT_MODULE);
         let authorization = authorize_administration(
@@ -1046,6 +1167,96 @@ pub(crate) mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn authorized_account_reads_return_only_bounded_data_without_side_effects() {
+        let surface = surface(false, false, true);
+        let connection = Connection::open(&surface.path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (?1, 'zeta-operator', 'Zeta Operator', 0, 1)",
+                [identifier(2).as_bytes().as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_public_identity (account_id, public_identifier) \
+                 VALUES (?1, ?2)",
+                params![
+                    identifier(2).as_bytes().as_slice(),
+                    [0x92_u8; 16].as_slice()
+                ],
+            )
+            .unwrap();
+        drop(connection);
+        let sessions_before = count(&surface.path, "weavelit_session", "");
+        let audit_before = count(&surface.path, "weavelit_audit_terminal_obligation", "");
+        let workflow = AccountAdministrationReadWorkflow::new(&surface.database);
+
+        let AccountAdministrationReadResult::List(accounts) = workflow
+            .read(authorized_account_read(AccountAdministrationRead::List))
+            .unwrap()
+        else {
+            panic!("the list action must return a list result");
+        };
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].username().as_str(), "administrator");
+        assert_eq!(accounts[0].display_name(), None);
+        assert!(accounts[0].active());
+        assert!(!accounts[0].mfa_required());
+        assert_eq!(
+            accounts[0].public_identifier(),
+            account_public_identifier(0x91)
+        );
+        assert_eq!(accounts[1].username().as_str(), "zeta-operator");
+        assert_eq!(
+            accounts[1].display_name().map(Name::as_str),
+            Some("Zeta Operator")
+        );
+        assert!(!accounts[1].active());
+        assert!(accounts[1].mfa_required());
+
+        let AccountAdministrationReadResult::View(exact) = workflow
+            .read(authorized_account_read(AccountAdministrationRead::View(
+                account_public_identifier(0x92),
+            )))
+            .unwrap()
+        else {
+            panic!("the view action must return a view result");
+        };
+        assert_eq!(exact, Some(accounts[1].clone()));
+
+        let AccountAdministrationReadResult::View(unknown) = workflow
+            .read(authorized_account_read(AccountAdministrationRead::View(
+                account_public_identifier(0x99),
+            )))
+            .unwrap()
+        else {
+            panic!("the view action must return a view result");
+        };
+        assert_eq!(unknown, None);
+        assert_eq!(
+            count(&surface.path, "weavelit_session", ""),
+            sessions_before
+        );
+        assert_eq!(
+            count(&surface.path, "weavelit_audit_terminal_obligation", ""),
+            audit_before
+        );
+    }
+
+    #[test]
+    fn account_read_rejects_another_authorized_action_without_database_access() {
+        let surface = surface(false, false, false);
+        surface.database.close_for_test().unwrap();
+        let workflow = AccountAdministrationReadWorkflow::new(&surface.database);
+        let error = workflow.read(authorized_change(true)).unwrap_err();
+
+        assert_eq!(error, AccountAdministrationReadError::ActionNotSupported);
+        assert_eq!(error.to_string(), "administration action not supported");
     }
 
     #[test]

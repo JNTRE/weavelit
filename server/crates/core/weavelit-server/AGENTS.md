@@ -35,9 +35,10 @@ Apply instructions in this order:
   state-root configuration reading, `classify_restricted_startup`, the listener's
   serving-mode switch, the listener-owned response-write acknowledgement, and
   stable error presentation.
-- `src/administration.rs`: Transport-independent Administrator-controlled TOTP
-  MFA Module enablement and internal Log Module configuration-change workflows,
-  including synchronous Audit sequencing and post-commit recovery status.
+- `src/administration.rs`: Transport-independent bounded account list and exact-view
+  reads, Administrator-controlled TOTP MFA Module enablement, and internal Log
+  Module configuration-change workflows, including synchronous Audit sequencing
+  and post-commit recovery status.
 - `src/authentication.rs`: The local login, session-validation, and logout route
   decisions: account and password-verifier resolution, the equal-work denial
   path, the single-permit login admission lane, session issuance and

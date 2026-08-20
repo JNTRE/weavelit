@@ -1,6 +1,9 @@
+use std::collections::BTreeSet;
+
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use weavelit_server_database::{
-    ACCOUNT_PUBLIC_IDENTIFIER_LENGTH, Account, AccountAuditReference, AccountPasswordVerifier,
+    ACCOUNT_PUBLIC_IDENTIFIER_LENGTH, Account, AccountAdministrationProjection,
+    AccountAdministrationStore, AccountAuditReference, AccountPasswordVerifier,
     AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountPublicIdentity,
     ApplicationState, ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
     BoundedText, COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
@@ -24,6 +27,25 @@ const ACCOUNT_PUBLIC_IDENTITY_QUERY: &str = "SELECT account_id, public_identifie
     FROM weavelit_account_public_identity ORDER BY account_id";
 const ACCOUNT_PUBLIC_IDENTITY_LOOKUP: &str = "SELECT account_id \
     FROM weavelit_account_public_identity WHERE public_identifier = ?1";
+const ACCOUNT_ADMINISTRATION_LIST_QUERY: &str = "SELECT identity.public_identifier, \
+    account.username, account.display_name, account.active, account.mfa_required \
+    FROM weavelit_account AS account \
+    JOIN weavelit_account_public_identity AS identity ON identity.account_id = account.account_id \
+    ORDER BY account.username";
+const ACCOUNT_ADMINISTRATION_LOOKUP_QUERY: &str = "SELECT identity.public_identifier, \
+    account.username, account.display_name, account.active, account.mfa_required \
+    FROM weavelit_account_public_identity AS identity \
+    JOIN weavelit_account AS account ON account.account_id = identity.account_id \
+    WHERE identity.public_identifier = ?1";
+const ACCOUNT_PUBLIC_IDENTITY_COVERAGE_QUERY: &str = "SELECT \
+    EXISTS(SELECT 1 FROM weavelit_account AS account \
+        LEFT JOIN weavelit_account_public_identity AS identity \
+        ON identity.account_id = account.account_id WHERE identity.account_id IS NULL) \
+    OR EXISTS(SELECT 1 FROM weavelit_account_public_identity AS identity \
+        LEFT JOIN weavelit_account AS account \
+        ON account.account_id = identity.account_id WHERE account.account_id IS NULL)";
+const ACCOUNT_PUBLIC_IDENTIFIER_VALUES_QUERY: &str = "SELECT public_identifier \
+    FROM weavelit_account_public_identity ORDER BY account_id";
 const ACCOUNT_AUDIT_REFERENCE_QUERY: &str = "SELECT account_id, audit_reference \
     FROM weavelit_account_audit_reference ORDER BY account_id";
 const ACCOUNT_AUDIT_REFERENCE_LOOKUP: &str = "SELECT audit_reference \
@@ -87,6 +109,7 @@ type ConfigurationRow = (String, String, String);
 type ProtectedSecretRow = (String, String, Vec<u8>);
 type AccountRow = (Vec<u8>, String, Option<String>, i64, i64);
 type AccountPublicIdentityRow = (Vec<u8>, Vec<u8>);
+type AccountAdministrationRow = (Vec<u8>, String, Option<String>, i64, i64);
 type AuditReferenceRow = (Vec<u8>, String);
 type PasswordVerifierRow = (Vec<u8>, String);
 type GroupRow = (Vec<u8>, String, Option<String>);
@@ -194,6 +217,89 @@ impl SqliteDatabase {
             reference.map(|value| LogConfigurationAuditReference::new(configuration, value))
         })
     }
+}
+
+impl AccountAdministrationStore for SqliteDatabase {
+    fn list_account_administration_projections(
+        &mut self,
+        persistence: &AccountPublicIdentifierPersistence,
+    ) -> Result<Vec<AccountAdministrationProjection>, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+        validate_account_public_identities(&transaction, persistence)?;
+        parameterized_rows::<AccountAdministrationRow>(
+            &transaction,
+            ACCOUNT_ADMINISTRATION_LIST_QUERY,
+            &[],
+            five_columns,
+        )?
+        .into_iter()
+        .map(|row| account_administration_projection(persistence, row))
+        .collect()
+    }
+
+    fn load_account_administration_projection(
+        &mut self,
+        persistence: &AccountPublicIdentifierPersistence,
+        public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountAdministrationProjection>, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+        validate_account_public_identities(&transaction, persistence)?;
+        let persisted = persistence.encode(&public_identifier);
+        transaction
+            .query_row(
+                ACCOUNT_ADMINISTRATION_LOOKUP_QUERY,
+                params![persisted.as_slice()],
+                five_columns,
+            )
+            .optional()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::State))?
+            .map(|row| account_administration_projection(persistence, row))
+            .transpose()
+    }
+}
+
+fn validate_account_public_identities(
+    connection: &Connection,
+    persistence: &AccountPublicIdentifierPersistence,
+) -> Result<(), DatabaseError> {
+    let incomplete: i64 = connection
+        .query_row(ACCOUNT_PUBLIC_IDENTITY_COVERAGE_QUERY, [], |row| row.get(0))
+        .map_err(|error| map_sqlite_error(error, ErrorContext::State))?;
+    if boolean(incomplete)? {
+        return Err(DatabaseError::IntegrityFailure);
+    }
+
+    let identifiers = rows::<Vec<u8>>(connection, ACCOUNT_PUBLIC_IDENTIFIER_VALUES_QUERY, |row| {
+        row.get(0)
+    })?
+    .into_iter()
+    .map(|value| account_public_identifier(persistence, &value))
+    .collect::<Result<Vec<_>, DatabaseError>>()?;
+    if identifiers.iter().copied().collect::<BTreeSet<_>>().len() != identifiers.len() {
+        return Err(DatabaseError::IntegrityFailure);
+    }
+
+    Ok(())
+}
+
+fn account_administration_projection(
+    persistence: &AccountPublicIdentifierPersistence,
+    (public_identifier, username, display_name, active, mfa_required): AccountAdministrationRow,
+) -> Result<AccountAdministrationProjection, DatabaseError> {
+    Ok(AccountAdministrationProjection::from_persistence(
+        persistence,
+        account_public_identifier(persistence, &public_identifier)?,
+        text(username)?,
+        display_name.map(text).transpose()?,
+        boolean(active)?,
+        boolean(mfa_required)?,
+    ))
 }
 
 fn read_audit_reference(

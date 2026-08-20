@@ -195,8 +195,17 @@ value, collision, orphan, or later failure rolls the database back to the exact
 
 Init and Restore completion insert their already validated typed identities in
 the application-state replacement transaction. State reads require exact
-account coverage and global public-identifier uniqueness. Exact typed lookup
-returns only the matching account projection. The normal schema validation
+account coverage and global public-identifier uniqueness. The SQLite
+`AccountAdministrationStore` performs deterministic list ordering by the unique
+username and exact lookup by the typed Account Public Identifier. Both queries
+join `weavelit_account` to `weavelit_account_public_identity` and select only
+the public identifier, username, display name, active state, and MFA-required
+state. Before either query returns, the same read transaction verifies complete
+reciprocal coverage, decodes every public identifier, and independently rejects
+duplicates. Missing, malformed, orphaned, or duplicate identities therefore
+return `IntegrityFailure` without partial output or an internal-identifier
+fallback; an unknown valid public identifier returns absence. These reads do
+not touch sessions or Audit terminal storage. The normal schema validation
 performed during database open rejects a missing or changed identity table,
 index, or immutability trigger with `IntegrityFailure` before readiness.
 

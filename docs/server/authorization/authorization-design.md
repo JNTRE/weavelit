@@ -229,7 +229,7 @@ weaker rule.
 
 | Action | Current-session MFA step-up | Additional decision |
 | --- | --- | --- |
-| `Account` | Not required | None in this foundation. Ordinary account creation, status, and password-reset contracts consume this family when implemented. |
+| `Account(List)` or `Account(View(AccountPublicIdentifier))` | Not required | Admits one bounded account administration read. The gate performs no database read. Future account creation, status mutation, and password-reset contracts remain unimplemented. |
 | `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
 | `GrantMutation` | Required, scoped to `GrantMutation` | Covers future Group membership and grant mutations. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
@@ -249,6 +249,16 @@ family in this foundation. The Server must not treat an ordinary `Account`
 authorization as sufficient for returning a temporary password, and it must
 not make ordinary account reads or status operations pay this
 issuance-specific gate.
+
+An account-read workflow consumes the exact `AuthorizedAdministrationAction`
+by value. `List` returns the Application Database store's deterministic bounded
+projections, and `View` returns one exact typed Account Public Identifier match
+or absence. Each projection contains only the Account Public Identifier,
+username, optional display name, active state, and MFA-required state. The
+workflow does not produce an Audit terminal record, read or change a session,
+or accept a state identifier, Audit Reference Identifier, password verifier,
+MFA factor, temporary credential value, or temporary credential metadata. It
+adds no route, public identifier codec, response schema, or pagination contract.
 
 `ComponentOperation` means an administration action performed through an
 already enabled target. It is not an enablement mutation. A

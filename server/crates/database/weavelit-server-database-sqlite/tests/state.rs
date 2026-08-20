@@ -6,19 +6,19 @@ use std::{
 use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
-    Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
-    AccountPublicIdentifierPersistence, AccountPublicIdentity, ApplicationDatabase,
-    ApplicationState, ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
-    COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation, ComponentEnablement,
-    ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
-    DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference,
-    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogClassification,
-    LogConfigurationAuditReference, LogConfigurationGenerationPersistence, LogConfigurationVersion,
-    LogDetail, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget,
-    MfaStore, MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
-    ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
-    ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
-    StateIdentifier, WorkflowCheckpoint, WorkflowKind,
+    Account, AccountAdministrationStore, AccountAuditReference, AccountPasswordVerifier,
+    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountPublicIdentity,
+    ApplicationDatabase, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
+    AuditReferencePersistence, COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation,
+    ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
+    CorrelationIdentifier, DatabaseError, DatabaseInspection, DeploymentIdentifier, Group,
+    GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
+    LogClassification, LogConfigurationAuditReference, LogConfigurationGenerationPersistence,
+    LogConfigurationVersion, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
+    MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession, PasswordVerifier,
+    ProtectedSecret, ProtectedValue, ReconciliationDigest, ReconciliationStore, RecoveryPublicKey,
+    SESSION_DIGEST_LENGTH, ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore,
+    SessionTokenHash, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_database_sqlite::SqliteDatabase;
@@ -1290,6 +1290,109 @@ fn account_public_identity_is_persistent_unique_and_exactly_lookupable() {
         )
         .unwrap();
     assert!(index_sql.contains("public_identifier"));
+}
+
+#[test]
+fn account_administration_reads_are_ordered_exact_and_persistent() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    drop(restored_database(&path, deployment(27)));
+    let mut database = SqliteDatabase::open(&path).unwrap();
+    let persistence = account_public_identifier_persistence();
+
+    let accounts = database
+        .list_account_administration_projections(&persistence)
+        .unwrap();
+    assert_eq!(accounts.len(), 2);
+    assert_eq!(accounts[0].username().as_str(), USERNAME);
+    assert_eq!(
+        accounts[0].display_name().map(Name::as_str),
+        Some("First Admin")
+    );
+    assert!(accounts[0].active());
+    assert!(accounts[0].mfa_required());
+    assert_eq!(
+        accounts[0].public_identifier(),
+        account_public_identifier(0x91)
+    );
+    assert_eq!(accounts[1].username().as_str(), "管理者-équipe");
+    assert_eq!(
+        accounts[1].display_name().map(Name::as_str),
+        Some("運用担当")
+    );
+    assert!(!accounts[1].active());
+    assert!(!accounts[1].mfa_required());
+
+    let exact = database
+        .load_account_administration_projection(&persistence, account_public_identifier(0x92))
+        .unwrap()
+        .expect("the persisted public identifier must resolve after reopen");
+    assert_eq!(exact, accounts[1]);
+    assert_eq!(
+        database
+            .load_account_administration_projection(&persistence, account_public_identifier(0x99),),
+        Ok(None)
+    );
+
+    let rendered = format!("{accounts:?}{exact:?}");
+    for excluded in [
+        VERIFIER,
+        "ar-a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "protected-component-secret",
+        "protected-factor-data",
+        "protected-provider-credential",
+        "session-marker-module",
+    ] {
+        assert!(
+            !rendered.contains(excluded),
+            "projection exposed {excluded}"
+        );
+    }
+}
+
+#[test]
+fn account_administration_reads_fail_before_output_for_invalid_public_identity_state() {
+    let corruptions = [
+        "DROP TRIGGER weavelit_account_public_identity_reject_delete; \
+         DELETE FROM weavelit_account_public_identity WHERE account_id = \
+         x'01010101010101010101010101010101'",
+        "PRAGMA ignore_check_constraints = ON; \
+         DROP TRIGGER weavelit_account_public_identity_reject_update; \
+         UPDATE weavelit_account_public_identity SET public_identifier = zeroblob(16) \
+         WHERE account_id = x'01010101010101010101010101010101'",
+        "DROP INDEX weavelit_account_public_identity_value; \
+         DROP TRIGGER weavelit_account_public_identity_reject_update; \
+         UPDATE weavelit_account_public_identity SET public_identifier = \
+         x'92929292929292929292929292929292' \
+         WHERE account_id = x'01010101010101010101010101010101'",
+    ];
+
+    for corruption in corruptions {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = restored_database(&path, deployment(28));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(corruption)
+            .unwrap();
+        let persistence = account_public_identifier_persistence();
+
+        let list_error = database
+            .list_account_administration_projections(&persistence)
+            .unwrap_err();
+        let lookup_error = database
+            .load_account_administration_projection(&persistence, account_public_identifier(0x92))
+            .unwrap_err();
+
+        assert_eq!(list_error, DatabaseError::IntegrityFailure, "{corruption}");
+        assert_eq!(
+            lookup_error,
+            DatabaseError::IntegrityFailure,
+            "{corruption}"
+        );
+        assert_redacted(list_error);
+        assert_redacted(lookup_error);
+    }
 }
 
 #[test]

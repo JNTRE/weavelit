@@ -14,8 +14,8 @@ use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authorization::{AuthorizationDenied, AuthorizedAdministration};
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    ComponentEnablement, ComponentKind, LogModuleSetting, LogType, Name, SessionTokenHash,
-    StateIdentifier,
+    AccountPublicIdentifier, ComponentEnablement, ComponentKind, LogModuleSetting, LogType, Name,
+    SessionTokenHash, StateIdentifier,
 };
 
 /// Lifetime of one current-session MFA step-up proof.
@@ -236,11 +236,20 @@ impl LogConfigurationChange {
     }
 }
 
+/// One bounded account administration read admitted by the action gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountAdministrationRead {
+    /// List every bounded account projection in the store's canonical order.
+    List,
+    /// View the account with one exact typed public identifier.
+    View(AccountPublicIdentifier),
+}
+
 /// Closed Administration Plane action families owned by this foundation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdministrationAction {
-    /// Ordinary account administration; no current-session step-up is required.
-    Account,
+    /// Ordinary account administration read; no current-session step-up is required.
+    Account(AccountAdministrationRead),
     /// MFA requirement or enrollment-reset administration.
     MfaPolicy,
     /// Group membership or grant mutation.
@@ -256,7 +265,7 @@ pub enum AdministrationAction {
 impl AdministrationAction {
     fn step_up_family(&self) -> Option<StepUpActionFamily> {
         match self {
-            Self::Account
+            Self::Account(_)
             | Self::ComponentOperation(_)
             | Self::ComponentEnablementChange(_)
             | Self::LogConfigurationChange(_) => None,
@@ -707,16 +716,21 @@ mod tests {
         let enablement = TestEnablement::new(ComponentEnablement::default());
         let mut plane = plane(TestClock::new(Duration::ZERO), enablement.clone());
 
-        let authorized = plane
-            .authorize(
-                administration_admission(&authority, 1, 11),
-                AdministrationRequest::new(AdministrationAction::Account),
-            )
-            .unwrap();
+        for read in [
+            AccountAdministrationRead::List,
+            AccountAdministrationRead::View(AccountPublicIdentifier::generate().unwrap()),
+        ] {
+            let authorized = plane
+                .authorize(
+                    administration_admission(&authority, 1, 11),
+                    AdministrationRequest::new(AdministrationAction::Account(read)),
+                )
+                .unwrap();
 
-        assert_eq!(authorized.actor(), identifier(1));
-        assert_eq!(authorized.client_module().as_str(), CLIENT_MODULE);
-        assert_eq!(authorized.action(), &AdministrationAction::Account);
+            assert_eq!(authorized.actor(), identifier(1));
+            assert_eq!(authorized.client_module().as_str(), CLIENT_MODULE);
+            assert_eq!(authorized.action(), &AdministrationAction::Account(read));
+        }
         assert_eq!(enablement.reads(), 0);
     }
 

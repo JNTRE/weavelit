@@ -19,13 +19,13 @@ mod state;
 pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 
 use weavelit_server_database::{
-    AccountAuditReference, AccountPublicIdentifier, AccountPublicIdentifierPersistence,
-    AccountPublicIdentity, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
-    AuditTerminalRecoveryStore, ComponentEnablement, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
-    LogConfigurationAuditReference, LogConfigurationGenerationStore, LogConfigurationMutationStore,
-    MfaStore, ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier,
-    WorkflowCheckpoint,
+    AccountAdministrationStore, AccountAuditReference, AccountPublicIdentifier,
+    AccountPublicIdentifierPersistence, AccountPublicIdentity, ApplicationDatabase,
+    ApplicationState, AuditReferencePersistence, AuditTerminalRecoveryStore, ComponentEnablement,
+    DatabaseError, DatabaseInspection, DeploymentIdentifier, GroupAuditReference,
+    HumanAuthorizationSnapshot, InitializedState, LogConfigurationAuditReference,
+    LogConfigurationGenerationStore, LogConfigurationMutationStore, MfaStore, ReconciliationDigest,
+    ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -132,6 +132,10 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore> {
+        Some(self)
+    }
+
+    fn account_administration(&mut self) -> Option<&mut dyn AccountAdministrationStore> {
         Some(self)
     }
 

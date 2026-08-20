@@ -28,17 +28,17 @@ use weavelit_module_client::{
     ReconciliationRejection, validate_reconciliation_request,
 };
 use weavelit_server_authentication::RustCryptoArgon2;
+#[cfg(test)]
+use weavelit_server_database::AuditReferencePersistence;
 use weavelit_server_database::{
-    AccountAuditReference, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
-    LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
-    LogConfigurationGeneration, LogConfigurationGenerationKey,
+    AccountAdministrationStore, AccountAuditReference, AccountPublicIdentifierPersistence,
+    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, LogConfigurationAuditReference,
+    LogConfigurationAuditTerminalWrites, LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
     LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
     MfaStore, PreparedLogConfigurationMutation, StateIdentifier,
 };
-#[cfg(test)]
-use weavelit_server_database::{AccountPublicIdentifierPersistence, AuditReferencePersistence};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
     SelectedDatabase,
@@ -179,6 +179,7 @@ impl fmt::Debug for ActiveDatabase {
 #[derive(Clone)]
 pub struct OperationalDatabase {
     database: Arc<Mutex<Option<OperationalDatabaseHandle>>>,
+    account_public_identifier_persistence: AccountPublicIdentifierPersistence,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
     log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
     log_configuration_mutation_persistence: Arc<LogConfigurationMutationPersistence>,
@@ -189,7 +190,6 @@ enum OperationalDatabaseHandle {
     #[cfg(test)]
     UnselectedTest {
         database: Box<dyn ApplicationDatabase>,
-        account_public_identifier_persistence: AccountPublicIdentifierPersistence,
         audit_reference_persistence: AuditReferencePersistence,
     },
 }
@@ -209,13 +209,13 @@ impl OperationalDatabase {
             database: Arc::new(Mutex::new(Some(
                 OperationalDatabaseHandle::UnselectedTest {
                     database,
-                    account_public_identifier_persistence:
-                        AccountPublicIdentifierPersistence::from_server_authority(&authority),
                     audit_reference_persistence: AuditReferencePersistence::from_server_authority(
                         &authority,
                     ),
                 },
             ))),
+            account_public_identifier_persistence:
+                AccountPublicIdentifierPersistence::from_server_authority(&authority),
             audit_terminal_recovery_persistence: Arc::new(
                 AuditTerminalRecoveryPersistence::from_server_authority(&authority),
             ),
@@ -230,6 +230,8 @@ impl OperationalDatabase {
 
     /// Takes ownership of a lifecycle-selected database and its decoder.
     fn from_selected(database: SelectedDatabase) -> Self {
+        let account_public_identifier_persistence =
+            database.account_public_identifier_persistence();
         let audit_terminal_recovery_persistence = database.audit_terminal_recovery_persistence();
         let log_configuration_generation_persistence =
             database.log_configuration_generation_persistence();
@@ -239,6 +241,7 @@ impl OperationalDatabase {
             database: Arc::new(Mutex::new(Some(OperationalDatabaseHandle::Selected(
                 database,
             )))),
+            account_public_identifier_persistence,
             audit_terminal_recovery_persistence,
             log_configuration_generation_persistence,
             log_configuration_mutation_persistence,
@@ -275,6 +278,24 @@ impl OperationalDatabase {
         operation: impl FnOnce(&mut dyn MfaStore) -> Result<R, DatabaseError>,
     ) -> Result<R, DatabaseError> {
         self.with(|database| operation(database.mfa().ok_or(DatabaseError::Unavailable)?))?
+    }
+
+    /// Runs one bounded account administration read with the selected decoder.
+    pub(crate) fn with_account_administration<R>(
+        &self,
+        operation: impl FnOnce(
+            &AccountPublicIdentifierPersistence,
+            &mut dyn AccountAdministrationStore,
+        ) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                &self.account_public_identifier_persistence,
+                database
+                    .account_administration()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
     }
 
     /// Loads the authenticated actor's typed Audit Reference through database authority.
@@ -443,10 +464,9 @@ impl OperationalDatabase {
             #[cfg(test)]
             OperationalDatabaseHandle::UnselectedTest {
                 database,
-                account_public_identifier_persistence,
                 audit_reference_persistence,
             } => database.load_initialized_state(
-                account_public_identifier_persistence,
+                &self.account_public_identifier_persistence,
                 audit_reference_persistence,
                 expected_deployment_identifier,
             ),
@@ -476,6 +496,11 @@ impl OperationalDatabase {
         } else {
             Ok(())
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn close_for_test(&self) -> Result<(), DatabaseError> {
+        self.close()
     }
 
     /// Compares one submitted reconciliation capability against the live
