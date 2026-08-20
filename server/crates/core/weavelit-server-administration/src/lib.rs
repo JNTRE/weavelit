@@ -14,8 +14,8 @@ use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authorization::{AuthorizationDenied, AuthorizedAdministration};
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    AccountPublicIdentifier, ComponentEnablement, ComponentKind, LogModuleSetting, LogType, Name,
-    SessionTokenHash, StateIdentifier,
+    AccountPublicIdentifier, AccountStatus, ComponentEnablement, ComponentKind, LogModuleSetting,
+    LogType, Name, SessionTokenHash, StateIdentifier,
 };
 
 /// Lifetime of one current-session MFA step-up proof.
@@ -297,6 +297,33 @@ impl AccountPasswordReset {
     }
 }
 
+/// One exact local Human User account status change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AccountStatusChange {
+    target: AccountPublicIdentifier,
+    desired: AccountStatus,
+}
+
+impl AccountStatusChange {
+    /// Targets one exact typed account public identifier and desired status.
+    #[must_use]
+    pub const fn new(target: AccountPublicIdentifier, desired: AccountStatus) -> Self {
+        Self { target, desired }
+    }
+
+    /// Returns the exact target account public identifier.
+    #[must_use]
+    pub const fn target(&self) -> AccountPublicIdentifier {
+        self.target
+    }
+
+    /// Returns the desired account status.
+    #[must_use]
+    pub const fn desired(&self) -> AccountStatus {
+        self.desired
+    }
+}
+
 /// Closed account administration actions.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccountAdministrationAction {
@@ -306,6 +333,8 @@ pub enum AccountAdministrationAction {
     Create(AccountCreate),
     /// Replace one local Human User account's credential with a temporary credential.
     PasswordReset(AccountPasswordReset),
+    /// Change one local Human User account's active status.
+    StatusChange(AccountStatusChange),
 }
 
 /// Closed Administration Plane action families owned by this foundation.
@@ -860,6 +889,10 @@ mod tests {
             AccountAdministrationAction::PasswordReset(AccountPasswordReset::new(
                 AccountPublicIdentifier::generate().unwrap(),
             )),
+            AccountAdministrationAction::StatusChange(AccountStatusChange::new(
+                AccountPublicIdentifier::generate().unwrap(),
+                AccountStatus::Disabled,
+            )),
         ] {
             let action = AdministrationAction::Account(account_action);
             let authorized = plane
@@ -924,6 +957,9 @@ mod tests {
 
         let target = AccountPublicIdentifier::generate().unwrap();
         assert_eq!(AccountPasswordReset::new(target).target(), target);
+        let status = AccountStatusChange::new(target, AccountStatus::Active);
+        assert_eq!(status.target(), target);
+        assert_eq!(status.desired(), AccountStatus::Active);
 
         let oversized = "sensitive".repeat(MAX_NAME_LENGTH + 1);
         for rejected in [

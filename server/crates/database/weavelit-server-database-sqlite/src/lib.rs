@@ -2,6 +2,7 @@
 
 //! SQLite implementation of the Weavelit Application Database contract.
 
+mod account_status;
 mod account_writer;
 #[cfg_attr(not(test), allow(dead_code))]
 mod audit_recovery;
@@ -22,9 +23,9 @@ pub use connection::{RetainedSqliteInspection, SqliteDatabase};
 use weavelit_server_database::{
     AccountAdministrationStore, AccountAuditReference, AccountCredentialWriterStore,
     AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountPublicIdentity,
-    ApplicationDatabase, ApplicationState, AuditReferencePersistence, AuditTerminalRecoveryStore,
-    ComponentEnablement, DatabaseError, DatabaseInspection, DeploymentIdentifier,
-    GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
+    AccountStatusWriterStore, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
+    AuditTerminalRecoveryStore, ComponentEnablement, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, GroupAuditReference, HumanAuthorizationSnapshot, InitializedState,
     LogConfigurationAuditReference, LogConfigurationGenerationStore, LogConfigurationMutationStore,
     MfaStore, ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier,
     WorkflowCheckpoint,
@@ -142,6 +143,10 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn account_credential_writers(&mut self) -> Option<&mut dyn AccountCredentialWriterStore> {
+        Some(self)
+    }
+
+    fn account_status_writers(&mut self) -> Option<&mut dyn AccountStatusWriterStore> {
         Some(self)
     }
 

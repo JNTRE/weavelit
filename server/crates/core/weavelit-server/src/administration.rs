@@ -6,11 +6,13 @@ use std::{error::Error as StdError, fmt};
 
 use weavelit_server_administration::{
     AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
-    AdministrationAction, AuthorizedAdministrationAction, LogConfigurationChange,
+    AccountStatusChange, AdministrationAction, AuthorizedAdministrationAction,
+    LogConfigurationChange,
 };
 use weavelit_server_audit::{
-    ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail, ComponentState,
-    LogConfigurationAuditReferences, MfaModuleChange, MfaModuleReference, StateChangeOutcome,
+    AccountStatus as AuditAccountStatus, ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail,
+    ComponentState, LogConfigurationAuditReferences, MfaModuleChange, MfaModuleReference,
+    StateChangeOutcome,
 };
 use weavelit_server_authentication::{
     AccountCredentialIssuanceInput, Argon2Engine, PasswordVerifierFactory,
@@ -20,11 +22,13 @@ use weavelit_server_database::{
     Account, AccountAdministrationProjection, AccountAuditReference, AccountCreateMutation,
     AccountCreateOutcome, AccountCredentialAuditTerminalWrites, AccountPasswordResetMutation,
     AccountPasswordResetOutcome, AccountPasswordVerifier, AccountPublicIdentifier,
-    AccountPublicIdentity, AuditReferenceIdentifier, ComponentKind, CredentialRevision,
-    DatabaseError, LogAssignment, LogConfigurationAuditTerminalWrites,
-    LogConfigurationMutationOutcome, LogConfigurationMutationRequest, LogConfigurationPreparation,
-    LogType, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, Name,
-    PasswordVerifier, StateIdentifier, TemporaryCredentialExpiration,
+    AccountPublicIdentity, AccountStatus, AccountStatusAuditTerminalWrites, AccountStatusMutation,
+    AccountStatusMutationError, AccountStatusMutationOutcome, AccountStatusRecheck,
+    AuditReferenceIdentifier, ComponentKind, CredentialRevision, DatabaseError, LogAssignment,
+    LogConfigurationAuditTerminalWrites, LogConfigurationMutationOutcome,
+    LogConfigurationMutationRequest, LogConfigurationPreparation, LogType,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, Name,
+    PasswordVerifier, SessionInstant, StateIdentifier, TemporaryCredentialExpiration,
     ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_log::{
@@ -197,7 +201,7 @@ where
         match action {
             AccountAdministrationAction::Create(change) => self.create(admission, change),
             AccountAdministrationAction::PasswordReset(change) => self.reset(admission, change),
-            AccountAdministrationAction::Read(_) => {
+            AccountAdministrationAction::Read(_) | AccountAdministrationAction::StatusChange(_) => {
                 Err(AccountCredentialIssuanceWorkflowError::ActionNotSupported)
             }
         }
@@ -577,6 +581,276 @@ fn issuance_admission_error(
             AccountCredentialIssuanceWorkflowError::Unavailable
         }
     }
+}
+
+/// Postcommit Audit terminal delivery state for an account status writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountStatusChangeDelivery {
+    /// Exact destination delivery and database acknowledgement completed.
+    Acknowledged,
+    /// The committed obligation remains available for bounded restart recovery.
+    Pending,
+}
+
+/// Complete internal result of one account status writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountStatusChangeResult {
+    /// The target already had the requested status; no Audit record was produced.
+    Unchanged,
+    /// The status change committed with its selected terminal.
+    Changed {
+        status: AccountStatus,
+        revoked_sessions: usize,
+        delivery: AccountStatusChangeDelivery,
+    },
+    /// The prepared target changed; only the denied terminal committed.
+    Stale {
+        delivery: AccountStatusChangeDelivery,
+    },
+    /// Final issuer state denied the mutation; only the denied terminal committed.
+    Denied {
+        delivery: AccountStatusChangeDelivery,
+    },
+}
+
+/// Payload-free refusal before or during an account status writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountStatusChangeError {
+    /// The consumed authorization was not an account status action.
+    ActionNotSupported,
+    /// The exact target did not exist at preparation.
+    TargetNotFound,
+    /// Disablement could not advance the maximal credential revision.
+    CredentialRevisionExhausted,
+    /// Clock or selected database preparation failed.
+    Unavailable,
+    /// Required Audit recovery, destination, Attempt, terminal, or commit failed.
+    AuditLogUnavailable,
+}
+
+impl fmt::Display for AccountStatusChangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ActionNotSupported => "administration action not supported",
+            Self::TargetNotFound => "account status target not found",
+            Self::CredentialRevisionExhausted => "account status change rejected",
+            Self::Unavailable => "account status change unavailable",
+            Self::AuditLogUnavailable => "consequential operation Audit Log unavailable",
+        })
+    }
+}
+
+impl StdError for AccountStatusChangeError {}
+
+/// Transport-independent Administrator account disable and re-enable workflow.
+pub(crate) struct AccountStatusChangeWorkflow<'a> {
+    database: &'a OperationalDatabase,
+    audit: &'a OperationalAuditRecovery,
+}
+
+impl<'a> AccountStatusChangeWorkflow<'a> {
+    pub(crate) const fn new(
+        database: &'a OperationalDatabase,
+        audit: &'a OperationalAuditRecovery,
+    ) -> Self {
+        Self { database, audit }
+    }
+
+    /// Consumes ordinary account authorization and commits one audited status outcome.
+    pub(crate) fn apply(
+        &self,
+        authorization: AuthorizedAdministrationAction,
+    ) -> Result<AccountStatusChangeResult, AccountStatusChangeError> {
+        let authorization = authorization
+            .into_account()
+            .map_err(|_| AccountStatusChangeError::ActionNotSupported)?;
+        let AccountAdministrationAction::StatusChange(change) = authorization.action() else {
+            return Err(AccountStatusChangeError::ActionNotSupported);
+        };
+        let change = *change;
+        let target = self
+            .database
+            .prepare_account_status_target(change.target())
+            .map_err(|_| AccountStatusChangeError::Unavailable)?
+            .ok_or(AccountStatusChangeError::TargetNotFound)?;
+        if target.status() == change.desired() {
+            return Ok(AccountStatusChangeResult::Unchanged);
+        }
+
+        let now = system_clock()().ok_or(AccountStatusChangeError::Unavailable)?;
+        let recheck = AccountStatusRecheck::new(
+            authorization.actor(),
+            authorization.session(),
+            authorization.client_module().clone(),
+            SessionInstant::from_unix_milliseconds(now)
+                .map_err(|_| AccountStatusChangeError::Unavailable)?,
+        );
+        let mutation =
+            AccountStatusMutation::new(recheck, target, change.desired()).map_err(|error| {
+                match error {
+                    AccountStatusMutationError::CredentialRevisionExhausted => {
+                        AccountStatusChangeError::CredentialRevisionExhausted
+                    }
+                    AccountStatusMutationError::Unchanged
+                    | AccountStatusMutationError::InvalidTarget => {
+                        AccountStatusChangeError::Unavailable
+                    }
+                }
+            })?;
+        if self.audit.drain_before_consequential_operation().active()
+            != AuditRecoverySequenceState::Ready
+        {
+            return Err(AccountStatusChangeError::AuditLogUnavailable);
+        }
+
+        let actor = self
+            .database
+            .load_account_audit_reference(authorization.actor())
+            .map_err(|_| AccountStatusChangeError::Unavailable)?
+            .ok_or(AccountStatusChangeError::Unavailable)?;
+        let event = account_status_event(change, mutation.target().audit_reference());
+        self.audit
+            .with_current_destination(|destination| {
+                self.apply_with_destination(mutation, actor, event, destination)
+            })
+            .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?
+    }
+
+    fn apply_with_destination(
+        &self,
+        mutation: AccountStatusMutation,
+        actor: AccountAuditReference,
+        event: AuditEvent,
+        destination: &OperationalAuditGenerationDestination,
+    ) -> Result<AccountStatusChangeResult, AccountStatusChangeError> {
+        destination
+            .destination()
+            .preflight(LogRecordType::Audit)
+            .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+        let correlation = CorrelationId::new(
+            correlation_identifier().ok_or(AccountStatusChangeError::Unavailable)?,
+        )
+        .map_err(|_| AccountStatusChangeError::Unavailable)?;
+        let classification = account_status_classification(mutation.desired());
+        let attempt = self
+            .audit
+            .producer()
+            .prepare_attempt(
+                account_status_event_time()?,
+                correlation,
+                AuditActor::Human(actor),
+                event,
+            )
+            .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+        let LogRecordPersistenceView::Audit(attempt_record) = attempt.record().persistence_view()
+        else {
+            return Err(AccountStatusChangeError::AuditLogUnavailable);
+        };
+        let attempt_identifier = *attempt_record.record_id().as_bytes();
+        let attempt_event_time = attempt_record.event_time().unix_milliseconds();
+        let attempt_correlation = attempt_record.correlation_id().as_str().to_owned();
+        let delivered_attempt = match attempt.deliver(destination.destination()) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                self.audit.reject_attempt_delivery(
+                    error,
+                    attempt_identifier,
+                    attempt_event_time,
+                    &attempt_correlation,
+                    destination.module(),
+                    classification,
+                );
+                return Err(AccountStatusChangeError::AuditLogUnavailable);
+            }
+        };
+        let succeeded_terminal = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered_attempt,
+                account_status_event_time()?,
+                account_status_audit_detail(mutation.desired(), true),
+            )
+            .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+        let denied_terminal = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered_attempt,
+                account_status_event_time()?,
+                account_status_audit_detail(mutation.desired(), false),
+            )
+            .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+        let persistence = self.database.audit_terminal_recovery_persistence();
+        let succeeded_write = succeeded_terminal
+            .recovery_obligation(persistence, destination.binding())
+            .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+        let denied_write = denied_terminal
+            .recovery_obligation(persistence, destination.binding())
+            .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+        let outcome = self
+            .database
+            .change_account_status(
+                &mutation,
+                &AccountStatusAuditTerminalWrites::new(&succeeded_write, &denied_write),
+            )
+            .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+        let delivery = if self.audit.drain_after_consequential_operation().active()
+            == AuditRecoverySequenceState::Ready
+        {
+            AccountStatusChangeDelivery::Acknowledged
+        } else {
+            AccountStatusChangeDelivery::Pending
+        };
+
+        Ok(match outcome {
+            AccountStatusMutationOutcome::Changed { revoked_sessions } => {
+                AccountStatusChangeResult::Changed {
+                    status: mutation.desired(),
+                    revoked_sessions,
+                    delivery,
+                }
+            }
+            AccountStatusMutationOutcome::Stale => AccountStatusChangeResult::Stale { delivery },
+            AccountStatusMutationOutcome::Denied => AccountStatusChangeResult::Denied { delivery },
+        })
+    }
+}
+
+fn account_status_event(change: AccountStatusChange, account: AccountAuditReference) -> AuditEvent {
+    match change.desired() {
+        AccountStatus::Disabled => AuditEvent::AuthenticationUserDisabled { account },
+        AccountStatus::Active => AuditEvent::InternalUserStatusChanged { account },
+    }
+}
+
+fn account_status_audit_detail(status: AccountStatus, succeeded: bool) -> AuditOutcomeDetail {
+    let outcome = if succeeded {
+        StateChangeOutcome::Succeeded(match status {
+            AccountStatus::Active => AuditAccountStatus::Active,
+            AccountStatus::Disabled => AuditAccountStatus::Disabled,
+        })
+    } else {
+        StateChangeOutcome::Denied
+    };
+    match status {
+        AccountStatus::Disabled => AuditOutcomeDetail::AuthenticationUserDisabled(outcome),
+        AccountStatus::Active => AuditOutcomeDetail::InternalUserStatusChanged(outcome),
+    }
+}
+
+const fn account_status_classification(status: AccountStatus) -> AuditLogClassification {
+    match status {
+        AccountStatus::Disabled => AuditLogClassification::AuthenticationUserDisabled,
+        AccountStatus::Active => AuditLogClassification::InternalUserStatusChanged,
+    }
+}
+
+fn account_status_event_time() -> Result<EventTime, AccountStatusChangeError> {
+    let milliseconds = system_clock()().ok_or(AccountStatusChangeError::AuditLogUnavailable)?;
+    let milliseconds =
+        u64::try_from(milliseconds).map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+    Ok(EventTime::from_unix_milliseconds(milliseconds))
 }
 
 impl<'a> AccountAdministrationReadWorkflow<'a> {
@@ -1162,9 +1436,9 @@ pub(crate) mod tests {
     use rusqlite::{Connection, params};
     use tempfile::TempDir;
     use weavelit_server_administration::{
-        AccountAdministrationRead, AdministrationClock, AdministrationPlane, AdministrationRequest,
-        AuthorizedAdministrationAdmission, ComponentEnablementChange, ComponentEnablementSource,
-        LogAssignmentChange, LogConfigurationChange,
+        AccountAdministrationRead, AccountStatusChange, AdministrationClock, AdministrationPlane,
+        AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementChange,
+        ComponentEnablementSource, LogAssignmentChange, LogConfigurationChange,
     };
     use weavelit_server_administration_authority::ServerAdministrationAuthority;
     use weavelit_server_authorization::{
@@ -1462,6 +1736,87 @@ pub(crate) mod tests {
             .unwrap();
     }
 
+    fn insert_status_account(path: &Path, active: bool, revision: u64) {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required, credential_revision, \
+                  must_change_password, temporary_credential_expires_at_milliseconds) \
+                 VALUES (?1, 'target', 'Target Account', ?2, 1, ?3, 0, NULL)",
+                params![
+                    identifier(2).as_bytes().as_slice(),
+                    i64::from(active),
+                    revision.to_be_bytes().as_slice(),
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_password_verifier (account_id, encoded_verifier) \
+                 VALUES (?1, '$target-verifier')",
+                [identifier(2).as_bytes().as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
+                 VALUES (?1, 'ar-22222222222222222222222222222222')",
+                [identifier(2).as_bytes().as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_public_identity (account_id, public_identifier) \
+                 VALUES (?1, ?2)",
+                params![
+                    identifier(2).as_bytes().as_slice(),
+                    [0x92_u8; 16].as_slice(),
+                ],
+            )
+            .unwrap();
+    }
+
+    fn insert_live_status_session(path: &Path, token: u8, account: u8) {
+        let now = system_clock()().unwrap();
+        let issued_at = now - 1;
+        Connection::open(path)
+            .unwrap()
+            .execute(
+                "INSERT INTO weavelit_session \
+                 (token_hash, csrf_hash, account_id, client_module, issued_at_milliseconds, \
+                  last_seen_at_milliseconds, absolute_expires_at_milliseconds) \
+                 VALUES (?1, ?2, ?3, 'web-ui', ?4, ?4, ?5)",
+                params![
+                    [token; SESSION_DIGEST_LENGTH].as_slice(),
+                    [token.wrapping_add(1); SESSION_DIGEST_LENGTH].as_slice(),
+                    identifier(account).as_bytes().as_slice(),
+                    issued_at,
+                    issued_at + weavelit_server_database::SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
+                ],
+            )
+            .unwrap();
+    }
+
+    fn insert_target_session(path: &Path, token: u8) {
+        insert_live_status_session(path, token, 2);
+    }
+
+    fn stored_account_status(path: &Path, account: u8) -> (bool, u64) {
+        let (active, revision): (i64, Vec<u8>) = Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT active, credential_revision FROM weavelit_account WHERE account_id = ?1",
+                [identifier(account).as_bytes().as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        (
+            active != 0,
+            u64::from_be_bytes(revision.try_into().unwrap()),
+        )
+    }
+
     pub(crate) fn recovery(
         database: OperationalDatabase,
         fail_on_attempt: Option<usize>,
@@ -1610,6 +1965,53 @@ pub(crate) mod tests {
                 admission,
                 AdministrationRequest::new(AdministrationAction::Account(
                     AccountAdministrationAction::Read(read),
+                )),
+            )
+            .unwrap()
+    }
+
+    fn authorized_account_status(
+        target: AccountPublicIdentifier,
+        desired: AccountStatus,
+    ) -> AuthorizedAdministrationAction {
+        let client_module = name(CLIENT_MODULE);
+        let authorization = authorize_administration(
+            &HumanAuthorizationSnapshot::new(
+                true,
+                vec![
+                    GroupGrant::ClientModule(client_module.clone()),
+                    GroupGrant::ServerAdministration,
+                ],
+            ),
+            &AuthorizationCatalog::new(
+                vec![ClientModuleDeclaration::new(
+                    client_module,
+                    true,
+                    &[Plane::Administration],
+                )],
+                vec![],
+                vec![],
+            )
+            .unwrap(),
+            AuthorizationRequest {
+                client_module: &name(CLIENT_MODULE),
+            },
+        )
+        .unwrap();
+        let authority = ServerAdministrationAuthority::new();
+        let admission = AuthorizedAdministrationAdmission::from_server_authority(
+            &authority,
+            authorization,
+            identifier(1),
+            SessionTokenHash::from_bytes([0x31; SESSION_DIGEST_LENGTH]).unwrap(),
+        );
+        AdministrationPlane::new(FixedClock, NoEnablementRead, AvailableComponents::default())
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Account(
+                    AccountAdministrationAction::StatusChange(AccountStatusChange::new(
+                        target, desired,
+                    )),
                 )),
             )
             .unwrap()
@@ -1773,6 +2175,298 @@ pub(crate) mod tests {
 
         assert_eq!(error, AccountAdministrationReadError::ActionNotSupported);
         assert_eq!(error.to_string(), "administration action not supported");
+    }
+
+    #[test]
+    fn status_noop_missing_and_revision_exhaustion_return_before_audit() {
+        let surface = surface(false, false, false);
+        insert_status_account(&surface.path, true, 7);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let (audit, records, attempts) = recovery(surface.database.clone(), None);
+        let workflow = AccountStatusChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x92),
+                AccountStatus::Active,
+            )),
+            Ok(AccountStatusChangeResult::Unchanged)
+        );
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x99),
+                AccountStatus::Disabled,
+            )),
+            Err(AccountStatusChangeError::TargetNotFound)
+        );
+        Connection::open(&surface.path)
+            .unwrap()
+            .execute(
+                "UPDATE weavelit_account SET credential_revision = ?2 WHERE account_id = ?1",
+                params![
+                    identifier(2).as_bytes().as_slice(),
+                    u64::MAX.to_be_bytes().as_slice(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x92),
+                AccountStatus::Disabled,
+            )),
+            Err(AccountStatusChangeError::CredentialRevisionExhausted)
+        );
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            count(&surface.path, "weavelit_audit_terminal_obligation", ""),
+            0
+        );
+    }
+
+    #[test]
+    fn status_change_requires_ready_active_recovery_before_attempt_or_mutation() {
+        let surface = surface(false, false, false);
+        insert_status_account(&surface.path, true, 7);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let (audit, records, attempts) = recovery(surface.database.clone(), None);
+        Connection::open(&surface.path)
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE weavelit_audit_terminal_supersession; \
+                 DROP TABLE weavelit_audit_terminal_obligation;",
+            )
+            .unwrap();
+        let workflow = AccountStatusChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x92),
+                AccountStatus::Disabled,
+            )),
+            Err(AccountStatusChangeError::AuditLogUnavailable)
+        );
+        assert_eq!(stored_account_status(&surface.path, 2), (true, 7));
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn disable_and_reenable_emit_exact_typed_audit_and_restore_no_session() {
+        let surface = surface(false, false, false);
+        insert_status_account(&surface.path, true, 7);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        insert_target_session(&surface.path, 0x41);
+        insert_target_session(&surface.path, 0x42);
+        let (audit, records, _) = recovery(surface.database.clone(), None);
+        let workflow = AccountStatusChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x92),
+                AccountStatus::Disabled,
+            )),
+            Ok(AccountStatusChangeResult::Changed {
+                status: AccountStatus::Disabled,
+                revoked_sessions: 2,
+                delivery: AccountStatusChangeDelivery::Acknowledged,
+            })
+        );
+        assert_eq!(stored_account_status(&surface.path, 2), (false, 8));
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_session",
+                "WHERE account_id = X'02020202020202020202020202020202'",
+            ),
+            0
+        );
+
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x92),
+                AccountStatus::Active,
+            )),
+            Ok(AccountStatusChangeResult::Changed {
+                status: AccountStatus::Active,
+                revoked_sessions: 0,
+                delivery: AccountStatusChangeDelivery::Acknowledged,
+            })
+        );
+        assert_eq!(stored_account_status(&surface.path, 2), (true, 8));
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_session",
+                "WHERE account_id = X'02020202020202020202020202020202'",
+            ),
+            0
+        );
+
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 4);
+        for record in &records[0..2] {
+            assert_eq!(record.classification, "authentication.user.disabled");
+            assert_eq!(record.action, "disable");
+            assert_eq!(record.target, "account:ar-22222222222222222222222222222222");
+        }
+        assert_eq!(
+            records[1].detail,
+            "accountable action completed successfully; account status: disabled"
+        );
+        for record in &records[2..4] {
+            assert_eq!(record.classification, "internal.user-status.changed");
+            assert_eq!(record.action, "change-user-status");
+            assert_eq!(record.target, "account:ar-22222222222222222222222222222222");
+        }
+        assert_eq!(
+            records[3].detail,
+            "accountable action completed successfully; account status: active"
+        );
+        let rendered = format!("{records:?}");
+        assert!(!rendered.contains("$target-verifier"));
+        assert!(!rendered.contains("Target Account"));
+    }
+
+    #[test]
+    fn self_disable_authorizes_before_revoking_its_exact_session() {
+        let surface = surface(false, false, false);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let (audit, _, _) = recovery(surface.database.clone(), None);
+        let workflow = AccountStatusChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x91),
+                AccountStatus::Disabled,
+            )),
+            Ok(AccountStatusChangeResult::Changed {
+                status: AccountStatus::Disabled,
+                revoked_sessions: 1,
+                delivery: AccountStatusChangeDelivery::Acknowledged,
+            })
+        );
+        assert_eq!(stored_account_status(&surface.path, 1), (false, 2));
+        assert_eq!(count(&surface.path, "weavelit_session", ""), 0);
+    }
+
+    #[test]
+    fn post_attempt_target_staleness_and_issuer_revocation_commit_denied_terminals() {
+        let stale = surface(false, false, false);
+        insert_status_account(&stale.path, true, 7);
+        insert_live_status_session(&stale.path, 0x31, 1);
+        insert_target_session(&stale.path, 0x41);
+        let stale_path = stale.path.clone();
+        let after_delivery: Arc<dyn Fn(usize) + Send + Sync> = Arc::new(move |attempt| {
+            if attempt == 1 {
+                Connection::open(&stale_path)
+                    .unwrap()
+                    .execute(
+                        "UPDATE weavelit_account SET credential_revision = ?2 WHERE account_id = ?1",
+                        params![
+                            identifier(2).as_bytes().as_slice(),
+                            9_u64.to_be_bytes().as_slice(),
+                        ],
+                    )
+                    .unwrap();
+            }
+        });
+        let (audit, records, _) =
+            recovery_with_hook(stale.database.clone(), None, Some(after_delivery));
+        let workflow = AccountStatusChangeWorkflow::new(&stale.database, &audit);
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x92),
+                AccountStatus::Disabled,
+            )),
+            Ok(AccountStatusChangeResult::Stale {
+                delivery: AccountStatusChangeDelivery::Acknowledged,
+            })
+        );
+        assert_eq!(stored_account_status(&stale.path, 2), (true, 9));
+        assert_eq!(count(&stale.path, "weavelit_session", ""), 2);
+        assert_eq!(
+            records.lock().unwrap()[1].detail,
+            "accountable action denied"
+        );
+
+        let denied = surface(false, false, false);
+        insert_status_account(&denied.path, true, 7);
+        insert_live_status_session(&denied.path, 0x31, 1);
+        let denied_path = denied.path.clone();
+        let after_delivery: Arc<dyn Fn(usize) + Send + Sync> = Arc::new(move |attempt| {
+            if attempt == 1 {
+                Connection::open(&denied_path)
+                    .unwrap()
+                    .execute("DELETE FROM weavelit_session", [])
+                    .unwrap();
+            }
+        });
+        let (audit, records, _) =
+            recovery_with_hook(denied.database.clone(), None, Some(after_delivery));
+        let workflow = AccountStatusChangeWorkflow::new(&denied.database, &audit);
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x92),
+                AccountStatus::Disabled,
+            )),
+            Ok(AccountStatusChangeResult::Denied {
+                delivery: AccountStatusChangeDelivery::Acknowledged,
+            })
+        );
+        assert_eq!(stored_account_status(&denied.path, 2), (true, 7));
+        assert_eq!(
+            records.lock().unwrap()[1].detail,
+            "accountable action denied"
+        );
+    }
+
+    #[test]
+    fn committed_status_remains_changed_when_delivery_is_pending_and_restart_recovers() {
+        let surface = surface(false, false, false);
+        insert_status_account(&surface.path, true, 7);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let (audit, records, attempts) = recovery(surface.database.clone(), Some(2));
+        let workflow = AccountStatusChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(authorized_account_status(
+                account_public_identifier(0x92),
+                AccountStatus::Disabled,
+            )),
+            Ok(AccountStatusChangeResult::Changed {
+                status: AccountStatus::Disabled,
+                revoked_sessions: 0,
+                delivery: AccountStatusChangeDelivery::Pending,
+            })
+        );
+        assert_eq!(stored_account_status(&surface.path, 2), (false, 8));
+        assert_eq!(records.lock().unwrap().len(), 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            1
+        );
+
+        drop(audit);
+        let (restarted, recovered_records, _) = recovery(surface.database.clone(), None);
+        assert_eq!(
+            restarted.drain_for_activation().active(),
+            AuditRecoverySequenceState::Ready
+        );
+        assert_eq!(recovered_records.lock().unwrap().len(), 1);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1988,6 +2682,9 @@ pub(crate) mod tests {
 
     #[test]
     fn non_administrator_is_denied_before_a_workflow_or_audit_side_effect_exists() {
+        let surface = surface(false, false, false);
+        insert_status_account(&surface.path, true, 7);
+        let (_audit, records, attempts) = recovery(surface.database.clone(), None);
         let client_module = name(CLIENT_MODULE);
         let denied = authorize_administration(
             &HumanAuthorizationSnapshot::new(
@@ -2010,6 +2707,13 @@ pub(crate) mod tests {
         );
 
         assert_eq!(denied.unwrap_err(), AuthorizationDenied);
+        assert_eq!(stored_account_status(&surface.path, 2), (true, 7));
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            count(&surface.path, "weavelit_audit_terminal_obligation", ""),
+            0
+        );
     }
 
     #[test]

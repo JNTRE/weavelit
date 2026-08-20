@@ -32,8 +32,10 @@ use weavelit_server_database::{
     AccountAdministrationStore, AccountAuditReference, AccountCreateMutation, AccountCreateOutcome,
     AccountCredentialAuditTerminalWrites, AccountCredentialWriterStore,
     AccountPasswordResetMutation, AccountPasswordResetOutcome, AccountPasswordResetTarget,
-    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AuditReferencePersistence,
-    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, LogConfigurationAuditReference,
+    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountStatusAuditTerminalWrites,
+    AccountStatusMutation, AccountStatusMutationOutcome, AccountStatusTarget,
+    AccountStatusWriterStore, AuditReferencePersistence, AuditTerminalRecoveryPersistence,
+    AuditTerminalRecoveryStore, LogConfigurationAuditReference,
     LogConfigurationAuditTerminalWrites, LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
@@ -357,6 +359,48 @@ impl OperationalDatabase {
             operation(
                 database
                     .account_credential_writers()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Resolves one exact account status target through both selected decoders.
+    pub(crate) fn prepare_account_status_target(
+        &self,
+        target: AccountPublicIdentifier,
+    ) -> Result<Option<AccountStatusTarget>, DatabaseError> {
+        self.with_account_status_writers(|store| {
+            store.prepare_account_status_target(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                target,
+            )
+        })
+    }
+
+    /// Commits one account status change and exactly one selected Audit terminal.
+    pub(crate) fn change_account_status(
+        &self,
+        mutation: &AccountStatusMutation,
+        audit_terminals: &AccountStatusAuditTerminalWrites<'_>,
+    ) -> Result<AccountStatusMutationOutcome, DatabaseError> {
+        self.with_account_status_writers(|store| {
+            store.change_account_status(
+                &self.account_public_identifier_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    fn with_account_status_writers<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn AccountStatusWriterStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                database
+                    .account_status_writers()
                     .ok_or(DatabaseError::Unavailable)?,
             )
         })?

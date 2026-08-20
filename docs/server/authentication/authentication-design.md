@@ -295,6 +295,31 @@ the last Administrator, make the deployment inaccessible through supported
 interfaces. This is an accepted fail-closed risk; expiry recovery requires a
 new Administrator reset and remains an operator responsibility.
 
+### Account Disable And Re-enable
+
+An authorized **[Administrator](../../glossary.md#identities-and-access)** may
+disable or re-enable any local **[Human User](../../glossary.md#identities-and-access)**,
+including themselves, through ordinary Account authorization. These status
+operations do not issue a credential and therefore do not perform the
+credential-issuance password reauthentication, TOTP verification, or an MFA
+step-up. The final writer still rechecks the exact authorized session and active
+actor before committing.
+
+Disablement atomically marks the account inactive, advances its credential
+revision, revokes every target session, and persists its selected Audit
+terminal. Re-enablement marks the account active while preserving that advanced
+revision and creates no session. The verifier, temporary-credential metadata,
+MFA requirement and factors, and replay watermarks are preserved through both
+operations.
+
+Direct, TOTP, and enrollment session issuance already recheck active state and
+the credential revision in the transaction that would issue a session. An
+issuance prepared before disablement is therefore rejected while the account is
+inactive and remains stale after re-enablement. Only authentication prepared
+against the post-disable revision can issue a new session. This does not cancel
+an unrelated request whose business operation already executed before the
+disable transaction committed.
+
 ## Session Storage And Lifetime
 
 A session lives in the Application Database's `SessionStore`, which is a

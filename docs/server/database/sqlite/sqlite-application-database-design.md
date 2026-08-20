@@ -300,6 +300,18 @@ duplicate or stale conflict, and final issuer denial each select exactly one
 opaque terminal obligation. The selected obligation and any watermark or
 business writes commit together or roll back together.
 
+The account status writer uses the same existing account, public-identity,
+Audit-reference, session, and terminal-recovery tables; it adds no migration or
+backup field. Its `BEGIN IMMEDIATE` transaction rechecks issuer session
+ownership, actor, Client Module, lifetime, and active state before evaluating
+the target. One update compare-and-sets the target account identifier, exact
+public identifier association, active flag, and eight-byte credential revision.
+Disablement writes inactive state and the checked successor revision, then
+deletes every target session. Re-enablement writes active state with the same
+revision and performs no session insert. The selected success or payload-free
+denied terminal is persisted before commit, so a terminal failure rolls back
+the status, revision, and session deletion together.
+
 ## Live Session Schema
 
 `0004_create_session_store.sql` creates the single `STRICT` table

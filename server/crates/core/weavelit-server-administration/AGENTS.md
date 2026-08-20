@@ -14,7 +14,7 @@ Apply instructions in this order:
 ## Purpose and Scope
 
 - This crate owns the closed administration action families, bounded account
-  read/create/reset payloads and exact-session authorized account proof, bounded component
+  read/create/reset/status payloads and exact-session authorized account proof, bounded component
   targets and desired enablement state, exact-session-bound compound admission,
   current-session MFA step-up proof and five-minute policy, live component-operation
   enablement check, non-forgeable authorized-action result, and reason-free denial
@@ -30,7 +30,7 @@ Apply instructions in this order:
 
 - `Cargo.toml`: Package metadata, narrow contract dependencies, and the JSON
   diagnostic test dependency.
-- `src/lib.rs`: Administration actions, requests, results, step-up policy,
+- `src/lib.rs`: Administration actions, account status intent, requests, results, step-up policy,
   component inventory and live enablement contracts, and direct tests.
 - `tests/contract_boundary.rs`: Driver pinning external compile failures at the
   violating source spans.

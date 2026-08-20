@@ -3,6 +3,7 @@
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
 mod account_administration;
+mod account_status;
 mod account_writer;
 mod audit_recovery;
 mod log_configuration;
@@ -12,6 +13,11 @@ mod session;
 mod state;
 
 pub use account_administration::{AccountAdministrationProjection, AccountAdministrationStore};
+pub use account_status::{
+    AccountStatus, AccountStatusAuditTerminalWrites, AccountStatusMutation,
+    AccountStatusMutationError, AccountStatusMutationOutcome, AccountStatusRecheck,
+    AccountStatusTarget, AccountStatusWriterStore,
+};
 pub use account_writer::{
     AccountCreateMutation, AccountCreateOutcome, AccountCredentialAuditTerminalWrites,
     AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck,
@@ -326,6 +332,11 @@ pub trait ApplicationDatabase: Send {
 
     /// Returns account credential mutation storage, when available.
     fn account_credential_writers(&mut self) -> Option<&mut dyn AccountCredentialWriterStore> {
+        None
+    }
+
+    /// Returns account status mutation storage, when available.
+    fn account_status_writers(&mut self) -> Option<&mut dyn AccountStatusWriterStore> {
         None
     }
 

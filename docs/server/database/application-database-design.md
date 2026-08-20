@@ -340,6 +340,35 @@ Audit Log destination. Refer to the
 [Authentication Design](../authentication/authentication-design.md#account-credential-issuance-writers)
 for expiry, disclosure, session, and reauthentication policy.
 
+### Account Status Writers
+
+`AccountStatusWriterStore` implements transport-independent disable and
+re-enable mutations for a local **[Human User](../../glossary.md#identities-and-access)**.
+A preparation read resolves one exact Account Public Identifier, internal
+account identifier, typed Audit Reference, active state, and credential
+revision in one backend snapshot. An exact desired-state match is an unchanged
+result before an Audit Attempt or writer call. Preparing disablement computes
+the checked next credential revision; exhaustion is a stable pre-commit
+rejection. Preparing re-enablement retains the current revision.
+
+The final transaction first rechecks the issuing **[Administrator](../../glossary.md#identities-and-access)**'s
+exact session digest, actor, Client Module, lifetime, and active state. It then
+compare-and-sets the target's public identity, active state, and credential
+revision. Disablement writes inactive state, advances the revision, and deletes
+every target session. Re-enablement writes active state only and neither changes
+the revision nor creates or restores a session. Self-disablement is valid: the
+issuer recheck completes before target-session deletion removes that same
+session.
+
+Success selects one prevalidated success Audit terminal. A stale target or
+final issuer denial selects one payload-free denied terminal and performs no
+business mutation. The selected opaque terminal and all business effects commit
+together or roll back together. The writer does not change the verifier,
+temporary-credential metadata, MFA requirement, factor enrollment, replay
+watermark, Group membership, grant, public identifier, or Audit Reference.
+Status and revision remain ordinary restorable account state, while sessions
+remain live operational data that Restore clears.
+
 ## Live Session Storage
 
 `SessionStore` is a separate backend-neutral contract from `ApplicationState`,

@@ -191,7 +191,7 @@ disposition and cannot mint one. Server Audit does not expose record fields,
 verify credentials, present confirmation, retain a destination, or execute the
 configuration change.
 
-The future account-create and password-reset workflows may disclose a generated
+The account-create and password-reset workflows may disclose a generated
 temporary password only in their originating successful response. Audit records
 record issuance or reset acceptance and safe outcomes only; they must never
 contain the password, verifier, response or delivery content, or whether a
@@ -230,7 +230,10 @@ post-commit obligations:
   state and the previewed affected-Human-User count, plus one payload-free
   denied terminal for a stale preview. The Log Module configuration workflow
   prepares one success terminal and one payload-free stale terminal after all
-  resultant destinations pass preflight. Each directly identifies the
+  resultant destinations pass preflight. The account status workflow prepares
+  one success terminal containing only the resulting active or disabled status
+  and one payload-free denied terminal for either a stale target or final
+  issuer denial. Each directly identifies the
   acknowledged Attempt. No final state or affected count appears in the
   Attempt or denied terminal.
 7. Begin the serialized application-state transaction, establish the

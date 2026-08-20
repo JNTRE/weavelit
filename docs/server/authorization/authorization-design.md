@@ -229,26 +229,31 @@ weaker rule.
 
 | Action | Current-session MFA step-up | Additional decision |
 | --- | --- | --- |
-| `Account(List)` or `Account(View(AccountPublicIdentifier))` | Not required | Admits one bounded account administration read. The gate performs no database read. Future account creation, status mutation, and password-reset contracts remain unimplemented. |
+| `Account(List)` or `Account(View(AccountPublicIdentifier))` | Not required | Admits one bounded account administration read. The gate performs no database read. |
+| `Account(Create(...))` or `Account(PasswordReset(...))` | Not required at this gate | Admits one account credential writer. The separate exact-session credential-issuance check applies before temporary-password disclosure. |
+| `Account(StatusChange { target: AccountPublicIdentifier, desired: Active | Disabled })` | Not required | Admits one account status writer. The gate performs no database read, credential reauthentication, or MFA step-up. |
 | `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
 | `GrantMutation` | Required, scoped to `GrantMutation` | Covers future Group membership and grant mutations. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
 | `ComponentEnablementChange` | Not required | The exact kind and name must identify a compiled-in Client Module, Service Module, MFA Module, or Operation. The descriptor retains the requested enabled state without reading current enablement. |
 | `LogConfigurationChange` | Not required | Carries one existing primary Log Module configuration, optional enabled state and complete non-secret settings, and canonically ordered assignment changes. The gate performs no configuration read or mutation. |
 
-Credential issuance is future policy, not an existing accepted
-`AdministrationAction` descriptor or type. Future account-create and
-password-reset workflows use the `Account` family for authorization and must
-add a separate exact-session credential-issuance check before returning a
+Account-create and password-reset workflows use the `Account` family for
+authorization and add a separate exact-session credential-issuance check before returning a
 temporary password. That check is a distinct reauthentication gate that
 reverifies the current Administrator's password and TOTP enrollment status
 within the same session; it does not consume or extend `MfaStepUpProof` and is
 independent of the `MfaPolicy` action's step-up requirement. The issuance check
-is specific to credential delivery and does not create a reusable action
-family in this foundation. The Server must not treat an ordinary `Account`
+is specific to credential delivery. The Server must not treat an ordinary `Account`
 authorization as sufficient for returning a temporary password, and it must
 not make ordinary account reads or status operations pay this
 issuance-specific gate.
+
+The status workflow consumes the exact authorized account action and derives
+its actor, exact session digest, Client Module, target, and desired state from
+that value. It prepares target state through the Application Database only
+after admission. Disable and re-enable do not accept a password, TOTP code,
+step-up proof, current credential revision, or independent actor or session.
 
 An account-read workflow consumes the exact `AuthorizedAdministrationAction`
 by value. `List` returns the Application Database store's deterministic bounded

@@ -669,6 +669,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         authorization: AuthorizedAccountAdministrationAction,
         input: AccountCredentialIssuanceInput,
     ) -> Result<AccountCredentialIssuanceAdmission, AccountCredentialIssuanceError> {
+        if matches!(
+            authorization.action(),
+            AccountAdministrationAction::StatusChange(_)
+        ) {
+            return Err(AccountCredentialIssuanceError::Denied);
+        }
         let state = self
             .initialized_state()
             .map_err(|_| AccountCredentialIssuanceError::Unavailable)?;
@@ -1934,9 +1940,9 @@ pub(crate) mod tests {
     };
     use weavelit_module_mfa_totp::STEP_SECONDS;
     use weavelit_server_administration::{
-        AccountAdministrationRead, AccountCreate, AdministrationAction, AdministrationClock,
-        AdministrationPlane, AdministrationRequest, AuthorizedAdministrationAdmission,
-        ComponentEnablementSource,
+        AccountAdministrationRead, AccountCreate, AccountStatusChange, AdministrationAction,
+        AdministrationClock, AdministrationPlane, AdministrationRequest,
+        AuthorizedAdministrationAdmission, ComponentEnablementSource,
     };
     use weavelit_server_administration_authority::ServerAdministrationAuthority;
     use weavelit_server_authentication::{
@@ -1948,9 +1954,9 @@ pub(crate) mod tests {
     };
     use weavelit_server_components::AvailableComponents;
     use weavelit_server_database::{
-        Account, AccountPasswordVerifier, ComponentEnablement, GroupGrant,
-        HumanAuthorizationSnapshot, MAX_NAME_LENGTH, PasswordVerifier,
-        SESSION_ABSOLUTE_LIFETIME_MILLISECONDS, SESSION_DIGEST_LENGTH,
+        Account, AccountPasswordVerifier, AccountPublicIdentifier, AccountStatus,
+        ComponentEnablement, GroupGrant, HumanAuthorizationSnapshot, MAX_NAME_LENGTH,
+        PasswordVerifier, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS, SESSION_DIGEST_LENGTH,
         SESSION_IDLE_TIMEOUT_MILLISECONDS,
     };
     use weavelit_server_log::{
@@ -2656,6 +2662,29 @@ pub(crate) mod tests {
             None,
         );
         assert_eq!(read.engine.verifications(), 1);
+    }
+
+    #[test]
+    fn account_status_action_never_enters_credential_reauthentication() {
+        let surface = AuthSurface::new();
+        let error = surface
+            .runtime
+            .admit_account_credential_issuance(
+                authorized_issuance_action(AccountAdministrationAction::StatusChange(
+                    AccountStatusChange::new(
+                        AccountPublicIdentifier::generate().unwrap(),
+                        AccountStatus::Disabled,
+                    ),
+                )),
+                issuance_input(
+                    CORRECT_PASSWORD.as_bytes(),
+                    Some(ENROLLED_VECTOR_CODE.as_bytes()),
+                ),
+            )
+            .unwrap_err();
+
+        assert_eq!(error, AccountCredentialIssuanceError::Denied);
+        assert_eq!(surface.engine.verifications(), 0);
     }
 
     #[test]
