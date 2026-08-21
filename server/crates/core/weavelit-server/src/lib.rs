@@ -4965,7 +4965,8 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(created_group.status, StatusCode::OK);
-        assert_eq!(audit_count(), before_changes + 7);
+        assert_eq!(audit_count(), before_changes + 8);
+        assert_response_audit_correlation(&log, &created_group);
         let temporary_group = credential_issuance_response_field(&created_group, "public_id");
 
         let updated_group = credential_issuance_json_request(
@@ -4979,8 +4980,8 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(updated_group.status, StatusCode::OK);
-        assert_eq!(audit_count(), before_changes + 9);
-        assert_response_audit_correlation(&log, &created_group);
+        assert_eq!(audit_count(), before_changes + 10);
+        assert_response_audit_correlation(&log, &updated_group);
 
         let deleted_group = credential_issuance_json_request(
             mount.surface(),
@@ -4993,18 +4994,7 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(deleted_group.status, StatusCode::OK);
-        assert_eq!(audit_count(), before_changes + 11);
-        assert_response_audit_correlation(&log, &updated_group);
-
-        let drain_trigger = credential_issuance_json_request(
-            mount.surface(),
-            GROUPS_CREATE_ROUTE,
-            "{\"name\":\"Drain Trigger\",\"description\":null}".to_owned(),
-            Some((&session, &csrf)),
-        )
-        .await;
-        assert_eq!(drain_trigger.status, StatusCode::OK);
-        assert_eq!(audit_count(), before_changes + 13);
+        assert_eq!(audit_count(), before_changes + 12);
         assert_response_audit_correlation(&log, &deleted_group);
 
         let audit_text = log
