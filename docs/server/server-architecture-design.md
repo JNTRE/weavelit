@@ -1194,7 +1194,7 @@ above rather than depending on the `age` crate.
   weavelit-server --test startup` passes all 23 tests; the locked feature graph
   contains only the selected Rustls provider capabilities.
 
-#### HTTPS Runtime Composition
+#### Direct-TLS Runtime Dependencies
 
 The following crates.io packages are direct dependencies of `weavelit-server`
 for the Milestone 1 single direct-TLS listener. The Rust standard library and
