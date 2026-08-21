@@ -709,4 +709,39 @@ describe("ApplicationShell sign-in panel gating", () => {
     expect(loginSection()).toBeNull();
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
+
+  it("withholds the Accounts workspace for a restricted password-change session", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+              password_change_required: true,
+            },
+          }),
+        );
+      }
+      return Promise.reject(new Error("the restricted session must not read administration data"));
+    });
+
+    render(<ApplicationShell />);
+
+    expect(await screen.findByRole("heading", { name: "Choose a new password" })).toBeTruthy();
+    expect(screen.getByLabelText("New password")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/administration/accounts/list"),
+    ).toHaveLength(0);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
 });

@@ -16,8 +16,7 @@ use weavelit_server_log::{
 
 use crate::{
     authentication::{
-        AuthenticationRuntime, PasswordChangePreparationError, ValidatedSession,
-        correlation_identifier, system_clock,
+        AuthenticationRuntime, PasswordChangePreparationError, ValidatedSession, system_clock,
     },
     operational::OperationalDatabase,
     operational_audit::{
@@ -97,6 +96,7 @@ where
         &self,
         session: ValidatedSession,
         input: PasswordReplacementInput,
+        correlation_id: &str,
     ) -> Result<PasswordChangeResult, PasswordChangeWorkflowError> {
         if self.audit.drain_before_consequential_operation().active()
             != AuditRecoverySequenceState::Ready
@@ -119,7 +119,7 @@ where
                     .destination()
                     .preflight(LogRecordType::Audit)
                     .map_err(|_| PasswordChangeWorkflowError::AuditLogUnavailable)?;
-                let terminals = self.prepare_terminals(account, destination)?;
+                let terminals = self.prepare_terminals(account, destination, correlation_id)?;
                 let (mutation, session) = self
                     .authentication
                     .prepare_password_change_mutation(admission)
@@ -137,11 +137,10 @@ where
         &self,
         account: weavelit_server_database::AccountAuditReference,
         destination: &OperationalAuditGenerationDestination,
+        correlation_id: &str,
     ) -> Result<PreparedPasswordChangeTerminals, PasswordChangeWorkflowError> {
-        let correlation = CorrelationId::new(
-            correlation_identifier().ok_or(PasswordChangeWorkflowError::Unavailable)?,
-        )
-        .map_err(|_| PasswordChangeWorkflowError::Unavailable)?;
+        let correlation = CorrelationId::new(correlation_id.to_owned())
+            .map_err(|_| PasswordChangeWorkflowError::Unavailable)?;
         let attempt = self
             .audit
             .producer()
@@ -260,6 +259,8 @@ mod tests {
         Argon2Engine, CURRENT_ARGON2_PROFILE, PasswordVerifierFactory, RustCryptoArgon2,
         SessionSecrets,
     };
+
+    const CORRELATION: &str = "password-change-test-correlation";
     use weavelit_server_database::{
         Account, AccountPasswordVerifier, CredentialRevision, Name, NewSession, PasswordVerifier,
         SessionCsrfHash, SessionInstant, SessionIssuance, SessionTokenHash,
@@ -411,7 +412,7 @@ mod tests {
             PasswordChangeWorkflow::new(&surface.database, &surface.authentication, &audit);
 
         let result = workflow
-            .change(restricted, input(REPLACEMENT_PASSWORD))
+            .change(restricted, input(REPLACEMENT_PASSWORD), CORRELATION)
             .unwrap();
         let rendered = format!("{result:?}");
         let PasswordChangeResult::Changed { session, delivery } = result else {
@@ -490,7 +491,7 @@ mod tests {
             PasswordChangeWorkflow::new(&temporary.database, &temporary.authentication, &audit);
         assert_eq!(
             workflow
-                .change(restricted, input(TEMPORARY_PASSWORD))
+                .change(restricted, input(TEMPORARY_PASSWORD), CORRELATION)
                 .unwrap_err(),
             PasswordChangeWorkflowError::Denied
         );
@@ -505,7 +506,7 @@ mod tests {
             PasswordChangeWorkflow::new(&ordinary.database, &ordinary.authentication, &audit);
         assert_eq!(
             workflow
-                .change(session, input(REPLACEMENT_PASSWORD))
+                .change(session, input(REPLACEMENT_PASSWORD), CORRELATION)
                 .unwrap_err(),
             PasswordChangeWorkflowError::Denied
         );
@@ -532,7 +533,7 @@ mod tests {
             PasswordChangeWorkflow::new(&surface.database, &surface.authentication, &audit);
 
         let result = workflow
-            .change(restricted, input(REPLACEMENT_PASSWORD))
+            .change(restricted, input(REPLACEMENT_PASSWORD), CORRELATION)
             .unwrap();
 
         assert!(matches!(
@@ -553,6 +554,57 @@ mod tests {
     }
 
     #[test]
+    fn stale_revision_after_acknowledged_attempt_commits_only_the_denied_terminal() {
+        let surface = surface(true);
+        let (restricted, _) = validated_session(&surface);
+        let path = surface.path.clone();
+        let hook = Arc::new(move |delivery: usize| {
+            if delivery == 1 {
+                Connection::open(&path)
+                    .unwrap()
+                    .execute(
+                        "UPDATE weavelit_account SET credential_revision = ?2 \
+                         WHERE account_id = ?1",
+                        params![
+                            identifier().as_bytes().as_slice(),
+                            2_u64.to_be_bytes().as_slice()
+                        ],
+                    )
+                    .unwrap();
+            }
+        });
+        let (audit, records, _) = recovery_with_hook(surface.database.clone(), None, Some(hook));
+        let workflow =
+            PasswordChangeWorkflow::new(&surface.database, &surface.authentication, &audit);
+
+        let result = workflow
+            .change(restricted, input(REPLACEMENT_PASSWORD), CORRELATION)
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            PasswordChangeResult::Denied {
+                delivery: PasswordChangeDelivery::Acknowledged
+            }
+        ));
+        let credential = credential_state(&surface.path);
+        assert_eq!(credential.0, 2_u64.to_be_bytes().to_vec());
+        assert_eq!(
+            (credential.1, credential.2),
+            (1, Some(surface.now + 60_000))
+        );
+        assert!(RustCryptoArgon2::default().verify(
+            TEMPORARY_PASSWORD,
+            &CURRENT_ARGON2_PROFILE,
+            &credential.3
+        ));
+        assert_eq!(session_count(&surface.path), 1);
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].detail, "accountable action denied");
+    }
+
+    #[test]
     fn audit_attempt_failure_changes_nothing_and_postcommit_failure_preserves_success() {
         let preflight = surface(true);
         let (restricted, _) = validated_session(&preflight);
@@ -563,7 +615,7 @@ mod tests {
             PasswordChangeWorkflow::new(&preflight.database, &preflight.authentication, &audit);
         assert_eq!(
             workflow
-                .change(restricted, input(REPLACEMENT_PASSWORD))
+                .change(restricted, input(REPLACEMENT_PASSWORD), CORRELATION)
                 .unwrap_err(),
             PasswordChangeWorkflowError::AuditLogUnavailable
         );
@@ -580,7 +632,7 @@ mod tests {
             PasswordChangeWorkflow::new(&failed.database, &failed.authentication, &audit);
         assert_eq!(
             workflow
-                .change(restricted, input(REPLACEMENT_PASSWORD))
+                .change(restricted, input(REPLACEMENT_PASSWORD), CORRELATION)
                 .unwrap_err(),
             PasswordChangeWorkflowError::AuditLogUnavailable
         );
@@ -594,7 +646,7 @@ mod tests {
         let workflow =
             PasswordChangeWorkflow::new(&pending.database, &pending.authentication, &audit);
         let result = workflow
-            .change(restricted, input(REPLACEMENT_PASSWORD))
+            .change(restricted, input(REPLACEMENT_PASSWORD), CORRELATION)
             .unwrap();
         let PasswordChangeResult::Changed { session, delivery } = result else {
             panic!("the mutation must remain committed")

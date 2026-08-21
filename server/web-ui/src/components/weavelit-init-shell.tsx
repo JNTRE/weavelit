@@ -11,6 +11,7 @@ import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
 import { AccountsWorkspace } from "./weavelit-accounts-workspace";
 import { InitWorkflow } from "./weavelit-init-workflow";
 import { LoginPanel } from "./weavelit-login-form";
+import { PasswordChangeForm } from "./weavelit-password-change-form";
 
 const LOADING_MESSAGE = "Checking the deployment status.";
 const SELECTED_MESSAGE = "An Application Database is selected for this deployment.";
@@ -58,6 +59,7 @@ export function ApplicationShell(): JSX.Element {
   const [choice, setChoice] = useState<SetupChoice | null>(null);
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
 
   const chooseInit = useCallback(() => {
     setChoice("init");
@@ -72,7 +74,13 @@ export function ApplicationShell(): JSX.Element {
   const completeSetup = useCallback(() => {
     setInitialized(true);
   }, []);
-  const completeAuthentication = useCallback(() => {
+  const completeAuthentication = useCallback((required: boolean) => {
+    setPasswordChangeRequired(required);
+    setAuthenticated(true);
+  }, []);
+
+  const completePasswordChange = useCallback(() => {
+    setPasswordChangeRequired(false);
     setAuthenticated(true);
   }, []);
 
@@ -117,7 +125,11 @@ export function ApplicationShell(): JSX.Element {
       <main className="shell shell--administration">
         <h1 className="shell__title">Weavelit Server</h1>
         <p className="shell__subtitle">Administration</p>
-        <AccountsWorkspace />
+        {passwordChangeRequired ? (
+          <PasswordChangeForm onCompleted={completePasswordChange} />
+        ) : (
+          <AccountsWorkspace />
+        )}
       </main>
     );
   }

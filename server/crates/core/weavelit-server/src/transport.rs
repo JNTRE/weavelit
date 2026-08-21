@@ -201,6 +201,8 @@ impl ProcessingBudget for ProcessingDeadline {
 pub enum PreBodyRejection {
     /// The request head is not acceptable for the route it targets.
     BadRequest,
+    /// The request presented no usable session or cross-site request forgery token.
+    SessionInvalid,
     /// The request failed the route's same-origin or cross-site request
     /// forgery precondition.
     RequestOriginDenied,
@@ -225,6 +227,9 @@ impl PreBodyRejection {
         match self {
             Self::BadRequest => {
                 json_fixed_response(StatusCode::BAD_REQUEST, "{\"error\":\"bad_request\"}")
+            }
+            Self::SessionInvalid => {
+                json_fixed_response(StatusCode::UNAUTHORIZED, "{\"error\":\"session_invalid\"}")
             }
             Self::RequestOriginDenied => json_fixed_response(
                 StatusCode::FORBIDDEN,
@@ -963,6 +968,7 @@ mod tests {
     async fn every_pre_body_failure_rejects_before_the_permit_and_the_allocation() {
         for rejection in [
             PreBodyRejection::BadRequest,
+            PreBodyRejection::SessionInvalid,
             PreBodyRejection::RequestOriginDenied,
         ] {
             let calls = Arc::new(AtomicUsize::new(0));

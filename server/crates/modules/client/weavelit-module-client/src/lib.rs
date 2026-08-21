@@ -37,6 +37,7 @@ pub mod authorization;
 pub mod cookie;
 pub mod init;
 pub mod mfa;
+pub mod password_change;
 pub mod reconciliation;
 pub mod restore;
 pub mod typed_json;
@@ -78,6 +79,11 @@ pub use mfa::{
     MFA_REQUIRED_CODE, MfaCapability, MfaCodeCommit, MfaCodeSubmission, MfaDeclaration,
     MfaEnrollmentCommit, MfaEnrollmentConfirmCommit, MfaEnrollmentOpened, MfaEnrollmentSubmission,
     MfaSelfEnrollmentCommit, MfaSelfEnrollmentSubmission,
+};
+pub use password_change::{
+    AUTH_PASSWORD_CHANGE_ROUTE, MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES,
+    PasswordChangeCapability, PasswordChangeCommit, PasswordChangeDeclaration,
+    PasswordChangeSubmission, validate_password_change_request,
 };
 pub use reconciliation::{
     LIFECYCLE_RECONCILIATION_ROUTE, MAX_RECONCILIATION_BODY_BYTES, ReconciliationCapability,

@@ -295,6 +295,14 @@ adds one must specify it as a separate contract, must not confuse it with the
 existing in-memory MFA continuation, and must not infer authority to persist it
 from this internal workflow.
 
+The session-validation response reports the live `password_change_required`
+posture to the authenticated client. When it is true, the Web UI presents only
+the replacement-password form and withholds ordinary User and Administration
+workspaces. The browser sends the replacement once, clears its local input on
+every outcome, and never retries an unreadable or timed-out request because the
+transaction may already have committed. It may manually revalidate the session;
+only a newly ordinary session unlocks the ordinary workspace.
+
 **MFA-Ordering Invariant:** The forced-change gate MUST sit AFTER the MFA
 step-up gate in an atomic transaction. This ensures that if MFA is required, the
 user must complete MFA before reaching the password-change route, preventing

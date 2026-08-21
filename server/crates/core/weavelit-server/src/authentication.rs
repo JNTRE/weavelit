@@ -1433,7 +1433,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         } = submission;
 
         task::spawn_blocking(move || {
-            let session = self.authorized_session(&session_token, &csrf_token)?.1;
+            let session = self.validated_session(&session_token, &csrf_token)?;
             let state = self.initialized_state()?;
             let public_id = state
                 .state()
@@ -1448,6 +1448,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                 account_id: hexadecimal(session.account().as_bytes()),
                 public_id,
                 client_module: session.client_module().as_str().to_owned(),
+                password_change_required: !session.is_ordinary(),
             })
         })
         .await
@@ -3903,6 +3904,18 @@ pub(crate) mod tests {
             .validated_session(&session, &csrf)
             .expect("the issued restricted session must validate");
         assert!(!validated.is_ordinary());
+        let identity = request(
+            surface.surface(),
+            default_timeouts(),
+            session_head(AUTH_SESSION_ROUTE, &session, &csrf),
+            String::new(),
+        )
+        .await;
+        assert_eq!(identity.status, StatusCode::OK);
+        assert!(
+            body_text(&identity).contains("\"password_change_required\":true"),
+            "the public session result must derive its restriction from the validated session"
+        );
         (session, csrf)
     }
 
@@ -4542,7 +4555,7 @@ pub(crate) mod tests {
     // Session validation
     // -----------------------------------------------------------------------
 
-    /// Validation reports the account's identifiers and Client Module only.
+    /// Validation reports the account's identifiers, Client Module, and live posture only.
     #[tokio::test]
     async fn session_validation_reports_internal_and_public_account_identifiers() {
         let surface = AuthSurface::new();
@@ -4572,7 +4585,8 @@ pub(crate) mod tests {
             body_text(&response),
             format!(
                 "{{\"result\":{{\"account_id\":\"{}\",\"public_id\":\"{public_id}\",\
-                 \"client_module\":\"{CLIENT_MODULE}\"}},\
+                 \"client_module\":\"{CLIENT_MODULE}\",\
+                 \"password_change_required\":false}},\
                  \"correlation_id\":\"{}\"}}",
                 hexadecimal(&ACTIVE_ACCOUNT_BYTES),
                 correlation_of(&response)

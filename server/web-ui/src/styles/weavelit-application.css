@@ -227,6 +227,46 @@ body {
   margin: var(--ds-space-md) 0 0;
 }
 
+.password-change {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-md);
+  margin: var(--ds-space-xl) 0 0;
+  max-width: 32rem;
+  padding: var(--ds-space-md);
+}
+
+.password-change__title {
+  font-size: var(--ds-font-size-lg);
+  margin: 0;
+}
+
+.password-change__label {
+  display: block;
+  margin: var(--ds-space-md) 0 var(--ds-space-xs);
+}
+
+.password-change__input {
+  display: block;
+  font: inherit;
+  max-width: 100%;
+}
+
+.password-change__action {
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  margin: var(--ds-space-md) var(--ds-space-sm) 0 0;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+}
+
+.password-change__action:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
 .shell__init {
   border: 1px solid currentColor;
   border-radius: var(--ds-radius-md);

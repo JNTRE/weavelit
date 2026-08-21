@@ -49,6 +49,7 @@ Apply instructions in this order:
   each collected body, every header, CSRF, and session precondition, the
   one-time provisioning disclosure, and the Server-core hooks each declaration
   is composed over.
+- `src/password_change.rs`: The restricted-session password-change route contract: its canonical path, strict one-field request, release-time body clearing, session and same-origin preconditions, fresh-session cookie result, stable rejections, and Server-core hook.
 - `src/authorization.rs`: The shared operational authorization denial contract:
   the single `AuthorizationRejection` value, the fixed `403` status and
   `authorization_denied` code, and the byte-identical response every denial

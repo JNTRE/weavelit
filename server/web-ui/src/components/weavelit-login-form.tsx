@@ -126,7 +126,7 @@ function isCredentialState(state: LoginViewState): boolean {
  * enrollment retains them.
  */
 export interface LoginPanelProps {
-  readonly onAuthenticated?: () => void;
+  readonly onAuthenticated?: (passwordChangeRequired: boolean) => void;
 }
 
 export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Element | null {
@@ -136,6 +136,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
   const [continuation, setContinuation] = useState("");
   const [provisioning, setProvisioning] = useState<EnrollmentOpened | null>(null);
   const [state, setState] = useState<LoginViewState>("checking");
+  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const mounted = useRef(true);
   const reconciliationAttempt = useRef(0);
@@ -159,6 +160,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
   useEffect(() => {
     void probeSession().then((probe) => {
       if (mounted.current) {
+        setPasswordChangeRequired(probe.kind === "authenticated" && probe.passwordChangeRequired);
         setState(probe.kind === "authenticated" ? "authenticated" : probe.kind);
       }
     });
@@ -166,9 +168,9 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
 
   useEffect(() => {
     if (state === "authenticated") {
-      onAuthenticated?.();
+      onAuthenticated?.(passwordChangeRequired);
     }
-  }, [onAuthenticated, state]);
+  }, [onAuthenticated, passwordChangeRequired, state]);
 
   const changeUsername = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     setUsername(event.target.value);
@@ -216,6 +218,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
         if (result.kind === "authenticated") {
           reconciliationTimer.current = null;
           setReconciling(false);
+          setPasswordChangeRequired(result.passwordChangeRequired);
           endAttempt("authenticated");
           return;
         }
@@ -237,6 +240,17 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
     probe(0);
   }, [endAttempt, reconciling]);
 
+  const completeAuthenticated = useCallback(() => {
+    void probeSession().then((probe) => {
+      if (probe.kind === "authenticated") {
+        setPasswordChangeRequired(probe.passwordChangeRequired);
+        endAttempt("authenticated");
+      } else {
+        endAttempt("failed");
+      }
+    });
+  }, [endAttempt]);
+
   const submit = useCallback(() => {
     if (username === "" || password === "") {
       return;
@@ -246,7 +260,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
       (outcome) => {
         setPassword("");
         if (outcome.kind === "session") {
-          endAttempt("authenticated");
+          completeAuthenticated();
           return;
         }
         if (outcome.kind === "mfa_required") {
@@ -277,7 +291,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
         endAttempt("failed");
       },
     );
-  }, [username, password, endAttempt, reconcileIndeterminateAuthentication]);
+  }, [username, password, completeAuthenticated, endAttempt, reconcileIndeterminateAuthentication]);
 
   const submitCode = useCallback(() => {
     if (!MFA_CODE_PATTERN.test(code) || continuation === "") {
@@ -286,7 +300,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
     setState("second-factor-submitting");
     void submitSecondFactor(continuation, code).then(
       () => {
-        endAttempt("authenticated");
+        completeAuthenticated();
       },
       (error: unknown) => {
         if (error instanceof IndeterminateAuthenticationError) {
@@ -296,7 +310,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
         endAttempt("attempt-ended");
       },
     );
-  }, [code, continuation, endAttempt, reconcileIndeterminateAuthentication]);
+  }, [code, completeAuthenticated, continuation, endAttempt, reconcileIndeterminateAuthentication]);
 
   const submitEnrollmentCode = useCallback(() => {
     if (!MFA_CODE_PATTERN.test(code) || provisioning === null) {
@@ -305,7 +319,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
     setState("enrollment-submitting");
     void confirmEnrollment(provisioning.enrollment, code).then(
       () => {
-        endAttempt("authenticated");
+        completeAuthenticated();
       },
       (error: unknown) => {
         if (error instanceof IndeterminateAuthenticationError) {
@@ -315,7 +329,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
         endAttempt("attempt-ended");
       },
     );
-  }, [code, provisioning, endAttempt, reconcileIndeterminateAuthentication]);
+  }, [code, completeAuthenticated, provisioning, endAttempt, reconcileIndeterminateAuthentication]);
 
   if (state === "checking" || state === "absent") {
     return null;

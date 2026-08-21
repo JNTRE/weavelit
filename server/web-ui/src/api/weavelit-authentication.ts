@@ -14,6 +14,9 @@ export const AUTH_LOGIN_PATH = "/api/v1/auth/login";
 /** The route that reports the identity a presented session authenticates. */
 export const AUTH_SESSION_PATH = "/api/v1/auth/session";
 
+/** The route that replaces a restricted session's temporary password. */
+export const AUTH_PASSWORD_CHANGE_PATH = "/api/v1/auth/password/change";
+
 /** The route that submits a second-factor code against a login continuation. */
 export const AUTH_MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify";
 
@@ -109,6 +112,14 @@ export class IndeterminateAuthenticationError extends Error {
   }
 }
 
+/** A refused password replacement whose cause must remain opaque. */
+export class PasswordChangeFailedError extends Error {
+  constructor() {
+    super("password_change_failed");
+    this.name = "PasswordChangeFailedError";
+  }
+}
+
 /**
  * What a session probe found, which is a fact about the served surface rather
  * than about any credential.
@@ -118,7 +129,7 @@ export class IndeterminateAuthenticationError extends Error {
  * like. It is never used to explain a denied login.
  */
 export type SessionProbe =
-  | { readonly kind: "authenticated" }
+  | { readonly kind: "authenticated"; readonly passwordChangeRequired: boolean }
   | { readonly kind: "unauthenticated" }
   | { readonly kind: "absent" };
 
@@ -242,18 +253,27 @@ export function readEnrollmentOpened(payload: unknown): EnrollmentOpened | null 
  * any further than this check.
  */
 export function isSessionIdentity(payload: unknown): boolean {
+  return sessionPasswordChangeRequired(payload) !== null;
+}
+
+/** Returns the documented restricted-session posture, or `null` for an invalid envelope. */
+export function sessionPasswordChangeRequired(payload: unknown): boolean | null {
   const result = typedResult(payload);
   if (result === null) {
-    return false;
+    return null;
   }
   const account = result.account_id;
   const clientModule = result.client_module;
-  return (
+  if (
     typeof account === "string" &&
     account.length > 0 &&
     typeof clientModule === "string" &&
     clientModule.length > 0
-  );
+  ) {
+    const required = result.password_change_required;
+    return required === undefined ? false : typeof required === "boolean" ? required : null;
+  }
+  return null;
 }
 
 /**
@@ -460,6 +480,52 @@ export async function confirmEnrollment(enrollment: string, code: string): Promi
 }
 
 /**
+ * Submits one replacement password for the current restricted session.
+ *
+ * The browser never retries this request because the Server might have committed
+ * the replacement before an unreadable response or timeout. An indeterminate
+ * result must be reconciled through {@link probeSession}.
+ */
+export async function submitPasswordChange(password: string): Promise<void> {
+  const csrf = readCsrfToken();
+  if (csrf === null) {
+    throw new PasswordChangeFailedError();
+  }
+  let response: Response;
+  try {
+    response = await fetch(AUTH_PASSWORD_CHANGE_PATH, {
+      method: "PUT",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        [CSRF_HEADER_NAME]: csrf,
+      },
+      body: JSON.stringify({ password }),
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+    });
+  } catch {
+    throw new IndeterminateAuthenticationError();
+  }
+  if (response.status !== 200) {
+    if (await isGatewayTimeout(response)) {
+      throw new IndeterminateAuthenticationError();
+    }
+    throw new PasswordChangeFailedError();
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new IndeterminateAuthenticationError();
+  }
+  if (!isSessionEstablished(payload)) {
+    throw new IndeterminateAuthenticationError();
+  }
+}
+
+/**
  * Asks the Server whether the cookies this browser already holds authenticate.
  *
  * This is how a session that outlived a Server restart is recognised: the
@@ -498,5 +564,8 @@ export async function probeSession(): Promise<SessionProbe> {
     return { kind: "absent" };
   }
 
-  return isSessionIdentity(payload) ? { kind: "authenticated" } : { kind: "absent" };
+  const passwordChangeRequired = sessionPasswordChangeRequired(payload);
+  return passwordChangeRequired === null
+    ? { kind: "absent" }
+    : { kind: "authenticated", passwordChangeRequired };
 }

@@ -3002,12 +3002,14 @@ pub(crate) mod tests {
     use weavelit_module_client::{
         ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE,
         AUTH_LOGOUT_ROUTE, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
-        AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_SESSION_ROUTE, CookieEffect,
-        CookieValue, DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE,
-        INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, RESTORE_ARTIFACT_ROUTE,
-        RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
-        RestoreDeclaration, RestoreRejection, STATUS_ROUTE,
+        AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
+        AUTH_SESSION_ROUTE, CSRF_COOKIE_NAME, CookieEffect, CookieValue,
+        DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE,
+        InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
+        RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
+        RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME, STATUS_ROUTE,
     };
+    use weavelit_server_authentication::PasswordVerifierFactory;
     use weavelit_server_database::{
         Account, ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
         LogClassification, LogDetail, LogModuleConfiguration, LogType, Name, ReconciliationDigest,
@@ -3184,6 +3186,7 @@ pub(crate) mod tests {
             (Method::PUT, AUTH_MFA_ENROLLMENT_ROUTE),
             (Method::PUT, AUTH_MFA_SELF_ENROLLMENT_ROUTE),
             (Method::PUT, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE),
+            (Method::PUT, AUTH_PASSWORD_CHANGE_ROUTE),
             (Method::PUT, ACCOUNTS_LIST_ROUTE),
             (Method::PUT, ACCOUNTS_VIEW_ROUTE),
         ]
@@ -3360,6 +3363,109 @@ pub(crate) mod tests {
     pub(crate) async fn response_body(response: axum::response::Response) -> String {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    fn issued_cookie_values(response: &Response) -> (String, String) {
+        let rendered = response
+            .extensions()
+            .get::<CookieEffect>()
+            .and_then(CookieEffect::render)
+            .expect("the response must issue the paired session cookies");
+        let value = |name: &str| {
+            let prefix = format!("Set-Cookie: {name}=");
+            rendered
+                .as_str()
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix(&prefix)
+                        .and_then(|value| value.split(';').next())
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| panic!("the response must issue {name}"))
+        };
+        (value(SESSION_COOKIE_NAME), value(CSRF_COOKIE_NAME))
+    }
+
+    fn operational_session_request(
+        target: &'static str,
+        session: &str,
+        csrf: &str,
+        body: Body,
+    ) -> Request<Body> {
+        let mut request = Request::put(target)
+            .header("host", UNBOUND_LISTENER)
+            .header("origin", format!("https://{UNBOUND_LISTENER}"))
+            .header("accept", "application/json")
+            .header("x-weavelit-csrf", csrf)
+            .header("cookie", format!("{SESSION_COOKIE_NAME}={session}"));
+        if target == AUTH_PASSWORD_CHANGE_ROUTE {
+            request = request.header("content-type", "application/json");
+        }
+        request.body(body).unwrap()
+    }
+
+    async fn operational_login(
+        router: &Router,
+        username: &str,
+        password: &str,
+    ) -> (String, String) {
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        let mut request = Request::put(AUTH_LOGIN_ROUTE)
+            .header("host", UNBOUND_LISTENER)
+            .header("origin", format!("https://{UNBOUND_LISTENER}"))
+            .header("accept", "application/json")
+            .header("content-type", "application/json")
+            .header("x-weavelit-csrf", "1")
+            .body(Body::from(format!(
+                "{{\"username\":\"{username}\",\"password\":\"{password}\",\
+                 \"client_module\":\"web-ui\"}}"
+            )))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(BodyAdmission::from_permit(permit));
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        issued_cookie_values(&response)
+    }
+
+    async fn submit_operational_password_change(
+        router: &Router,
+        session: &str,
+        csrf: &str,
+        password: &str,
+    ) -> Response {
+        router
+            .clone()
+            .oneshot(operational_session_request(
+                AUTH_PASSWORD_CHANGE_ROUTE,
+                session,
+                csrf,
+                Body::from(format!("{{\"password\":\"{password}\"}}")),
+            ))
+            .await
+            .unwrap()
+    }
+
+    async fn assert_password_change_denied(response: Response, forbidden: &str) {
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response.extensions().get::<CookieEffect>().is_none());
+        let body = response
+            .extensions()
+            .get::<TypedJsonEnvelope>()
+            .unwrap()
+            .serialize()
+            .to_string();
+        assert!(body.starts_with("{\"error\":\"session_invalid\",\"correlation_id\":\""));
+        assert!(body.ends_with("\"}"));
+        assert!(!body.contains(forbidden));
+    }
+
+    fn typed_correlation(body: &str) -> &str {
+        const PREFIX: &str = "\"correlation_id\":\"";
+        let start = body.find(PREFIX).unwrap() + PREFIX.len();
+        let end = body[start..].find('"').unwrap() + start;
+        &body[start..end]
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -4094,6 +4200,246 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(unavailable_records, 0);
+    }
+
+    #[tokio::test]
+    async fn restricted_session_password_change_is_public_audited_and_rotates_to_ordinary() {
+        const USERNAME: &str = "temporary-user";
+        const TEMPORARY_PASSWORD: &str = "temporary-password-for-route";
+        const REPLACEMENT_PASSWORD: &str = "replacement-password-for-route";
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let account = StateIdentifier::from_bytes([0x71; 16]).unwrap();
+        let encoded_verifier = PasswordVerifierFactory::approved()
+            .create(TEMPORARY_PASSWORD.as_bytes())
+            .unwrap()
+            .into_string();
+        let state = sealed_application_state_with(
+            vec![Account {
+                identifier: account,
+                username: Name::new(USERNAME).unwrap(),
+                display_name: None,
+                active: true,
+                mfa_required: false,
+                credential_revision: weavelit_server_database::CredentialRevision::INITIAL,
+                must_change_password: true,
+                temporary_credential_expiration: Some(
+                    weavelit_server_database::TemporaryCredentialExpiration::from_unix_milliseconds(
+                        i64::MAX,
+                    )
+                    .unwrap(),
+                ),
+            }],
+            vec![weavelit_server_database::AccountPasswordVerifier {
+                account,
+                verifier: weavelit_server_database::PasswordVerifier::new(encoded_verifier)
+                    .unwrap(),
+            }],
+        );
+        seal_deployment_with(&state_root, &state);
+        let startup = classify_restricted_startup(&state_root).unwrap();
+        let mount = operational_mount(&startup);
+        let router = mount.surface().router().clone();
+        let database_path = state_root.join(APPLICATION_DATABASE_FILE);
+
+        let (restricted_session, restricted_csrf) =
+            operational_login(&router, USERNAME, TEMPORARY_PASSWORD).await;
+        assert_password_change_denied(
+            submit_operational_password_change(
+                &router,
+                &restricted_session,
+                &restricted_csrf,
+                TEMPORARY_PASSWORD,
+            )
+            .await,
+            TEMPORARY_PASSWORD,
+        )
+        .await;
+
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute(
+                "UPDATE weavelit_account SET temporary_credential_expires_at_milliseconds = 0 \
+                 WHERE account_id = ?1",
+                [account.as_bytes().as_slice()],
+            )
+            .unwrap();
+        assert_password_change_denied(
+            submit_operational_password_change(
+                &router,
+                &restricted_session,
+                &restricted_csrf,
+                REPLACEMENT_PASSWORD,
+            )
+            .await,
+            REPLACEMENT_PASSWORD,
+        )
+        .await;
+        connection
+            .execute(
+                "UPDATE weavelit_account SET temporary_credential_expires_at_milliseconds = ?2 \
+                 WHERE account_id = ?1",
+                rusqlite::params![account.as_bytes().as_slice(), i64::MAX],
+            )
+            .unwrap();
+
+        let logout = router
+            .clone()
+            .oneshot(operational_session_request(
+                AUTH_LOGOUT_ROUTE,
+                &restricted_session,
+                &restricted_csrf,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::OK);
+        assert_password_change_denied(
+            submit_operational_password_change(
+                &router,
+                &restricted_session,
+                &restricted_csrf,
+                REPLACEMENT_PASSWORD,
+            )
+            .await,
+            REPLACEMENT_PASSWORD,
+        )
+        .await;
+
+        let (changing_session, changing_csrf) =
+            operational_login(&router, USERNAME, TEMPORARY_PASSWORD).await;
+        let changed = submit_operational_password_change(
+            &router,
+            &changing_session,
+            &changing_csrf,
+            REPLACEMENT_PASSWORD,
+        )
+        .await;
+        assert_eq!(changed.status(), StatusCode::OK);
+        let (ordinary_session, ordinary_csrf) = issued_cookie_values(&changed);
+        let changed_body = changed
+            .extensions()
+            .get::<TypedJsonEnvelope>()
+            .unwrap()
+            .serialize()
+            .to_string();
+        assert!(changed_body.starts_with("{\"result\":{\"authenticated\":true},"));
+        let correlation = typed_correlation(&changed_body);
+        for secret in [
+            TEMPORARY_PASSWORD,
+            REPLACEMENT_PASSWORD,
+            changing_session.as_str(),
+            changing_csrf.as_str(),
+            ordinary_session.as_str(),
+            ordinary_csrf.as_str(),
+        ] {
+            assert!(!changed_body.contains(secret));
+        }
+
+        let revoked = router
+            .clone()
+            .oneshot(operational_session_request(
+                AUTH_SESSION_ROUTE,
+                &changing_session,
+                &changing_csrf,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        let ordinary = router
+            .clone()
+            .oneshot(operational_session_request(
+                AUTH_SESSION_ROUTE,
+                &ordinary_session,
+                &ordinary_csrf,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ordinary.status(), StatusCode::OK);
+        assert!(
+            ordinary
+                .extensions()
+                .get::<TypedJsonEnvelope>()
+                .unwrap()
+                .serialize()
+                .as_str()
+                .contains("\"password_change_required\":false")
+        );
+        assert_password_change_denied(
+            submit_operational_password_change(
+                &router,
+                &ordinary_session,
+                &ordinary_csrf,
+                "another-password",
+            )
+            .await,
+            "another-password",
+        )
+        .await;
+
+        let session_count: i64 = connection
+            .query_row("SELECT count(*) FROM weavelit_session", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(session_count, 1);
+        let stored_verifier: String = connection
+            .query_row(
+                "SELECT encoded_verifier FROM weavelit_password_verifier WHERE account_id = ?1",
+                [account.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let log = rusqlite::Connection::open(state_root.join("log.sqlite3")).unwrap();
+        let mut statement = log
+            .prepare(
+                "SELECT phase, correlation_id, classification, principal, action, target, detail \
+                 FROM weavelit_log_audit_records ORDER BY rowid",
+            )
+            .unwrap();
+        let records = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].0, "attempt");
+        assert_eq!(records[1].0, "completion");
+        for record in records {
+            assert_eq!(record.1, correlation);
+            assert_eq!(record.2, "authentication.password.changed");
+            assert_eq!(record.4, "change-password");
+            let rendered = format!(
+                "{} {} {} {} {} {} {}",
+                record.0, record.1, record.2, record.3, record.4, record.5, record.6
+            );
+            for forbidden in [
+                TEMPORARY_PASSWORD,
+                REPLACEMENT_PASSWORD,
+                changing_session.as_str(),
+                changing_csrf.as_str(),
+                ordinary_session.as_str(),
+                ordinary_csrf.as_str(),
+                stored_verifier.as_str(),
+            ] {
+                assert!(!rendered.contains(forbidden));
+            }
+        }
     }
 
     #[tokio::test]

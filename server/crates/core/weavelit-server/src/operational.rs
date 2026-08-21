@@ -21,17 +21,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::http::Method;
+use axum::http::{HeaderMap, Method, Uri};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::task;
 use weavelit_module_client::{
-    ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, AccountAdministrationCapability,
-    AccountAdministrationDeclaration, AccountAdministrationProjection as ClientAccountProjection,
-    AccountAdministrationRejection, AccountAdministrationRequest,
-    AccountAdministrationResult as ClientAccountResult, AccountAdministrationSubmission,
-    AccountsPage, AuthenticationRejection, ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
-    ReconciliationCapability as ClientReconciliationCapability, ReconciliationOutcome,
-    ReconciliationRejection, validate_reconciliation_request,
+    ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
+    AccountAdministrationCapability, AccountAdministrationDeclaration,
+    AccountAdministrationProjection as ClientAccountProjection, AccountAdministrationRejection,
+    AccountAdministrationRequest, AccountAdministrationResult as ClientAccountResult,
+    AccountAdministrationSubmission, AccountsPage, AuthenticationRejection, ExpectedOrigin,
+    LIFECYCLE_RECONCILIATION_ROUTE, MAX_PASSWORD_CHANGE_BODY_BYTES,
+    MAX_PASSWORD_CHANGE_PASSWORD_BYTES, PasswordChangeCapability, PasswordChangeDeclaration,
+    PasswordChangeSubmission, ReconciliationCapability as ClientReconciliationCapability,
+    ReconciliationOutcome, ReconciliationRejection, validate_password_change_request,
+    validate_reconciliation_request,
 };
 use weavelit_server_administration::{
     AccountAdministrationAction, AccountAdministrationRead, AdministrationAction,
@@ -40,7 +43,9 @@ use weavelit_server_administration::{
     StepUpActionFamily,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
-use weavelit_server_authentication::RustCryptoArgon2;
+use weavelit_server_authentication::{
+    MAX_PASSWORD_REPLACEMENT_BYTES, PasswordReplacementInput, RustCryptoArgon2,
+};
 use weavelit_server_authorization::AuthorizationDenied;
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
@@ -74,11 +79,20 @@ use crate::{
     authorization::{AuthorizationRuntime, ServedComponents},
     fallback_router,
     operational_audit::{OperationalAuditRecovery, OperationalAuditRecoveryState},
+    password_change::{PasswordChangeResult, PasswordChangeWorkflow, PasswordChangeWorkflowError},
     transport::{
         MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection, TransportCapability,
         TransportProfile, TransportRegistration,
     },
 };
+
+const _: () = assert!(MAX_PASSWORD_CHANGE_PASSWORD_BYTES == MAX_PASSWORD_REPLACEMENT_BYTES);
+
+const PASSWORD_CHANGE_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_PASSWORD_CHANGE_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
 
 /// The Server-wide values every operational composition is built against.
 ///
@@ -789,6 +803,29 @@ impl PreBodyCheck for ReconciliationPreconditions {
     }
 }
 
+/// Password-change checks that run before the listener allocates its secret body.
+struct PasswordChangePreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+impl PreBodyCheck for PasswordChangePreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_password_change_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(AuthenticationRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(AuthenticationRejection::SessionInvalid) => Err(PreBodyRejection::SessionInvalid),
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
 /// Composes the operational surface a sealed deployment serves.
 ///
 /// The composer owns the deployment's open Application Database, so a route it
@@ -796,7 +833,7 @@ impl PreBodyCheck for ReconciliationPreconditions {
 pub struct OperationalComposer {
     runtime: Arc<OperationalRuntime>,
     database: OperationalDatabase,
-    audit_recovery: OperationalAuditRecovery,
+    audit_recovery: Arc<OperationalAuditRecovery>,
     #[cfg(test)]
     activation_audit_recovery_state: OperationalAuditRecoveryState,
     /// The authentication runtime, when one could be composed.
@@ -927,7 +964,11 @@ impl OperationalComposer {
         database: OperationalDatabase,
     ) -> Self {
         runtime.active_database.activate(database.clone());
-        let audit_recovery = OperationalAuditRecovery::new(&runtime, state, database.clone());
+        let audit_recovery = Arc::new(OperationalAuditRecovery::new(
+            &runtime,
+            state,
+            database.clone(),
+        ));
         let activation_audit_recovery_state = audit_recovery.drain_for_activation();
         #[cfg(not(test))]
         let _ = activation_audit_recovery_state;
@@ -971,6 +1012,7 @@ impl OperationalComposer {
         audit_recovery: OperationalAuditRecovery,
     ) -> Self {
         runtime.active_database.activate(database.clone());
+        let audit_recovery = Arc::new(audit_recovery);
         let activation_audit_recovery_state = audit_recovery.drain_for_activation();
         let authentication = AuthenticationRuntime::new(
             database.clone(),
@@ -1133,6 +1175,39 @@ impl OperationalComposer {
         let mut capabilities = vec![reconciliation];
         if let Some(runtime) = &self.authentication {
             capabilities.extend(runtime.capabilities(expected_origin));
+            let authentication = Arc::clone(runtime);
+            let database = self.database.clone();
+            let audit_recovery = Arc::clone(&self.audit_recovery);
+            let declaration = Arc::new(PasswordChangeDeclaration::new(PasswordChangeCapability {
+                expected_origin,
+                correlate: Arc::new(correlation_identifier),
+                change: Arc::new(move |submission| {
+                    let authentication = Arc::clone(&authentication);
+                    let database = database.clone();
+                    let audit_recovery = Arc::clone(&audit_recovery);
+                    Box::pin(async move {
+                        task::spawn_blocking(move || {
+                            execute_password_change(
+                                &authentication,
+                                &database,
+                                &audit_recovery,
+                                submission,
+                            )
+                        })
+                        .await
+                        .unwrap_or(Err(AuthenticationRejection::ServiceUnavailable))
+                    })
+                }),
+            }));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    AUTH_PASSWORD_CHANGE_ROUTE,
+                    PASSWORD_CHANGE_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(PasswordChangePreconditions { expected_origin })),
+                move |router| router.route(AUTH_PASSWORD_CHANGE_ROUTE, declaration.route()),
+            ));
         }
         if let Some(declaration) = account_administration {
             let declaration = Arc::new(declaration);
@@ -1155,6 +1230,44 @@ impl OperationalComposer {
             ));
         }
         capabilities
+    }
+}
+
+fn execute_password_change(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: PasswordChangeSubmission,
+) -> Result<weavelit_module_client::SessionEstablished, AuthenticationRejection> {
+    let PasswordChangeSubmission {
+        session_token,
+        csrf_token,
+        password,
+        correlation_id,
+        context: _,
+    } = submission;
+    let input = PasswordReplacementInput::new(Zeroizing::new(password.as_bytes().to_vec()))
+        .map_err(|_| AuthenticationRejection::BadRequest)?;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(|rejection| match rejection {
+            AuthenticationRejection::ServiceUnavailable => rejection,
+            _ => AuthenticationRejection::SessionInvalid,
+        })?;
+
+    match PasswordChangeWorkflow::new(database, authentication, audit_recovery).change(
+        session,
+        input,
+        &correlation_id,
+    ) {
+        Ok(PasswordChangeResult::Changed { session, .. }) => Ok(session),
+        Ok(PasswordChangeResult::Denied { .. }) | Err(PasswordChangeWorkflowError::Denied) => {
+            Err(AuthenticationRejection::SessionInvalid)
+        }
+        Err(
+            PasswordChangeWorkflowError::Unavailable
+            | PasswordChangeWorkflowError::AuditLogUnavailable,
+        ) => Err(AuthenticationRejection::ServiceUnavailable),
     }
 }
 

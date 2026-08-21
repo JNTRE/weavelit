@@ -114,7 +114,19 @@ Route groups:
     compatibility and the account's independent `public_id`, encoded as exactly
     22 unpadded Base64url characters. New account-administration targets accept
     only `public_id`; `account_id` remains limited to this additive session
-    result.
+    result. It also carries the boolean `password_change_required`, derived from
+    the live validated session posture. A `true` result identifies a restricted
+    session that can only replace its temporary password.
+  - `/api/v1/auth/password/change` replaces the current restricted session's
+    temporary password. It requires the session cookie, the session's
+    `X-Weavelit-CSRF` value, exact same-origin and `Host` validation, and a
+    strict JSON body containing only a non-empty `password` of at most 1,024
+    bytes. It accepts no target identifier, current password, temporary
+    password, or caller-provided session state. On success it returns `200` and
+    the fresh ordinary session cookie effect. A malformed or refused request is
+    payload-free and reveals neither the reason nor temporary credential state.
+    A client MUST NOT automatically retry an unreadable or timed-out submission;
+    it may only reconcile through `/api/v1/auth/session`.
   - `/api/v1/auth/logout` revokes the presented session and clears both
     cookies.
   - `/api/v1/auth/mfa/verify` submits a `code` against the `continuation` a
