@@ -46,6 +46,16 @@ pub mod reconciliation;
 pub mod restore;
 pub mod typed_json;
 
+pub(crate) fn deserialize_present_optional<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 pub use administration::{
     ACCOUNTS_LIST_ROUTE, ACCOUNTS_STATUS_ROUTE, ACCOUNTS_VIEW_ROUTE,
     AccountAdministrationCapability, AccountAdministrationDeclaration,

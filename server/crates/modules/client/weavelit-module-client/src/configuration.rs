@@ -21,7 +21,7 @@ use crate::{
     authentication::{
         CorrelationSource, submitted_csrf_token, submitted_session_token, unrenderable_response,
     },
-    has_request_body, single_header,
+    deserialize_present_optional, has_request_body, single_header,
     typed_json::{ResponseCorrelation, StableCode, TypedJsonEnvelope, typed_json_response},
 };
 
@@ -193,7 +193,9 @@ impl TotpEnablementApplyRequest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ListBody {
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     limit: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     cursor: Option<String>,
 }
 
@@ -316,8 +318,11 @@ impl LogAssignmentRequest {
 #[serde(deny_unknown_fields)]
 struct ChangeBody {
     configuration_name: String,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     settings: Option<Vec<LogSettingProjection>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     assignments: Option<Vec<LogAssignmentRequest>>,
 }
 
@@ -1066,10 +1071,27 @@ mod tests {
             )
             .is_err()
         );
+        for body in [
+            br#"{"configuration_name":"primary","enabled":null,"settings":[]}"#.as_slice(),
+            br#"{"configuration_name":"primary","enabled":true,"settings":null}"#.as_slice(),
+            br#"{"configuration_name":"primary","enabled":true,"assignments":null}"#.as_slice(),
+        ] {
+            assert!(LogConfigurationChangeRequest::from_json(body).is_err());
+        }
     }
 
     #[test]
     fn list_cursor_is_route_scoped_and_requires_an_exact_boundary() {
+        let omitted = LogConfigurationsListRequest::from_optional_json(b"").unwrap();
+        assert_eq!(omitted.limit(), DEFAULT_LOG_CONFIGURATIONS_PAGE_LIMIT);
+        assert_eq!(omitted.after_name(), None);
+        for body in [
+            br#"{"limit":null}"#.as_slice(),
+            br#"{"limit":1,"cursor":null}"#.as_slice(),
+        ] {
+            assert!(LogConfigurationsListRequest::from_optional_json(body).is_err());
+        }
+
         let first = LogConfigurationsListRequest::from_optional_json(br#"{"limit":1}"#).unwrap();
         let page = LogConfigurationsPage::from_ordered(
             &first,
@@ -1184,6 +1206,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unexpected_media.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn optional_fields_reject_present_null_at_routes() {
+        let declaration = ConfigurationAdministrationDeclaration::new(capability(Err(
+            ConfigurationAdministrationRejection::Conflict,
+        )));
+
+        for (route, path, body) in [
+            (
+                declaration.log_list_route(),
+                LOG_CONFIGURATIONS_LIST_ROUTE,
+                r#"{"limit":null}"#,
+            ),
+            (
+                declaration.log_list_route(),
+                LOG_CONFIGURATIONS_LIST_ROUTE,
+                r#"{"limit":1,"cursor":null}"#,
+            ),
+            (
+                declaration.log_change_route(),
+                LOG_CONFIGURATIONS_CHANGE_ROUTE,
+                r#"{"configuration_name":"primary","enabled":null,"settings":[]}"#,
+            ),
+            (
+                declaration.log_change_route(),
+                LOG_CONFIGURATIONS_CHANGE_ROUTE,
+                r#"{"configuration_name":"primary","enabled":true,"settings":null}"#,
+            ),
+            (
+                declaration.log_change_route(),
+                LOG_CONFIGURATIONS_CHANGE_ROUTE,
+                r#"{"configuration_name":"primary","enabled":true,"assignments":null}"#,
+            ),
+        ] {
+            let response = route
+                .oneshot(request(Method::PUT, path, body))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rendered(response).await.contains("bad_request"));
+        }
     }
 
     #[tokio::test]

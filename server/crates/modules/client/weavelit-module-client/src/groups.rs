@@ -22,7 +22,7 @@ use crate::{
     authentication::{
         CorrelationSource, submitted_csrf_token, submitted_session_token, unrenderable_response,
     },
-    has_request_body, single_header,
+    deserialize_present_optional, has_request_body, single_header,
     typed_json::{ResponseCorrelation, StableCode, TypedJsonEnvelope, typed_json_response},
 };
 
@@ -86,7 +86,9 @@ pub struct GroupAdministrationInputRejected;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ListBody {
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     limit: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     cursor: Option<String>,
 }
 
@@ -272,7 +274,9 @@ impl GroupsDeleteRequest {
 #[serde(deny_unknown_fields)]
 struct AssociationListBody {
     group_public_id: String,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     limit: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     cursor: Option<String>,
 }
 
@@ -1521,9 +1525,17 @@ mod tests {
 
     #[test]
     fn strict_requests_accept_only_documented_values() {
-        assert!(GroupsListRequest::from_optional_json(b"").is_ok());
+        let omitted = GroupsListRequest::from_optional_json(b"").unwrap();
+        assert_eq!(omitted.limit(), DEFAULT_GROUPS_PAGE_LIMIT);
+        assert_eq!(omitted.after_name(), None);
         assert!(GroupsListRequest::from_optional_json(br#"{"limit":100}"#).is_ok());
         assert!(GroupsListRequest::from_optional_json(br#"{"limit":0}"#).is_err());
+        for body in [
+            br#"{"limit":null}"#.as_slice(),
+            br#"{"limit":1,"cursor":null}"#.as_slice(),
+        ] {
+            assert!(GroupsListRequest::from_optional_json(body).is_err());
+        }
         assert!(
             GroupsViewRequest::from_json(format!(r#"{{"public_id":"{ID}"}}"#).as_bytes()).is_ok()
         );
@@ -1580,6 +1592,22 @@ mod tests {
 
     #[test]
     fn association_requests_are_strict_and_route_scoped() {
+        let omitted = format!(r#"{{"group_public_id":"{ID}"}}"#);
+        let members = GroupMembersListRequest::from_json(omitted.as_bytes()).unwrap();
+        assert_eq!(members.limit(), DEFAULT_GROUPS_PAGE_LIMIT);
+        assert_eq!(members.after(), None);
+        let grants = GroupGrantsListRequest::from_json(omitted.as_bytes()).unwrap();
+        assert_eq!(grants.limit(), DEFAULT_GROUPS_PAGE_LIMIT);
+        assert_eq!(grants.after(), None);
+
+        for body in [
+            format!(r#"{{"group_public_id":"{ID}","limit":null}}"#),
+            format!(r#"{{"group_public_id":"{ID}","limit":1,"cursor":null}}"#),
+        ] {
+            assert!(GroupMembersListRequest::from_json(body.as_bytes()).is_err());
+            assert!(GroupGrantsListRequest::from_json(body.as_bytes()).is_err());
+        }
+
         let member_cursor = encode_member_cursor("administrator", ID).unwrap();
         assert!(
             GroupMembersListRequest::from_json(
@@ -1754,5 +1782,54 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(mismatch.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn optional_fields_reject_present_null_at_routes() {
+        let declaration = GroupAdministrationDeclaration::new(capability(Err(
+            GroupAdministrationRejection::Conflict,
+        )));
+        let limit_null = format!(r#"{{"group_public_id":"{ID}","limit":null}}"#);
+        let cursor_null = format!(r#"{{"group_public_id":"{ID}","limit":1,"cursor":null}}"#);
+
+        for (route, path, body) in [
+            (
+                declaration.list_route(),
+                GROUPS_LIST_ROUTE,
+                r#"{"limit":null}"#,
+            ),
+            (
+                declaration.list_route(),
+                GROUPS_LIST_ROUTE,
+                r#"{"limit":1,"cursor":null}"#,
+            ),
+            (
+                declaration.members_list_route(),
+                GROUP_MEMBERS_LIST_ROUTE,
+                limit_null.as_str(),
+            ),
+            (
+                declaration.members_list_route(),
+                GROUP_MEMBERS_LIST_ROUTE,
+                cursor_null.as_str(),
+            ),
+            (
+                declaration.grants_list_route(),
+                GROUP_GRANTS_LIST_ROUTE,
+                limit_null.as_str(),
+            ),
+            (
+                declaration.grants_list_route(),
+                GROUP_GRANTS_LIST_ROUTE,
+                cursor_null.as_str(),
+            ),
+        ] {
+            let response = route
+                .oneshot(request(Method::PUT, path, body))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rendered(response).await.contains("bad_request"));
+        }
     }
 }
