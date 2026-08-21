@@ -352,6 +352,10 @@ fn totp_enablement_normalizes_to_one_canonical_entry() {
             "true",
         ),
         (
+            r#"{"component":"totp","key":"mfa-module.enabled","value":"false"}"#,
+            "false",
+        ),
+        (
             r#"{"component":"mfa.totp","key":"enabled","value":"false"},{"component":"totp","key":"mfa-module.enabled","value":"true"}"#,
             "false",
         ),

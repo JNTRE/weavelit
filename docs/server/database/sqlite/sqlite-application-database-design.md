@@ -484,9 +484,11 @@ state produced by this running deployment.
 `0010_migrate_totp_component_enablement.sql` normalizes an initialized
 deployment's former `mfa.totp` / `enabled` configuration entry into the generic
 `totp` / `mfa-module.enabled` component entry. Exact legacy `true` becomes
-canonical `true`; false, absent, or any other legacy value becomes canonical
-`false`, replacing a conflicting canonical row. The legacy row is then removed
-in the same migration transaction. An uninitialized database is unchanged;
+canonical `true`; legacy false or any other legacy value becomes canonical
+`false`, replacing a conflicting canonical row. When the legacy entry is absent,
+an existing canonical value is preserved; when both entries are absent,
+canonical `false` is inserted. The legacy row is then removed in the same
+migration transaction. An uninitialized database is unchanged;
 Init explicitly seeds canonical TOTP disablement when it creates application
 state. Reopening repeats no data change because the migration ledger records
 the exact migration once.

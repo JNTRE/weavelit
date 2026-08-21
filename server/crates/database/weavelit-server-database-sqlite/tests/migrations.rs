@@ -1108,6 +1108,8 @@ fn initialized_legacy_totp_enablement_migrates_to_one_canonical_authority() {
         (Some("false"), None, "false"),
         (Some("yes"), None, "false"),
         (None, None, "false"),
+        (None, Some("true"), "true"),
+        (None, Some("false"), "false"),
         (Some("true"), Some("false"), "true"),
         (Some("false"), Some("true"), "false"),
     ] {
