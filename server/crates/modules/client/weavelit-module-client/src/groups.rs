@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::{
-    ExpectedOrigin, JSON_MEDIA_TYPE, accepts_json,
+    ExpectedOrigin, JSON_MEDIA_TYPE, WipedBody, accepts_json,
     administration::AccountAdministrationProjection,
     authentication::{
         CorrelationSource, submitted_csrf_token, submitted_session_token, unrenderable_response,
@@ -51,6 +51,27 @@ const PUBLIC_ID_BYTES: usize = 16;
 const PUBLIC_ID_CHARS: usize = 22;
 const TICKET_BYTES: usize = 32;
 const TICKET_CHARS: usize = 43;
+
+fn parse_group_delete_body_wiped<B: AsMut<[u8]>>(
+    buffer: B,
+) -> Result<GroupsDeleteRequest, GroupAdministrationInputRejected> {
+    let mut body = WipedBody::new(buffer);
+    GroupsDeleteRequest::from_json(body.bytes())
+}
+
+fn parse_group_member_change_body_wiped<B: AsMut<[u8]>>(
+    buffer: B,
+) -> Result<GroupMemberChangeRequest, GroupAdministrationInputRejected> {
+    let mut body = WipedBody::new(buffer);
+    GroupMemberChangeRequest::from_json(body.bytes())
+}
+
+fn parse_group_grant_change_body_wiped<B: AsMut<[u8]>>(
+    buffer: B,
+) -> Result<GroupGrantChangeRequest, GroupAdministrationInputRejected> {
+    let mut body = WipedBody::new(buffer);
+    GroupGrantChangeRequest::from_json(body.bytes())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GroupAdministrationInputRejected;
@@ -1009,21 +1030,27 @@ async fn response(
         Route::Update => {
             GroupsUpdateRequest::from_json(&body).map(GroupAdministrationRequest::Update)
         }
-        Route::Delete => {
-            GroupsDeleteRequest::from_json(&body).map(GroupAdministrationRequest::Delete)
+        Route::Delete => match body.try_into_mut() {
+            Ok(unique) => parse_group_delete_body_wiped(unique),
+            Err(shared) => parse_group_delete_body_wiped(shared.to_vec()),
         }
+        .map(GroupAdministrationRequest::Delete),
         Route::MembersList => {
             GroupMembersListRequest::from_json(&body).map(GroupAdministrationRequest::MembersList)
         }
-        Route::MemberChange => {
-            GroupMemberChangeRequest::from_json(&body).map(GroupAdministrationRequest::MemberChange)
+        Route::MemberChange => match body.try_into_mut() {
+            Ok(unique) => parse_group_member_change_body_wiped(unique),
+            Err(shared) => parse_group_member_change_body_wiped(shared.to_vec()),
         }
+        .map(GroupAdministrationRequest::MemberChange),
         Route::GrantsList => {
             GroupGrantsListRequest::from_json(&body).map(GroupAdministrationRequest::GrantsList)
         }
-        Route::GrantChange => {
-            GroupGrantChangeRequest::from_json(&body).map(GroupAdministrationRequest::GrantChange)
+        Route::GrantChange => match body.try_into_mut() {
+            Ok(unique) => parse_group_grant_change_body_wiped(unique),
+            Err(shared) => parse_group_grant_change_body_wiped(shared.to_vec()),
         }
+        .map(GroupAdministrationRequest::GrantChange),
         Route::Catalog => AdministrationCatalogRequest::from_optional_json(&body)
             .map(GroupAdministrationRequest::Catalog),
     };
@@ -1264,7 +1291,10 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
-    use crate::{CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME};
+    use crate::{
+        CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME,
+        wiped_body_support::{SpyBuffer, parse_and_observe},
+    };
 
     const ID: &str = "MTExMTExMTExMTExMTExMQ";
     const TICKET: &str = "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE";
@@ -1302,6 +1332,93 @@ mod tests {
                 .header("content-length", body.len().to_string());
         }
         builder.body(Body::from(body.to_owned())).unwrap()
+    }
+
+    fn with_extra_field(body: &str, field: &str) -> String {
+        let mut extended = body
+            .strip_suffix('}')
+            .expect("the accepted request body must be an object")
+            .to_owned();
+        extended.push(',');
+        extended.push_str(field);
+        extended.push('}');
+        extended
+    }
+
+    fn assert_ticket_request_body_wiped(
+        request_type: &str,
+        accepted: String,
+        invalid_ticket: String,
+        parse: fn(SpyBuffer) -> Result<(), GroupAdministrationInputRejected>,
+    ) {
+        let ticket_start = accepted
+            .find(TICKET)
+            .expect("the accepted request body must carry the ticket");
+        let malformed = accepted[..ticket_start + TICKET.len() / 2].to_owned();
+        let duplicate = format!(r#""grant_mutation_step_up_ticket":"{TICKET}""#);
+        let padding = "x".repeat(MAX_GROUP_ADMINISTRATION_BODY_BYTES);
+        let oversized = format!(r#""padding":"{padding}""#);
+        let cases = [
+            ("accepted", accepted.clone(), true),
+            (
+                "unknown-field",
+                with_extra_field(&accepted, r#""extra":true"#),
+                false,
+            ),
+            (
+                "duplicate-field",
+                with_extra_field(&accepted, &duplicate),
+                false,
+            ),
+            ("malformed-ticket-string", malformed, false),
+            ("invalid-ticket", invalid_ticket, false),
+            ("oversized", with_extra_field(&accepted, &oversized), false),
+        ];
+
+        for (path, body, accepted) in cases {
+            let (parsed, released) = parse_and_observe(&body, parse);
+            assert_eq!(
+                parsed.is_ok(),
+                accepted,
+                "{request_type} {path} path returned the wrong parse result"
+            );
+            assert_eq!(
+                released,
+                vec![0u8; released.len()],
+                "{request_type} {path} path left readable ticket bytes behind"
+            );
+            assert!(!released.is_empty(), "{request_type} {path} body was empty");
+        }
+    }
+
+    #[test]
+    fn group_ticket_request_bodies_are_cleared_on_all_parse_paths() {
+        assert_ticket_request_body_wiped(
+            "delete",
+            format!(r#"{{"public_id":"{ID}","grant_mutation_step_up_ticket":"{TICKET}"}}"#),
+            format!(r#"{{"public_id":"{ID}","grant_mutation_step_up_ticket":"short"}}"#),
+            |buffer| parse_group_delete_body_wiped(buffer).map(drop),
+        );
+        assert_ticket_request_body_wiped(
+            "member change",
+            format!(
+                r#"{{"group_public_id":"{ID}","account_public_id":"{ID}","present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+            ),
+            format!(
+                r#"{{"group_public_id":"{ID}","account_public_id":"{ID}","present":true,"grant_mutation_step_up_ticket":"short"}}"#
+            ),
+            |buffer| parse_group_member_change_body_wiped(buffer).map(drop),
+        );
+        assert_ticket_request_body_wiped(
+            "grant change",
+            format!(
+                r#"{{"group_public_id":"{ID}","grant":{{"type":"server_administration"}},"present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+            ),
+            format!(
+                r#"{{"group_public_id":"{ID}","grant":{{"type":"server_administration"}},"present":true,"grant_mutation_step_up_ticket":"short"}}"#
+            ),
+            |buffer| parse_group_grant_change_body_wiped(buffer).map(drop),
+        );
     }
 
     async fn rendered(response: Response) -> String {
