@@ -831,8 +831,9 @@ does not request or accept an `MfaPolicy`, `GrantMutation`, or
 credential-issuance proof. The process retains the exact preview behind a
 single-claim, digest-only, actor-, session-, Client Module-, and desired-state
 bound credential. A public apply whose business change committed while terminal
-delivery remains pending returns `service_unavailable` and does not claim
-success.
+delivery remains pending returns the ordinary safe committed `200` result. It
+does not expose Audit delivery state or invite an automatic retry; Audit
+recovery remains internal.
 
 ## Related Documents
 
