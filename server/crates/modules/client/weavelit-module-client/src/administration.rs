@@ -1,4 +1,4 @@
-//! Shared Client Module contract for account administration reads.
+//! Shared Client Module contract for account administration.
 
 use std::{fmt, io, pin::Pin, sync::Arc};
 
@@ -34,6 +34,9 @@ pub const ACCOUNTS_LIST_ROUTE: &str = "/api/v1/administration/accounts/list";
 /// Canonical route that loads one public account projection.
 pub const ACCOUNTS_VIEW_ROUTE: &str = "/api/v1/administration/accounts/view";
 
+/// Canonical route that changes one account's active status.
+pub const ACCOUNTS_STATUS_ROUTE: &str = "/api/v1/administration/accounts/status";
+
 /// Default number of accounts returned by a list request.
 pub const DEFAULT_ACCOUNTS_PAGE_LIMIT: usize = 50;
 
@@ -49,6 +52,7 @@ const MAX_LIST_CURSOR_BYTES: usize =
     ((LIST_CURSOR_SCOPE.len() + MAX_CURSOR_POSITION_BYTES) * 4).div_ceil(3);
 const LIST_FIELDS: &[&str] = &["limit", "cursor"];
 const VIEW_FIELDS: &[&str] = &["public_id"];
+const STATUS_FIELDS: &[&str] = &["public_id", "active"];
 const ACCOUNT_PUBLIC_ID_BYTES: usize = 16;
 const ACCOUNT_PUBLIC_ID_BASE64URL_CHARS: usize = 22;
 const MAX_ACCOUNT_NAME_BYTES: usize = 256;
@@ -154,6 +158,94 @@ struct AccountsViewBody {
     public_id: String,
 }
 
+/// Strictly validated account-status request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountsStatusRequest {
+    public_id: String,
+    active: bool,
+}
+
+impl AccountsStatusRequest {
+    /// Parses exactly `{"public_id":"<22 character Base64url>","active":<boolean>}`.
+    pub fn from_json(body: &[u8]) -> Result<Self, AccountAdministrationInputRejected> {
+        if body.is_empty() || body.len() > MAX_ACCOUNT_ADMINISTRATION_BODY_BYTES {
+            return Err(AccountAdministrationInputRejected);
+        }
+        let mut deserializer = serde_json::Deserializer::from_slice(body);
+        let parsed = AccountsStatusBody::deserialize(&mut deserializer)
+            .map_err(|_| AccountAdministrationInputRejected)?;
+        deserializer
+            .end()
+            .map_err(|_| AccountAdministrationInputRejected)?;
+        if !valid_public_id(&parsed.public_id) {
+            return Err(AccountAdministrationInputRejected);
+        }
+        Ok(Self {
+            public_id: parsed.public_id,
+            active: parsed.active,
+        })
+    }
+
+    /// Returns the canonical unpadded Base64url account identifier.
+    #[must_use]
+    pub fn public_id(&self) -> &str {
+        &self.public_id
+    }
+
+    /// Returns the requested active state.
+    #[must_use]
+    pub const fn active(&self) -> bool {
+        self.active
+    }
+}
+
+struct AccountsStatusBody {
+    public_id: String,
+    active: bool,
+}
+
+impl<'de> Deserialize<'de> for AccountsStatusBody {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BodyVisitor;
+
+        impl<'de> Visitor<'de> for BodyVisitor {
+            type Value = AccountsStatusBody;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an exact account status object")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut public_id = None;
+                let mut active = None;
+                while let Some(field) = map.next_key::<String>()? {
+                    match field.as_str() {
+                        "public_id" => {
+                            if public_id.is_some() {
+                                return Err(de::Error::duplicate_field("public_id"));
+                            }
+                            public_id = Some(map.next_value()?);
+                        }
+                        "active" => {
+                            if active.is_some() {
+                                return Err(de::Error::duplicate_field("active"));
+                            }
+                            active = Some(map.next_value()?);
+                        }
+                        unknown => return Err(de::Error::unknown_field(unknown, STATUS_FIELDS)),
+                    }
+                }
+                Ok(AccountsStatusBody {
+                    public_id: public_id.ok_or_else(|| de::Error::missing_field("public_id"))?,
+                    active: active.ok_or_else(|| de::Error::missing_field("active"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(BodyVisitor)
+    }
+}
+
 impl<'de> Deserialize<'de> for AccountsViewBody {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct BodyVisitor;
@@ -238,6 +330,8 @@ pub enum AccountAdministrationRequest {
     List(AccountsListRequest),
     /// View one exact public identifier.
     View(AccountsViewRequest),
+    /// Change one exact public identifier to the requested active state.
+    Status(AccountsStatusRequest),
 }
 
 /// Validated session-bearing submission handed to trusted Server composition.
@@ -349,9 +443,11 @@ pub enum AccountAdministrationResult {
     List(AccountsPage),
     /// One exact account projection.
     View(AccountAdministrationProjection),
+    /// One account projection after a successful status request.
+    Status(AccountAdministrationProjection),
 }
 
-/// Complete public account-read rejection vocabulary.
+/// Complete public account-administration rejection vocabulary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountAdministrationRejection {
     /// Malformed headers, body, schema, target identifier, or cursor.
@@ -423,7 +519,7 @@ impl AccountAdministrationRejection {
     }
 }
 
-/// Server-core hook that validates, authorizes, consumes, and executes one read.
+/// Server-core hook that validates, authorizes, consumes, and executes one account request.
 pub type AccountAdministrationCommit = Arc<
     dyn Fn(
             AccountAdministrationSubmission,
@@ -440,23 +536,23 @@ pub type AccountAdministrationCommit = Arc<
         + Sync,
 >;
 
-/// Runtime collaborators a Client Module declares account reads with.
+/// Runtime collaborators a Client Module declares account administration with.
 pub struct AccountAdministrationCapability {
     /// Trusted listener authority.
     pub expected_origin: ExpectedOrigin,
     /// Server-owned correlation source.
     pub correlate: CorrelationSource,
-    /// Trusted Server read hook.
-    pub read: AccountAdministrationCommit,
+    /// Trusted Server execution hook.
+    pub execute: AccountAdministrationCommit,
 }
 
-/// Declared account-read capability split into its two canonical routes.
+/// Declared account-administration capability split into its canonical routes.
 pub struct AccountAdministrationDeclaration {
     capability: Arc<AccountAdministrationCapability>,
 }
 
 impl AccountAdministrationDeclaration {
-    /// Declares account reads over supplied Server collaborators.
+    /// Declares account administration over supplied Server collaborators.
     #[must_use]
     pub fn new(capability: AccountAdministrationCapability) -> Self {
         Self {
@@ -467,14 +563,33 @@ impl AccountAdministrationDeclaration {
     /// Returns the canonical account-list route.
     pub fn list_route(&self) -> MethodRouter {
         let capability = Arc::clone(&self.capability);
-        any(move |request| account_administration_response(request, Arc::clone(&capability), true))
+        any(move |request| {
+            account_administration_response(request, Arc::clone(&capability), AccountRoute::List)
+        })
     }
 
     /// Returns the canonical account-view route.
     pub fn view_route(&self) -> MethodRouter {
         let capability = Arc::clone(&self.capability);
-        any(move |request| account_administration_response(request, Arc::clone(&capability), false))
+        any(move |request| {
+            account_administration_response(request, Arc::clone(&capability), AccountRoute::View)
+        })
     }
+
+    /// Returns the canonical account-status route.
+    pub fn status_route(&self) -> MethodRouter {
+        let capability = Arc::clone(&self.capability);
+        any(move |request| {
+            account_administration_response(request, Arc::clone(&capability), AccountRoute::Status)
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AccountRoute {
+    List,
+    View,
+    Status,
 }
 
 /// Route-specific typed envelope serialized by the listener under its own bound.
@@ -546,7 +661,7 @@ impl io::Write for BoundedJsonWriter {
 async fn account_administration_response(
     request: Request,
     capability: Arc<AccountAdministrationCapability>,
-    list: bool,
+    route: AccountRoute,
 ) -> Response {
     let Some(correlation_id) = (capability.correlate)() else {
         return unrenderable_response();
@@ -556,17 +671,23 @@ async fn account_administration_response(
         &parts.method,
         &parts.headers,
         capability.expected_origin,
-        !list,
+        !matches!(route, AccountRoute::List),
     ) {
         return rejection.response(&correlation_id);
     }
     let Ok(body) = to_bytes(body, MAX_ACCOUNT_ADMINISTRATION_BODY_BYTES).await else {
         return AccountAdministrationRejection::BadRequest.response(&correlation_id);
     };
-    let parsed = if list {
-        AccountsListRequest::from_optional_json(&body).map(AccountAdministrationRequest::List)
-    } else {
-        AccountsViewRequest::from_json(&body).map(AccountAdministrationRequest::View)
+    let parsed = match route {
+        AccountRoute::List => {
+            AccountsListRequest::from_optional_json(&body).map(AccountAdministrationRequest::List)
+        }
+        AccountRoute::View => {
+            AccountsViewRequest::from_json(&body).map(AccountAdministrationRequest::View)
+        }
+        AccountRoute::Status => {
+            AccountsStatusRequest::from_json(&body).map(AccountAdministrationRequest::Status)
+        }
     };
     let Ok(request) = parsed else {
         return AccountAdministrationRejection::BadRequest.response(&correlation_id);
@@ -584,7 +705,7 @@ async fn account_administration_response(
         }
     };
 
-    match (capability.read)(AccountAdministrationSubmission {
+    match (capability.execute)(AccountAdministrationSubmission {
         request,
         session_token,
         csrf_token,
@@ -593,7 +714,14 @@ async fn account_administration_response(
     })
     .await
     {
-        Ok(result) if list == matches!(result, AccountAdministrationResult::List(_)) => {
+        Ok(result)
+            if matches!(
+                (route, &result),
+                (AccountRoute::List, AccountAdministrationResult::List(_))
+                    | (AccountRoute::View, AccountAdministrationResult::View(_))
+                    | (AccountRoute::Status, AccountAdministrationResult::Status(_))
+            ) =>
+        {
             account_administration_success(result, correlation_id)
         }
         Ok(_) => AccountAdministrationRejection::ServiceUnavailable.response(&correlation_id),
@@ -747,7 +875,7 @@ mod tests {
         AccountAdministrationCapability {
             expected_origin: ExpectedOrigin::from_listener(LISTENER.parse().unwrap()),
             correlate: Arc::new(|| Some(CORRELATION.to_owned())),
-            read: Arc::new(move |_| {
+            execute: Arc::new(move |_| {
                 let outcome = outcome.clone();
                 Box::pin(async move { outcome })
             }),
@@ -911,6 +1039,33 @@ mod tests {
     }
 
     #[test]
+    fn status_request_accepts_only_an_exact_public_identifier_and_boolean() {
+        let identifier = public_id(0x41);
+        let request = AccountsStatusRequest::from_json(
+            format!(r#"{{"public_id":"{identifier}","active":false}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(request.public_id(), identifier);
+        assert!(!request.active());
+
+        for body in [
+            br#"{}"#.as_slice(),
+            br#"[]"#,
+            br#"{"public_id":null,"active":false}"#,
+            br#"{"public_id":"short","active":false}"#,
+            format!(r#"{{"public_id":"{identifier}","active":"false"}}"#).as_bytes(),
+            format!(r#"{{"public_id":"{identifier}","active":false,"active":true}}"#).as_bytes(),
+            format!(r#"{{"public_id":"{identifier}","active":false,"confirmed":true}}"#).as_bytes(),
+            format!(r#"{{"public_id":"{identifier}","active":false}} trailing"#).as_bytes(),
+        ] {
+            assert_eq!(
+                AccountsStatusRequest::from_json(body),
+                Err(AccountAdministrationInputRejected)
+            );
+        }
+    }
+
+    #[test]
     fn ordered_pages_round_trip_the_exact_last_username() {
         let projections = vec![projection("alice"), projection("bob"), projection("carol")];
         let first_request = AccountsListRequest::from_optional_json(br#"{"limit":2}"#).unwrap();
@@ -977,7 +1132,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_and_view_routes_emit_the_exact_typed_success_shapes() {
+    async fn list_view_and_status_routes_emit_the_exact_typed_success_shapes() {
         let page = AccountsPage {
             items: vec![projection("alice")],
             next_cursor: None,
@@ -1008,6 +1163,87 @@ mod tests {
         let body = rendered(view).await;
         assert!(body.contains(r#""result":{"public_id":"#));
         assert!(!body.contains(r#""items"#));
+
+        let status = AccountAdministrationDeclaration::new(capability(Ok(
+            AccountAdministrationResult::Status(projection("alice")),
+        )))
+        .status_route()
+        .oneshot(request(
+            Method::PUT,
+            ACCOUNTS_STATUS_ROUTE,
+            &format!(r#"{{"public_id":"{identifier}","active":false}}"#),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let body = rendered(status).await;
+        assert!(body.contains(r#""result":{"public_id":"#));
+        assert!(!body.contains("confirmed"));
+    }
+
+    #[tokio::test]
+    async fn status_route_rejects_wrong_method_origin_media_session_csrf_and_schema() {
+        let identifier = public_id(0x41);
+        let body = format!(r#"{{"public_id":"{identifier}","active":false}}"#);
+        let declaration = AccountAdministrationDeclaration::new(capability(Ok(
+            AccountAdministrationResult::Status(projection("alice")),
+        )));
+
+        let method = declaration
+            .status_route()
+            .oneshot(request(Method::POST, ACCOUNTS_STATUS_ROUTE, &body))
+            .await
+            .unwrap();
+        assert_eq!(method.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(method.headers().get(ALLOW).unwrap(), "PUT");
+
+        let mut origin = request(Method::PUT, ACCOUNTS_STATUS_ROUTE, &body);
+        origin.headers_mut().insert(
+            ORIGIN,
+            HeaderValue::from_static("https://elsewhere.example"),
+        );
+        let origin = declaration.status_route().oneshot(origin).await.unwrap();
+        assert_eq!(origin.status(), StatusCode::FORBIDDEN);
+        assert!(rendered(origin).await.contains("request_origin_denied"));
+
+        let mut host = request(Method::PUT, ACCOUNTS_STATUS_ROUTE, &body);
+        host.headers_mut()
+            .insert(HOST, HeaderValue::from_static("elsewhere.example"));
+        let host = declaration.status_route().oneshot(host).await.unwrap();
+        assert_eq!(host.status(), StatusCode::FORBIDDEN);
+
+        let mut media = request(Method::PUT, ACCOUNTS_STATUS_ROUTE, &body);
+        media.headers_mut().remove(CONTENT_TYPE);
+        let media = declaration.status_route().oneshot(media).await.unwrap();
+        assert_eq!(media.status(), StatusCode::BAD_REQUEST);
+
+        let mut accept = request(Method::PUT, ACCOUNTS_STATUS_ROUTE, &body);
+        accept
+            .headers_mut()
+            .insert(ACCEPT, HeaderValue::from_static("text/plain"));
+        let accept = declaration.status_route().oneshot(accept).await.unwrap();
+        assert_eq!(accept.status(), StatusCode::BAD_REQUEST);
+
+        let mut session = request(Method::PUT, ACCOUNTS_STATUS_ROUTE, &body);
+        session.headers_mut().remove(COOKIE);
+        let session = declaration.status_route().oneshot(session).await.unwrap();
+        assert_eq!(session.status(), StatusCode::UNAUTHORIZED);
+
+        let mut csrf = request(Method::PUT, ACCOUNTS_STATUS_ROUTE, &body);
+        csrf.headers_mut().remove(CSRF_HEADER_NAME);
+        let csrf = declaration.status_route().oneshot(csrf).await.unwrap();
+        assert_eq!(csrf.status(), StatusCode::UNAUTHORIZED);
+
+        let schema = declaration
+            .status_route()
+            .oneshot(request(
+                Method::PUT,
+                ACCOUNTS_STATUS_ROUTE,
+                &format!(r#"{{"public_id":"{identifier}","active":false,"confirmed":true}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(schema.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1116,7 +1352,11 @@ mod tests {
     async fn undeclared_operational_surface_mounts_no_account_route() {
         let router = OperationalSurface::default()
             .mount(Router::new().fallback(any(|| async { StatusCode::NOT_FOUND })));
-        for target in [ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE] {
+        for target in [
+            ACCOUNTS_LIST_ROUTE,
+            ACCOUNTS_VIEW_ROUTE,
+            ACCOUNTS_STATUS_ROUTE,
+        ] {
             let response = router
                 .clone()
                 .oneshot(request(Method::PUT, target, ""))

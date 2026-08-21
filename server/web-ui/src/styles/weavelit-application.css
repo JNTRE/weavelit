@@ -433,7 +433,8 @@ body {
 
 .accounts__create,
 .accounts__assurance,
-.accounts__credential-disclosure {
+.accounts__credential-disclosure,
+.accounts__status-confirmation {
   border-bottom: 1px solid var(--ds-color-border);
   margin-bottom: var(--ds-space-lg);
   padding-bottom: var(--ds-space-lg);
@@ -441,13 +442,15 @@ body {
 
 .accounts__create h3,
 .accounts__assurance h3,
-.accounts__credential-disclosure h3 {
+.accounts__credential-disclosure h3,
+.accounts__status-confirmation h3 {
   font-size: var(--ds-font-size-heading-sm);
   margin: 0;
 }
 
 .accounts__assurance p,
-.accounts__credential-disclosure p {
+.accounts__credential-disclosure p,
+.accounts__status-confirmation p {
   margin: var(--ds-space-sm) 0 0;
 }
 
@@ -469,11 +472,18 @@ body {
 }
 
 .accounts__create .accounts__action,
-.accounts__assurance .accounts__action {
+.accounts__assurance .accounts__action,
+.accounts__status-confirmation .accounts__action {
   margin: var(--ds-space-md) var(--ds-space-sm) 0 0;
 }
 
 .accounts__credential-status {
+  border-bottom: 1px solid var(--ds-color-border);
+  margin: 0 0 var(--ds-space-lg);
+  padding: 0 0 var(--ds-space-lg);
+}
+
+.accounts__status-result {
   border-bottom: 1px solid var(--ds-color-border);
   margin: 0 0 var(--ds-space-lg);
   padding: 0 0 var(--ds-space-lg);
@@ -552,6 +562,10 @@ body {
 .accounts__detail dd {
   margin: var(--ds-space-xs) 0 0;
   overflow-wrap: anywhere;
+}
+
+.accounts__detail-action {
+  margin-top: var(--ds-space-lg);
 }
 
 .accounts__visually-hidden {

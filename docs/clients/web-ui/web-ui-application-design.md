@@ -1,6 +1,6 @@
 # Web UI Application Design
 
-This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the first-launch **[Init](../../glossary.md#states-and-requests)** and **[Restore](../../glossary.md#states-and-requests)** choice, the Application Database selection control, the Init workflow, the Restore submission control, the sign-in control, and the authenticated Accounts workspace and credential-issuance controls. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md) owns the two-request Init submission protocol, its recovery-key delivery, its browser-side proof-of-possession derivation, and its rejection contract the Init workflow drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser, and the [Server Authentication Design](../../server/authentication/authentication-design.md) and [Server API Contract](../../server/api/api-contract-design.md) own the shared session, sign-in, and credential-issuance route contracts the application drives. This document does not restate any of those contracts.
+This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the first-launch **[Init](../../glossary.md#states-and-requests)** and **[Restore](../../glossary.md#states-and-requests)** choice, the Application Database selection control, the Init workflow, the Restore submission control, the sign-in control, and the authenticated Accounts read, status, and credential-issuance controls. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md) owns the two-request Init submission protocol, its recovery-key delivery, its browser-side proof-of-possession derivation, and its rejection contract the Init workflow drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser, and the [Server Authentication Design](../../server/authentication/authentication-design.md) and [Server API Contract](../../server/api/api-contract-design.md) own the shared session, sign-in, account-administration, and credential-issuance route contracts the application drives. This document does not restate any of those contracts.
 
 ## Build Toolchain
 
@@ -616,6 +616,29 @@ The workspace renders no Server code, status number, response detail, field
 path, or transport diagnostic. It stores no account result or cursor in a URL,
 cookie, `localStorage`, or `sessionStorage`.
 
+Each account row and the safe detail view offer `Disable` for an active account
+or `Re-enable` for a disabled account. Choosing either command opens an in-page
+confirmation that names only the already displayed account. The disable
+confirmation states that every target session ends and that disabling the
+current account also ends the current session. Confirmation is client-only;
+the request contains exactly the target Account Public Identifier and desired
+`active` value and carries no confirmation member.
+
+The application starts the status request only from the confirmation action and
+never retries it automatically. An exact reported refusal renders only `The
+account status was not changed.` An unreported transport outcome, malformed
+success, or failure to determine the current session after a successful result
+renders only `The account status outcome is unknown. Refresh before taking
+another status action.` Neither state renders a Server code, target detail,
+status number, response content, or transport diagnostic.
+
+After a valid status result, the application probes the existing session. An
+authenticated result causes one first-page Accounts refresh. An unauthenticated
+result, including successful self-disable, withdraws the Accounts workspace and
+returns the shell to its sign-in state without issuing another mutation. An
+absent or unreadable session result is indeterminate and causes neither an
+automatic account refresh nor a repeated status request.
+
 The workspace also drives the
 [account credential-issuance contract](../../server/api/api-contract-design.md#account-credential-issuance).
 The create control collects a username and optional display name. Each account
@@ -657,7 +680,7 @@ The surrounding create and assurance forms never receive the returned password.
 
 ## Same-Origin Requests
 
-The application issues exactly eighteen outbound request kinds, all same-origin,
+The application issues exactly nineteen outbound request kinds, all same-origin,
 all with `cache: no-store` and `redirect: error`:
 
 - `GET /api/v1/status` with `Accept: application/json` and `credentials: omit`;
@@ -704,6 +727,9 @@ all with `cache: no-store` and `redirect: error`:
   `PUT /api/v1/administration/accounts/view` with the session's CSRF value,
   `credentials: same-origin`, and only their documented pagination or Account
   Public Identifier fields in the JSON body;
+- `PUT /api/v1/administration/accounts/status` with the session's CSRF value,
+  `credentials: same-origin`, and exactly the target Account Public Identifier
+  and desired active state in the JSON body;
 - `PUT /api/v1/administration/step-up/credential-issuance` with the session's
   CSRF value, `credentials: same-origin`, and the current password and optional
   TOTP code in the JSON body;
@@ -721,7 +747,7 @@ use `credentials: same-origin` so the cookies a completed step issues are
 stored. This application does not issue the session-bearing self-enrollment
 request the Server also serves.
 
-Only the last eleven request kinds use `credentials: same-origin`; the first
+Only the last twelve request kinds use `credentials: same-origin`; the first
 seven use `credentials: omit` because no session exists yet to send or receive
 while the pre-operational or submission-bound reconciliation surface is in use.
 

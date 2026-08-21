@@ -249,6 +249,62 @@ correlation identifier. No rejection carries a message, field path, lookup
 detail, dependency name, or supplied value. Neither route is mounted on a
 Pre-Operational Surface.
 
+### Account Status Administration
+
+The account-status surface contains exactly one route:
+
+| Route | Method | Result |
+| --- | --- | --- |
+| `/api/v1/administration/accounts/status` | `PUT` | The target account's safe projection after the requested active state is confirmed. |
+
+The route requires the same ordinary validated session, exact same-origin
+`Origin` and `Host`, session `X-Weavelit-CSRF` value, JSON media types, live Web
+UI Client Module access, and effective Server Administration Permission as the
+account-read routes. It requires no credential-issuance ticket, password
+reauthentication, TOTP code, or current-session MFA step-up. Its body is exactly:
+
+```json
+{"public_id":"<22-character Base64url>","active":false}
+```
+
+`public_id` is the Account Public Identifier defined by the read contract, and
+`active` is the desired state. The route accepts no State Identifier, Audit
+Reference Identifier, caller identity, session value, confirmation field,
+password, TOTP code, or credential-issuance ticket. Unknown or duplicate
+members, missing members, wrong types, trailing content, malformed identifiers,
+and oversized input are `bad_request`.
+
+Success returns the same exact five-field safe account projection as view. The
+returned `active` value equals the requested state. A request for the target's
+current state succeeds with that projection and produces no Audit record. A
+committed disable revokes every target session, including the request's own
+session when an Administrator disables their own account. The successful
+self-disable response is still returned; the revoked cookies are
+`session_invalid` on the next request. Re-enabling an account creates no session
+and restores none of its revoked sessions.
+
+A changed status follows the Server's consequential-operation Audit sequence.
+The response does not expose whether terminal delivery was immediate or remains
+pending for bounded recovery. A client MUST NOT retry automatically after an
+unreported or malformed outcome because the mutation may already have
+committed.
+
+The stable rejection contract is:
+
+| Condition | Response |
+| --- | --- |
+| Malformed headers, body, schema, or identifier | `400 Bad Request`, `bad_request` |
+| Missing, malformed, unknown, expired, mismatched, or restricted session | `401 Unauthorized`, `session_invalid` |
+| Failed exact origin or host check | `403 Forbidden`, `request_origin_denied` |
+| Any initial or final live authorization denial | `403 Forbidden`, `authorization_denied` |
+| Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
+| Unknown valid target identifier | `404 Not Found`, `not_found` |
+| Persistence, integrity, Audit readiness, target staleness, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
+
+Every rejection uses the typed error envelope and reveals no target detail,
+mutation phase, session count, Audit state, or supplied value. The route is not
+mounted on a Pre-Operational Surface.
+
 ### Account Credential Issuance
 
 The account credential-issuance surface contains exactly three routes:

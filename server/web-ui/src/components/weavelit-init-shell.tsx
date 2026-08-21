@@ -84,6 +84,11 @@ export function ApplicationShell(): JSX.Element {
     setAuthenticated(true);
   }, []);
 
+  const endAuthenticatedSession = useCallback(() => {
+    setPasswordChangeRequired(false);
+    setAuthenticated(false);
+  }, []);
+
   const submit = useCallback(() => {
     setSelection("submitting");
     void selectSqliteDatabase().then(
@@ -128,7 +133,7 @@ export function ApplicationShell(): JSX.Element {
         {passwordChangeRequired ? (
           <PasswordChangeForm onCompleted={completePasswordChange} />
         ) : (
-          <AccountsWorkspace />
+          <AccountsWorkspace onSessionEnded={endAuthenticatedSession} />
         )}
       </main>
     );

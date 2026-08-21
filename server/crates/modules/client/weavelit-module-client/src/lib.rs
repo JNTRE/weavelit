@@ -44,13 +44,14 @@ pub mod restore;
 pub mod typed_json;
 
 pub use administration::{
-    ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, AccountAdministrationCapability,
-    AccountAdministrationDeclaration, AccountAdministrationEnvelope,
-    AccountAdministrationInputRejected, AccountAdministrationProjection,
-    AccountAdministrationRejection, AccountAdministrationRequest, AccountAdministrationResult,
-    AccountAdministrationSubmission, AccountsListRequest, AccountsPage, AccountsViewRequest,
-    DEFAULT_ACCOUNTS_PAGE_LIMIT, MAX_ACCOUNT_ADMINISTRATION_BODY_BYTES,
-    MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES, MAX_ACCOUNTS_PAGE_LIMIT,
+    ACCOUNTS_LIST_ROUTE, ACCOUNTS_STATUS_ROUTE, ACCOUNTS_VIEW_ROUTE,
+    AccountAdministrationCapability, AccountAdministrationDeclaration,
+    AccountAdministrationEnvelope, AccountAdministrationInputRejected,
+    AccountAdministrationProjection, AccountAdministrationRejection, AccountAdministrationRequest,
+    AccountAdministrationResult, AccountAdministrationSubmission, AccountsListRequest,
+    AccountsPage, AccountsStatusRequest, AccountsViewRequest, DEFAULT_ACCOUNTS_PAGE_LIMIT,
+    MAX_ACCOUNT_ADMINISTRATION_BODY_BYTES, MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES,
+    MAX_ACCOUNTS_PAGE_LIMIT,
 };
 pub use authentication::{
     AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE, AuthenticationCapability,
@@ -288,7 +289,7 @@ pub struct OperationalSurface {
 }
 
 impl OperationalSurface {
-    /// Declares authenticated read-only account administration.
+    /// Declares authenticated account reads and status changes.
     pub fn with_account_administration(
         mut self,
         capability: AccountAdministrationCapability,
@@ -330,7 +331,8 @@ impl OperationalSurface {
         let router = match self.account_administration {
             Some(administration) => router
                 .route(ACCOUNTS_LIST_ROUTE, administration.list_route())
-                .route(ACCOUNTS_VIEW_ROUTE, administration.view_route()),
+                .route(ACCOUNTS_VIEW_ROUTE, administration.view_route())
+                .route(ACCOUNTS_STATUS_ROUTE, administration.status_route()),
             None => router,
         };
         let router = match self.credential_issuance {

@@ -2985,6 +2985,7 @@ pub(crate) mod tests {
         response::{Html, Response},
         routing::any,
     };
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use http_body_util::BodyExt;
     use rustls::{
         ClientConfig, RootCertStore, ServerConfig,
@@ -3001,8 +3002,8 @@ pub(crate) mod tests {
     use tower::ServiceExt;
     use weavelit_module_client::{
         ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE,
-        ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
-        AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
+        ACCOUNTS_STATUS_ROUTE, ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE,
+        AUTH_LOGOUT_ROUTE, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
         AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
         AUTH_SESSION_ROUTE, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CSRF_COOKIE_NAME, CookieEffect,
         CookieValue, DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE,
@@ -3191,6 +3192,7 @@ pub(crate) mod tests {
             (Method::PUT, AUTH_PASSWORD_CHANGE_ROUTE),
             (Method::PUT, ACCOUNTS_LIST_ROUTE),
             (Method::PUT, ACCOUNTS_VIEW_ROUTE),
+            (Method::PUT, ACCOUNTS_STATUS_ROUTE),
             (Method::PUT, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE),
             (Method::PUT, ACCOUNTS_CREATE_ROUTE),
             (Method::PUT, ACCOUNTS_RESET_PASSWORD_ROUTE),
@@ -4064,6 +4066,291 @@ pub(crate) mod tests {
         let second_password = credential_issuance_response_field(&reset, "temporary_password");
         assert_ne!(first_password, second_password);
         assert!(reset.cookies.is_none());
+    }
+
+    #[tokio::test]
+    async fn account_status_public_route_disables_reenables_and_returns_self_disable_before_logout()
+    {
+        const ADMIN_PASSWORD: &str = "account-status-administrator-password";
+        const TARGET_PASSWORD: &str = "account-status-target-password";
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let administrator = StateIdentifier::from_bytes([0xa1; 16]).unwrap();
+        let target = StateIdentifier::from_bytes([0xa2; 16]).unwrap();
+        let administrators = StateIdentifier::from_bytes([0xb1; 16]).unwrap();
+        let web_users = StateIdentifier::from_bytes([0xb2; 16]).unwrap();
+        let state = sealed_application_state_from(SealedStateParts {
+            accounts: vec![
+                Account {
+                    identifier: administrator,
+                    username: Name::new("administrator").unwrap(),
+                    display_name: Some(Name::new("Administrator").unwrap()),
+                    active: true,
+                    mfa_required: false,
+                    credential_revision: CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
+                },
+                Account {
+                    identifier: target,
+                    username: Name::new("target-user").unwrap(),
+                    display_name: None,
+                    active: true,
+                    mfa_required: false,
+                    credential_revision: CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
+                },
+            ],
+            password_verifiers: vec![
+                AccountPasswordVerifier {
+                    account: administrator,
+                    verifier: PasswordVerifier::new(
+                        PasswordVerifierFactory::approved()
+                            .create(ADMIN_PASSWORD.as_bytes())
+                            .unwrap()
+                            .into_string(),
+                    )
+                    .unwrap(),
+                },
+                AccountPasswordVerifier {
+                    account: target,
+                    verifier: PasswordVerifier::new(
+                        PasswordVerifierFactory::approved()
+                            .create(TARGET_PASSWORD.as_bytes())
+                            .unwrap()
+                            .into_string(),
+                    )
+                    .unwrap(),
+                },
+            ],
+            groups: vec![
+                Group {
+                    identifier: administrators,
+                    name: Name::new("Administrators").unwrap(),
+                    description: None,
+                },
+                Group {
+                    identifier: web_users,
+                    name: Name::new("Web Users").unwrap(),
+                    description: None,
+                },
+            ],
+            group_memberships: vec![
+                GroupMembership {
+                    group: administrators,
+                    account: administrator,
+                },
+                GroupMembership {
+                    group: web_users,
+                    account: target,
+                },
+            ],
+            group_grants: vec![
+                GroupGrantRecord {
+                    group: administrators,
+                    grant: GroupGrant::ClientModule(Name::new("web-ui").unwrap()),
+                },
+                GroupGrantRecord {
+                    group: administrators,
+                    grant: GroupGrant::ServerAdministration,
+                },
+                GroupGrantRecord {
+                    group: web_users,
+                    grant: GroupGrant::ClientModule(Name::new("web-ui").unwrap()),
+                },
+            ],
+            ..SealedStateParts::default()
+        });
+        seal_deployment_with(&state_root, &state);
+        let startup = classify_restricted_startup(&state_root).unwrap();
+        let mount = operational_mount(&startup);
+        let router = mount.surface().router().clone();
+
+        let login = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_LOGIN_ROUTE,
+            format!(
+                "{{\"username\":\"administrator\",\"password\":\"{ADMIN_PASSWORD}\",\
+                 \"client_module\":\"web-ui\"}}"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(login.status, StatusCode::OK);
+        let administrator_session = credential_issuance_cookie(&login, SESSION_COOKIE_NAME);
+        let administrator_csrf = credential_issuance_cookie(&login, CSRF_COOKIE_NAME);
+        let target_login = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_LOGIN_ROUTE,
+            format!(
+                "{{\"username\":\"target-user\",\"password\":\"{TARGET_PASSWORD}\",\
+                 \"client_module\":\"web-ui\"}}"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(target_login.status, StatusCode::OK);
+        let target_session = credential_issuance_cookie(&target_login, SESSION_COOKIE_NAME);
+        let target_csrf = credential_issuance_cookie(&target_login, CSRF_COOKIE_NAME);
+
+        let application =
+            rusqlite::Connection::open(state_root.join(APPLICATION_DATABASE_FILE)).unwrap();
+        let public_id = |username: &str| -> String {
+            let persisted = application
+                .query_row(
+                    "SELECT identity.public_identifier FROM weavelit_account AS account \
+                     JOIN weavelit_account_public_identity AS identity \
+                     ON identity.account_id = account.account_id WHERE account.username = ?1",
+                    [username],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .unwrap();
+            URL_SAFE_NO_PAD.encode(persisted)
+        };
+        let administrator_public_id = public_id("administrator");
+        let target_public_id = public_id("target-user");
+        let assert_projection =
+            |response: &BoundedResponse, public_id: &str, username: &str, active: bool| {
+                let body = String::from_utf8(response.body.to_vec()).unwrap();
+                let display_name = if username == "administrator" {
+                    "\"Administrator\""
+                } else {
+                    "null"
+                };
+                let expected = format!(
+                    "{{\"result\":{{\"public_id\":\"{public_id}\",\"username\":\"{username}\",\
+                     \"display_name\":{display_name},\"active\":{active},\"mfa_required\":false}},\
+                     \"correlation_id\":\""
+                );
+                assert!(body.starts_with(&expected), "{body}");
+                assert!(body.ends_with("\"}"), "{body}");
+                for forbidden in [
+                    "password",
+                    "verifier",
+                    "session",
+                    "temporary",
+                    "account_id",
+                    "audit",
+                    "state_id",
+                ] {
+                    assert!(!body.contains(forbidden), "{forbidden}: {body}");
+                }
+            };
+
+        let mismatched_csrf = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_STATUS_ROUTE,
+            format!("{{\"public_id\":\"{target_public_id}\",\"active\":false}}"),
+            Some((&administrator_session, "different-csrf")),
+        )
+        .await;
+        assert_eq!(mismatched_csrf.status, StatusCode::UNAUTHORIZED);
+        assert!(String::from_utf8_lossy(&mismatched_csrf.body).contains("session_invalid"));
+
+        let denied = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_STATUS_ROUTE,
+            format!("{{\"public_id\":\"{target_public_id}\",\"active\":false}}"),
+            Some((&target_session, &target_csrf)),
+        )
+        .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN);
+        assert!(String::from_utf8_lossy(&denied.body).contains("authorization_denied"));
+
+        let log = rusqlite::Connection::open(state_root.join("log.sqlite3")).unwrap();
+        let audit_count = || {
+            log.query_row(
+                "SELECT count(*) FROM weavelit_log_audit_records",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(audit_count(), 0);
+
+        let unchanged = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_STATUS_ROUTE,
+            format!("{{\"public_id\":\"{target_public_id}\",\"active\":true}}"),
+            Some((&administrator_session, &administrator_csrf)),
+        )
+        .await;
+        assert_eq!(unchanged.status, StatusCode::OK);
+        assert_projection(&unchanged, &target_public_id, "target-user", true);
+        assert_eq!(audit_count(), 0);
+
+        let disabled = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_STATUS_ROUTE,
+            format!("{{\"public_id\":\"{target_public_id}\",\"active\":false}}"),
+            Some((&administrator_session, &administrator_csrf)),
+        )
+        .await;
+        assert_eq!(disabled.status, StatusCode::OK);
+        assert_projection(&disabled, &target_public_id, "target-user", false);
+        assert_eq!(audit_count(), 2);
+        let revoked = router
+            .clone()
+            .oneshot(operational_session_request(
+                AUTH_SESSION_ROUTE,
+                &target_session,
+                &target_csrf,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+        let reenabled = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_STATUS_ROUTE,
+            format!("{{\"public_id\":\"{target_public_id}\",\"active\":true}}"),
+            Some((&administrator_session, &administrator_csrf)),
+        )
+        .await;
+        assert_eq!(reenabled.status, StatusCode::OK);
+        assert_projection(&reenabled, &target_public_id, "target-user", true);
+        assert_eq!(audit_count(), 4);
+
+        let unknown = URL_SAFE_NO_PAD.encode([0x99_u8; 16]);
+        let absent = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_STATUS_ROUTE,
+            format!("{{\"public_id\":\"{unknown}\",\"active\":false}}"),
+            Some((&administrator_session, &administrator_csrf)),
+        )
+        .await;
+        assert_eq!(absent.status, StatusCode::NOT_FOUND);
+        assert!(String::from_utf8_lossy(&absent.body).contains("not_found"));
+        assert_eq!(audit_count(), 4);
+
+        let self_disabled = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_STATUS_ROUTE,
+            format!("{{\"public_id\":\"{administrator_public_id}\",\"active\":false}}"),
+            Some((&administrator_session, &administrator_csrf)),
+        )
+        .await;
+        assert_eq!(self_disabled.status, StatusCode::OK);
+        assert_projection(
+            &self_disabled,
+            &administrator_public_id,
+            "administrator",
+            false,
+        );
+        assert_eq!(audit_count(), 6);
+        let self_revoked = router
+            .oneshot(operational_session_request(
+                AUTH_SESSION_ROUTE,
+                &administrator_session,
+                &administrator_csrf,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(self_revoked.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

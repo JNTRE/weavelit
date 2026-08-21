@@ -3,8 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME } from "./weavelit-authentication";
 import {
   ACCOUNTS_LIST_PATH,
+  ACCOUNTS_STATUS_PATH,
   ACCOUNTS_VIEW_PATH,
+  AccountStatusIndeterminateError,
+  AccountStatusRefusedError,
   AccountsUnavailableError,
+  changeAccountStatus,
   listAccounts,
   readAccountProjection,
   readAccountsPage,
@@ -76,8 +80,9 @@ describe("account response parsing", () => {
   });
 
   it.each([
-    ["a verifier", projection({ password_verifier: "secret", username: null })],
+    ["an additive verifier", projection({ password_verifier: "secret" })],
     ["a malformed public id", projection({ public_id: "internal-state-id" })],
+    ["a zero public id", projection({ public_id: "AAAAAAAAAAAAAAAAAAAAAA" })],
     ["an overlong name", projection({ username: "a".repeat(257) })],
     ["a wrong active type", projection({ active: 1 })],
   ])("rejects %s without carrying response detail", (_label, item) => {
@@ -147,5 +152,62 @@ describe("account requests", () => {
       jsonResponse({ result: { items: "secret" } }),
     );
     await expect(listAccounts()).rejects.toBeInstanceOf(AccountsUnavailableError);
+  });
+
+  it("changes status through one exact same-origin request and accepts only the requested result", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        result: projection({ active: false }),
+        correlation_id: CORRELATION,
+      }),
+    );
+
+    await expect(changeAccountStatus(PUBLIC_ID, false)).resolves.toMatchObject({
+      publicId: PUBLIC_ID,
+      active: false,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(target).toBe(ACCOUNTS_STATUS_PATH);
+    expect(init).toMatchObject({
+      method: "PUT",
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+    });
+    expect(init.headers).toEqual({
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      [CSRF_HEADER_NAME]: CSRF,
+    });
+    expect(requestBody(init)).toEqual({ public_id: PUBLIC_ID, active: false });
+  });
+
+  it("distinguishes exact reported refusals from indeterminate outcomes without retrying", async () => {
+    withCsrfCookie();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+      )
+      .mockRejectedValueOnce(new Error("connection closed after request"))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          result: projection({ active: true }),
+          correlation_id: CORRELATION,
+        }),
+      );
+
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusRefusedError,
+    );
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusIndeterminateError,
+    );
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusIndeterminateError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

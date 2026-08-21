@@ -18,7 +18,7 @@ Apply instructions in this order:
 
 ## Asset Inventory
 
-- `web-ui-application-design.md`: Build toolchain, generated production outputs, application shell, status presentation states, the first-launch Init and Restore choice, the Application Database selection control, the Init workflow, the Restore submission control, the sign-in control, and the authenticated Accounts read and credential-issuance workspace for the Web UI browser application.
+- `web-ui-application-design.md`: Build toolchain, generated production outputs, application shell, status presentation states, the first-launch Init and Restore choice, the Application Database selection control, the Init workflow, the Restore submission control, the sign-in control, and the authenticated Accounts read, status, and credential-issuance workspace for the Web UI browser application.
 
 ## Working Rules
 

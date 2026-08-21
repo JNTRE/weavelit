@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
 
 import {
+  AccountStatusRefusedError,
+  changeAccountStatus,
   listAccounts,
   viewAccount,
   type AccountProjection,
 } from "../api/weavelit-administration-accounts";
+import { probeSession } from "../api/weavelit-authentication";
 import {
   CredentialIssuanceIndeterminateError,
   createAccount,
@@ -23,14 +26,26 @@ type CredentialState = "idle" | "assurance" | "issuing" | "consuming" | "refused
 type PendingCredentialAction =
   | { readonly kind: "create"; readonly username: string; readonly displayName?: string }
   | { readonly kind: "reset"; readonly publicId: string; readonly username: string };
+type StatusState = "idle" | "submitting" | "refused" | "indeterminate";
+interface PendingStatusAction {
+  readonly account: AccountProjection;
+  readonly active: boolean;
+}
 
 const FAILURE_MESSAGE = "Accounts are unavailable.";
 const CREDENTIAL_REFUSED_MESSAGE = "Credential issuance was not completed.";
 const CREDENTIAL_INDETERMINATE_MESSAGE =
   "The credential issuance outcome is unknown. Start a new action only if you intend to issue another credential.";
+const STATUS_REFUSED_MESSAGE = "The account status was not changed.";
+const STATUS_INDETERMINATE_MESSAGE =
+  "The account status outcome is unknown. Refresh before taking another status action.";
 const TOTP_PATTERN = /^[0-9]{6}$/;
 
-export function AccountsWorkspace(): JSX.Element {
+export interface AccountsWorkspaceProps {
+  readonly onSessionEnded?: () => void;
+}
+
+export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {}): JSX.Element {
   const [accounts, setAccounts] = useState<readonly AccountProjection[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [collectionState, setCollectionState] = useState<CollectionState>("loading");
@@ -43,8 +58,11 @@ export function AccountsWorkspace(): JSX.Element {
   const [pendingCredentialAction, setPendingCredentialAction] =
     useState<PendingCredentialAction | null>(null);
   const [disclosure, setDisclosure] = useState<CredentialIssued | null>(null);
+  const [statusState, setStatusState] = useState<StatusState>("idle");
+  const [pendingStatusAction, setPendingStatusAction] = useState<PendingStatusAction | null>(null);
   const mounted = useRef(true);
   const credentialAttemptActive = useRef(false);
+  const statusAttemptActive = useRef(false);
   const credentialIssuanceTicket = useRef("");
   const workspaceIsMounted = (): boolean => mounted.current;
 
@@ -52,6 +70,8 @@ export function AccountsWorkspace(): JSX.Element {
     if (!preserveDisclosure) {
       setDisclosure(null);
     }
+    setStatusState("idle");
+    setPendingStatusAction(null);
     setCollectionState("loading");
     setSelection({ kind: "none" });
     void listAccounts().then(
@@ -91,6 +111,7 @@ export function AccountsWorkspace(): JSX.Element {
     return () => {
       mounted.current = false;
       credentialAttemptActive.current = false;
+      statusAttemptActive.current = false;
       credentialIssuanceTicket.current = "";
     };
   }, []);
@@ -134,8 +155,78 @@ export function AccountsWorkspace(): JSX.Element {
     );
   };
 
+  const beginStatusAction = (account: AccountProjection): void => {
+    if (
+      statusAttemptActive.current ||
+      pendingStatusAction !== null ||
+      credentialAttemptActive.current ||
+      pendingCredentialAction !== null
+    ) {
+      return;
+    }
+    setDisclosure(null);
+    setStatusState("idle");
+    setPendingStatusAction({ account, active: !account.active });
+  };
+
+  const cancelStatusAction = (): void => {
+    if (!statusAttemptActive.current) {
+      setPendingStatusAction(null);
+      setStatusState("idle");
+    }
+  };
+
+  const submitStatusAction = (event: SyntheticEvent<HTMLFormElement, SubmitEvent>): void => {
+    event.preventDefault();
+    if (
+      statusAttemptActive.current ||
+      pendingStatusAction === null ||
+      credentialAttemptActive.current
+    ) {
+      return;
+    }
+    statusAttemptActive.current = true;
+    setStatusState("submitting");
+    const action = pendingStatusAction;
+
+    void (async () => {
+      try {
+        await changeAccountStatus(action.account.publicId, action.active);
+        if (!mounted.current) {
+          return;
+        }
+        const session = await probeSession();
+        if (!workspaceIsMounted()) {
+          return;
+        }
+        setPendingStatusAction(null);
+        if (session.kind === "unauthenticated") {
+          setStatusState("idle");
+          onSessionEnded?.();
+        } else if (session.kind === "authenticated") {
+          setStatusState("idle");
+          loadFirstPage();
+        } else {
+          setStatusState("indeterminate");
+        }
+      } catch (error: unknown) {
+        if (mounted.current) {
+          setPendingStatusAction(null);
+          setStatusState(error instanceof AccountStatusRefusedError ? "refused" : "indeterminate");
+        }
+      } finally {
+        statusAttemptActive.current = false;
+      }
+    })();
+  };
+
   const beginCredentialAction = (action: PendingCredentialAction): void => {
-    if (credentialAttemptActive.current || pendingCredentialAction !== null) {
+    if (
+      credentialAttemptActive.current ||
+      pendingCredentialAction !== null ||
+      statusAttemptActive.current ||
+      pendingStatusAction !== null
+    ) {
       return;
     }
     credentialIssuanceTicket.current = "";
@@ -239,10 +330,16 @@ export function AccountsWorkspace(): JSX.Element {
 
   const credentialBusy = credentialState === "issuing" || credentialState === "consuming";
   const credentialActionLocked = pendingCredentialAction !== null || credentialBusy;
+  const statusBusy = statusState === "submitting";
+  const actionLocked = credentialActionLocked || pendingStatusAction !== null || statusBusy;
   const validAssuranceTotp = assuranceTotp === "" || TOTP_PATTERN.test(assuranceTotp);
 
   return (
-    <section className="accounts" data-accounts-state={collectionState}>
+    <section
+      className="accounts"
+      data-accounts-state={collectionState}
+      data-account-status-state={statusState}
+    >
       <header className="accounts__toolbar">
         <div>
           <h2 className="accounts__title">Accounts</h2>
@@ -254,7 +351,9 @@ export function AccountsWorkspace(): JSX.Element {
           onClick={() => {
             loadFirstPage();
           }}
-          disabled={collectionState === "loading" || collectionState === "loading-more"}
+          disabled={
+            collectionState === "loading" || collectionState === "loading-more" || actionLocked
+          }
         >
           Refresh
         </button>
@@ -292,7 +391,7 @@ export function AccountsWorkspace(): JSX.Element {
             onChange={(event) => {
               setCreateUsername(event.target.value);
             }}
-            disabled={credentialActionLocked}
+            disabled={actionLocked}
           />
           <label className="accounts__label" htmlFor="account-create-display-name">
             Display name (optional)
@@ -311,7 +410,7 @@ export function AccountsWorkspace(): JSX.Element {
           <button
             type="submit"
             className="accounts__action"
-            disabled={credentialActionLocked || createUsername === ""}
+            disabled={actionLocked || createUsername === ""}
           >
             Create account
           </button>
@@ -414,6 +513,46 @@ export function AccountsWorkspace(): JSX.Element {
         </section>
       ) : null}
 
+      {pendingStatusAction !== null ? (
+        <section
+          className="accounts__status-confirmation"
+          aria-labelledby="account-status-confirmation-title"
+        >
+          <h3 id="account-status-confirmation-title">
+            {pendingStatusAction.active ? "Re-enable account" : "Disable account"}
+          </h3>
+          <p>
+            {pendingStatusAction.active
+              ? `Re-enable ${pendingStatusAction.account.username}?`
+              : `Disable ${pendingStatusAction.account.username}? This ends every session for the account, including your current session if this is your account.`}
+          </p>
+          <form onSubmit={submitStatusAction}>
+            <button type="submit" className="accounts__action" disabled={statusBusy}>
+              {pendingStatusAction.active ? "Confirm re-enable" : "Confirm disable"}
+            </button>
+            <button
+              type="button"
+              className="accounts__action"
+              onClick={cancelStatusAction}
+              disabled={statusBusy}
+            >
+              Cancel
+            </button>
+          </form>
+        </section>
+      ) : null}
+
+      {statusState === "refused" ? (
+        <p className="accounts__status-result" role="alert">
+          {STATUS_REFUSED_MESSAGE}
+        </p>
+      ) : null}
+      {statusState === "indeterminate" ? (
+        <p className="accounts__status-result" role="status">
+          {STATUS_INDETERMINATE_MESSAGE}
+        </p>
+      ) : null}
+
       {collectionState === "ready" || collectionState === "loading-more" ? (
         <>
           <div className="accounts__table-wrap">
@@ -443,7 +582,7 @@ export function AccountsWorkspace(): JSX.Element {
                         onClick={() => {
                           selectAccount(account.publicId);
                         }}
-                        disabled={credentialActionLocked}
+                        disabled={actionLocked}
                       >
                         View
                       </button>
@@ -458,9 +597,20 @@ export function AccountsWorkspace(): JSX.Element {
                             username: account.username,
                           });
                         }}
-                        disabled={credentialActionLocked}
+                        disabled={actionLocked}
                       >
                         Reset password
+                      </button>
+                      <button
+                        type="button"
+                        className="accounts__view"
+                        aria-label={`${account.active ? "Disable" : "Re-enable"} ${account.username}`}
+                        onClick={() => {
+                          beginStatusAction(account);
+                        }}
+                        disabled={actionLocked}
+                      >
+                        {account.active ? "Disable" : "Re-enable"}
                       </button>
                     </td>
                   </tr>
@@ -473,7 +623,7 @@ export function AccountsWorkspace(): JSX.Element {
               type="button"
               className="accounts__action"
               onClick={loadMore}
-              disabled={collectionState === "loading-more"}
+              disabled={collectionState === "loading-more" || actionLocked}
             >
               Load more
             </button>
@@ -504,6 +654,17 @@ export function AccountsWorkspace(): JSX.Element {
               <dd>{selection.account.mfaRequired ? "Required" : "Optional"}</dd>
             </div>
           </dl>
+          <button
+            type="button"
+            className="accounts__action accounts__detail-action"
+            aria-label={`${selection.account.active ? "Disable" : "Re-enable"} ${selection.account.username} from account detail`}
+            onClick={() => {
+              beginStatusAction(selection.account);
+            }}
+            disabled={actionLocked}
+          >
+            {selection.account.active ? "Disable" : "Re-enable"}
+          </button>
         </section>
       ) : null}
     </section>

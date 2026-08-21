@@ -2,7 +2,12 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CSRF_COOKIE_NAME } from "../api/weavelit-authentication";
-import { ACCOUNTS_LIST_PATH, ACCOUNTS_VIEW_PATH } from "../api/weavelit-administration-accounts";
+import { AUTH_SESSION_PATH } from "../api/weavelit-authentication";
+import {
+  ACCOUNTS_LIST_PATH,
+  ACCOUNTS_STATUS_PATH,
+  ACCOUNTS_VIEW_PATH,
+} from "../api/weavelit-administration-accounts";
 import {
   ACCOUNTS_CREATE_PATH,
   ACCOUNTS_RESET_PASSWORD_PATH,
@@ -148,7 +153,7 @@ describe("AccountsWorkspace", () => {
     expect(document.body.textContent).not.toContain("internal secret");
   });
 
-  it("never renders additive sensitive fields from an otherwise valid projection", async () => {
+  it("rejects an additive sensitive projection without rendering its fields", async () => {
     withCsrfCookie();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       response({
@@ -166,11 +171,141 @@ describe("AccountsWorkspace", () => {
     );
 
     render(<AccountsWorkspace />);
-    expect(await screen.findByRole("rowheader", { name: "alice" })).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toContain("Accounts are unavailable.");
     await waitFor(() => {
       expect(document.body.textContent).not.toContain("secret-verifier");
       expect(document.body.textContent).not.toContain("internal-account");
     });
+  });
+
+  it("confirms one exact disable, probes the session, refreshes, and offers detail re-enable", async () => {
+    withCsrfCookie();
+    let listRequests = 0;
+    let statusRequests = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        listRequests += 1;
+        return Promise.resolve(
+          accountPage([
+            account(ALICE_ID, "alice", "Alice", true, false),
+            account(BOB_ID, "bob", "Bob", listRequests === 1, false),
+          ]),
+        );
+      }
+      if (target === ACCOUNTS_STATUS_PATH) {
+        statusRequests += 1;
+        expect(requestBody(init)).toEqual({ public_id: BOB_ID, active: false });
+        return Promise.resolve(
+          response({
+            result: account(BOB_ID, "bob", "Bob", false, false),
+            correlation_id: CORRELATION,
+          }),
+        );
+      }
+      if (target === AUTH_SESSION_PATH) {
+        return Promise.resolve(
+          response({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: ALICE_ID,
+              client_module: "web-ui",
+              password_change_required: false,
+            },
+          }),
+        );
+      }
+      if (target === ACCOUNTS_VIEW_PATH) {
+        return Promise.resolve(response({ result: account(BOB_ID, "bob", "Bob", false, false) }));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "bob" });
+    expect(screen.getByRole("button", { name: "Disable bob" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Disable bob" }));
+    expect(screen.getByRole("heading", { name: "Disable account" })).toBeTruthy();
+    expect(screen.getByText(/This ends every session for the account/)).toBeTruthy();
+    expect(statusRequests).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("heading", { name: "Disable account" })).toBeNull();
+    expect(statusRequests).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Disable bob" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+    await waitFor(() => {
+      expect(listRequests).toBe(2);
+    });
+    expect(statusRequests).toBe(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Re-enable bob" })).toBeTruthy();
+
+    const bobRow = screen.getByRole("rowheader", { name: "bob" }).closest("tr")!;
+    fireEvent.click(bobRow.querySelector<HTMLButtonElement>("button")!);
+    expect(
+      await screen.findByRole("button", { name: "Re-enable bob from account detail" }),
+    ).toBeTruthy();
+  });
+
+  it("renders a reported status refusal without detail or automatic retry", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === ACCOUNTS_STATUS_PATH) {
+        return Promise.resolve(
+          response(
+            {
+              error: "authorization_denied",
+              correlation_id: CORRELATION,
+            },
+            403,
+          ),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Disable alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+
+    expect(await screen.findByText("The account status was not changed.")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("authorization_denied");
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_STATUS_PATH)).toHaveLength(
+      1,
+    );
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
+  });
+
+  it("renders one generic indeterminate outcome and never retries the mutation", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === ACCOUNTS_STATUS_PATH) {
+        return Promise.reject(new Error("response lost after request"));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Disable alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+
+    expect(await screen.findByText(/The account status outcome is unknown\./)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("response lost");
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_STATUS_PATH)).toHaveLength(
+      1,
+    );
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
+    );
   });
 
   it("creates through one assurance ticket without persisting secrets and withdraws disclosure", async () => {

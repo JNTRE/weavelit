@@ -710,6 +710,98 @@ describe("ApplicationShell sign-in panel gating", () => {
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 
+  it("returns to sign-in after self-disable succeeds without retrying the mutation", async () => {
+    const publicId = "QUFBQUFBQUFBQUFBQUFBQQ";
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    let listRequests = 0;
+    let statusRequests = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((target: unknown, init?: RequestInit) => {
+        if (target === "/api/v1/status") {
+          return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+        }
+        if (target === "/api/v1/auth/session") {
+          sessionProbes += 1;
+          if (sessionProbes === 1) {
+            return Promise.resolve(
+              jsonResponse({
+                result: {
+                  account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  public_id: publicId,
+                  client_module: "web-ui",
+                  password_change_required: false,
+                },
+              }),
+            );
+          }
+          return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+        }
+        if (target === "/api/v1/administration/accounts/list") {
+          listRequests += 1;
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                items: [
+                  {
+                    public_id: publicId,
+                    username: "administrator",
+                    display_name: "First Administrator",
+                    active: true,
+                    mfa_required: false,
+                  },
+                ],
+                next_cursor: null,
+              },
+            }),
+          );
+        }
+        if (target === "/api/v1/administration/accounts/status") {
+          statusRequests += 1;
+          if (typeof init?.body !== "string") {
+            throw new Error("the status request body must be a JSON string");
+          }
+          expect(JSON.parse(init.body)).toEqual({ public_id: publicId, active: false });
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                public_id: publicId,
+                username: "administrator",
+                display_name: "First Administrator",
+                active: false,
+                mfa_required: false,
+              },
+              correlation_id: "account-status-correlation",
+            }),
+          );
+        }
+        return Promise.reject(new Error("unexpected request"));
+      });
+
+    render(<ApplicationShell />);
+    await screen.findByRole("rowheader", { name: "administrator" });
+    fireEvent.click(screen.getByRole("button", { name: "Disable administrator" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(statusRequests).toBe(1);
+    expect(listRequests).toBe(1);
+    expect(sessionProbes).toBe(3);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([target]) => target === "/api/v1/administration/accounts/status",
+      ),
+    ).toHaveLength(1);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
   it("withholds the Accounts workspace for a restricted password-change session", async () => {
     Object.defineProperty(globalThis.document, "cookie", {
       configurable: true,

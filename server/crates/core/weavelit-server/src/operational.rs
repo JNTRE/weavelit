@@ -25,8 +25,9 @@ use axum::http::{HeaderMap, Method, Uri};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::task;
 use weavelit_module_client::{
-    ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, ACCOUNTS_VIEW_ROUTE,
-    AUTH_PASSWORD_CHANGE_ROUTE, AccountAdministrationCapability, AccountAdministrationDeclaration,
+    ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE,
+    ACCOUNTS_STATUS_ROUTE, ACCOUNTS_VIEW_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
+    AccountAdministrationCapability, AccountAdministrationDeclaration,
     AccountAdministrationProjection as ClientAccountProjection, AccountAdministrationRejection,
     AccountAdministrationRequest, AccountAdministrationResult as ClientAccountResult,
     AccountAdministrationSubmission, AccountCreateSubmission, AccountCredentialIssued,
@@ -43,9 +44,9 @@ use weavelit_module_client::{
 };
 use weavelit_server_administration::{
     AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
-    AdministrationAction, AdministrationClock, AdministrationPlane, AdministrationRequest,
-    AuthorizedAdministrationAdmission, ComponentEnablementSource, MfaStepUpProof,
-    StepUpActionFamily,
+    AccountStatusChange, AdministrationAction, AdministrationClock, AdministrationPlane,
+    AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementSource,
+    MfaStepUpProof, StepUpActionFamily,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authentication::{
@@ -59,12 +60,13 @@ use weavelit_server_database::{
     AccountCreateMutation, AccountCreateOutcome, AccountCredentialAuditTerminalWrites,
     AccountCredentialWriterStore, AccountPasswordResetMutation, AccountPasswordResetOutcome,
     AccountPasswordResetTarget, AccountPublicIdentifier, AccountPublicIdentifierPersistence,
-    AccountStatusAuditTerminalWrites, AccountStatusMutation, AccountStatusMutationOutcome,
-    AccountStatusTarget, AccountStatusWriterStore, AuditReferencePersistence,
-    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, GroupGrant,
-    GroupGrantMutationTarget, GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites,
-    GroupMutationOutcome, GroupMutationStore, LogConfigurationAuditReference,
-    LogConfigurationAuditTerminalWrites, LogConfigurationGeneration, LogConfigurationGenerationKey,
+    AccountStatus, AccountStatusAuditTerminalWrites, AccountStatusMutation,
+    AccountStatusMutationOutcome, AccountStatusTarget, AccountStatusWriterStore,
+    AuditReferencePersistence, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
+    GroupGrant, GroupGrantMutationTarget, GroupMembershipMutationTarget,
+    GroupMutationAuditTerminalWrites, GroupMutationOutcome, GroupMutationStore,
+    LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
+    LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
     LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
@@ -83,7 +85,8 @@ use crate::{
     administration::{
         AccountAdministrationReadResult, AccountAdministrationReadWorkflow,
         AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflow,
-        AccountCredentialIssuanceWorkflowError,
+        AccountCredentialIssuanceWorkflowError, AccountStatusChangeError,
+        AccountStatusChangeResult, AccountStatusChangeWorkflow,
     },
     authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
     authorization::{AuthorizationRuntime, ServedComponents},
@@ -362,6 +365,16 @@ impl OperationalDatabase {
                     .ok_or(DatabaseError::Unavailable)?,
             )
         })?
+    }
+
+    /// Loads one exact bounded account projection with the selected decoder.
+    fn load_account_administration_projection(
+        &self,
+        public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountAdministrationProjection>, DatabaseError> {
+        self.with_account_administration(|persistence, store| {
+            store.load_account_administration_projection(persistence, public_identifier)
+        })
     }
 
     /// Decodes one canonical public account identifier through database authority.
@@ -997,6 +1010,24 @@ impl OperationalAdministration {
             )
     }
 
+    /// Consumes one exact Administration Plane admission for an account status change.
+    fn authorize_account_status(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        change: AccountStatusChange,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        self.plane
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Account(
+                    AccountAdministrationAction::StatusChange(change),
+                )),
+            )
+    }
+
     /// Consumes one exact Administration Plane admission for a credential writer.
     fn authorize_account_write(
         &self,
@@ -1153,22 +1184,25 @@ impl OperationalComposer {
         let authorization = Arc::clone(self.authorization.as_ref()?);
         let administration = Arc::clone(self.administration.as_ref()?);
         let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
 
         Some(AccountAdministrationCapability {
             expected_origin,
             correlate: Arc::new(correlation_identifier),
-            read: Arc::new(move |submission| {
+            execute: Arc::new(move |submission| {
                 let authentication = Arc::clone(&authentication);
                 let authorization = Arc::clone(&authorization);
                 let administration = Arc::clone(&administration);
                 let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
                 Box::pin(async move {
                     task::spawn_blocking(move || {
-                        execute_account_administration_read(
+                        execute_account_administration(
                             &authentication,
                             &authorization,
                             &administration,
                             &database,
+                            &audit_recovery,
                             submission,
                         )
                     })
@@ -1356,6 +1390,7 @@ impl OperationalComposer {
         if let Some(declaration) = account_administration {
             let declaration = Arc::new(declaration);
             let view = Arc::clone(&declaration);
+            let status = Arc::clone(&declaration);
             capabilities.push(TransportCapability::new(
                 TransportRegistration::new(
                     Method::PUT,
@@ -1371,6 +1406,14 @@ impl OperationalComposer {
                     TransportProfile::DEFAULT,
                 ),
                 move |router| router.route(ACCOUNTS_VIEW_ROUTE, view.view_route()),
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_STATUS_ROUTE,
+                    TransportProfile::DEFAULT,
+                ),
+                move |router| router.route(ACCOUNTS_STATUS_ROUTE, status.status_route()),
             ));
         }
         if let (Some(declaration), Some(authentication)) =
@@ -1671,11 +1714,12 @@ fn account_credential_workflow_error(
     }
 }
 
-fn execute_account_administration_read(
+fn execute_account_administration(
     authentication: &AuthenticationRuntime<RustCryptoArgon2>,
     authorization: &AuthorizationRuntime,
     administration: &OperationalAdministration,
     database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
     submission: AccountAdministrationSubmission,
 ) -> Result<ClientAccountResult, AccountAdministrationRejection> {
     let AccountAdministrationSubmission {
@@ -1696,26 +1740,18 @@ fn execute_account_administration_read(
     let admission = authorization
         .authorize_administration(&session, &client_module, &correlation_id)
         .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
-    let read = match &request {
-        AccountAdministrationRequest::List(_) => AccountAdministrationRead::List,
-        AccountAdministrationRequest::View(view) => AccountAdministrationRead::View(
-            database
-                .account_public_identifier(view.public_id())
-                .map_err(|_| AccountAdministrationRejection::BadRequest)?,
-        ),
-    };
-    let action = administration
-        .authorize_account_read(admission, read)
-        .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
-    let result = AccountAdministrationReadWorkflow::new(database)
-        .read(action)
-        .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?;
-
-    match (request, result) {
-        (
-            AccountAdministrationRequest::List(request),
-            AccountAdministrationReadResult::List(items),
-        ) => {
+    match request {
+        AccountAdministrationRequest::List(request) => {
+            let action = administration
+                .authorize_account_read(admission, AccountAdministrationRead::List)
+                .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+            let AccountAdministrationReadResult::List(items) =
+                AccountAdministrationReadWorkflow::new(database)
+                    .read(action)
+                    .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?
+            else {
+                return Err(AccountAdministrationRejection::ServiceUnavailable);
+            };
             let items = items
                 .into_iter()
                 .map(client_account_projection)
@@ -1730,14 +1766,76 @@ fn execute_account_administration_read(
                 .map(ClientAccountResult::List)
                 .map_err(|_| AccountAdministrationRejection::BadRequest)
         }
-        (
-            AccountAdministrationRequest::View(_),
-            AccountAdministrationReadResult::View(Some(item)),
-        ) => client_account_projection(item).map(ClientAccountResult::View),
-        (AccountAdministrationRequest::View(_), AccountAdministrationReadResult::View(None)) => {
-            Err(AccountAdministrationRejection::NotFound)
+        AccountAdministrationRequest::View(view) => {
+            let target = database
+                .account_public_identifier(view.public_id())
+                .map_err(|_| AccountAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_account_read(admission, AccountAdministrationRead::View(target))
+                .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+            match AccountAdministrationReadWorkflow::new(database)
+                .read(action)
+                .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?
+            {
+                AccountAdministrationReadResult::View(Some(item)) => {
+                    client_account_projection(item).map(ClientAccountResult::View)
+                }
+                AccountAdministrationReadResult::View(None) => {
+                    Err(AccountAdministrationRejection::NotFound)
+                }
+                AccountAdministrationReadResult::List(_) => {
+                    Err(AccountAdministrationRejection::ServiceUnavailable)
+                }
+            }
         }
-        _ => Err(AccountAdministrationRejection::ServiceUnavailable),
+        AccountAdministrationRequest::Status(status) => {
+            let target = database
+                .account_public_identifier(status.public_id())
+                .map_err(|_| AccountAdministrationRejection::BadRequest)?;
+            let desired = if status.active() {
+                AccountStatus::Active
+            } else {
+                AccountStatus::Disabled
+            };
+            let action = administration
+                .authorize_account_status(admission, AccountStatusChange::new(target, desired))
+                .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+            match AccountStatusChangeWorkflow::new(database, audit_recovery).apply(action) {
+                Ok(AccountStatusChangeResult::Unchanged) => {}
+                Ok(AccountStatusChangeResult::Changed {
+                    status: AccountStatus::Active,
+                    ..
+                }) if desired == AccountStatus::Active => {}
+                Ok(AccountStatusChangeResult::Changed {
+                    status: AccountStatus::Disabled,
+                    ..
+                }) if desired == AccountStatus::Disabled => {}
+                Ok(
+                    AccountStatusChangeResult::Changed { .. }
+                    | AccountStatusChangeResult::Stale { .. },
+                ) => return Err(AccountAdministrationRejection::ServiceUnavailable),
+                Ok(AccountStatusChangeResult::Denied { .. }) => {
+                    return Err(AccountAdministrationRejection::AuthorizationDenied);
+                }
+                Err(AccountStatusChangeError::TargetNotFound) => {
+                    return Err(AccountAdministrationRejection::NotFound);
+                }
+                Err(
+                    AccountStatusChangeError::ActionNotSupported
+                    | AccountStatusChangeError::CredentialRevisionExhausted
+                    | AccountStatusChangeError::Unavailable
+                    | AccountStatusChangeError::AuditLogUnavailable,
+                ) => return Err(AccountAdministrationRejection::ServiceUnavailable),
+            }
+            let projection = database
+                .load_account_administration_projection(target)
+                .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?
+                .ok_or(AccountAdministrationRejection::ServiceUnavailable)?;
+            if projection.active() != status.active() {
+                return Err(AccountAdministrationRejection::ServiceUnavailable);
+            }
+            client_account_projection(projection).map(ClientAccountResult::Status)
+        }
     }
 }
 
