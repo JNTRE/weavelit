@@ -3401,6 +3401,7 @@ pub(crate) mod tests {
                 credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
                     .unwrap()
                     .as_str(),
+                TEST_CORRELATION,
             )
             .unwrap();
         assert_eq!(
@@ -3440,6 +3441,7 @@ pub(crate) mod tests {
                 credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
                     .unwrap()
                     .as_str(),
+                TEST_CORRELATION,
             )
             .unwrap();
         let second_secret = match reset {
@@ -3484,6 +3486,7 @@ pub(crate) mod tests {
             "authentication.password-reset.started"
         );
         for record in records.iter() {
+            assert_eq!(record.correlation_id, TEST_CORRELATION);
             let rendered = format!("{record:?}");
             assert!(!rendered.contains(first_secret.as_str()));
             assert!(!rendered.contains(second_secret.as_str()));
@@ -3497,7 +3500,7 @@ pub(crate) mod tests {
         let surface = AuthSurface::new();
         let session = surface.credential_issuance_session();
         let database = surface.runtime.database.clone();
-        let (audit, _, _) = crate::administration::tests::recovery(database.clone(), None);
+        let (audit, records, _) = crate::administration::tests::recovery(database.clone(), None);
         let workflow =
             AccountCredentialIssuanceWorkflow::new(&database, surface.runtime.as_ref(), &audit);
 
@@ -3507,6 +3510,7 @@ pub(crate) mod tests {
                 credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
                     .unwrap()
                     .as_str(),
+                TEST_CORRELATION,
             )
             .unwrap();
         let account = match created {
@@ -3519,6 +3523,7 @@ pub(crate) mod tests {
                 credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
                     .unwrap()
                     .as_str(),
+                TEST_CORRELATION,
             )
             .unwrap();
         assert!(matches!(
@@ -3538,6 +3543,7 @@ pub(crate) mod tests {
                 credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
                     .unwrap()
                     .as_str(),
+                TEST_CORRELATION,
             )
             .unwrap();
         assert!(matches!(
@@ -3557,6 +3563,7 @@ pub(crate) mod tests {
                 credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
                     .unwrap()
                     .as_str(),
+                TEST_CORRELATION,
             )
             .unwrap();
         let disclosed = match explicit {
@@ -3572,6 +3579,13 @@ pub(crate) mod tests {
             &weavelit_server_authentication::CURRENT_ARGON2_PROFILE,
             &verifier,
         ));
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 8);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.correlation_id == TEST_CORRELATION)
+        );
     }
 
     #[test]
@@ -3597,6 +3611,7 @@ pub(crate) mod tests {
                 )
                 .unwrap()
                 .as_str(),
+                TEST_CORRELATION,
             ),
             Err(AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)
         ));
@@ -3624,6 +3639,7 @@ pub(crate) mod tests {
                 )
                 .unwrap()
                 .as_str(),
+                TEST_CORRELATION,
             )
             .unwrap();
         let secret = match result {

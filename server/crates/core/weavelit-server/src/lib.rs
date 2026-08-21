@@ -3560,6 +3560,31 @@ pub(crate) mod tests {
         &body[start..end]
     }
 
+    fn assert_response_audit_correlation(log: &rusqlite::Connection, response: &BoundedResponse) {
+        let body = String::from_utf8(response.body.to_vec()).unwrap();
+        let correlation = typed_correlation(&body);
+        let mut statement = log
+            .prepare(
+                "SELECT phase, correlation_id FROM weavelit_log_audit_records \
+                 WHERE correlation_id = ?1 ORDER BY rowid",
+            )
+            .unwrap();
+        let records = statement
+            .query_map([correlation], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            records,
+            vec![
+                ("attempt".to_owned(), correlation.to_owned()),
+                ("completion".to_owned(), correlation.to_owned()),
+            ]
+        );
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     enum RequestHeadResult {
         Accepted,
@@ -4224,6 +4249,10 @@ pub(crate) mod tests {
         let second_password = credential_issuance_response_field(&reset, "temporary_password");
         assert_ne!(first_password, second_password);
         assert!(reset.cookies.is_none());
+
+        let log = rusqlite::Connection::open(state_root.join("log.sqlite3")).unwrap();
+        assert_response_audit_correlation(&log, &created);
+        assert_response_audit_correlation(&log, &reset);
     }
 
     #[tokio::test]
@@ -4464,6 +4493,7 @@ pub(crate) mod tests {
         assert!(!required_body.contains(&ticket));
         assert!(!required_body.contains(&step_up_code));
         assert_eq!(audit_count(), before_policy + 2);
+        assert_response_audit_correlation(&log, &required);
 
         let target_revoked = router
             .clone()
@@ -4506,6 +4536,7 @@ pub(crate) mod tests {
         assert!(!reset_body.contains(&ticket));
         assert!(!reset_body.contains(&secret_text));
         assert_eq!(audit_count(), before_policy + 4);
+        assert_response_audit_correlation(&log, &reset);
 
         for (session, csrf) in [
             (&first_session, &first_csrf),
@@ -4835,6 +4866,7 @@ pub(crate) mod tests {
         assert!(member_body.contains("\"username\":\"target-user\""));
         assert!(member_body.contains("\"present\":true"));
         assert_eq!(audit_count(), before_changes + 2);
+        assert_response_audit_correlation(&log, &member_added);
 
         let unchanged_member = credential_issuance_json_request(
             mount.surface(),
@@ -4874,6 +4906,7 @@ pub(crate) mod tests {
         .await;
         assert_eq!(grant_added.status, StatusCode::OK);
         assert_eq!(audit_count(), before_changes + 4);
+        assert_response_audit_correlation(&log, &grant_added);
         let unchanged_grant = credential_issuance_json_request(
             mount.surface(),
             GROUP_GRANTS_CHANGE_ROUTE,
@@ -4911,6 +4944,7 @@ pub(crate) mod tests {
         .await;
         assert_eq!(last_administrator.status, StatusCode::CONFLICT);
         assert_eq!(audit_count(), before_changes + 6);
+        assert_response_audit_correlation(&log, &last_administrator);
         assert_eq!(
             application
                 .query_row(
@@ -4922,6 +4956,56 @@ pub(crate) mod tests {
                 .unwrap(),
             1
         );
+
+        let created_group = credential_issuance_json_request(
+            mount.surface(),
+            GROUPS_CREATE_ROUTE,
+            "{\"name\":\"Temporary\",\"description\":\"Short-lived\"}".to_owned(),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(created_group.status, StatusCode::OK);
+        assert_eq!(audit_count(), before_changes + 7);
+        let temporary_group = credential_issuance_response_field(&created_group, "public_id");
+
+        let updated_group = credential_issuance_json_request(
+            mount.surface(),
+            GROUPS_UPDATE_ROUTE,
+            format!(
+                "{{\"public_id\":\"{temporary_group}\",\"name\":\"Temporary Updated\",\
+                 \"description\":null}}"
+            ),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(updated_group.status, StatusCode::OK);
+        assert_eq!(audit_count(), before_changes + 9);
+        assert_response_audit_correlation(&log, &created_group);
+
+        let deleted_group = credential_issuance_json_request(
+            mount.surface(),
+            GROUPS_DELETE_ROUTE,
+            format!(
+                "{{\"public_id\":\"{temporary_group}\",\
+                 \"grant_mutation_step_up_ticket\":\"{ticket}\"}}"
+            ),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(deleted_group.status, StatusCode::OK);
+        assert_eq!(audit_count(), before_changes + 11);
+        assert_response_audit_correlation(&log, &updated_group);
+
+        let drain_trigger = credential_issuance_json_request(
+            mount.surface(),
+            GROUPS_CREATE_ROUTE,
+            "{\"name\":\"Drain Trigger\",\"description\":null}".to_owned(),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(drain_trigger.status, StatusCode::OK);
+        assert_eq!(audit_count(), before_changes + 13);
+        assert_response_audit_correlation(&log, &deleted_group);
 
         let audit_text = log
             .prepare(
@@ -5170,6 +5254,7 @@ pub(crate) mod tests {
         assert_eq!(disabled.status, StatusCode::OK);
         assert_projection(&disabled, &target_public_id, "target-user", false);
         assert_eq!(audit_count(), 2);
+        assert_response_audit_correlation(&log, &disabled);
         let revoked = router
             .clone()
             .oneshot(operational_session_request(
@@ -5192,6 +5277,7 @@ pub(crate) mod tests {
         assert_eq!(reenabled.status, StatusCode::OK);
         assert_projection(&reenabled, &target_public_id, "target-user", true);
         assert_eq!(audit_count(), 4);
+        assert_response_audit_correlation(&log, &reenabled);
 
         let unknown = URL_SAFE_NO_PAD.encode([0x99_u8; 16]);
         let absent = credential_issuance_json_request(
@@ -5220,6 +5306,7 @@ pub(crate) mod tests {
             false,
         );
         assert_eq!(audit_count(), 6);
+        assert_response_audit_correlation(&log, &self_disabled);
         let self_revoked = router
             .oneshot(operational_session_request(
                 AUTH_SESSION_ROUTE,
@@ -5230,6 +5317,124 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(self_revoked.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn configuration_writer_routes_share_response_correlation_with_audit_records() {
+        const ADMIN_PASSWORD: &str = "configuration-administrator-password";
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let administrator = StateIdentifier::from_bytes([0x31; 16]).unwrap();
+        let administrators = StateIdentifier::from_bytes([0x32; 16]).unwrap();
+        let state = sealed_application_state_from(SealedStateParts {
+            configuration: vec![ConfigurationEntry {
+                component: Name::new("totp").unwrap(),
+                key: ConfigurationKey::new(ComponentKind::MfaModule.enablement_key()).unwrap(),
+                value: ConfigurationValue::new("false").unwrap(),
+            }],
+            accounts: vec![Account {
+                identifier: administrator,
+                username: Name::new("administrator").unwrap(),
+                display_name: None,
+                active: true,
+                mfa_required: false,
+                credential_revision: CredentialRevision::INITIAL,
+                must_change_password: false,
+                temporary_credential_expiration: None,
+            }],
+            password_verifiers: vec![AccountPasswordVerifier {
+                account: administrator,
+                verifier: PasswordVerifier::new(
+                    PasswordVerifierFactory::approved()
+                        .create(ADMIN_PASSWORD.as_bytes())
+                        .unwrap()
+                        .into_string(),
+                )
+                .unwrap(),
+            }],
+            groups: vec![Group {
+                identifier: administrators,
+                name: Name::new("Administrators").unwrap(),
+                description: None,
+            }],
+            group_memberships: vec![GroupMembership {
+                group: administrators,
+                account: administrator,
+            }],
+            group_grants: vec![
+                GroupGrantRecord {
+                    group: administrators,
+                    grant: GroupGrant::ClientModule(Name::new("web-ui").unwrap()),
+                },
+                GroupGrantRecord {
+                    group: administrators,
+                    grant: GroupGrant::ServerAdministration,
+                },
+            ],
+            additional_log_module_configurations: vec![LogModuleConfiguration {
+                identifier: StateIdentifier::from_bytes([0x22; 16]).unwrap(),
+                module: Name::new(weavelit_module_log_sqlite::MODULE_IDENTIFIER).unwrap(),
+                name: Name::new("secondary").unwrap(),
+                enabled: false,
+                settings: vec![],
+            }],
+            ..SealedStateParts::default()
+        });
+        seal_deployment_with(&state_root, &state);
+        let startup = classify_restricted_startup(&state_root).unwrap();
+        let mount = operational_mount(&startup);
+
+        let login = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_LOGIN_ROUTE,
+            format!(
+                "{{\"username\":\"administrator\",\"password\":\"{ADMIN_PASSWORD}\",\
+                 \"client_module\":\"web-ui\"}}"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(login.status, StatusCode::OK);
+        let session = credential_issuance_cookie(&login, SESSION_COOKIE_NAME);
+        let csrf = credential_issuance_cookie(&login, CSRF_COOKIE_NAME);
+        let log = rusqlite::Connection::open(state_root.join("log.sqlite3")).unwrap();
+
+        let preview = credential_issuance_json_request(
+            mount.surface(),
+            TOTP_ENABLEMENT_PREVIEW_ROUTE,
+            "{\"enabled\":true}".to_owned(),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(preview.status, StatusCode::OK);
+        let preview_token = credential_issuance_response_field(&preview, "totp_enablement_preview");
+        let applied = credential_issuance_json_request(
+            mount.surface(),
+            TOTP_ENABLEMENT_APPLY_ROUTE,
+            format!("{{\"enabled\":true,\"totp_enablement_preview\":\"{preview_token}\"}}"),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(applied.status, StatusCode::OK);
+        assert!(String::from_utf8_lossy(&applied.body).contains("\"current_enabled\":true"));
+        assert_response_audit_correlation(&log, &applied);
+
+        let changed = credential_issuance_json_request(
+            mount.surface(),
+            LOG_CONFIGURATIONS_CHANGE_ROUTE,
+            "{\"configuration_name\":\"secondary\",\"enabled\":true,\
+             \"assignments\":[{\"log_type\":\"system\",\"configuration_name\":\"secondary\"},\
+             {\"log_type\":\"audit\",\"configuration_name\":\"secondary\"}]}"
+                .to_owned(),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(changed.status, StatusCode::OK);
+        let changed_body = String::from_utf8_lossy(&changed.body);
+        assert!(changed_body.contains("\"configuration_name\":\"secondary\""));
+        assert!(changed_body.contains("\"enabled\":true"));
+        assert_response_audit_correlation(&log, &changed);
     }
 
     #[tokio::test]
@@ -5418,6 +5623,8 @@ pub(crate) mod tests {
         pub(crate) group_memberships: Vec<weavelit_server_database::GroupMembership>,
         pub(crate) group_grants: Vec<weavelit_server_database::GroupGrantRecord>,
         pub(crate) mfa_factors: Vec<weavelit_server_database::MfaFactor>,
+        pub(crate) additional_log_module_configurations:
+            Vec<weavelit_server_database::LogModuleConfiguration>,
     }
 
     /// Builds the smallest accepted state that carries the supplied parts.
@@ -5430,6 +5637,7 @@ pub(crate) mod tests {
             group_memberships,
             group_grants,
             mfa_factors,
+            additional_log_module_configurations,
         } = parts;
         let account_audit_references = accounts
             .iter()
@@ -5468,6 +5676,23 @@ pub(crate) mod tests {
             })
             .collect();
         let configuration_identifier = StateIdentifier::from_bytes([0x11; 16]).unwrap();
+        let mut log_module_configurations = vec![LogModuleConfiguration {
+            identifier: configuration_identifier,
+            module: Name::new(weavelit_module_log_sqlite::MODULE_IDENTIFIER).unwrap(),
+            name: Name::new("local").unwrap(),
+            enabled: true,
+            settings: vec![],
+        }];
+        log_module_configurations.extend(additional_log_module_configurations);
+        let log_configuration_audit_references = log_module_configurations
+            .iter()
+            .map(|configuration| {
+                weavelit_server_database::LogConfigurationAuditReference::new(
+                    configuration.identifier,
+                    test_audit_reference(),
+                )
+            })
+            .collect();
         ApplicationState::new(ApplicationStateInput {
             configuration,
             protected_secrets: vec![],
@@ -5483,19 +5708,8 @@ pub(crate) mod tests {
             mfa_factors,
             service_connections: vec![],
             recovery_public_key: RecoveryPublicKey::new("age1recoverypublickeyvalue").unwrap(),
-            log_module_configurations: vec![LogModuleConfiguration {
-                identifier: configuration_identifier,
-                module: Name::new(weavelit_module_log_sqlite::MODULE_IDENTIFIER).unwrap(),
-                name: Name::new("local").unwrap(),
-                enabled: true,
-                settings: vec![],
-            }],
-            log_configuration_audit_references: vec![
-                weavelit_server_database::LogConfigurationAuditReference::new(
-                    configuration_identifier,
-                    test_audit_reference(),
-                ),
-            ],
+            log_module_configurations,
+            log_configuration_audit_references,
             log_assignments: LogType::ALL
                 .into_iter()
                 .map(|log_type| LogAssignment {
@@ -5887,7 +6101,10 @@ pub(crate) mod tests {
             crate::administration::MfaModuleEnablementWorkflow::new(&database, &audit_recovery);
         let setup_preview = setup.preview(&setup_action).unwrap();
         assert_eq!(
-            setup.apply(setup_action, setup_preview).unwrap().delivery,
+            setup
+                .apply(setup_action, setup_preview, "pending-audit-setup")
+                .unwrap()
+                .delivery,
             MfaModuleEnablementDelivery::Pending
         );
         assert_eq!(deliveries.load(Ordering::SeqCst), 2);
@@ -5928,7 +6145,9 @@ pub(crate) mod tests {
         let blocked_action = crate::administration::tests::authorized_change(false);
         let blocked = composer.mfa_module_enablement_workflow();
         let blocked_preview = blocked.preview(&blocked_action).unwrap();
-        let error = blocked.apply(blocked_action, blocked_preview).unwrap_err();
+        let error = blocked
+            .apply(blocked_action, blocked_preview, "pending-audit-blocked")
+            .unwrap_err();
         assert_eq!(error, MfaModuleEnablementError::AuditLogUnavailable);
         assert_eq!(
             error.to_string(),

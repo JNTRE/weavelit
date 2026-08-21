@@ -46,7 +46,7 @@ use weavelit_server_log::{
 use crate::{
     authentication::{
         AccountCredentialIssuanceAdmission, AccountCredentialIssuanceError, AuthenticationRuntime,
-        correlation_identifier, random_bytes, system_clock,
+        random_bytes, system_clock,
     },
     operational::OperationalDatabase,
     operational_audit::{
@@ -191,6 +191,7 @@ where
         &self,
         authorization: AuthorizedAdministrationAction,
         credential_issuance_ticket: &str,
+        correlation_id: &str,
     ) -> Result<AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflowError> {
         let authorization = authorization
             .into_account()
@@ -207,8 +208,12 @@ where
 
         let action = admission.action().clone();
         match action {
-            AccountAdministrationAction::Create(change) => self.create(admission, change),
-            AccountAdministrationAction::PasswordReset(change) => self.reset(admission, change),
+            AccountAdministrationAction::Create(change) => {
+                self.create(admission, change, correlation_id)
+            }
+            AccountAdministrationAction::PasswordReset(change) => {
+                self.reset(admission, change, correlation_id)
+            }
             AccountAdministrationAction::Read(_) | AccountAdministrationAction::StatusChange(_) => {
                 Err(AccountCredentialIssuanceWorkflowError::ActionNotSupported)
             }
@@ -219,6 +224,7 @@ where
         &self,
         admission: AccountCredentialIssuanceAdmission,
         change: AccountCreate,
+        correlation_id: &str,
     ) -> Result<AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflowError> {
         let prepared = PreparedTemporaryPassword::generate(&PasswordVerifierFactory::approved())
             .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
@@ -244,6 +250,7 @@ where
                     event,
                     AuditLogClassification::AuthenticationUserCreated,
                     destination,
+                    correlation_id,
                 )?;
                 let (action, recheck) = self
                     .authentication
@@ -288,6 +295,7 @@ where
         &self,
         admission: AccountCredentialIssuanceAdmission,
         change: AccountPasswordReset,
+        correlation_id: &str,
     ) -> Result<AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflowError> {
         let target = self
             .database
@@ -313,6 +321,7 @@ where
                     event,
                     AuditLogClassification::AuthenticationPasswordResetStarted,
                     destination,
+                    correlation_id,
                 )?;
                 let (action, recheck) = self
                     .authentication
@@ -359,11 +368,10 @@ where
         event: AuditEvent,
         classification: AuditLogClassification,
         destination: &OperationalAuditGenerationDestination,
+        correlation_id: &str,
     ) -> Result<PreparedAccountCredentialTerminals, AccountCredentialIssuanceWorkflowError> {
-        let correlation = CorrelationId::new(
-            correlation_identifier().ok_or(AccountCredentialIssuanceWorkflowError::Unavailable)?,
-        )
-        .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
+        let correlation = CorrelationId::new(correlation_id.to_owned())
+            .map_err(|_| AccountCredentialIssuanceWorkflowError::Unavailable)?;
         let attempt = self
             .audit
             .producer()
@@ -670,6 +678,7 @@ impl<'a> AccountStatusChangeWorkflow<'a> {
     pub(crate) fn apply(
         &self,
         authorization: AuthorizedAdministrationAction,
+        correlation_id: &str,
     ) -> Result<AccountStatusChangeResult, AccountStatusChangeError> {
         let authorization = authorization
             .into_account()
@@ -721,7 +730,7 @@ impl<'a> AccountStatusChangeWorkflow<'a> {
         let event = account_status_event(change, mutation.target().audit_reference());
         self.audit
             .with_current_destination(|destination| {
-                self.apply_with_destination(mutation, actor, event, destination)
+                self.apply_with_destination(mutation, actor, event, destination, correlation_id)
             })
             .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?
     }
@@ -732,15 +741,14 @@ impl<'a> AccountStatusChangeWorkflow<'a> {
         actor: AccountAuditReference,
         event: AuditEvent,
         destination: &OperationalAuditGenerationDestination,
+        correlation_id: &str,
     ) -> Result<AccountStatusChangeResult, AccountStatusChangeError> {
         destination
             .destination()
             .preflight(LogRecordType::Audit)
             .map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
-        let correlation = CorrelationId::new(
-            correlation_identifier().ok_or(AccountStatusChangeError::Unavailable)?,
-        )
-        .map_err(|_| AccountStatusChangeError::Unavailable)?;
+        let correlation = CorrelationId::new(correlation_id.to_owned())
+            .map_err(|_| AccountStatusChangeError::Unavailable)?;
         let classification = account_status_classification(mutation.desired());
         let attempt = self
             .audit
@@ -927,6 +935,7 @@ impl<'a> MfaPolicyChangeWorkflow<'a> {
         authorization: AuthorizedAdministrationAction,
         target: AccountPublicIdentifier,
         action: MfaPolicyAction,
+        correlation_id: &str,
     ) -> Result<MfaPolicyChangeResult, MfaPolicyChangeError> {
         let authorization = authorization
             .into_mfa_policy()
@@ -976,7 +985,7 @@ impl<'a> MfaPolicyChangeWorkflow<'a> {
         let event = mfa_policy_event(action, mutation.target().audit_reference());
         self.audit
             .with_current_destination(|destination| {
-                self.apply_with_destination(mutation, actor, event, destination)
+                self.apply_with_destination(mutation, actor, event, destination, correlation_id)
             })
             .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?
     }
@@ -987,14 +996,14 @@ impl<'a> MfaPolicyChangeWorkflow<'a> {
         actor: AccountAuditReference,
         event: AuditEvent,
         destination: &OperationalAuditGenerationDestination,
+        correlation_id: &str,
     ) -> Result<MfaPolicyChangeResult, MfaPolicyChangeError> {
         destination
             .destination()
             .preflight(LogRecordType::Audit)
             .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
-        let correlation =
-            CorrelationId::new(correlation_identifier().ok_or(MfaPolicyChangeError::Unavailable)?)
-                .map_err(|_| MfaPolicyChangeError::Unavailable)?;
+        let correlation = CorrelationId::new(correlation_id.to_owned())
+            .map_err(|_| MfaPolicyChangeError::Unavailable)?;
         let classification = mfa_policy_classification(mutation.action());
         let attempt = self
             .audit
@@ -1195,6 +1204,7 @@ impl<'a> GroupMutationWorkflow<'a> {
     pub(crate) fn apply(
         &self,
         action: AuthorizedAdministrationAction,
+        correlation_id: &str,
     ) -> Result<GroupMutationResult, GroupMutationWorkflowError> {
         let authorization = action
             .into_group_mutation()
@@ -1210,7 +1220,7 @@ impl<'a> GroupMutationWorkflow<'a> {
                     .destination()
                     .preflight(LogRecordType::Audit)
                     .map_err(|_| GroupMutationWorkflowError::AuditLogUnavailable)?;
-                self.apply_with_destination(authorization, destination)
+                self.apply_with_destination(authorization, destination, correlation_id)
             })
             .map_err(|_| GroupMutationWorkflowError::AuditLogUnavailable)?
     }
@@ -1219,6 +1229,7 @@ impl<'a> GroupMutationWorkflow<'a> {
         &self,
         authorization: weavelit_server_administration::AuthorizedGroupMutation,
         destination: &OperationalAuditGenerationDestination,
+        correlation_id: &str,
     ) -> Result<GroupMutationResult, GroupMutationWorkflowError> {
         let descriptor = authorization.mutation().clone();
         let target = match descriptor.clone() {
@@ -1273,10 +1284,8 @@ impl<'a> GroupMutationWorkflow<'a> {
             }
             _ => unreachable!("Group mutation workflow constructs only Group events"),
         };
-        let correlation = CorrelationId::new(
-            correlation_identifier().ok_or(GroupMutationWorkflowError::AuditLogUnavailable)?,
-        )
-        .map_err(|_| GroupMutationWorkflowError::AuditLogUnavailable)?;
+        let correlation = CorrelationId::new(correlation_id.to_owned())
+            .map_err(|_| GroupMutationWorkflowError::AuditLogUnavailable)?;
         let attempt = self
             .audit
             .producer()
@@ -1525,6 +1534,7 @@ impl<'a> GroupAdministrationWorkflow<'a> {
     pub(crate) fn mutate(
         &self,
         authorization: AuthorizedAdministrationAction,
+        correlation_id: &str,
     ) -> Result<GroupAdministrationMutationResult, GroupAdministrationWorkflowError> {
         let authorization = authorization
             .into_group_administration()
@@ -1571,6 +1581,7 @@ impl<'a> GroupAdministrationWorkflow<'a> {
                         group: audit_reference,
                     },
                     AuditLogClassification::AuthorizationGroupCreated,
+                    correlation_id,
                     |terminals| self.database.create_group(&mutation, terminals),
                 )
                 .map(|outcome| match outcome {
@@ -1627,6 +1638,7 @@ impl<'a> GroupAdministrationWorkflow<'a> {
                         group: audit_reference,
                     },
                     AuditLogClassification::AuthorizationGroupUpdated,
+                    correlation_id,
                     |terminals| self.database.update_group(&mutation, terminals),
                 )
                 .map(|outcome| match outcome {
@@ -1647,6 +1659,7 @@ impl<'a> GroupAdministrationWorkflow<'a> {
     pub(crate) fn delete(
         &self,
         authorization: AuthorizedAdministrationAction,
+        correlation_id: &str,
     ) -> Result<GroupAdministrationMutationResult, GroupAdministrationWorkflowError> {
         let authorization = authorization
             .into_group_mutation()
@@ -1676,6 +1689,7 @@ impl<'a> GroupAdministrationWorkflow<'a> {
                 group: audit_reference,
             },
             AuditLogClassification::AuthorizationGroupDeleted,
+            correlation_id,
             |terminals| self.database.delete_group(&mutation, terminals),
         )
         .map(|outcome| match outcome {
@@ -1693,6 +1707,7 @@ impl<'a> GroupAdministrationWorkflow<'a> {
         actor: StateIdentifier,
         event: AuditEvent,
         classification: AuditLogClassification,
+        correlation_id: &str,
         write: impl FnOnce(
             &GroupAdministrationAuditTerminalWrites<'_>,
         ) -> Result<Outcome, DatabaseError>,
@@ -1713,11 +1728,8 @@ impl<'a> GroupAdministrationWorkflow<'a> {
                     .destination()
                     .preflight(LogRecordType::Audit)
                     .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
-                let correlation = CorrelationId::new(
-                    correlation_identifier()
-                        .ok_or(GroupAdministrationWorkflowError::AuditLogUnavailable)?,
-                )
-                .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let correlation = CorrelationId::new(correlation_id.to_owned())
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
                 let attempt = self
                     .audit
                     .producer()
@@ -1867,6 +1879,7 @@ impl<'a> LogConfigurationChangeWorkflow<'a> {
     pub(crate) fn apply(
         &self,
         action: AuthorizedAdministrationAction,
+        correlation_id: &str,
     ) -> Result<LogConfigurationChangeResult, LogConfigurationChangeError> {
         let request = exact_log_configuration_change(&action)?;
         if self.audit.drain_before_consequential_operation().active()
@@ -1924,7 +1937,14 @@ impl<'a> LogConfigurationChangeWorkflow<'a> {
 
         self.audit
             .with_expected_current_destination(expected_audit_generation, |destination| {
-                self.apply_with_destination(action, prepared, actor, event, destination)
+                self.apply_with_destination(
+                    action,
+                    prepared,
+                    actor,
+                    event,
+                    destination,
+                    correlation_id,
+                )
             })
             .map_err(log_configuration_unavailable)?
     }
@@ -1936,11 +1956,10 @@ impl<'a> LogConfigurationChangeWorkflow<'a> {
         actor: weavelit_server_database::AccountAuditReference,
         event: AuditEvent,
         destination: &OperationalAuditGenerationDestination,
+        correlation_id: &str,
     ) -> Result<LogConfigurationChangeResult, LogConfigurationChangeError> {
-        let correlation = CorrelationId::new(
-            correlation_identifier().ok_or(LogConfigurationChangeError::AuditLogUnavailable)?,
-        )
-        .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?;
+        let correlation = CorrelationId::new(correlation_id.to_owned())
+            .map_err(|_| LogConfigurationChangeError::AuditLogUnavailable)?;
         let attempt = self
             .audit
             .producer()
@@ -2187,6 +2206,7 @@ impl<'a> MfaModuleEnablementWorkflow<'a> {
         &self,
         action: AuthorizedAdministrationAction,
         preview: MfaModuleEnablementPreview,
+        correlation_id: &str,
     ) -> Result<MfaModuleEnablementResult, MfaModuleEnablementError> {
         let desired_state = exact_totp_change(&action)?;
         if desired_state != preview.desired_state || preview.target != totp_target()? {
@@ -2200,7 +2220,7 @@ impl<'a> MfaModuleEnablementWorkflow<'a> {
 
         self.audit
             .with_current_destination(|destination| {
-                self.apply_with_destination(action, preview, destination)
+                self.apply_with_destination(action, preview, destination, correlation_id)
             })
             .map_err(audit_unavailable)?
     }
@@ -2210,16 +2230,15 @@ impl<'a> MfaModuleEnablementWorkflow<'a> {
         action: AuthorizedAdministrationAction,
         preview: MfaModuleEnablementPreview,
         destination: &OperationalAuditGenerationDestination,
+        correlation_id: &str,
     ) -> Result<MfaModuleEnablementResult, MfaModuleEnablementError> {
         let actor = self
             .database
             .load_account_audit_reference(action.actor())
             .map_err(audit_unavailable)?
             .ok_or(MfaModuleEnablementError::AuditLogUnavailable)?;
-        let correlation = CorrelationId::new(
-            correlation_identifier().ok_or(MfaModuleEnablementError::AuditLogUnavailable)?,
-        )
-        .map_err(|_| MfaModuleEnablementError::AuditLogUnavailable)?;
+        let correlation = CorrelationId::new(correlation_id.to_owned())
+            .map_err(|_| MfaModuleEnablementError::AuditLogUnavailable)?;
         let event = AuditEvent::AuthenticationMfaModuleEnablementChanged {
             module: MfaModuleReference::new(TOTP_MODULE)
                 .map_err(|_| MfaModuleEnablementError::AuditLogUnavailable)?,
@@ -2405,9 +2424,11 @@ pub(crate) mod tests {
     };
 
     const CLIENT_MODULE: &str = "web-ui";
+    const TEST_CORRELATION: &str = "administration-test-correlation";
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub(crate) struct ObservedAuditRecord {
+        pub(crate) correlation_id: String,
         pub(crate) classification: String,
         pub(crate) action: String,
         pub(crate) target: String,
@@ -2436,6 +2457,7 @@ pub(crate) mod tests {
                 return Err(LogDestinationError::IntegrityFailure);
             };
             self.records.lock().unwrap().push(ObservedAuditRecord {
+                correlation_id: view.correlation_id().as_str().to_owned(),
                 classification: view.body().classification().to_owned(),
                 action: view.body().action().to_owned(),
                 target: view.body().target().to_owned(),
@@ -3154,17 +3176,17 @@ pub(crate) mod tests {
         let workflow = AccountStatusChangeWorkflow::new(&surface.database, &audit);
 
         assert_eq!(
-            workflow.apply(authorized_account_status(
-                account_public_identifier(0x92),
-                AccountStatus::Active,
-            )),
+            workflow.apply(
+                authorized_account_status(account_public_identifier(0x92), AccountStatus::Active,),
+                TEST_CORRELATION
+            ),
             Ok(AccountStatusChangeResult::Unchanged)
         );
         assert_eq!(
             workflow.apply(authorized_account_status(
                 account_public_identifier(0x99),
                 AccountStatus::Disabled,
-            )),
+            ), TEST_CORRELATION),
             Err(AccountStatusChangeError::TargetNotFound)
         );
         Connection::open(&surface.path)
@@ -3181,7 +3203,7 @@ pub(crate) mod tests {
             workflow.apply(authorized_account_status(
                 account_public_identifier(0x92),
                 AccountStatus::Disabled,
-            )),
+            ), TEST_CORRELATION),
             Err(AccountStatusChangeError::CredentialRevisionExhausted)
         );
         assert!(records.lock().unwrap().is_empty());
@@ -3211,7 +3233,7 @@ pub(crate) mod tests {
             workflow.apply(authorized_account_status(
                 account_public_identifier(0x92),
                 AccountStatus::Disabled,
-            )),
+            ), TEST_CORRELATION),
             Err(AccountStatusChangeError::AuditLogUnavailable)
         );
         assert_eq!(stored_account_status(&surface.path, 2), (true, 7));
@@ -3233,7 +3255,7 @@ pub(crate) mod tests {
             workflow.apply(authorized_account_status(
                 account_public_identifier(0x92),
                 AccountStatus::Disabled,
-            )),
+            ), TEST_CORRELATION),
             Ok(AccountStatusChangeResult::Changed {
                 status: AccountStatus::Disabled,
                 revoked_sessions: 2,
@@ -3251,10 +3273,10 @@ pub(crate) mod tests {
         );
 
         assert_eq!(
-            workflow.apply(authorized_account_status(
-                account_public_identifier(0x92),
-                AccountStatus::Active,
-            )),
+            workflow.apply(
+                authorized_account_status(account_public_identifier(0x92), AccountStatus::Active,),
+                TEST_CORRELATION
+            ),
             Ok(AccountStatusChangeResult::Changed {
                 status: AccountStatus::Active,
                 revoked_sessions: 0,
@@ -3273,6 +3295,11 @@ pub(crate) mod tests {
 
         let records = records.lock().unwrap();
         assert_eq!(records.len(), 4);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.correlation_id == TEST_CORRELATION)
+        );
         for record in &records[0..2] {
             assert_eq!(record.classification, "authentication.user.disabled");
             assert_eq!(record.action, "disable");
@@ -3307,7 +3334,7 @@ pub(crate) mod tests {
             workflow.apply(authorized_account_status(
                 account_public_identifier(0x91),
                 AccountStatus::Disabled,
-            )),
+            ), TEST_CORRELATION),
             Ok(AccountStatusChangeResult::Changed {
                 status: AccountStatus::Disabled,
                 revoked_sessions: 1,
@@ -3346,13 +3373,14 @@ pub(crate) mod tests {
             workflow.apply(authorized_account_status(
                 account_public_identifier(0x92),
                 AccountStatus::Disabled,
-            )),
+            ), TEST_CORRELATION),
             Ok(AccountStatusChangeResult::Stale {
                 delivery: AccountStatusChangeDelivery::Acknowledged,
             })
         );
         assert_eq!(stored_account_status(&stale.path, 2), (true, 9));
         assert_eq!(count(&stale.path, "weavelit_session", ""), 2);
+        assert_eq!(records.lock().unwrap()[1].correlation_id, TEST_CORRELATION);
         assert_eq!(
             records.lock().unwrap()[1].detail,
             "accountable action denied"
@@ -3377,12 +3405,13 @@ pub(crate) mod tests {
             workflow.apply(authorized_account_status(
                 account_public_identifier(0x92),
                 AccountStatus::Disabled,
-            )),
+            ), TEST_CORRELATION),
             Ok(AccountStatusChangeResult::Denied {
                 delivery: AccountStatusChangeDelivery::Acknowledged,
             })
         );
         assert_eq!(stored_account_status(&denied.path, 2), (true, 7));
+        assert_eq!(records.lock().unwrap()[1].correlation_id, TEST_CORRELATION);
         assert_eq!(
             records.lock().unwrap()[1].detail,
             "accountable action denied"
@@ -3401,7 +3430,7 @@ pub(crate) mod tests {
             workflow.apply(authorized_account_status(
                 account_public_identifier(0x92),
                 AccountStatus::Disabled,
-            )),
+            ), TEST_CORRELATION),
             Ok(AccountStatusChangeResult::Changed {
                 status: AccountStatus::Disabled,
                 revoked_sessions: 0,
@@ -3453,7 +3482,7 @@ pub(crate) mod tests {
         let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
 
         assert_eq!(
-            workflow.apply(action),
+            workflow.apply(action, TEST_CORRELATION),
             Ok(LogConfigurationChangeResult::Unchanged)
         );
         assert!(records.lock().unwrap().is_empty());
@@ -3484,7 +3513,7 @@ pub(crate) mod tests {
         let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
 
         assert_eq!(
-            workflow.apply(action),
+            workflow.apply(action, TEST_CORRELATION),
             Err(LogConfigurationChangeError::ChangeRejected)
         );
         assert!(records.lock().unwrap().is_empty());
@@ -3510,7 +3539,7 @@ pub(crate) mod tests {
         let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
 
         assert_eq!(
-            workflow.apply(action),
+            workflow.apply(action, TEST_CORRELATION),
             Ok(LogConfigurationChangeResult::Applied {
                 generation_count: 2,
                 delivery: LogConfigurationChangeDelivery::Acknowledged,
@@ -3519,7 +3548,8 @@ pub(crate) mod tests {
         let records = records.lock().unwrap();
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|record| {
-            record.classification == "dependency.log-module-configuration.changed"
+            record.correlation_id == TEST_CORRELATION
+                && record.classification == "dependency.log-module-configuration.changed"
                 && record.action == "change-log-module-configuration"
                 && record.target
                     == "log-configuration:ar-68686868686868686868686868686868;log-configuration:ar-69696969696969696969696969696969"
@@ -3558,7 +3588,7 @@ pub(crate) mod tests {
         let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
 
         assert_eq!(
-            workflow.apply(action),
+            workflow.apply(action, TEST_CORRELATION),
             Ok(LogConfigurationChangeResult::Applied {
                 generation_count: 2,
                 delivery: LogConfigurationChangeDelivery::Pending,
@@ -3622,13 +3652,18 @@ pub(crate) mod tests {
         let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
 
         assert_eq!(
-            workflow.apply(action),
+            workflow.apply(action, TEST_CORRELATION),
             Ok(LogConfigurationChangeResult::Stale {
                 delivery: LogConfigurationChangeDelivery::Acknowledged,
             })
         );
         let records = records.lock().unwrap();
         assert_eq!(records.len(), 2);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.correlation_id == TEST_CORRELATION)
+        );
         assert!(records[1].detail.contains("accountable action denied"));
         assert_eq!(
             count(&surface.path, "weavelit_log_configuration_generation", ""),
@@ -3700,7 +3735,7 @@ pub(crate) mod tests {
             .unwrap();
 
         assert_eq!(
-            workflow.apply(action, preview),
+            workflow.apply(action, preview, TEST_CORRELATION),
             Err(MfaModuleEnablementError::AuditLogUnavailable)
         );
         assert_eq!(enablement(&surface.path), "false");
@@ -3715,7 +3750,9 @@ pub(crate) mod tests {
         let workflow = MfaModuleEnablementWorkflow::new(&surface.database, &audit);
         let preview = workflow.preview(&action).unwrap();
 
-        let error = workflow.apply(action, preview).unwrap_err();
+        let error = workflow
+            .apply(action, preview, TEST_CORRELATION)
+            .unwrap_err();
 
         assert_eq!(error, MfaModuleEnablementError::AuditLogUnavailable);
         assert_eq!(
@@ -3741,7 +3778,7 @@ pub(crate) mod tests {
         let preview = workflow.preview(&action).unwrap();
         assert_eq!(preview.affected_users(), 1);
 
-        let result = workflow.apply(action, preview).unwrap();
+        let result = workflow.apply(action, preview, TEST_CORRELATION).unwrap();
 
         assert_eq!(
             result,
@@ -3769,6 +3806,11 @@ pub(crate) mod tests {
         );
         let records = records.lock().unwrap();
         assert_eq!(records.len(), 2);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.correlation_id == TEST_CORRELATION)
+        );
         assert_eq!(
             records[0].classification,
             "authentication.mfa-module-enablement.changed"
@@ -3787,7 +3829,7 @@ pub(crate) mod tests {
         let workflow = MfaModuleEnablementWorkflow::new(&surface.database, &audit);
         let preview = workflow.preview(&action).unwrap();
 
-        let result = workflow.apply(action, preview).unwrap();
+        let result = workflow.apply(action, preview, TEST_CORRELATION).unwrap();
 
         assert_eq!(
             result,
@@ -3818,7 +3860,7 @@ pub(crate) mod tests {
         assert_eq!(preview.affected_users(), 0);
         insert_enrollment(&Connection::open(&surface.path).unwrap(), 1);
 
-        let result = workflow.apply(action, preview).unwrap();
+        let result = workflow.apply(action, preview, TEST_CORRELATION).unwrap();
 
         assert_eq!(
             result,
@@ -3836,6 +3878,11 @@ pub(crate) mod tests {
         );
         let records = records.lock().unwrap();
         assert_eq!(records.len(), 2);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.correlation_id == TEST_CORRELATION)
+        );
         assert_eq!(records[1].detail, "accountable action denied");
         assert!(!records[1].detail.contains('1'));
     }
@@ -3848,7 +3895,7 @@ pub(crate) mod tests {
         let workflow = MfaModuleEnablementWorkflow::new(&surface.database, &audit);
         let preview = workflow.preview(&action).unwrap();
 
-        let result = workflow.apply(action, preview).unwrap();
+        let result = workflow.apply(action, preview, TEST_CORRELATION).unwrap();
 
         assert_eq!(result.delivery, MfaModuleEnablementDelivery::Pending);
         assert_eq!(enablement(&surface.path), "true");

@@ -2527,7 +2527,7 @@ fn execute_mfa_policy_change(
         .authorize_mfa_policy(admission, ticket)
         .map_err(|_| MfaPolicyRejection::MfaPolicyDenied)?;
     match MfaPolicyChangeWorkflow::new(database, audit_recovery)
-        .apply(authorized, target, action)
+        .apply(authorized, target, action, correlation_id)
         .map_err(mfa_policy_workflow_error)?
     {
         MfaPolicyChangeResult::Unchanged | MfaPolicyChangeResult::Changed { .. } => {}
@@ -2581,7 +2581,7 @@ fn execute_account_create(
         .authorize_account_write(admission, AccountAdministrationAction::Create(change))
         .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
     match AccountCredentialIssuanceWorkflow::new(database, authentication, audit_recovery)
-        .issue(action, &credential_issuance_ticket)
+        .issue(action, &credential_issuance_ticket, &correlation_id)
         .map_err(account_credential_workflow_error)?
     {
         AccountCredentialIssuanceResult::Created {
@@ -2642,7 +2642,7 @@ fn execute_account_password_reset(
         )
         .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
     match AccountCredentialIssuanceWorkflow::new(database, authentication, audit_recovery)
-        .issue(action, &credential_issuance_ticket)
+        .issue(action, &credential_issuance_ticket, &correlation_id)
         .map_err(account_credential_workflow_error)?
     {
         AccountCredentialIssuanceResult::PasswordReset {
@@ -2821,8 +2821,11 @@ fn execute_configuration_administration(
                         .ok_or(ConfigurationAdministrationRejection::Conflict)?,
                 )
                 .map_err(|_| ConfigurationAdministrationRejection::Conflict)?;
-            match MfaModuleEnablementWorkflow::new(database, audit_recovery).apply(action, preview)
-            {
+            match MfaModuleEnablementWorkflow::new(database, audit_recovery).apply(
+                action,
+                preview,
+                &correlation_id,
+            ) {
                 Ok(result) => match (result.outcome, result.delivery) {
                     (
                         MfaModuleEnablementOutcome::Applied {
@@ -2917,7 +2920,9 @@ fn execute_configuration_administration(
                     AdministrationAction::LogConfigurationChange(change),
                 )
                 .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
-            match LogConfigurationChangeWorkflow::new(database, audit_recovery).apply(action) {
+            match LogConfigurationChangeWorkflow::new(database, audit_recovery)
+                .apply(action, &correlation_id)
+            {
                 Ok(LogConfigurationChangeResult::Unchanged)
                 | Ok(LogConfigurationChangeResult::Applied {
                     delivery: LogConfigurationChangeDelivery::Acknowledged,
@@ -3173,7 +3178,9 @@ fn execute_account_administration(
             let action = administration
                 .authorize_account_status(admission, AccountStatusChange::new(target, desired))
                 .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
-            match AccountStatusChangeWorkflow::new(database, audit_recovery).apply(action) {
+            match AccountStatusChangeWorkflow::new(database, audit_recovery)
+                .apply(action, &correlation_id)
+            {
                 Ok(AccountStatusChangeResult::Unchanged) => {}
                 Ok(AccountStatusChangeResult::Changed {
                     status: AccountStatus::Active,
@@ -3311,7 +3318,11 @@ fn execute_group_administration(
                     GroupAdministrationAction::Create(change),
                 )
                 .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
-            group_mutation_response(workflow.mutate(action).map_err(group_workflow_error)?)
+            group_mutation_response(
+                workflow
+                    .mutate(action, &correlation_id)
+                    .map_err(group_workflow_error)?,
+            )
         }
         ClientGroupRequest::Update(request) => {
             let target = database
@@ -3325,7 +3336,11 @@ fn execute_group_administration(
                     GroupAdministrationAction::Update(change),
                 )
                 .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
-            group_mutation_response(workflow.mutate(action).map_err(group_workflow_error)?)
+            group_mutation_response(
+                workflow
+                    .mutate(action, &correlation_id)
+                    .map_err(group_workflow_error)?,
+            )
         }
         ClientGroupRequest::Delete(request) => {
             let target = database
@@ -3338,7 +3353,11 @@ fn execute_group_administration(
                     request.ticket(),
                 )
                 .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
-            group_mutation_response(workflow.delete(action).map_err(group_workflow_error)?)
+            group_mutation_response(
+                workflow
+                    .delete(action, &correlation_id)
+                    .map_err(group_workflow_error)?,
+            )
         }
         ClientGroupRequest::MembersList(request) => {
             let target = database
@@ -3378,7 +3397,7 @@ fn execute_group_administration(
                 .authorize_grant_mutation_ticket(admission, mutation, request.ticket())
                 .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
             group_association_result(
-                GroupMutationWorkflow::new(database, audit_recovery).apply(action),
+                GroupMutationWorkflow::new(database, audit_recovery).apply(action, &correlation_id),
             )?;
             let account = database
                 .load_account_administration_projection(account)
@@ -3430,7 +3449,7 @@ fn execute_group_administration(
                 .authorize_grant_mutation_ticket(admission, mutation, request.ticket())
                 .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
             group_association_result(
-                GroupMutationWorkflow::new(database, audit_recovery).apply(action),
+                GroupMutationWorkflow::new(database, audit_recovery).apply(action, &correlation_id),
             )?;
             Ok(ClientGroupResult::GrantChanged(
                 ClientGroupGrantChanged::new(client_group_grant(grant)?, request.present())
