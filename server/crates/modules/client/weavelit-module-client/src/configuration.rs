@@ -148,7 +148,7 @@ fn deserialize_optional_zeroizing_string<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    Option::<String>::deserialize(deserializer).map(|value| value.map(Zeroizing::new))
+    String::deserialize(deserializer).map(|value| Some(Zeroizing::new(value)))
 }
 
 pub struct TotpEnablementApplyRequest {
@@ -974,7 +974,20 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(TotpEnablementApplyRequest::from_json(br#"{"enabled":false}"#).is_ok());
+        let omitted = TotpEnablementApplyRequest::from_json(br#"{"enabled":false}"#).unwrap();
+        assert_eq!(omitted.preview(), None);
+        assert!(
+            TotpEnablementApplyRequest::from_json(
+                br#"{"enabled":false,"totp_enablement_preview":null}"#
+            )
+            .is_err()
+        );
+        assert!(
+            TotpEnablementApplyRequest::from_json(
+                br#"{"enabled":false,"totp_enablement_preview":1}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -996,6 +1009,37 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn totp_apply_omission_reaches_claim_and_present_null_is_bad_request() {
+        let declaration = ConfigurationAdministrationDeclaration::new(capability(Err(
+            ConfigurationAdministrationRejection::Conflict,
+        )));
+
+        let omitted = declaration
+            .totp_apply_route()
+            .oneshot(request(
+                Method::PUT,
+                TOTP_ENABLEMENT_APPLY_ROUTE,
+                r#"{"enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(omitted.status(), StatusCode::CONFLICT);
+        assert!(rendered(omitted).await.contains("conflict"));
+
+        let explicit_null = declaration
+            .totp_apply_route()
+            .oneshot(request(
+                Method::PUT,
+                TOTP_ENABLEMENT_APPLY_ROUTE,
+                r#"{"enabled":false,"totp_enablement_preview":null}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(explicit_null.status(), StatusCode::BAD_REQUEST);
+        assert!(rendered(explicit_null).await.contains("bad_request"));
     }
 
     #[test]
