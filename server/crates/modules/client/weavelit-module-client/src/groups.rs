@@ -52,6 +52,13 @@ const PUBLIC_ID_CHARS: usize = 22;
 const TICKET_BYTES: usize = 32;
 const TICKET_CHARS: usize = 43;
 
+fn deserialize_zeroizing_string<'de, D>(deserializer: D) -> Result<Zeroizing<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Zeroizing::new)
+}
+
 fn parse_group_delete_body_wiped<B: AsMut<[u8]>>(
     buffer: B,
 ) -> Result<GroupsDeleteRequest, GroupAdministrationInputRejected> {
@@ -230,7 +237,8 @@ impl GroupsUpdateRequest {
 #[serde(deny_unknown_fields)]
 struct DeleteBody {
     public_id: String,
-    grant_mutation_step_up_ticket: String,
+    #[serde(deserialize_with = "deserialize_zeroizing_string")]
+    grant_mutation_step_up_ticket: Zeroizing<String>,
 }
 
 #[derive(Debug)]
@@ -249,7 +257,7 @@ impl GroupsDeleteRequest {
         }
         Ok(Self {
             public_id: parsed.public_id,
-            ticket: Zeroizing::new(parsed.grant_mutation_step_up_ticket),
+            ticket: parsed.grant_mutation_step_up_ticket,
         })
     }
     pub fn public_id(&self) -> &str {
@@ -313,7 +321,8 @@ struct MemberChangeBody {
     group_public_id: String,
     account_public_id: String,
     present: bool,
-    grant_mutation_step_up_ticket: String,
+    #[serde(deserialize_with = "deserialize_zeroizing_string")]
+    grant_mutation_step_up_ticket: Zeroizing<String>,
 }
 
 #[derive(Debug)]
@@ -337,7 +346,7 @@ impl GroupMemberChangeRequest {
             group_public_id: parsed.group_public_id,
             account_public_id: parsed.account_public_id,
             present: parsed.present,
-            ticket: Zeroizing::new(parsed.grant_mutation_step_up_ticket),
+            ticket: parsed.grant_mutation_step_up_ticket,
         })
     }
 
@@ -462,7 +471,8 @@ struct GrantChangeBody {
     group_public_id: String,
     grant: GroupGrantProjection,
     present: bool,
-    grant_mutation_step_up_ticket: String,
+    #[serde(deserialize_with = "deserialize_zeroizing_string")]
+    grant_mutation_step_up_ticket: Zeroizing<String>,
 }
 
 #[derive(Debug)]
@@ -486,7 +496,7 @@ impl GroupGrantChangeRequest {
             group_public_id: parsed.group_public_id,
             grant: parsed.grant,
             present: parsed.present,
-            ticket: Zeroizing::new(parsed.grant_mutation_step_up_ticket),
+            ticket: parsed.grant_mutation_step_up_ticket,
         })
     }
 
@@ -1418,6 +1428,84 @@ mod tests {
                 r#"{{"group_public_id":"{ID}","grant":{{"type":"server_administration"}},"present":true,"grant_mutation_step_up_ticket":"short"}}"#
             ),
             |buffer| parse_group_grant_change_body_wiped(buffer).map(drop),
+        );
+    }
+
+    #[test]
+    fn group_ticket_schemas_retain_zeroizing_owners_before_validation() {
+        fn assert_zeroizing(_: &Zeroizing<String>) {}
+
+        let accepted_delete: DeleteBody = required_json(
+            format!(r#"{{"public_id":"{ID}","grant_mutation_step_up_ticket":"{TICKET}"}}"#)
+                .as_bytes(),
+        )
+        .unwrap();
+        let rejected_delete: DeleteBody = required_json(
+            format!(r#"{{"public_id":"invalid","grant_mutation_step_up_ticket":"{TICKET}"}}"#)
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_zeroizing(&accepted_delete.grant_mutation_step_up_ticket);
+        assert_zeroizing(&rejected_delete.grant_mutation_step_up_ticket);
+
+        let accepted_member: MemberChangeBody = required_json(
+            format!(
+                r#"{{"group_public_id":"{ID}","account_public_id":"{ID}","present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let rejected_member: MemberChangeBody = required_json(
+            format!(
+                r#"{{"group_public_id":"{ID}","account_public_id":"invalid","present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_zeroizing(&accepted_member.grant_mutation_step_up_ticket);
+        assert_zeroizing(&rejected_member.grant_mutation_step_up_ticket);
+
+        let accepted_grant: GrantChangeBody = required_json(
+            format!(
+                r#"{{"group_public_id":"{ID}","grant":{{"type":"server_administration"}},"present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let rejected_grant: GrantChangeBody = required_json(
+            format!(
+                r#"{{"group_public_id":"{ID}","grant":{{"type":"operation","value":""}},"present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_zeroizing(&accepted_grant.grant_mutation_step_up_ticket);
+        assert_zeroizing(&rejected_grant.grant_mutation_step_up_ticket);
+
+        assert!(
+            GroupsDeleteRequest::from_json(
+                format!(r#"{{"public_id":"invalid","grant_mutation_step_up_ticket":"{TICKET}"}}"#)
+                    .as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            GroupMemberChangeRequest::from_json(
+                format!(
+                    r#"{{"group_public_id":"{ID}","account_public_id":"invalid","present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+                )
+                .as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            GroupGrantChangeRequest::from_json(
+                format!(
+                    r#"{{"group_public_id":"{ID}","grant":{{"type":"operation","value":""}},"present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+                )
+                .as_bytes()
+            )
+            .is_err()
         );
     }
 
