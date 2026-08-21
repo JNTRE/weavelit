@@ -15,7 +15,8 @@ use weavelit_server_log_authority::ServerLogAuthority;
 #[test]
 fn sqlite_catalog_dispatch_persists_attempt_and_terminal_relationship() {
     let temporary_directory = tempfile::tempdir().unwrap();
-    let local_root = temporary_directory.path().join("configured-log-root");
+    let canonical = temporary_directory.path().canonicalize().unwrap();
+    let local_root = canonical.join("configured-log-root");
     std::fs::create_dir(&local_root).unwrap();
     let authority = ServerLogAuthority::new();
     let catalog = LogModuleCatalog::new(vec![registration()]).unwrap();
