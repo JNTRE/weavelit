@@ -1,6 +1,6 @@
 //! Strict public Client Module contract for Group administration.
 
-use std::{pin::Pin, sync::Arc};
+use std::{io, pin::Pin, sync::Arc};
 
 use axum::{
     body::{Body, to_bytes},
@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     ExpectedOrigin, JSON_MEDIA_TYPE, accepts_json,
+    administration::AccountAdministrationProjection,
     authentication::{
         CorrelationSource, submitted_csrf_token, submitted_session_token, unrenderable_response,
     },
@@ -30,12 +31,20 @@ pub const GROUPS_VIEW_ROUTE: &str = "/api/v1/administration/groups/view";
 pub const GROUPS_CREATE_ROUTE: &str = "/api/v1/administration/groups/create";
 pub const GROUPS_UPDATE_ROUTE: &str = "/api/v1/administration/groups/update";
 pub const GROUPS_DELETE_ROUTE: &str = "/api/v1/administration/groups/delete";
+pub const GROUP_MEMBERS_LIST_ROUTE: &str = "/api/v1/administration/groups/members/list";
+pub const GROUP_MEMBERS_CHANGE_ROUTE: &str = "/api/v1/administration/groups/members/change";
+pub const GROUP_GRANTS_LIST_ROUTE: &str = "/api/v1/administration/groups/grants/list";
+pub const GROUP_GRANTS_CHANGE_ROUTE: &str = "/api/v1/administration/groups/grants/change";
+pub const ADMINISTRATION_CATALOG_ROUTE: &str = "/api/v1/administration/catalog";
 pub const DEFAULT_GROUPS_PAGE_LIMIT: usize = 50;
 pub const MAX_GROUPS_PAGE_LIMIT: usize = 100;
 pub const MAX_GROUP_ADMINISTRATION_BODY_BYTES: usize = 2 * 1024;
 pub const MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES: usize = 160 * 1024;
+pub const MAX_ADMINISTRATION_CATALOG_ENTRIES: usize = 256;
 
 const CURSOR_SCOPE: &[u8] = b"weavelit:/api/v1/administration/groups/list:v1\0";
+const MEMBER_CURSOR_SCOPE: &[u8] = b"weavelit:/api/v1/administration/groups/members/list:v1\0";
+const GRANT_CURSOR_SCOPE: &[u8] = b"weavelit:/api/v1/administration/groups/grants/list:v1\0";
 const MAX_NAME_BYTES: usize = 256;
 const MAX_DESCRIPTION_BYTES: usize = 1024;
 const PUBLIC_ID_BYTES: usize = 16;
@@ -230,6 +239,272 @@ impl GroupsDeleteRequest {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssociationListBody {
+    group_public_id: String,
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupMembersListRequest {
+    group_public_id: String,
+    limit: usize,
+    after: Option<(String, String)>,
+}
+
+impl GroupMembersListRequest {
+    pub fn from_json(body: &[u8]) -> Result<Self, GroupAdministrationInputRejected> {
+        let parsed: AssociationListBody = required_json(body)?;
+        if !valid_public_id(&parsed.group_public_id) {
+            return Err(GroupAdministrationInputRejected);
+        }
+        let limit = page_limit(parsed.limit)?;
+        Ok(Self {
+            group_public_id: parsed.group_public_id,
+            limit,
+            after: parsed
+                .cursor
+                .map(|cursor| decode_member_cursor(&cursor))
+                .transpose()?,
+        })
+    }
+
+    pub fn group_public_id(&self) -> &str {
+        &self.group_public_id
+    }
+
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+
+    pub fn after(&self) -> Option<(&str, &str)> {
+        self.after
+            .as_ref()
+            .map(|(username, public_id)| (username.as_str(), public_id.as_str()))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemberChangeBody {
+    group_public_id: String,
+    account_public_id: String,
+    present: bool,
+    grant_mutation_step_up_ticket: String,
+}
+
+#[derive(Debug)]
+pub struct GroupMemberChangeRequest {
+    group_public_id: String,
+    account_public_id: String,
+    present: bool,
+    ticket: Zeroizing<String>,
+}
+
+impl GroupMemberChangeRequest {
+    pub fn from_json(body: &[u8]) -> Result<Self, GroupAdministrationInputRejected> {
+        let parsed: MemberChangeBody = required_json(body)?;
+        if !valid_public_id(&parsed.group_public_id)
+            || !valid_public_id(&parsed.account_public_id)
+            || !valid_ticket(&parsed.grant_mutation_step_up_ticket)
+        {
+            return Err(GroupAdministrationInputRejected);
+        }
+        Ok(Self {
+            group_public_id: parsed.group_public_id,
+            account_public_id: parsed.account_public_id,
+            present: parsed.present,
+            ticket: Zeroizing::new(parsed.grant_mutation_step_up_ticket),
+        })
+    }
+
+    pub fn group_public_id(&self) -> &str {
+        &self.group_public_id
+    }
+
+    pub fn account_public_id(&self) -> &str {
+        &self.account_public_id
+    }
+
+    pub const fn present(&self) -> bool {
+        self.present
+    }
+
+    pub fn ticket(&self) -> &str {
+        &self.ticket
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GroupGrantProjection {
+    ClientModule { value: String },
+    ServiceModule { value: String },
+    Operation { value: String },
+    ServerAdministration,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGroupGrant {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    value: RawGrantValue,
+}
+
+#[derive(Default)]
+enum RawGrantValue {
+    #[default]
+    Missing,
+    Text(String),
+}
+
+impl<'de> Deserialize<'de> for RawGrantValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(Self::Text)
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupGrantProjection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawGroupGrant::deserialize(deserializer)?;
+        match (raw.kind.as_str(), raw.value) {
+            ("client_module", RawGrantValue::Text(value)) => Ok(Self::ClientModule { value }),
+            ("service_module", RawGrantValue::Text(value)) => Ok(Self::ServiceModule { value }),
+            ("operation", RawGrantValue::Text(value)) => Ok(Self::Operation { value }),
+            ("server_administration", RawGrantValue::Missing) => Ok(Self::ServerAdministration),
+            _ => Err(serde::de::Error::custom("invalid Group grant")),
+        }
+    }
+}
+
+impl GroupGrantProjection {
+    fn validate(&self) -> Result<(), GroupAdministrationInputRejected> {
+        match self {
+            Self::ClientModule { value }
+            | Self::ServiceModule { value }
+            | Self::Operation { value } => validate_text(value, MAX_NAME_BYTES),
+            Self::ServerAdministration => Ok(()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupGrantsListRequest {
+    group_public_id: String,
+    limit: usize,
+    after: Option<GroupGrantProjection>,
+}
+
+impl GroupGrantsListRequest {
+    pub fn from_json(body: &[u8]) -> Result<Self, GroupAdministrationInputRejected> {
+        let parsed: AssociationListBody = required_json(body)?;
+        if !valid_public_id(&parsed.group_public_id) {
+            return Err(GroupAdministrationInputRejected);
+        }
+        let limit = page_limit(parsed.limit)?;
+        Ok(Self {
+            group_public_id: parsed.group_public_id,
+            limit,
+            after: parsed
+                .cursor
+                .map(|cursor| decode_grant_cursor(&cursor))
+                .transpose()?,
+        })
+    }
+
+    pub fn group_public_id(&self) -> &str {
+        &self.group_public_id
+    }
+
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+
+    pub const fn after(&self) -> Option<&GroupGrantProjection> {
+        self.after.as_ref()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrantChangeBody {
+    group_public_id: String,
+    grant: GroupGrantProjection,
+    present: bool,
+    grant_mutation_step_up_ticket: String,
+}
+
+#[derive(Debug)]
+pub struct GroupGrantChangeRequest {
+    group_public_id: String,
+    grant: GroupGrantProjection,
+    present: bool,
+    ticket: Zeroizing<String>,
+}
+
+impl GroupGrantChangeRequest {
+    pub fn from_json(body: &[u8]) -> Result<Self, GroupAdministrationInputRejected> {
+        let parsed: GrantChangeBody = required_json(body)?;
+        if !valid_public_id(&parsed.group_public_id)
+            || !valid_ticket(&parsed.grant_mutation_step_up_ticket)
+        {
+            return Err(GroupAdministrationInputRejected);
+        }
+        parsed.grant.validate()?;
+        Ok(Self {
+            group_public_id: parsed.group_public_id,
+            grant: parsed.grant,
+            present: parsed.present,
+            ticket: Zeroizing::new(parsed.grant_mutation_step_up_ticket),
+        })
+    }
+
+    pub fn group_public_id(&self) -> &str {
+        &self.group_public_id
+    }
+
+    pub const fn grant(&self) -> &GroupGrantProjection {
+        &self.grant
+    }
+
+    pub const fn present(&self) -> bool {
+        self.present
+    }
+
+    pub fn ticket(&self) -> &str {
+        &self.ticket
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdministrationCatalogRequest;
+
+impl AdministrationCatalogRequest {
+    pub fn from_optional_json(body: &[u8]) -> Result<Self, GroupAdministrationInputRejected> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Empty {}
+
+        if body.len() > MAX_GROUP_ADMINISTRATION_BODY_BYTES {
+            return Err(GroupAdministrationInputRejected);
+        }
+        if !body.is_empty() {
+            let _: Empty = strict_json(body)?;
+        }
+        Ok(Self)
+    }
+}
+
 #[derive(Debug)]
 pub enum GroupAdministrationRequest {
     List(GroupsListRequest),
@@ -237,6 +512,11 @@ pub enum GroupAdministrationRequest {
     Create(GroupsCreateRequest),
     Update(GroupsUpdateRequest),
     Delete(GroupsDeleteRequest),
+    MembersList(GroupMembersListRequest),
+    MemberChange(GroupMemberChangeRequest),
+    GrantsList(GroupGrantsListRequest),
+    GrantChange(GroupGrantChangeRequest),
+    Catalog(AdministrationCatalogRequest),
 }
 
 pub struct GroupAdministrationSubmission {
@@ -324,6 +604,153 @@ impl GroupsPage {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GroupMembersPage {
+    items: Vec<AccountAdministrationProjection>,
+    next_cursor: Option<String>,
+}
+
+impl GroupMembersPage {
+    pub fn from_ordered(
+        request: &GroupMembersListRequest,
+        projections: Vec<AccountAdministrationProjection>,
+    ) -> Result<Self, GroupAdministrationInputRejected> {
+        if projections
+            .windows(2)
+            .any(|pair| member_key(&pair[0]) >= member_key(&pair[1]))
+        {
+            return Err(GroupAdministrationInputRejected);
+        }
+        let start = match request.after() {
+            Some(after) => {
+                projections
+                    .binary_search_by(|projection| member_key(projection).cmp(&after))
+                    .map_err(|_| GroupAdministrationInputRejected)?
+                    + 1
+            }
+            None => 0,
+        };
+        let end = start.saturating_add(request.limit()).min(projections.len());
+        let next_cursor = if end < projections.len() {
+            projections
+                .get(end - 1)
+                .map(|projection| {
+                    encode_member_cursor(projection.username(), projection.public_id())
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(Self {
+            items: projections[start..end].to_vec(),
+            next_cursor,
+        })
+    }
+}
+
+fn member_key(projection: &AccountAdministrationProjection) -> (&str, &str) {
+    (projection.username(), projection.public_id())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GroupGrantsPage {
+    items: Vec<GroupGrantProjection>,
+    next_cursor: Option<String>,
+}
+
+impl GroupGrantsPage {
+    pub fn from_ordered(
+        request: &GroupGrantsListRequest,
+        projections: Vec<GroupGrantProjection>,
+    ) -> Result<Self, GroupAdministrationInputRejected> {
+        if projections.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(GroupAdministrationInputRejected);
+        }
+        let start = match request.after() {
+            Some(after) => {
+                projections
+                    .binary_search(after)
+                    .map_err(|_| GroupAdministrationInputRejected)?
+                    + 1
+            }
+            None => 0,
+        };
+        let end = start.saturating_add(request.limit()).min(projections.len());
+        let next_cursor = if end < projections.len() {
+            projections
+                .get(end - 1)
+                .map(encode_grant_cursor)
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(Self {
+            items: projections[start..end].to_vec(),
+            next_cursor,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GroupMemberChanged {
+    account: AccountAdministrationProjection,
+    present: bool,
+}
+
+impl GroupMemberChanged {
+    #[must_use]
+    pub const fn new(account: AccountAdministrationProjection, present: bool) -> Self {
+        Self { account, present }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GroupGrantChanged {
+    grant: GroupGrantProjection,
+    present: bool,
+}
+
+impl GroupGrantChanged {
+    pub fn new(
+        grant: GroupGrantProjection,
+        present: bool,
+    ) -> Result<Self, GroupAdministrationInputRejected> {
+        grant.validate()?;
+        Ok(Self { grant, present })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AdministrationCatalog {
+    client_modules: Vec<String>,
+    service_modules: Vec<String>,
+    operations: Vec<String>,
+}
+
+impl AdministrationCatalog {
+    pub fn new(
+        client_modules: Vec<String>,
+        service_modules: Vec<String>,
+        operations: Vec<String>,
+    ) -> Result<Self, GroupAdministrationInputRejected> {
+        for values in [&client_modules, &service_modules, &operations] {
+            if values.len() > MAX_ADMINISTRATION_CATALOG_ENTRIES
+                || values
+                    .iter()
+                    .any(|value| validate_text(value, MAX_NAME_BYTES).is_err())
+                || values.windows(2).any(|pair| pair[0] >= pair[1])
+            {
+                return Err(GroupAdministrationInputRejected);
+            }
+        }
+        Ok(Self {
+            client_modules,
+            service_modules,
+            operations,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct GroupDeleted {
     public_id: String,
 }
@@ -342,6 +769,73 @@ pub enum GroupAdministrationResult {
     List(GroupsPage),
     Projection(GroupAdministrationProjection),
     Deleted(GroupDeleted),
+    Members(GroupMembersPage),
+    MemberChanged(GroupMemberChanged),
+    Grants(GroupGrantsPage),
+    GrantChanged(GroupGrantChanged),
+    Catalog(AdministrationCatalog),
+}
+
+/// Route-specific typed envelope serialized only by the Server listener.
+#[derive(Clone)]
+pub struct GroupAdministrationEnvelope {
+    result: GroupAdministrationResult,
+    correlation_id: String,
+}
+
+impl GroupAdministrationEnvelope {
+    #[must_use]
+    pub fn serialize(&self) -> Option<Zeroizing<String>> {
+        #[derive(Serialize)]
+        struct WireEnvelope<'a> {
+            result: &'a GroupAdministrationResult,
+            correlation_id: &'a str,
+        }
+
+        let mut writer = GroupBoundedJsonWriter::new();
+        serde_json::to_writer(
+            &mut writer,
+            &WireEnvelope {
+                result: &self.result,
+                correlation_id: &self.correlation_id,
+            },
+        )
+        .ok()?;
+        let mut bytes = writer.into_bytes();
+        String::from_utf8(std::mem::take(&mut *bytes))
+            .ok()
+            .map(Zeroizing::new)
+    }
+}
+
+struct GroupBoundedJsonWriter {
+    bytes: Zeroizing<Vec<u8>>,
+}
+
+impl GroupBoundedJsonWriter {
+    fn new() -> Self {
+        Self {
+            bytes: Zeroizing::new(Vec::with_capacity(MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES)),
+        }
+    }
+
+    fn into_bytes(self) -> Zeroizing<Vec<u8>> {
+        self.bytes
+    }
+}
+
+impl io::Write for GroupBoundedJsonWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(buffer.len()) > MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES {
+            return Err(io::Error::other("Group response exceeds its bound"));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -449,6 +943,21 @@ impl GroupAdministrationDeclaration {
     pub fn delete_route(&self) -> MethodRouter {
         self.route(Route::Delete)
     }
+    pub fn members_list_route(&self) -> MethodRouter {
+        self.route(Route::MembersList)
+    }
+    pub fn member_change_route(&self) -> MethodRouter {
+        self.route(Route::MemberChange)
+    }
+    pub fn grants_list_route(&self) -> MethodRouter {
+        self.route(Route::GrantsList)
+    }
+    pub fn grant_change_route(&self) -> MethodRouter {
+        self.route(Route::GrantChange)
+    }
+    pub fn catalog_route(&self) -> MethodRouter {
+        self.route(Route::Catalog)
+    }
     fn route(&self, route: Route) -> MethodRouter {
         let capability = Arc::clone(&self.capability);
         any(move |request| response(request, Arc::clone(&capability), route))
@@ -462,6 +971,11 @@ enum Route {
     Create,
     Update,
     Delete,
+    MembersList,
+    MemberChange,
+    GrantsList,
+    GrantChange,
+    Catalog,
 }
 
 async fn response(
@@ -477,7 +991,7 @@ async fn response(
         &parts.method,
         &parts.headers,
         capability.expected_origin,
-        !matches!(route, Route::List),
+        !matches!(route, Route::List | Route::Catalog),
     ) {
         return rejection.response(&correlation_id);
     }
@@ -498,6 +1012,20 @@ async fn response(
         Route::Delete => {
             GroupsDeleteRequest::from_json(&body).map(GroupAdministrationRequest::Delete)
         }
+        Route::MembersList => {
+            GroupMembersListRequest::from_json(&body).map(GroupAdministrationRequest::MembersList)
+        }
+        Route::MemberChange => {
+            GroupMemberChangeRequest::from_json(&body).map(GroupAdministrationRequest::MemberChange)
+        }
+        Route::GrantsList => {
+            GroupGrantsListRequest::from_json(&body).map(GroupAdministrationRequest::GrantsList)
+        }
+        Route::GrantChange => {
+            GroupGrantChangeRequest::from_json(&body).map(GroupAdministrationRequest::GrantChange)
+        }
+        Route::Catalog => AdministrationCatalogRequest::from_optional_json(&body)
+            .map(GroupAdministrationRequest::Catalog),
     };
     let Ok(request) = parsed else {
         return GroupAdministrationRejection::BadRequest.response(&correlation_id);
@@ -517,34 +1045,46 @@ async fn response(
     })
     .await
     {
-        Ok(result) => success(result, correlation_id),
+        Ok(result) if route_matches_result(route, &result) => success(result, correlation_id),
+        Ok(_) => GroupAdministrationRejection::ServiceUnavailable.response(&correlation_id),
         Err(rejection) => rejection.response(&correlation_id),
     }
 }
 
+fn route_matches_result(route: Route, result: &GroupAdministrationResult) -> bool {
+    matches!(
+        (route, result),
+        (Route::List, GroupAdministrationResult::List(_))
+            | (Route::View, GroupAdministrationResult::Projection(_))
+            | (Route::Create, GroupAdministrationResult::Projection(_))
+            | (Route::Update, GroupAdministrationResult::Projection(_))
+            | (Route::Delete, GroupAdministrationResult::Deleted(_))
+            | (Route::MembersList, GroupAdministrationResult::Members(_))
+            | (
+                Route::MemberChange,
+                GroupAdministrationResult::MemberChanged(_)
+            )
+            | (Route::GrantsList, GroupAdministrationResult::Grants(_))
+            | (
+                Route::GrantChange,
+                GroupAdministrationResult::GrantChanged(_)
+            )
+            | (Route::Catalog, GroupAdministrationResult::Catalog(_))
+    )
+}
+
 fn success(result: GroupAdministrationResult, correlation_id: String) -> Response {
-    #[derive(Serialize)]
-    struct Envelope<'a> {
-        result: &'a GroupAdministrationResult,
-        correlation_id: &'a str,
-    }
     if ResponseCorrelation::new(&correlation_id).is_none() {
         return unrenderable_response();
     }
-    let Ok(body) = serde_json::to_vec(&Envelope {
-        result: &result,
-        correlation_id: &correlation_id,
-    }) else {
-        return unrenderable_response();
-    };
-    if body.len() > MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES {
-        return unrenderable_response();
-    }
-    let mut response = Response::new(Body::from(body));
+    let mut response = Response::new(Body::empty());
     *response.status_mut() = StatusCode::OK;
     response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        .extensions_mut()
+        .insert(GroupAdministrationEnvelope {
+            result,
+            correlation_id,
+        });
     response
 }
 
@@ -603,6 +1143,14 @@ fn validate_text(value: &str, max: usize) -> Result<(), GroupAdministrationInput
         Ok(())
     }
 }
+fn page_limit(value: Option<usize>) -> Result<usize, GroupAdministrationInputRejected> {
+    let limit = value.unwrap_or(DEFAULT_GROUPS_PAGE_LIMIT);
+    if (1..=MAX_GROUPS_PAGE_LIMIT).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err(GroupAdministrationInputRejected)
+    }
+}
 fn valid_public_id(value: &str) -> bool {
     value.len() == PUBLIC_ID_CHARS
         && URL_SAFE_NO_PAD.decode(value).is_ok_and(|bytes| {
@@ -640,12 +1188,131 @@ fn decode_cursor(cursor: &str) -> Result<String, GroupAdministrationInputRejecte
     validate_text(value, MAX_NAME_BYTES)?;
     Ok(value.to_owned())
 }
+fn encode_member_cursor(
+    username: &str,
+    public_id: &str,
+) -> Result<String, GroupAdministrationInputRejected> {
+    validate_text(username, MAX_NAME_BYTES)?;
+    if !valid_public_id(public_id) {
+        return Err(GroupAdministrationInputRejected);
+    }
+    let mut value =
+        Vec::with_capacity(MEMBER_CURSOR_SCOPE.len() + username.len() + 1 + public_id.len());
+    value.extend_from_slice(MEMBER_CURSOR_SCOPE);
+    value.extend_from_slice(username.as_bytes());
+    value.push(0);
+    value.extend_from_slice(public_id.as_bytes());
+    Ok(URL_SAFE_NO_PAD.encode(value))
+}
+fn decode_member_cursor(
+    cursor: &str,
+) -> Result<(String, String), GroupAdministrationInputRejected> {
+    let decoded = canonical_cursor(cursor, MEMBER_CURSOR_SCOPE)?;
+    let (username, public_id) = decoded
+        .split_once('\0')
+        .ok_or(GroupAdministrationInputRejected)?;
+    validate_text(username, MAX_NAME_BYTES)?;
+    if !valid_public_id(public_id) {
+        return Err(GroupAdministrationInputRejected);
+    }
+    Ok((username.to_owned(), public_id.to_owned()))
+}
+fn encode_grant_cursor(
+    grant: &GroupGrantProjection,
+) -> Result<String, GroupAdministrationInputRejected> {
+    grant.validate()?;
+    let encoded = serde_json::to_vec(grant).map_err(|_| GroupAdministrationInputRejected)?;
+    let mut value = Vec::with_capacity(GRANT_CURSOR_SCOPE.len() + encoded.len());
+    value.extend_from_slice(GRANT_CURSOR_SCOPE);
+    value.extend_from_slice(&encoded);
+    Ok(URL_SAFE_NO_PAD.encode(value))
+}
+fn decode_grant_cursor(
+    cursor: &str,
+) -> Result<GroupGrantProjection, GroupAdministrationInputRejected> {
+    let decoded = canonical_cursor(cursor, GRANT_CURSOR_SCOPE)?;
+    let grant = strict_json(decoded.as_bytes())?;
+    GroupGrantProjection::validate(&grant)?;
+    Ok(grant)
+}
+fn canonical_cursor(
+    cursor: &str,
+    scope: &[u8],
+) -> Result<String, GroupAdministrationInputRejected> {
+    let decoded = URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| GroupAdministrationInputRejected)?;
+    if URL_SAFE_NO_PAD.encode(&decoded) != cursor {
+        return Err(GroupAdministrationInputRejected);
+    }
+    let value = decoded
+        .strip_prefix(scope)
+        .ok_or(GroupAdministrationInputRejected)?;
+    let value = std::str::from_utf8(value).map_err(|_| GroupAdministrationInputRejected)?;
+    Ok(value.to_owned())
+}
 
 #[cfg(test)]
 mod tests {
+    use axum::{
+        body::Body,
+        http::{
+            Request as HttpRequest,
+            header::{ACCEPT, COOKIE, HOST, ORIGIN},
+        },
+    };
+    use tower::ServiceExt as _;
+
     use super::*;
+    use crate::{CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME};
+
     const ID: &str = "MTExMTExMTExMTExMTExMQ";
     const TICKET: &str = "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE";
+    const LISTENER: &str = "127.0.0.1:8443";
+    const CORRELATION: &str = "group-correlation";
+
+    fn capability(
+        outcome: Result<GroupAdministrationResult, GroupAdministrationRejection>,
+    ) -> GroupAdministrationCapability {
+        GroupAdministrationCapability {
+            expected_origin: ExpectedOrigin::from_listener(LISTENER.parse().unwrap()),
+            correlate: Arc::new(|| Some(CORRELATION.to_owned())),
+            execute: Arc::new(move |_| {
+                let outcome = outcome.clone();
+                Box::pin(async move { outcome })
+            }),
+        }
+    }
+
+    fn request(method: Method, target: &str, body: &str) -> HttpRequest<Body> {
+        let mut builder = HttpRequest::builder()
+            .method(method)
+            .uri(target)
+            .header(HOST, LISTENER)
+            .header(ORIGIN, format!("https://{LISTENER}"))
+            .header(ACCEPT, "application/json")
+            .header(CSRF_HEADER_NAME, "csrf-token")
+            .header(
+                COOKIE,
+                format!("{SESSION_COOKIE_NAME}=session-token; {CSRF_COOKIE_NAME}=csrf-token"),
+            );
+        if !body.is_empty() {
+            builder = builder
+                .header(CONTENT_TYPE, "application/json")
+                .header("content-length", body.len().to_string());
+        }
+        builder.body(Body::from(body.to_owned())).unwrap()
+    }
+
+    async fn rendered(response: Response) -> String {
+        if let Some(envelope) = response.extensions().get::<GroupAdministrationEnvelope>() {
+            return envelope.serialize().unwrap().to_string();
+        }
+        if let Some(envelope) = response.extensions().get::<TypedJsonEnvelope>() {
+            return envelope.serialize().to_string();
+        }
+        String::new()
+    }
 
     #[test]
     fn strict_requests_accept_only_documented_values() {
@@ -704,5 +1371,183 @@ mod tests {
         .unwrap();
         assert_eq!(second.items.len(), 1);
         assert!(GroupsListRequest::from_optional_json(br#"{"cursor":"YmFk"}"#).is_err());
+    }
+
+    #[test]
+    fn association_requests_are_strict_and_route_scoped() {
+        let member_cursor = encode_member_cursor("administrator", ID).unwrap();
+        assert!(
+            GroupMembersListRequest::from_json(
+                format!(r#"{{"group_public_id":"{ID}","limit":1,"cursor":"{member_cursor}"}}"#)
+                    .as_bytes()
+            )
+            .is_ok()
+        );
+        assert!(
+            GroupGrantsListRequest::from_json(
+                format!(r#"{{"group_public_id":"{ID}","cursor":"{member_cursor}"}}"#).as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            GroupMemberChangeRequest::from_json(
+                format!(
+                    r#"{{"group_public_id":"{ID}","account_public_id":"{ID}","present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+                )
+                .as_bytes()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn direct_grants_are_a_closed_strict_union() {
+        for grant in [
+            r#"{"type":"client_module","value":"web-ui"}"#,
+            r#"{"type":"service_module","value":"zendesk"}"#,
+            r#"{"type":"operation","value":"zendesk.ticket.read"}"#,
+            r#"{"type":"server_administration"}"#,
+        ] {
+            let body = format!(
+                r#"{{"group_public_id":"{ID}","grant":{grant},"present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+            );
+            assert!(GroupGrantChangeRequest::from_json(body.as_bytes()).is_ok());
+        }
+        for grant in [
+            r#"{"type":"server_administration","value":"unsafe"}"#,
+            r#"{"type":"operation"}"#,
+            r#"{"type":"unknown","value":"unsafe"}"#,
+            r#"{"type":"client_module","value":"web-ui","extra":true}"#,
+        ] {
+            let body = format!(
+                r#"{{"group_public_id":"{ID}","grant":{grant},"present":true,"grant_mutation_step_up_ticket":"{TICKET}"}}"#
+            );
+            assert!(GroupGrantChangeRequest::from_json(body.as_bytes()).is_err());
+        }
+
+        let grant = GroupGrantProjection::Operation {
+            value: "zendesk.ticket.read".to_owned(),
+        };
+        let cursor = encode_grant_cursor(&grant).unwrap();
+        let request = GroupGrantsListRequest::from_json(
+            format!(r#"{{"group_public_id":"{ID}","cursor":"{cursor}"}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(request.after(), Some(&grant));
+        assert!(AdministrationCatalogRequest::from_optional_json(b"").is_ok());
+        assert!(AdministrationCatalogRequest::from_optional_json(br#"{}"#).is_ok());
+        assert!(AdministrationCatalogRequest::from_optional_json(br#"{"extra":true}"#).is_err());
+    }
+
+    #[test]
+    fn catalog_and_typed_results_are_bounded_sorted_and_safe() {
+        let catalog =
+            AdministrationCatalog::new(vec!["web-ui".to_owned()], Vec::new(), Vec::new()).unwrap();
+        let serialized = GroupAdministrationEnvelope {
+            result: GroupAdministrationResult::Catalog(catalog),
+            correlation_id: CORRELATION.to_owned(),
+        }
+        .serialize()
+        .unwrap();
+        assert_eq!(
+            serialized.as_str(),
+            r#"{"result":{"client_modules":["web-ui"],"service_modules":[],"operations":[]},"correlation_id":"group-correlation"}"#
+        );
+        for forbidden in ["account_id", "group_id", "audit_reference", "state_id"] {
+            assert!(!serialized.contains(forbidden));
+        }
+        assert!(serialized.len() <= MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES);
+
+        assert!(
+            AdministrationCatalog::new(
+                vec!["zeta".to_owned(), "alpha".to_owned()],
+                Vec::new(),
+                Vec::new(),
+            )
+            .is_err()
+        );
+        assert!(
+            AdministrationCatalog::new(
+                (0..=MAX_ADMINISTRATION_CATALOG_ENTRIES)
+                    .map(|index| format!("component-{index:03}"))
+                    .collect(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn association_routes_reject_method_origin_session_csrf_schema_and_result_mismatch() {
+        let page = GroupMembersPage {
+            items: Vec::new(),
+            next_cursor: None,
+        };
+        let declaration = GroupAdministrationDeclaration::new(capability(Ok(
+            GroupAdministrationResult::Members(page),
+        )));
+        let body = format!(r#"{{"group_public_id":"{ID}"}}"#);
+
+        let method = declaration
+            .members_list_route()
+            .oneshot(request(Method::POST, GROUP_MEMBERS_LIST_ROUTE, &body))
+            .await
+            .unwrap();
+        assert_eq!(method.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(method.headers().get(ALLOW).unwrap(), "PUT");
+
+        let mut origin = request(Method::PUT, GROUP_MEMBERS_LIST_ROUTE, &body);
+        origin.headers_mut().insert(
+            ORIGIN,
+            HeaderValue::from_static("https://elsewhere.example"),
+        );
+        let origin = declaration
+            .members_list_route()
+            .oneshot(origin)
+            .await
+            .unwrap();
+        assert_eq!(origin.status(), StatusCode::FORBIDDEN);
+        assert!(rendered(origin).await.contains("request_origin_denied"));
+
+        let mut session = request(Method::PUT, GROUP_MEMBERS_LIST_ROUTE, &body);
+        session.headers_mut().remove(COOKIE);
+        let session = declaration
+            .members_list_route()
+            .oneshot(session)
+            .await
+            .unwrap();
+        assert_eq!(session.status(), StatusCode::UNAUTHORIZED);
+
+        let mut csrf = request(Method::PUT, GROUP_MEMBERS_LIST_ROUTE, &body);
+        csrf.headers_mut().remove(CSRF_HEADER_NAME);
+        let csrf = declaration
+            .members_list_route()
+            .oneshot(csrf)
+            .await
+            .unwrap();
+        assert_eq!(csrf.status(), StatusCode::UNAUTHORIZED);
+
+        let schema = declaration
+            .members_list_route()
+            .oneshot(request(
+                Method::PUT,
+                GROUP_MEMBERS_LIST_ROUTE,
+                &format!(r#"{{"group_public_id":"{ID}","confirmed":true}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(schema.status(), StatusCode::BAD_REQUEST);
+
+        let mismatch = GroupAdministrationDeclaration::new(capability(Ok(
+            GroupAdministrationResult::Catalog(
+                AdministrationCatalog::new(Vec::new(), Vec::new(), Vec::new()).unwrap(),
+            ),
+        )))
+        .members_list_route()
+        .oneshot(request(Method::PUT, GROUP_MEMBERS_LIST_ROUTE, &body))
+        .await
+        .unwrap();
+        assert_eq!(mismatch.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

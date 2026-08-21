@@ -3,9 +3,10 @@
 use std::fmt;
 
 use crate::{
-    AuditReferencePersistence, DatabaseError, Description, Group, GroupAuditReference,
-    GroupMutationRecheck, GroupPublicIdentifier, GroupPublicIdentifierPersistence,
-    GroupPublicIdentity, Name, ValidatedAuditTerminalObligationWrite,
+    AccountAdministrationProjection, AccountPublicIdentifierPersistence, AuditReferencePersistence,
+    DatabaseError, Description, Group, GroupAuditReference, GroupGrant, GroupMutationRecheck,
+    GroupPublicIdentifier, GroupPublicIdentifierPersistence, GroupPublicIdentity, Name,
+    ValidatedAuditTerminalObligationWrite,
 };
 
 /// The complete Group data available to an administration read.
@@ -301,6 +302,19 @@ pub trait GroupAdministrationStore {
         public_identity_persistence: &GroupPublicIdentifierPersistence,
         public_identifier: GroupPublicIdentifier,
     ) -> Result<Option<GroupAdministrationProjection>, DatabaseError>;
+
+    fn list_group_member_administration_projections(
+        &mut self,
+        account_public_identity_persistence: &AccountPublicIdentifierPersistence,
+        group_public_identity_persistence: &GroupPublicIdentifierPersistence,
+        group: GroupPublicIdentifier,
+    ) -> Result<Option<Vec<AccountAdministrationProjection>>, DatabaseError>;
+
+    fn list_group_grant_administration_projections(
+        &mut self,
+        group_public_identity_persistence: &GroupPublicIdentifierPersistence,
+        group: GroupPublicIdentifier,
+    ) -> Result<Option<Vec<GroupGrant>>, DatabaseError>;
 
     fn prepare_group_administration_target(
         &mut self,

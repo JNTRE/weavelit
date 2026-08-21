@@ -28,6 +28,7 @@ export const MANIFEST_FORMAT_VERSION = 1;
 export const EXPECTED_ASSETS = new Map([
   ["index.html", 16 * KIB],
   ["assets/weavelit-application.js", 256 * KIB],
+  ["assets/weavelit-groups-workspace.js", 32 * KIB],
   ["assets/weavelit-application.css", 64 * KIB],
 ]);
 

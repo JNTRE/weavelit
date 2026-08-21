@@ -122,7 +122,7 @@ type AccountRow = (
     Option<i64>,
 );
 type AccountPublicIdentityRow = (Vec<u8>, Vec<u8>);
-type AccountAdministrationRow = (Vec<u8>, String, Option<String>, i64, i64);
+pub(super) type AccountAdministrationRow = (Vec<u8>, String, Option<String>, i64, i64);
 type AuditReferenceRow = (Vec<u8>, String);
 type PasswordVerifierRow = (Vec<u8>, String);
 type GroupRow = (Vec<u8>, String, Option<String>);
@@ -278,7 +278,7 @@ impl AccountAdministrationStore for SqliteDatabase {
     }
 }
 
-fn validate_account_public_identities(
+pub(super) fn validate_account_public_identities(
     connection: &Connection,
     persistence: &AccountPublicIdentifierPersistence,
 ) -> Result<(), DatabaseError> {
@@ -302,7 +302,7 @@ fn validate_account_public_identities(
     Ok(())
 }
 
-fn account_administration_projection(
+pub(super) fn account_administration_projection(
     persistence: &AccountPublicIdentifierPersistence,
     (public_identifier, username, display_name, active, mfa_required): AccountAdministrationRow,
 ) -> Result<AccountAdministrationProjection, DatabaseError> {
@@ -958,7 +958,7 @@ fn encode_grant(grant: &GroupGrant) -> (&'static str, &str) {
     }
 }
 
-fn decode_grant(kind: &str, value: String) -> Result<GroupGrant, DatabaseError> {
+pub(super) fn decode_grant(kind: &str, value: String) -> Result<GroupGrant, DatabaseError> {
     match kind {
         "client_module" => Ok(GroupGrant::ClientModule(text(value)?)),
         "service_module" => Ok(GroupGrant::ServiceModule(text(value)?)),

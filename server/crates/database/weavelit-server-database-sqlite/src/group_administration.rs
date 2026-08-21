@@ -2,17 +2,21 @@ use std::collections::BTreeSet;
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
-    AuditReferencePersistence, DatabaseError, GroupAdministrationAuditTerminalWrites,
-    GroupAdministrationProjection, GroupAdministrationStore, GroupAdministrationTarget,
-    GroupAuditReference, GroupCreateMutation, GroupCreateOutcome, GroupDeleteMutation,
-    GroupDeleteOutcome, GroupPublicIdentifier, GroupPublicIdentifierPersistence,
-    GroupUpdateMutation, GroupUpdateOutcome,
+    AccountAdministrationProjection, AccountPublicIdentifierPersistence, AuditReferencePersistence,
+    DatabaseError, GroupAdministrationAuditTerminalWrites, GroupAdministrationProjection,
+    GroupAdministrationStore, GroupAdministrationTarget, GroupAuditReference, GroupCreateMutation,
+    GroupCreateOutcome, GroupDeleteMutation, GroupDeleteOutcome, GroupGrant, GroupPublicIdentifier,
+    GroupPublicIdentifierPersistence, GroupUpdateMutation, GroupUpdateOutcome,
 };
 
 use crate::SqliteDatabase;
 use crate::audit_recovery;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::group_mutation::accept_issuer;
+use crate::state::{
+    AccountAdministrationRow, account_administration_projection, decode_grant,
+    validate_account_public_identities,
+};
 
 const LIST_GROUPS: &str = "SELECT identity.public_identifier, target.name, target.description \
     FROM weavelit_group AS target \
@@ -28,6 +32,17 @@ const PREPARE_GROUP: &str = "SELECT target.group_id, identity.public_identifier,
     JOIN weavelit_group AS target ON target.group_id = identity.group_id \
     JOIN weavelit_group_audit_reference AS reference ON reference.group_id = target.group_id \
     WHERE identity.public_identifier = ?1";
+const LOOKUP_GROUP_IDENTIFIER: &str = "SELECT group_id FROM weavelit_group_public_identity \
+    WHERE public_identifier = ?1";
+const LIST_GROUP_MEMBERS: &str = "SELECT identity.public_identifier, account.username, \
+    account.display_name, account.active, account.mfa_required \
+    FROM weavelit_group_membership AS membership \
+    JOIN weavelit_account AS account ON account.account_id = membership.account_id \
+    JOIN weavelit_account_public_identity AS identity ON identity.account_id = account.account_id \
+    WHERE membership.group_id = ?1 \
+    ORDER BY account.username, identity.public_identifier";
+const LIST_GROUP_GRANTS: &str = "SELECT grant_kind, grant_value \
+    FROM weavelit_group_grant WHERE group_id = ?1 ORDER BY grant_kind, grant_value";
 const COVERAGE: &str = "SELECT \
     EXISTS(SELECT 1 FROM weavelit_group AS target \
         LEFT JOIN weavelit_group_public_identity AS identity \
@@ -40,6 +55,7 @@ const PUBLIC_IDENTIFIERS: &str =
 
 type ProjectionRow = (Vec<u8>, String, Option<String>);
 type TargetRow = (Vec<u8>, Vec<u8>, String, String, Option<String>);
+type GrantRow = (String, String);
 
 impl GroupAdministrationStore for SqliteDatabase {
     fn list_group_administration_projections(
@@ -71,6 +87,67 @@ impl GroupAdministrationStore for SqliteDatabase {
         let result = row.map(|row| projection(persistence, row)).transpose()?;
         commit(transaction)?;
         Ok(result)
+    }
+
+    fn list_group_member_administration_projections(
+        &mut self,
+        account_persistence: &AccountPublicIdentifierPersistence,
+        group_persistence: &GroupPublicIdentifierPersistence,
+        group: GroupPublicIdentifier,
+    ) -> Result<Option<Vec<AccountAdministrationProjection>>, DatabaseError> {
+        let transaction = self.connection.transaction().map_err(group_error)?;
+        validate_identities(&transaction, group_persistence)?;
+        validate_account_public_identities(&transaction, account_persistence)?;
+        let Some(group) = resolve_group(&transaction, group_persistence, group)? else {
+            commit(transaction)?;
+            return Ok(None);
+        };
+        let members = transaction
+            .prepare(LIST_GROUP_MEMBERS)
+            .map_err(group_error)?
+            .query_map([group.as_slice()], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .map_err(group_error)?
+            .collect::<Result<Vec<AccountAdministrationRow>, _>>()
+            .map_err(group_error)?
+            .into_iter()
+            .map(|row| account_administration_projection(account_persistence, row))
+            .collect::<Result<Vec<_>, _>>()?;
+        commit(transaction)?;
+        Ok(Some(members))
+    }
+
+    fn list_group_grant_administration_projections(
+        &mut self,
+        group_persistence: &GroupPublicIdentifierPersistence,
+        group: GroupPublicIdentifier,
+    ) -> Result<Option<Vec<GroupGrant>>, DatabaseError> {
+        let transaction = self.connection.transaction().map_err(group_error)?;
+        validate_identities(&transaction, group_persistence)?;
+        let Some(group) = resolve_group(&transaction, group_persistence, group)? else {
+            commit(transaction)?;
+            return Ok(None);
+        };
+        let mut grants = transaction
+            .prepare(LIST_GROUP_GRANTS)
+            .map_err(group_error)?
+            .query_map([group.as_slice()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(group_error)?
+            .collect::<Result<Vec<GrantRow>, _>>()
+            .map_err(group_error)?
+            .into_iter()
+            .map(|(kind, value)| decode_grant(&kind, value))
+            .collect::<Result<Vec<_>, _>>()?;
+        grants.sort();
+        commit(transaction)?;
+        Ok(Some(grants))
     }
 
     fn prepare_group_administration_target(
@@ -317,6 +394,20 @@ fn validate_identities(
         return Err(DatabaseError::IntegrityFailure);
     }
     Ok(())
+}
+
+fn resolve_group(
+    transaction: &Transaction<'_>,
+    persistence: &GroupPublicIdentifierPersistence,
+    group: GroupPublicIdentifier,
+) -> Result<Option<Vec<u8>>, DatabaseError> {
+    let encoded = persistence.encode(&group);
+    transaction
+        .query_row(LOOKUP_GROUP_IDENTIFIER, [encoded.as_slice()], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(group_error)
 }
 
 fn target_is_current(

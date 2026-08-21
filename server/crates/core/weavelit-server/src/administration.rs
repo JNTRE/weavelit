@@ -1448,6 +1448,8 @@ impl<'a> AccountAdministrationReadWorkflow<'a> {
 pub(crate) enum GroupAdministrationReadResult {
     List(Vec<GroupAdministrationProjection>),
     View(Option<GroupAdministrationProjection>),
+    Members(Option<Vec<AccountAdministrationProjection>>),
+    Grants(Option<Vec<GroupGrant>>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1491,16 +1493,33 @@ impl<'a> GroupAdministrationWorkflow<'a> {
         let GroupAdministrationAction::Read(read) = authorization.into_action() else {
             return Err(GroupAdministrationWorkflowError::ActionNotSupported);
         };
-        self.database
-            .with_group_administration(|persistence, store| match read {
-                GroupAdministrationRead::List => store
-                    .list_group_administration_projections(persistence)
-                    .map(GroupAdministrationReadResult::List),
-                GroupAdministrationRead::View(target) => store
-                    .load_group_administration_projection(persistence, target)
-                    .map(GroupAdministrationReadResult::View),
-            })
-            .map_err(|_| GroupAdministrationWorkflowError::Unavailable)
+        match read {
+            GroupAdministrationRead::Members(target) => self
+                .database
+                .list_group_member_administration_projections(target)
+                .map(GroupAdministrationReadResult::Members),
+            GroupAdministrationRead::Grants(target) => self
+                .database
+                .list_group_grant_administration_projections(target)
+                .map(GroupAdministrationReadResult::Grants),
+            GroupAdministrationRead::Catalog => {
+                Err(weavelit_server_database::DatabaseError::Unavailable)
+            }
+            GroupAdministrationRead::List | GroupAdministrationRead::View(_) => self
+                .database
+                .with_group_administration(|persistence, store| match read {
+                    GroupAdministrationRead::List => store
+                        .list_group_administration_projections(persistence)
+                        .map(GroupAdministrationReadResult::List),
+                    GroupAdministrationRead::View(target) => store
+                        .load_group_administration_projection(persistence, target)
+                        .map(GroupAdministrationReadResult::View),
+                    GroupAdministrationRead::Members(_)
+                    | GroupAdministrationRead::Grants(_)
+                    | GroupAdministrationRead::Catalog => unreachable!("read kind is split above"),
+                }),
+        }
+        .map_err(|_| GroupAdministrationWorkflowError::Unavailable)
     }
 
     pub(crate) fn mutate(

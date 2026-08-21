@@ -79,12 +79,17 @@ pub use credential_issuance::{
     MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES, validate_credential_issuance_request,
 };
 pub use groups::{
-    DEFAULT_GROUPS_PAGE_LIMIT, GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE,
-    GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE, GroupAdministrationCapability,
-    GroupAdministrationDeclaration, GroupAdministrationInputRejected,
+    ADMINISTRATION_CATALOG_ROUTE, AdministrationCatalog, AdministrationCatalogRequest,
+    DEFAULT_GROUPS_PAGE_LIMIT, GROUP_GRANTS_CHANGE_ROUTE, GROUP_GRANTS_LIST_ROUTE,
+    GROUP_MEMBERS_CHANGE_ROUTE, GROUP_MEMBERS_LIST_ROUTE, GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE,
+    GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE, GroupAdministrationCapability,
+    GroupAdministrationDeclaration, GroupAdministrationEnvelope, GroupAdministrationInputRejected,
     GroupAdministrationProjection, GroupAdministrationRejection, GroupAdministrationRequest,
-    GroupAdministrationResult, GroupAdministrationSubmission, GroupDeleted, GroupsCreateRequest,
-    GroupsDeleteRequest, GroupsListRequest, GroupsPage, GroupsUpdateRequest, GroupsViewRequest,
+    GroupAdministrationResult, GroupAdministrationSubmission, GroupDeleted,
+    GroupGrantChangeRequest, GroupGrantChanged, GroupGrantProjection, GroupGrantsListRequest,
+    GroupGrantsPage, GroupMemberChangeRequest, GroupMemberChanged, GroupMembersListRequest,
+    GroupMembersPage, GroupsCreateRequest, GroupsDeleteRequest, GroupsListRequest, GroupsPage,
+    GroupsUpdateRequest, GroupsViewRequest, MAX_ADMINISTRATION_CATALOG_ENTRIES,
     MAX_GROUP_ADMINISTRATION_BODY_BYTES, MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES,
     MAX_GROUPS_PAGE_LIMIT,
 };
@@ -387,7 +392,12 @@ impl OperationalSurface {
                 .route(GROUPS_VIEW_ROUTE, groups.view_route())
                 .route(GROUPS_CREATE_ROUTE, groups.create_route())
                 .route(GROUPS_UPDATE_ROUTE, groups.update_route())
-                .route(GROUPS_DELETE_ROUTE, groups.delete_route()),
+                .route(GROUPS_DELETE_ROUTE, groups.delete_route())
+                .route(GROUP_MEMBERS_LIST_ROUTE, groups.members_list_route())
+                .route(GROUP_MEMBERS_CHANGE_ROUTE, groups.member_change_route())
+                .route(GROUP_GRANTS_LIST_ROUTE, groups.grants_list_route())
+                .route(GROUP_GRANTS_CHANGE_ROUTE, groups.grant_change_route())
+                .route(ADMINISTRATION_CATALOG_ROUTE, groups.catalog_route()),
             None => router,
         };
         let router = match self.credential_issuance {

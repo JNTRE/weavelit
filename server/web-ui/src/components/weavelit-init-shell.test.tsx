@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentType } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApplicationShell } from "./weavelit-init-shell";
@@ -609,6 +610,33 @@ describe("ApplicationShell sign-in panel gating", () => {
     return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
   }
 
+  function mockAuthenticatedAdministrationFetch() {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    return vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+            },
+          }),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        return Promise.resolve(jsonResponse({ result: { items: [], next_cursor: null } }));
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+  }
+
   it.each([
     ["no database is selected", () => unselectedStatus()],
     [
@@ -707,6 +735,57 @@ describe("ApplicationShell sign-in panel gating", () => {
     expect(await screen.findByRole("rowheader", { name: "administrator" })).toBeTruthy();
     expect(screen.getByText("Administration")).toBeTruthy();
     expect(loginSection()).toBeNull();
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("loads the Groups workspace only after authenticated navigation selects it", async () => {
+    const fetchMock = mockAuthenticatedAdministrationFetch();
+    let completeLoad: (module: { GroupsWorkspace: ComponentType }) => void = () => {};
+    const loadGroupsWorkspace = vi.fn(
+      () =>
+        new Promise<{ GroupsWorkspace: ComponentType }>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+
+    render(<ApplicationShell loadGroupsWorkspace={loadGroupsWorkspace} />);
+
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(loadGroupsWorkspace).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/administration/groups/list"),
+    ).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Groups" }));
+
+    expect(loadGroupsWorkspace).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toBe("Loading Groups.");
+    completeLoad({ GroupsWorkspace: () => <h2>Groups</h2> });
+    expect(await screen.findByRole("heading", { name: "Groups" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Groups" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("offers a redacted retry when the Groups workspace loader fails", async () => {
+    mockAuthenticatedAdministrationFetch();
+    const loadGroupsWorkspace = vi
+      .fn<() => Promise<{ GroupsWorkspace: ComponentType }>>()
+      .mockRejectedValueOnce(new Error("private chunk delivery detail"))
+      .mockResolvedValueOnce({ GroupsWorkspace: () => <h2>Groups</h2> });
+
+    render(<ApplicationShell loadGroupsWorkspace={loadGroupsWorkspace} />);
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Groups" }));
+
+    const failure = await screen.findByRole("alert");
+    expect(failure.textContent).toBe("Groups could not be loaded.");
+    expect(document.body.textContent).not.toContain("private chunk delivery detail");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("heading", { name: "Groups" })).toBeTruthy();
+    expect(loadGroupsWorkspace).toHaveBeenCalledTimes(2);
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 

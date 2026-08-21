@@ -251,7 +251,7 @@ Pre-Operational Surface.
 
 ### Group Administration
 
-The Group administration surface contains exactly five strict `PUT` routes:
+The Group administration surface contains exactly ten strict `PUT` routes:
 
 | Route | Body | Result |
 | --- | --- | --- |
@@ -260,6 +260,11 @@ The Group administration surface contains exactly five strict `PUT` routes:
 | `/api/v1/administration/groups/create` | `name` and nullable or omitted `description` | the created Group projection |
 | `/api/v1/administration/groups/update` | `public_id`, `name`, and nullable or omitted `description` | the resulting Group projection |
 | `/api/v1/administration/groups/delete` | `public_id` and `grant_mutation_step_up_ticket` | the deleted `public_id` |
+| `/api/v1/administration/groups/members/list` | `group_public_id`, optional `limit`, and optional `cursor` | safe Account projection `items` and nullable `next_cursor` |
+| `/api/v1/administration/groups/members/change` | `group_public_id`, `account_public_id`, `present`, and `grant_mutation_step_up_ticket` | `account` safe projection and resulting `present` state |
+| `/api/v1/administration/groups/grants/list` | `group_public_id`, optional `limit`, and optional `cursor` | canonical grant `items` and nullable `next_cursor` |
+| `/api/v1/administration/groups/grants/change` | `group_public_id`, structured `grant`, `present`, and `grant_mutation_step_up_ticket` | canonical `grant` and resulting `present` state |
+| `/api/v1/administration/catalog` | empty or absent object | compiled-in `client_modules`, `service_modules`, and `operations` |
 
 Every request requires the ordinary session, exact same-origin `Origin` and
 `Host`, session `X-Weavelit-CSRF`, JSON media types, live Web UI Client Module
@@ -274,10 +279,30 @@ Group target accepted or returned. A projection contains exactly `public_id`,
 `name`, and nullable `description`; it contains no state identifier, Audit
 Reference Identifier, membership, grant, or count.
 
+Member projections use the Account Public Identifier and the same exact five
+safe fields as Account administration: `public_id`, `username`, nullable
+`display_name`, `active`, and `mfa_required`. A direct grant is exactly one of
+`{"type":"client_module","value":"<catalog name>"}`,
+`{"type":"service_module","value":"<catalog name>"}`,
+`{"type":"operation","value":"<catalog name>"}`, or
+`{"type":"server_administration"}`. The server-administration variant accepts
+no `value`; the other variants require one bounded catalog name. No route
+accepts a state identifier, Audit Reference Identifier, free-form grant kind,
+component enablement state, or confirmation member.
+
 List uses limits 1 through 100 and default 50. Its opaque cursor is scoped to
 this route and API version and carries the last returned unique Group name. A
 malformed, cross-route, noncanonical, over-bound, or currently absent position
 is `bad_request`. Reads produce no Audit record.
+
+Member and grant lists use the same limit bounds and distinct route-scoped
+opaque cursors. Member order is deterministic by username and Account Public
+Identifier; grant order is the canonical structured-grant order. The catalog
+contains at most 256 strictly ordered values per component kind, comes only
+from the Server's compiled-in component inventory, and contains no enablement,
+configuration, credential, provider, state, or Audit data. An unknown valid
+Group target is `404 not_found`; an existing Group with no associations returns
+an empty page.
 
 Create produces an empty Group. Update replaces name and nullable description;
 an exact no-op returns the current projection and produces no Audit record. A
@@ -290,6 +315,19 @@ Delete succeeds only when the Group has no memberships and no direct grants. A
 nonempty Group is `409 conflict` without a count or association kind. Invalid
 proof is `403 grant_mutation_denied`. Clients MUST NOT automatically retry
 step-up or deletion after an unreadable or unreported outcome.
+
+Membership and direct-grant changes require the same family-bound five-minute
+proof. The Account target is always an Account Public Identifier. A Client
+Module, Service Module, or Operation grant must name a value in the compiled-in
+catalog; an unknown valid value is `404 not_found` before Audit or mutation.
+An already-present or already-absent association returns the requested safe
+result and produces no Audit record. A changed association uses the existing
+atomic Group mutation and Audit sequence. A removal that would eliminate the
+last active effective Administrator is `409 conflict` with no account, Group,
+grant, count, or policy detail. Missing, malformed, expired, cross-session, or
+cross-family proof is the same `403 grant_mutation_denied`. Clients MUST NOT
+automatically retry step-up or a member or grant change after an unreadable or
+unreported outcome.
 
 ### Account Status Administration
 

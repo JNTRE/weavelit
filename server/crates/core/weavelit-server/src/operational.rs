@@ -27,19 +27,26 @@ use tokio::task;
 use weavelit_module_client::{
     ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_MFA_REQUIREMENT_ROUTE,
     ACCOUNTS_MFA_RESET_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, ACCOUNTS_STATUS_ROUTE,
-    ACCOUNTS_VIEW_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE, AccountAdministrationCapability,
-    AccountAdministrationDeclaration, AccountAdministrationProjection as ClientAccountProjection,
-    AccountAdministrationRejection, AccountAdministrationRequest,
-    AccountAdministrationResult as ClientAccountResult, AccountAdministrationSubmission,
-    AccountCreateSubmission, AccountCredentialIssued, AccountPasswordResetSubmission, AccountsPage,
-    AuthenticationRejection, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CredentialIssuanceCapability,
-    CredentialIssuanceDeclaration, CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
-    CredentialIssuanceTicketIssued, ExpectedOrigin, GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE,
-    GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE, GroupAdministrationCapability,
-    GroupAdministrationDeclaration, GroupAdministrationProjection as ClientGroupProjection,
-    GroupAdministrationRejection, GroupAdministrationRequest as ClientGroupRequest,
+    ACCOUNTS_VIEW_ROUTE, ADMINISTRATION_CATALOG_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
+    AccountAdministrationCapability, AccountAdministrationDeclaration,
+    AccountAdministrationProjection as ClientAccountProjection, AccountAdministrationRejection,
+    AccountAdministrationRequest, AccountAdministrationResult as ClientAccountResult,
+    AccountAdministrationSubmission, AccountCreateSubmission, AccountCredentialIssued,
+    AccountPasswordResetSubmission, AccountsPage,
+    AdministrationCatalog as ClientAdministrationCatalog, AuthenticationRejection,
+    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CredentialIssuanceCapability, CredentialIssuanceDeclaration,
+    CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
+    CredentialIssuanceTicketIssued, ExpectedOrigin, GROUP_GRANTS_CHANGE_ROUTE,
+    GROUP_GRANTS_LIST_ROUTE, GROUP_MEMBERS_CHANGE_ROUTE, GROUP_MEMBERS_LIST_ROUTE,
+    GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE,
+    GROUPS_VIEW_ROUTE, GroupAdministrationCapability, GroupAdministrationDeclaration,
+    GroupAdministrationProjection as ClientGroupProjection, GroupAdministrationRejection,
+    GroupAdministrationRequest as ClientGroupRequest,
     GroupAdministrationResult as ClientGroupResult, GroupAdministrationSubmission, GroupDeleted,
-    GroupsPage, LIFECYCLE_RECONCILIATION_ROUTE, MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
+    GroupGrantChanged as ClientGroupGrantChanged,
+    GroupGrantProjection as ClientGroupGrantProjection, GroupGrantsPage,
+    GroupMemberChanged as ClientGroupMemberChanged, GroupMembersPage, GroupsPage,
+    LIFECYCLE_RECONCILIATION_ROUTE, MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
     MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES, MAX_GROUP_ADMINISTRATION_BODY_BYTES,
     MAX_MFA_POLICY_BODY_BYTES, MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES,
     MFA_POLICY_STEP_UP_ROUTE, MfaPolicyCapability, MfaPolicyDeclaration, MfaPolicyRejection,
@@ -54,8 +61,9 @@ use weavelit_server_administration::{
     AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
     AccountStatusChange, AdministrationAction, AdministrationClock, AdministrationPlane,
     AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementSource,
-    GroupAdministrationAction, GroupAdministrationRead, GroupCreate, GroupMutation, GroupUpdate,
-    MFA_STEP_UP_LIFETIME, MfaStepUpProof, StepUpActionFamily,
+    GroupAdministrationAction, GroupAdministrationRead, GroupCreate, GroupGrantMutation,
+    GroupMembershipMutation, GroupMutation, GroupUpdate, MFA_STEP_UP_LIFETIME, MfaStepUpProof,
+    StepUpActionFamily,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authentication::{
@@ -101,7 +109,8 @@ use crate::{
         AccountCredentialIssuanceWorkflowError, AccountStatusChangeError,
         AccountStatusChangeResult, AccountStatusChangeWorkflow, GroupAdministrationMutationResult,
         GroupAdministrationReadResult, GroupAdministrationWorkflow,
-        GroupAdministrationWorkflowError, MfaPolicyChangeError, MfaPolicyChangeResult,
+        GroupAdministrationWorkflowError, GroupMutationResult, GroupMutationWorkflow,
+        GroupMutationWorkflowError, MfaPolicyChangeError, MfaPolicyChangeResult,
         MfaPolicyChangeWorkflow,
     },
     authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
@@ -476,6 +485,28 @@ impl OperationalDatabase {
                 &self.audit_reference_persistence,
                 target,
             )
+        })
+    }
+
+    pub(crate) fn list_group_member_administration_projections(
+        &self,
+        target: GroupPublicIdentifier,
+    ) -> Result<Option<Vec<AccountAdministrationProjection>>, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.list_group_member_administration_projections(
+                &self.account_public_identifier_persistence,
+                persistence,
+                target,
+            )
+        })
+    }
+
+    pub(crate) fn list_group_grant_administration_projections(
+        &self,
+        target: GroupPublicIdentifier,
+    ) -> Result<Option<Vec<GroupGrant>>, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.list_group_grant_administration_projections(persistence, target)
         })
     }
 
@@ -1557,6 +1588,7 @@ impl OperationalComposer {
         let administration = Arc::clone(self.administration.as_ref()?);
         let database = self.database.clone();
         let audit_recovery = Arc::clone(&self.audit_recovery);
+        let components = self.runtime.components.clone();
         Some(GroupAdministrationCapability {
             expected_origin,
             correlate: Arc::new(correlation_identifier),
@@ -1566,6 +1598,7 @@ impl OperationalComposer {
                 let administration = Arc::clone(&administration);
                 let database = database.clone();
                 let audit_recovery = Arc::clone(&audit_recovery);
+                let components = components.clone();
                 Box::pin(async move {
                     task::spawn_blocking(move || {
                         execute_group_administration(
@@ -1574,6 +1607,7 @@ impl OperationalComposer {
                             &administration,
                             &database,
                             &audit_recovery,
+                            &components,
                             submission,
                         )
                     })
@@ -1887,12 +1921,25 @@ impl OperationalComposer {
             let create = Arc::clone(&declaration);
             let update = Arc::clone(&declaration);
             let delete = Arc::clone(&declaration);
+            let members_list = Arc::clone(&declaration);
+            let member_change = Arc::clone(&declaration);
+            let grants_list = Arc::clone(&declaration);
+            let grant_change = Arc::clone(&declaration);
+            let catalog = Arc::clone(&declaration);
             for (route, mount) in [
                 (GROUPS_LIST_ROUTE, declaration.list_route()),
                 (GROUPS_VIEW_ROUTE, view.view_route()),
                 (GROUPS_CREATE_ROUTE, create.create_route()),
                 (GROUPS_UPDATE_ROUTE, update.update_route()),
                 (GROUPS_DELETE_ROUTE, delete.delete_route()),
+                (GROUP_MEMBERS_LIST_ROUTE, members_list.members_list_route()),
+                (
+                    GROUP_MEMBERS_CHANGE_ROUTE,
+                    member_change.member_change_route(),
+                ),
+                (GROUP_GRANTS_LIST_ROUTE, grants_list.grants_list_route()),
+                (GROUP_GRANTS_CHANGE_ROUTE, grant_change.grant_change_route()),
+                (ADMINISTRATION_CATALOG_ROUTE, catalog.catalog_route()),
             ] {
                 capabilities.push(TransportCapability::new(
                     TransportRegistration::new(Method::PUT, route, GROUP_ADMINISTRATION_PROFILE),
@@ -2567,6 +2614,7 @@ fn execute_group_administration(
     administration: &OperationalAdministration,
     database: &OperationalDatabase,
     audit_recovery: &OperationalAuditRecovery,
+    components: &AvailableComponents,
     submission: GroupAdministrationSubmission,
 ) -> Result<ClientGroupResult, GroupAdministrationRejection> {
     let GroupAdministrationSubmission {
@@ -2629,6 +2677,10 @@ fn execute_group_administration(
                 GroupAdministrationReadResult::List(_) => {
                     Err(GroupAdministrationRejection::ServiceUnavailable)
                 }
+                GroupAdministrationReadResult::Members(_)
+                | GroupAdministrationReadResult::Grants(_) => {
+                    Err(GroupAdministrationRejection::ServiceUnavailable)
+                }
             }
         }
         ClientGroupRequest::Create(request) => {
@@ -2669,6 +2721,211 @@ fn execute_group_administration(
                 .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
             group_mutation_response(workflow.delete(action).map_err(group_workflow_error)?)
         }
+        ClientGroupRequest::MembersList(request) => {
+            let target = database
+                .group_public_identifier(request.group_public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::Members(target)),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            let GroupAdministrationReadResult::Members(Some(items)) =
+                workflow.read(action).map_err(group_workflow_error)?
+            else {
+                return Err(GroupAdministrationRejection::NotFound);
+            };
+            let items = items
+                .into_iter()
+                .map(client_account_projection)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?;
+            GroupMembersPage::from_ordered(&request, items)
+                .map(ClientGroupResult::Members)
+                .map_err(|_| GroupAdministrationRejection::BadRequest)
+        }
+        ClientGroupRequest::MemberChange(request) => {
+            let group = public_group_target(database, request.group_public_id())?;
+            let account = database
+                .account_public_identifier(request.account_public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let mutation = GroupMutation::Membership(GroupMembershipMutation::new(
+                group,
+                account,
+                request.present(),
+            ));
+            let action = administration
+                .authorize_grant_mutation_ticket(admission, mutation, request.ticket())
+                .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
+            group_association_result(
+                GroupMutationWorkflow::new(database, audit_recovery).apply(action),
+            )?;
+            let account = database
+                .load_account_administration_projection(account)
+                .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?
+                .ok_or(GroupAdministrationRejection::NotFound)?;
+            Ok(ClientGroupResult::MemberChanged(
+                ClientGroupMemberChanged::new(
+                    client_account_projection(account)
+                        .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?,
+                    request.present(),
+                ),
+            ))
+        }
+        ClientGroupRequest::GrantsList(request) => {
+            let target = database
+                .group_public_identifier(request.group_public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::Grants(target)),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            let GroupAdministrationReadResult::Grants(Some(items)) =
+                workflow.read(action).map_err(group_workflow_error)?
+            else {
+                return Err(GroupAdministrationRejection::NotFound);
+            };
+            let items = items
+                .into_iter()
+                .map(client_group_grant)
+                .collect::<Result<Vec<_>, _>>()?;
+            GroupGrantsPage::from_ordered(&request, items)
+                .map(ClientGroupResult::Grants)
+                .map_err(|_| GroupAdministrationRejection::BadRequest)
+        }
+        ClientGroupRequest::GrantChange(request) => {
+            let group = public_group_target(database, request.group_public_id())?;
+            let grant = database_group_grant(request.grant())?;
+            if !catalog_contains(components, &grant) {
+                return Err(GroupAdministrationRejection::NotFound);
+            }
+            let mutation = GroupMutation::Grant(GroupGrantMutation::new(
+                group,
+                grant.clone(),
+                request.present(),
+            ));
+            let action = administration
+                .authorize_grant_mutation_ticket(admission, mutation, request.ticket())
+                .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
+            group_association_result(
+                GroupMutationWorkflow::new(database, audit_recovery).apply(action),
+            )?;
+            Ok(ClientGroupResult::GrantChanged(
+                ClientGroupGrantChanged::new(client_group_grant(grant)?, request.present())
+                    .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?,
+            ))
+        }
+        ClientGroupRequest::Catalog(_) => {
+            administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::Catalog),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            ClientAdministrationCatalog::new(
+                components
+                    .client_modules
+                    .iter()
+                    .map(|name| name.as_str().to_owned())
+                    .collect(),
+                components
+                    .service_modules
+                    .iter()
+                    .map(|name| name.as_str().to_owned())
+                    .collect(),
+                components
+                    .operations
+                    .iter()
+                    .map(|name| name.as_str().to_owned())
+                    .collect(),
+            )
+            .map(ClientGroupResult::Catalog)
+            .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)
+        }
+    }
+}
+
+fn public_group_target(
+    database: &OperationalDatabase,
+    encoded: &str,
+) -> Result<StateIdentifier, GroupAdministrationRejection> {
+    let public_identifier = database
+        .group_public_identifier(encoded)
+        .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+    database
+        .prepare_group_administration_target(public_identifier)
+        .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?
+        .map(|target| target.group().group())
+        .ok_or(GroupAdministrationRejection::NotFound)
+}
+
+fn database_group_grant(
+    grant: &ClientGroupGrantProjection,
+) -> Result<GroupGrant, GroupAdministrationRejection> {
+    match grant {
+        ClientGroupGrantProjection::ClientModule { value } => Name::new(value.clone())
+            .map(GroupGrant::ClientModule)
+            .map_err(|_| GroupAdministrationRejection::BadRequest),
+        ClientGroupGrantProjection::ServiceModule { value } => Name::new(value.clone())
+            .map(GroupGrant::ServiceModule)
+            .map_err(|_| GroupAdministrationRejection::BadRequest),
+        ClientGroupGrantProjection::Operation { value } => Name::new(value.clone())
+            .map(GroupGrant::Operation)
+            .map_err(|_| GroupAdministrationRejection::BadRequest),
+        ClientGroupGrantProjection::ServerAdministration => Ok(GroupGrant::ServerAdministration),
+    }
+}
+
+fn client_group_grant(
+    grant: GroupGrant,
+) -> Result<ClientGroupGrantProjection, GroupAdministrationRejection> {
+    Ok(match grant {
+        GroupGrant::ClientModule(value) => ClientGroupGrantProjection::ClientModule {
+            value: value.as_str().to_owned(),
+        },
+        GroupGrant::ServiceModule(value) => ClientGroupGrantProjection::ServiceModule {
+            value: value.as_str().to_owned(),
+        },
+        GroupGrant::Operation(value) => ClientGroupGrantProjection::Operation {
+            value: value.as_str().to_owned(),
+        },
+        GroupGrant::ServerAdministration => ClientGroupGrantProjection::ServerAdministration,
+    })
+}
+
+fn catalog_contains(components: &AvailableComponents, grant: &GroupGrant) -> bool {
+    match grant {
+        GroupGrant::ClientModule(name) => components.has_client_module(name),
+        GroupGrant::ServiceModule(name) => components.has_service_module(name),
+        GroupGrant::Operation(name) => components.has_operation(name),
+        GroupGrant::ServerAdministration => true,
+    }
+}
+
+fn group_association_result(
+    result: Result<GroupMutationResult, GroupMutationWorkflowError>,
+) -> Result<(), GroupAdministrationRejection> {
+    match result {
+        Ok(GroupMutationResult::Unchanged | GroupMutationResult::Changed { .. }) => Ok(()),
+        Ok(GroupMutationResult::Stale { .. }) => {
+            Err(GroupAdministrationRejection::ServiceUnavailable)
+        }
+        Ok(GroupMutationResult::Denied { .. }) => {
+            Err(GroupAdministrationRejection::AuthorizationDenied)
+        }
+        Err(GroupMutationWorkflowError::TargetNotFound) => {
+            Err(GroupAdministrationRejection::NotFound)
+        }
+        Err(GroupMutationWorkflowError::CannotRemoveLastAdministrator) => {
+            Err(GroupAdministrationRejection::Conflict)
+        }
+        Err(
+            GroupMutationWorkflowError::ActionNotSupported
+            | GroupMutationWorkflowError::AuditLogUnavailable,
+        ) => Err(GroupAdministrationRejection::ServiceUnavailable),
     }
 }
 

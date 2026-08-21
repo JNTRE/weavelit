@@ -454,7 +454,8 @@ body {
 }
 
 .groups input,
-.groups textarea {
+.groups textarea,
+.groups select {
   box-sizing: border-box;
   display: block;
   font: inherit;
@@ -476,6 +477,45 @@ body {
   border-top: 1px solid var(--ds-color-border-strong);
   margin-top: var(--ds-space-lg);
   padding-top: var(--ds-space-lg);
+}
+
+.groups__associations {
+  border-top: 1px solid var(--ds-color-border-strong);
+  margin-top: var(--ds-space-xl);
+  padding-top: var(--ds-space-lg);
+}
+
+.groups__associations h4,
+.groups__association-section h5,
+.groups__associations .accounts__confirmation h5 {
+  font-size: var(--ds-font-size-heading-sm);
+  margin: 0;
+}
+
+.groups__association-section {
+  border-top: 1px solid var(--ds-color-border);
+  margin-top: var(--ds-space-lg);
+  padding-top: var(--ds-space-lg);
+}
+
+.groups__association-list {
+  list-style: none;
+  margin: var(--ds-space-sm) 0 0;
+  padding: 0;
+}
+
+.groups__association-list li {
+  align-items: center;
+  border-bottom: 1px solid var(--ds-color-border);
+  display: flex;
+  gap: var(--ds-space-md);
+  justify-content: space-between;
+  padding: var(--ds-space-xs) 0;
+}
+
+.groups__association-list small {
+  color: var(--ds-color-text-secondary);
+  display: block;
 }
 
 .accounts__toolbar {

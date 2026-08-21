@@ -337,6 +337,22 @@ grant targets use an existing Group and one canonical current grant value. No
 route, Group public identifier, pagination, or client schema is implied by this
 internal writer.
 
+The public Group adapter independently authorizes each read or change through
+a live ordinary session and Administration Plane decision, resolves only Group
+and Account Public Identifiers, and converts the closed public grant union into
+this typed intent. Client Module, Service Module, and Operation values are
+admitted only when they exist in the same compiled-in component inventory the
+action gate uses; Server Administration Permission is the only nameless
+variant. The adapter cannot supply an independent actor, session, grant kind,
+proof family, enablement decision, or final recheck.
+
+Member, grant, and compiled-catalog reads are ordinary typed Group reads. They
+require effective Server Administration Permission, produce only safe public
+projections, and do not request step-up or create Audit records. The compiled
+catalog is selection data, not component enablement authority: it reveals only
+the closed Client Module, Service Module, and Operation names the build can
+accept and adds no enablement mutation family.
+
 Deletion of an existing Group is also a `GrantMutation`. Any Group-deletion
 workflow MUST consume a current exact-session proof scoped to that family
 before it can begin. It MUST NOT classify deletion as an ordinary `Account`

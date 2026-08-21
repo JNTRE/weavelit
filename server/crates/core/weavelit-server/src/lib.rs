@@ -77,7 +77,8 @@ pub mod transport;
 
 pub use weavelit_module_client::typed_json;
 use weavelit_module_client::{
-    AccountAdministrationEnvelope, MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES,
+    AccountAdministrationEnvelope, GroupAdministrationEnvelope,
+    MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES, MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES,
 };
 
 use operational::{
@@ -274,6 +275,8 @@ enum ResponseProfile {
     TypedJson,
     /// Bounded account collection or exact-view envelopes.
     AccountAdministrationJson,
+    /// Bounded Group administration result envelopes.
+    GroupAdministrationJson,
     Html,
     JavaScript,
     Css,
@@ -282,9 +285,10 @@ enum ResponseProfile {
 impl ResponseProfile {
     const fn media_type(self) -> &'static str {
         match self {
-            Self::Json | Self::TypedJson | Self::AccountAdministrationJson => {
-                "application/json; charset=utf-8"
-            }
+            Self::Json
+            | Self::TypedJson
+            | Self::AccountAdministrationJson
+            | Self::GroupAdministrationJson => "application/json; charset=utf-8",
             Self::Html => "text/html; charset=utf-8",
             Self::JavaScript => "text/javascript; charset=utf-8",
             Self::Css => "text/css; charset=utf-8",
@@ -296,6 +300,7 @@ impl ResponseProfile {
             Self::Json => MAX_JSON_BODY_BYTES,
             Self::TypedJson => MAX_TYPED_JSON_BODY_BYTES,
             Self::AccountAdministrationJson => MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES,
+            Self::GroupAdministrationJson => MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES,
             Self::Html => MAX_HTML_BODY_BYTES,
             Self::JavaScript => MAX_JAVASCRIPT_BODY_BYTES,
             Self::Css => MAX_CSS_BODY_BYTES,
@@ -304,7 +309,10 @@ impl ResponseProfile {
 
     const fn security_headers(self) -> &'static str {
         match self {
-            Self::Json | Self::TypedJson | Self::AccountAdministrationJson => "",
+            Self::Json
+            | Self::TypedJson
+            | Self::AccountAdministrationJson
+            | Self::GroupAdministrationJson => "",
             Self::Html | Self::JavaScript | Self::Css => ASSET_SECURITY_HEADERS,
         }
     }
@@ -2121,6 +2129,25 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             acknowledgement: None,
         };
     }
+    if let Some(envelope) = response.extensions().get::<GroupAdministrationEnvelope>() {
+        let Some(body) = envelope.serialize() else {
+            return redacted_response(status, allow);
+        };
+        if body.len() > ResponseProfile::GroupAdministrationJson.max_body_bytes()
+            || effect.is_some()
+            || acknowledgement.is_some()
+        {
+            return redacted_response(status, allow);
+        }
+        return BoundedResponse {
+            status,
+            profile: ResponseProfile::GroupAdministrationJson,
+            body: Bytes::from_owner(WipedResponseBytes::from_text(body)),
+            allow,
+            cookies: None,
+            acknowledgement: None,
+        };
+    }
     if let Some(envelope) = response.extensions().get::<TypedJsonEnvelope>() {
         let body = envelope.serialize();
         if body.len() > ResponseProfile::TypedJson.max_body_bytes() {
@@ -3004,15 +3031,16 @@ pub(crate) mod tests {
     use weavelit_module_client::{
         ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_MFA_REQUIREMENT_ROUTE,
         ACCOUNTS_MFA_RESET_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, ACCOUNTS_STATUS_ROUTE,
-        ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
-        AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
-        AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
-        AUTH_SESSION_ROUTE, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CSRF_COOKIE_NAME, CookieEffect,
-        CookieValue, DatabaseSelectionRejection, ExpectedOrigin, GROUPS_CREATE_ROUTE,
-        GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE,
-        INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE,
-        MFA_POLICY_STEP_UP_ROUTE, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
-        RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
+        ACCOUNTS_VIEW_ROUTE, ADMINISTRATION_CATALOG_ROUTE, APPLICATION_DATABASE_ROUTE,
+        AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+        AUTH_MFA_ENROLLMENT_ROUTE, AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE,
+        AUTH_PASSWORD_CHANGE_ROUTE, AUTH_SESSION_ROUTE, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+        CSRF_COOKIE_NAME, CookieEffect, CookieValue, DatabaseSelectionRejection, ExpectedOrigin,
+        GROUP_GRANTS_CHANGE_ROUTE, GROUP_GRANTS_LIST_ROUTE, GROUP_MEMBERS_CHANGE_ROUTE,
+        GROUP_MEMBERS_LIST_ROUTE, GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE,
+        GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE, INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE, InitRejection,
+        LIFECYCLE_RECONCILIATION_ROUTE, MFA_POLICY_STEP_UP_ROUTE, RESTORE_ARTIFACT_ROUTE,
+        RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
         RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME, STATUS_ROUTE,
     };
     use weavelit_module_mfa_totp::{SECRET_LENGTH, TotpSecret};
@@ -3204,6 +3232,11 @@ pub(crate) mod tests {
             (Method::PUT, GROUPS_CREATE_ROUTE),
             (Method::PUT, GROUPS_UPDATE_ROUTE),
             (Method::PUT, GROUPS_DELETE_ROUTE),
+            (Method::PUT, GROUP_MEMBERS_LIST_ROUTE),
+            (Method::PUT, GROUP_MEMBERS_CHANGE_ROUTE),
+            (Method::PUT, GROUP_GRANTS_LIST_ROUTE),
+            (Method::PUT, GROUP_GRANTS_CHANGE_ROUTE),
+            (Method::PUT, ADMINISTRATION_CATALOG_ROUTE),
             (Method::PUT, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE),
             (Method::PUT, ACCOUNTS_CREATE_ROUTE),
             (Method::PUT, ACCOUNTS_RESET_PASSWORD_ROUTE),
@@ -3673,11 +3706,16 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    const EMBEDDED_ASSETS: [(&str, &str, &str); 3] = [
+    const EMBEDDED_ASSETS: [(&str, &str, &str); 4] = [
         ("/", "index.html", "text/html; charset=utf-8"),
         (
             "/assets/weavelit-application.js",
             "assets/weavelit-application.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/assets/weavelit-groups-workspace.js",
+            "assets/weavelit-groups-workspace.js",
             "text/javascript; charset=utf-8",
         ),
         (
@@ -3764,6 +3802,7 @@ pub(crate) mod tests {
             "/assets/../assets/weavelit-application.js",
             "/../assets/weavelit-application.js",
             "/assets/weavelit-application.js.map",
+            "/assets/weavelit-groups-workspace.js.map",
         ] {
             let response = restricted_routes(StartupOutcome::UninitializedWithoutDatabase)
                 .oneshot(Request::get(target).body(Body::empty()).unwrap())
@@ -4491,6 +4530,386 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn group_association_routes_are_safe_proof_bound_audited_and_last_admin_guarded() {
+        const ADMIN_PASSWORD: &str = "group-association-administrator-password";
+        const TARGET_PASSWORD: &str = "group-association-target-password";
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let administrator = StateIdentifier::from_bytes([0xe1; 16]).unwrap();
+        let target = StateIdentifier::from_bytes([0xe2; 16]).unwrap();
+        let administrators = StateIdentifier::from_bytes([0xf1; 16]).unwrap();
+        let operators = StateIdentifier::from_bytes([0xf2; 16]).unwrap();
+        let verifier = |password: &str| {
+            PasswordVerifier::new(
+                PasswordVerifierFactory::approved()
+                    .create(password.as_bytes())
+                    .unwrap()
+                    .into_string(),
+            )
+            .unwrap()
+        };
+        let state = sealed_application_state_from(SealedStateParts {
+            configuration: vec![ConfigurationEntry {
+                component: Name::new("totp").unwrap(),
+                key: ConfigurationKey::new(ComponentKind::MfaModule.enablement_key()).unwrap(),
+                value: ConfigurationValue::new("true").unwrap(),
+            }],
+            accounts: vec![
+                Account {
+                    identifier: administrator,
+                    username: Name::new("administrator").unwrap(),
+                    display_name: Some(Name::new("Administrator").unwrap()),
+                    active: true,
+                    mfa_required: false,
+                    credential_revision: CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
+                },
+                Account {
+                    identifier: target,
+                    username: Name::new("target-user").unwrap(),
+                    display_name: None,
+                    active: true,
+                    mfa_required: false,
+                    credential_revision: CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
+                },
+            ],
+            password_verifiers: vec![
+                AccountPasswordVerifier {
+                    account: administrator,
+                    verifier: verifier(ADMIN_PASSWORD),
+                },
+                AccountPasswordVerifier {
+                    account: target,
+                    verifier: verifier(TARGET_PASSWORD),
+                },
+            ],
+            groups: vec![
+                Group {
+                    identifier: administrators,
+                    name: Name::new("Administrators").unwrap(),
+                    description: None,
+                },
+                Group {
+                    identifier: operators,
+                    name: Name::new("Operators").unwrap(),
+                    description: None,
+                },
+            ],
+            group_memberships: vec![GroupMembership {
+                group: administrators,
+                account: administrator,
+            }],
+            group_grants: vec![
+                GroupGrantRecord {
+                    group: administrators,
+                    grant: GroupGrant::ClientModule(Name::new("web-ui").unwrap()),
+                },
+                GroupGrantRecord {
+                    group: administrators,
+                    grant: GroupGrant::ServerAdministration,
+                },
+            ],
+            ..SealedStateParts::default()
+        });
+        seal_deployment_with(&state_root, &state);
+        let startup = classify_restricted_startup(&state_root).unwrap();
+        let mount = operational_mount(&startup);
+
+        let login = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_LOGIN_ROUTE,
+            format!(
+                "{{\"username\":\"administrator\",\"password\":\"{ADMIN_PASSWORD}\",\
+                 \"client_module\":\"web-ui\"}}"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(login.status, StatusCode::OK);
+        let session = credential_issuance_cookie(&login, SESSION_COOKIE_NAME);
+        let csrf = credential_issuance_cookie(&login, CSRF_COOKIE_NAME);
+
+        let application =
+            rusqlite::Connection::open(state_root.join(APPLICATION_DATABASE_FILE)).unwrap();
+        let account_public_id = |username: &str| -> String {
+            URL_SAFE_NO_PAD.encode(
+                application
+                    .query_row(
+                        "SELECT identity.public_identifier FROM weavelit_account AS account \
+                         JOIN weavelit_account_public_identity AS identity \
+                         ON identity.account_id = account.account_id WHERE account.username = ?1",
+                        [username],
+                        |row| row.get::<_, Vec<u8>>(0),
+                    )
+                    .unwrap(),
+            )
+        };
+        let group_public_id = |name: &str| -> String {
+            URL_SAFE_NO_PAD.encode(
+                application
+                    .query_row(
+                        "SELECT identity.public_identifier FROM weavelit_group AS target \
+                         JOIN weavelit_group_public_identity AS identity \
+                         ON identity.group_id = target.group_id WHERE target.name = ?1",
+                        [name],
+                        |row| row.get::<_, Vec<u8>>(0),
+                    )
+                    .unwrap(),
+            )
+        };
+        let administrator_group = group_public_id("Administrators");
+        let operators_group = group_public_id("Operators");
+        let target_public_id = account_public_id("target-user");
+        let log = rusqlite::Connection::open(state_root.join("log.sqlite3")).unwrap();
+        let audit_count = || {
+            log.query_row(
+                "SELECT count(*) FROM weavelit_log_audit_records",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        let before_reads = audit_count();
+
+        let catalog = credential_issuance_json_request(
+            mount.surface(),
+            ADMINISTRATION_CATALOG_ROUTE,
+            "{}".to_owned(),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(catalog.status, StatusCode::OK);
+        let catalog_body = String::from_utf8_lossy(&catalog.body);
+        assert!(
+            catalog_body.contains("\"client_modules\":[\"web-ui\"]"),
+            "{catalog_body}"
+        );
+        assert!(
+            catalog_body.contains("\"service_modules\":[]"),
+            "{catalog_body}"
+        );
+        assert!(catalog_body.contains("\"operations\":[]"), "{catalog_body}");
+
+        let empty_members = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_MEMBERS_LIST_ROUTE,
+            format!("{{\"group_public_id\":\"{operators_group}\"}}"),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(empty_members.status, StatusCode::OK);
+        assert!(String::from_utf8_lossy(&empty_members.body).contains("\"items\":[]"));
+        let grants = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_GRANTS_LIST_ROUTE,
+            format!("{{\"group_public_id\":\"{administrator_group}\"}}"),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(grants.status, StatusCode::OK);
+        let grants_body = String::from_utf8_lossy(&grants.body);
+        assert!(grants_body.contains("\"type\":\"client_module\",\"value\":\"web-ui\""));
+        assert!(grants_body.contains("\"type\":\"server_administration\""));
+        for forbidden in ["account_id", "group_id", "audit_reference", "state_id"] {
+            assert!(!catalog_body.contains(forbidden));
+            assert!(!grants_body.contains(forbidden));
+        }
+        assert_eq!(audit_count(), before_reads);
+
+        let opened = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_MFA_SELF_ENROLLMENT_ROUTE,
+            format!("{{\"password\":\"{ADMIN_PASSWORD}\"}}"),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(opened.status, StatusCode::OK);
+        let secret_text = credential_issuance_response_field(&opened, "secret");
+        let enrollment = credential_issuance_response_field(&opened, "enrollment");
+        let secret = disclosed_totp_secret(&secret_text);
+        let confirming_code = current_totp_code(&secret, 0);
+        let confirmed = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+            format!("{{\"enrollment\":\"{enrollment}\",\"code\":\"{confirming_code}\"}}"),
+            None,
+        )
+        .await;
+        assert_eq!(confirmed.status, StatusCode::OK);
+        let other_session = credential_issuance_cookie(&confirmed, SESSION_COOKIE_NAME);
+        let other_csrf = credential_issuance_cookie(&confirmed, CSRF_COOKIE_NAME);
+
+        let step_up_code = current_totp_code(&secret, 1);
+        let step_up = credential_issuance_json_request(
+            mount.surface(),
+            MFA_POLICY_STEP_UP_ROUTE,
+            format!("{{\"family\":\"grant_mutation\",\"code\":\"{step_up_code}\"}}"),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(step_up.status, StatusCode::OK);
+        let ticket = credential_issuance_response_field(&step_up, "totp_step_up_ticket");
+        let before_changes = audit_count();
+
+        let cross_family = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+            format!(
+                "{{\"public_id\":\"{target_public_id}\",\"required\":true,\
+                 \"totp_step_up_ticket\":\"{ticket}\"}}"
+            ),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(cross_family.status, StatusCode::FORBIDDEN);
+        assert!(String::from_utf8_lossy(&cross_family.body).contains("mfa_policy_denied"));
+
+        let member_change_body = format!(
+            "{{\"group_public_id\":\"{operators_group}\",\
+             \"account_public_id\":\"{target_public_id}\",\"present\":true,\
+             \"grant_mutation_step_up_ticket\":\"{ticket}\"}}"
+        );
+        let cross_session = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_MEMBERS_CHANGE_ROUTE,
+            member_change_body.clone(),
+            Some((&other_session, &other_csrf)),
+        )
+        .await;
+        assert_eq!(cross_session.status, StatusCode::FORBIDDEN);
+        assert!(String::from_utf8_lossy(&cross_session.body).contains("grant_mutation_denied"));
+        assert_eq!(audit_count(), before_changes);
+
+        let member_added = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_MEMBERS_CHANGE_ROUTE,
+            member_change_body.clone(),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(member_added.status, StatusCode::OK);
+        let member_body = String::from_utf8_lossy(&member_added.body);
+        assert!(member_body.contains(&format!("\"public_id\":\"{target_public_id}\"")));
+        assert!(member_body.contains("\"username\":\"target-user\""));
+        assert!(member_body.contains("\"present\":true"));
+        assert_eq!(audit_count(), before_changes + 2);
+
+        let unchanged_member = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_MEMBERS_CHANGE_ROUTE,
+            member_change_body,
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(unchanged_member.status, StatusCode::OK);
+        assert_eq!(audit_count(), before_changes + 2);
+
+        let listed_members = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_MEMBERS_LIST_ROUTE,
+            format!("{{\"group_public_id\":\"{operators_group}\"}}"),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(listed_members.status, StatusCode::OK);
+        let listed_body = String::from_utf8_lossy(&listed_members.body);
+        assert!(listed_body.contains("\"username\":\"target-user\""));
+        for forbidden in ["account_id", "group_id", "audit_reference", "state_id"] {
+            assert!(!listed_body.contains(forbidden));
+        }
+
+        let grant_change_body = format!(
+            "{{\"group_public_id\":\"{operators_group}\",\"grant\":{{\
+             \"type\":\"client_module\",\"value\":\"web-ui\"}},\"present\":true,\
+             \"grant_mutation_step_up_ticket\":\"{ticket}\"}}"
+        );
+        let grant_added = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_GRANTS_CHANGE_ROUTE,
+            grant_change_body.clone(),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(grant_added.status, StatusCode::OK);
+        assert_eq!(audit_count(), before_changes + 4);
+        let unchanged_grant = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_GRANTS_CHANGE_ROUTE,
+            grant_change_body,
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(unchanged_grant.status, StatusCode::OK);
+        assert_eq!(audit_count(), before_changes + 4);
+
+        let uncatalogued = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_GRANTS_CHANGE_ROUTE,
+            format!(
+                "{{\"group_public_id\":\"{operators_group}\",\"grant\":{{\
+                 \"type\":\"operation\",\"value\":\"unsafe.operation\"}},\
+                 \"present\":true,\"grant_mutation_step_up_ticket\":\"{ticket}\"}}"
+            ),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(uncatalogued.status, StatusCode::NOT_FOUND);
+        assert_eq!(audit_count(), before_changes + 4);
+
+        let last_administrator = credential_issuance_json_request(
+            mount.surface(),
+            GROUP_GRANTS_CHANGE_ROUTE,
+            format!(
+                "{{\"group_public_id\":\"{administrator_group}\",\"grant\":{{\
+                 \"type\":\"server_administration\"}},\"present\":false,\
+                 \"grant_mutation_step_up_ticket\":\"{ticket}\"}}"
+            ),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(last_administrator.status, StatusCode::CONFLICT);
+        assert_eq!(audit_count(), before_changes + 6);
+        assert_eq!(
+            application
+                .query_row(
+                    "SELECT count(*) FROM weavelit_group_grant \
+                     WHERE group_id = ?1 AND grant_kind = 'server_administration'",
+                    [administrators.as_bytes().as_slice()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        let audit_text = log
+            .prepare(
+                "SELECT phase, correlation_id, classification, principal, action, target, detail \
+                 FROM weavelit_log_audit_records",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((0..7)
+                    .map(|index| row.get::<_, String>(index))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(" "))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        for secret in [&confirming_code, &step_up_code, &ticket, &secret_text] {
+            assert!(
+                !audit_text.contains(secret),
+                "Audit output exposed a secret"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn account_status_public_route_disables_reenables_and_returns_self_disable_before_logout()
     {
         const ADMIN_PASSWORD: &str = "account-status-administrator-password";
@@ -4784,6 +5203,7 @@ pub(crate) mod tests {
         for target in [
             "/",
             "/assets/weavelit-application.js",
+            "/assets/weavelit-groups-workspace.js",
             "/assets/weavelit-application.css",
             STATUS_ROUTE,
             APPLICATION_DATABASE_ROUTE,
@@ -9603,6 +10023,7 @@ pub(crate) mod tests {
         for target in [
             "/",
             "/assets/weavelit-application.js",
+            "/assets/weavelit-groups-workspace.js",
             "/assets/weavelit-application.css",
             STATUS_ROUTE,
             APPLICATION_DATABASE_ROUTE,

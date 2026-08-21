@@ -287,6 +287,18 @@ The Audit catalog separately names
 `authorization.group-grant.removal-denied`; neither catalog entry causes the
 producer to emit a System Log or orchestrate a mutation.
 
+Public Group, member, direct-grant, and compiled-catalog reads produce no Audit
+record. An exact membership or direct-grant no-op is rejected before Attempt
+construction and likewise produces no Audit record. Public member and grant
+changes delegate to the existing Group mutation producer without introducing a
+transport-specific event: a changed membership uses
+`authorization.group-membership.changed`, a changed direct grant uses
+`authorization.group-grant.changed`, and an effective-last-Administrator
+refusal uses `authorization.group-grant.removal-denied`. The public Group and
+Account identifiers, TOTP code, opaque ticket, response projection, cursor,
+and catalog payload never enter these records; the producer continues to use
+only stable internal Audit references and canonical grant references.
+
 ## Operational Terminal Recovery
 
 The `weavelit-server` operational composer owns one process-local recovery

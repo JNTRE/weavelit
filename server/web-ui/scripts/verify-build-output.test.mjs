@@ -52,6 +52,7 @@ function createWebUi() {
 
   writeFileSync(join(dist, "index.html"), "<!doctype html>built");
   writeFileSync(join(dist, "assets", "weavelit-application.js"), "console.log(1);");
+  writeFileSync(join(dist, "assets", "weavelit-groups-workspace.js"), "console.log(2);");
   writeFileSync(join(dist, "assets", "weavelit-application.css"), "body{}");
 
   return { root, dist };
@@ -83,6 +84,7 @@ test("write mode records the format version, inputs, and generated assets", () =
   deepStrictEqual(Object.keys(manifest.assets), [
     "assets/weavelit-application.css",
     "assets/weavelit-application.js",
+    "assets/weavelit-groups-workspace.js",
     "index.html",
   ]);
   for (const digest of Object.values(manifest.assets)) {
@@ -131,10 +133,10 @@ test("check mode reports an added and a removed bundle input", () => {
 test("check mode reports a corrupted generated asset", () => {
   const { root, dist } = createWebUi();
   writeManifest(root, dist);
-  writeFileSync(join(dist, "assets", "weavelit-application.js"), "console.log(2);");
+  writeFileSync(join(dist, "assets", "weavelit-groups-workspace.js"), "console.log(3);");
 
   deepStrictEqual(checkManifest(root, dist), [
-    "Build content manifest generated asset hash does not match the current file: assets/weavelit-application.js",
+    "Build content manifest generated asset hash does not match the current file: assets/weavelit-groups-workspace.js",
   ]);
 });
 

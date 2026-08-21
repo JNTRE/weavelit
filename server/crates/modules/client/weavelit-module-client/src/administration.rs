@@ -389,6 +389,12 @@ impl AccountAdministrationProjection {
     pub fn username(&self) -> &str {
         &self.username
     }
+
+    /// Returns the stable public identifier used as the member-page tiebreaker.
+    #[must_use]
+    pub fn public_id(&self) -> &str {
+        &self.public_id
+    }
 }
 
 /// One deterministic bounded account collection page.

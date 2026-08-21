@@ -3,13 +3,14 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use weavelit_server_database::{
-    AuditReferenceIdentifier, AuditReferencePersistence, AuditTerminalRecoveryPersistence,
-    AuditTerminalRecoveryStore, AuditTerminalReplayBatchSize, Description, Group,
-    GroupAdministrationAuditTerminalWrites, GroupAdministrationMutationError,
-    GroupAdministrationStore, GroupAuditReference, GroupCreateMutation, GroupCreateOutcome,
-    GroupDeleteMutation, GroupDeleteOutcome, GroupMutationRecheck, GroupPublicIdentifier,
-    GroupPublicIdentifierPersistence, GroupPublicIdentity, GroupUpdateMutation, GroupUpdateOutcome,
-    Name, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS, SESSION_DIGEST_LENGTH, SessionInstant,
+    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AuditReferenceIdentifier,
+    AuditReferencePersistence, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
+    AuditTerminalReplayBatchSize, Description, Group, GroupAdministrationAuditTerminalWrites,
+    GroupAdministrationMutationError, GroupAdministrationStore, GroupAuditReference,
+    GroupCreateMutation, GroupCreateOutcome, GroupDeleteMutation, GroupDeleteOutcome, GroupGrant,
+    GroupMutationRecheck, GroupPublicIdentifier, GroupPublicIdentifierPersistence,
+    GroupPublicIdentity, GroupUpdateMutation, GroupUpdateOutcome, Name,
+    SESSION_ABSOLUTE_LIFETIME_MILLISECONDS, SESSION_DIGEST_LENGTH, SessionInstant,
     SessionTokenHash, StateIdentifier, StoredAuditDestinationBinding,
     ValidatedAuditTerminalObligationWrite,
 };
@@ -24,6 +25,7 @@ struct Surface {
     _directory: TempDir,
     path: PathBuf,
     database: SqliteDatabase,
+    account_public_ids: AccountPublicIdentifierPersistence,
     public_ids: GroupPublicIdentifierPersistence,
     audit_refs: AuditReferencePersistence,
     recovery: AuditTerminalRecoveryPersistence,
@@ -50,15 +52,17 @@ fn surface() -> Surface {
         .join("application.db");
     let database = SqliteDatabase::open(&path).unwrap();
     let authority = ServerDatabaseAuthority::new();
+    let account_public_ids = AccountPublicIdentifierPersistence::from_server_authority(&authority);
     let public_ids = GroupPublicIdentifierPersistence::from_server_authority(&authority);
     let audit_refs = AuditReferencePersistence::from_server_authority(&authority);
     let recovery = AuditTerminalRecoveryPersistence::from_server_authority(&authority);
-    insert_actor(&path);
+    insert_actor(&path, &account_public_ids);
     insert_session(&path);
     Surface {
         _directory: directory,
         path,
         database,
+        account_public_ids,
         public_ids,
         audit_refs,
         recovery,
@@ -73,20 +77,39 @@ fn public_id(persistence: &GroupPublicIdentifierPersistence, byte: u8) -> GroupP
     persistence.decode([byte; 16]).unwrap()
 }
 
+fn account_public_id(
+    persistence: &AccountPublicIdentifierPersistence,
+    byte: u8,
+) -> AccountPublicIdentifier {
+    persistence.decode([byte; 16]).unwrap()
+}
+
 fn audit_ref(persistence: &AuditReferencePersistence, byte: u8) -> AuditReferenceIdentifier {
     persistence
         .decode(&format!("ar-{}", format!("{byte:02x}").repeat(16)))
         .unwrap()
 }
 
-fn insert_actor(path: &Path) {
-    Connection::open(path)
-        .unwrap()
+fn insert_actor(path: &Path, persistence: &AccountPublicIdentifierPersistence) {
+    let connection = Connection::open(path).unwrap();
+    connection
         .execute(
             "INSERT INTO weavelit_account \
              (account_id, username, display_name, active, mfa_required) \
              VALUES (?1, 'administrator', NULL, 1, 0)",
             [identifier(ACTOR).as_bytes().as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_account_public_identity \
+             (account_id, public_identifier) VALUES (?1, ?2)",
+            params![
+                identifier(ACTOR).as_bytes().as_slice(),
+                persistence
+                    .encode(&account_public_id(persistence, ACTOR))
+                    .as_slice(),
+            ],
         )
         .unwrap();
 }
@@ -261,6 +284,87 @@ fn group_reads_are_ordered_exact_persistent_and_fail_closed_for_identity_damage(
             .database
             .list_group_administration_projections(&surface.public_ids)
             .is_err()
+    );
+}
+
+#[test]
+fn association_reads_are_safe_ordered_persistent_and_distinguish_missing_groups() {
+    let mut surface = surface();
+    insert_group(&surface, 0x11, "Operators", None);
+    let connection = Connection::open(&surface.path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_group_membership (group_id, account_id) VALUES (?1, ?2)",
+            params![
+                identifier(0x11).as_bytes().as_slice(),
+                identifier(ACTOR).as_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
+    for (kind, value) in [("server_administration", ""), ("client_module", "web-ui")] {
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_grant (group_id, grant_kind, grant_value) \
+                 VALUES (?1, ?2, ?3)",
+                params![identifier(0x11).as_bytes().as_slice(), kind, value],
+            )
+            .unwrap();
+    }
+
+    let members = surface
+        .database
+        .list_group_member_administration_projections(
+            &surface.account_public_ids,
+            &surface.public_ids,
+            public_id(&surface.public_ids, 0x11),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].username().as_str(), "administrator");
+    assert_eq!(
+        members[0].public_identifier(),
+        account_public_id(&surface.account_public_ids, ACTOR)
+    );
+    let grants = surface
+        .database
+        .list_group_grant_administration_projections(
+            &surface.public_ids,
+            public_id(&surface.public_ids, 0x11),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        grants,
+        [
+            GroupGrant::ClientModule(Name::new("web-ui").unwrap()),
+            GroupGrant::ServerAdministration,
+        ]
+    );
+    assert!(
+        surface
+            .database
+            .list_group_member_administration_projections(
+                &surface.account_public_ids,
+                &surface.public_ids,
+                public_id(&surface.public_ids, 0x19),
+            )
+            .unwrap()
+            .is_none()
+    );
+
+    drop(surface.database);
+    surface.database = SqliteDatabase::open(&surface.path).unwrap();
+    assert_eq!(
+        surface
+            .database
+            .list_group_grant_administration_projections(
+                &surface.public_ids,
+                public_id(&surface.public_ids, 0x11),
+            )
+            .unwrap()
+            .unwrap(),
+        grants
     );
 }
 

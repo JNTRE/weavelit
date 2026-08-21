@@ -30,6 +30,12 @@ const RESTORE_ARTIFACT_PATH = "/api/v1/restore/artifact";
 const LOGIN_PATH = "/api/v1/auth/login";
 const SESSION_PATH = "/api/v1/auth/session";
 const ACCOUNTS_LIST_PATH = "/api/v1/administration/accounts/list";
+const GROUPS_LIST_PATH = "/api/v1/administration/groups/list";
+const GROUPS_WORKSPACE_ASSET_PATH = "/assets/weavelit-groups-workspace.js";
+const GROUPS_VIEW_PATH = "/api/v1/administration/groups/view";
+const GROUP_MEMBERS_LIST_PATH = "/api/v1/administration/groups/members/list";
+const GROUP_GRANTS_LIST_PATH = "/api/v1/administration/groups/grants/list";
+const ADMINISTRATION_CATALOG_PATH = "/api/v1/administration/catalog";
 
 const ARTIFACT_INPUT = "#weavelit-restore-artifact";
 const RECOVERY_KEY_INPUT = "#weavelit-restore-recovery-key";
@@ -79,7 +85,7 @@ function capturedOutput(path: string): string {
 /**
  * Every response a page load against the pre-operational surface produces.
  *
- * The listener admits a burst of 12 requests per source and each Server
+ * The listener admits a burst of 14 requests per source and each Server
  * generation is counted by its own limiter, so asserting the exact set per
  * generation also pins the request budget and keeps a drifting `429` visible.
  */
@@ -402,11 +408,77 @@ test("an operator signs in to a restored deployment and the session survives a r
     await expect(login).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
     await expect(page.getByRole("rowheader", { name: FIXTURE_USERNAME })).toBeVisible();
+    expect(observed.slice(thirdGeneration)).not.toContain(`200 ${GROUPS_WORKSPACE_ASSET_PATH}`);
+
+    const groupsWorkspaceLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUPS_WORKSPACE_ASSET_PATH,
+    );
+    const groupsLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUPS_LIST_PATH,
+    );
+    await page.getByRole("button", { name: "Groups" }).click();
+    expect((await groupsWorkspaceLoaded).status()).toBe(200);
+    expect((await groupsLoaded).status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Groups" })).toBeVisible();
+
+    const groupView = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUPS_VIEW_PATH,
+    );
+    const members = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUP_MEMBERS_LIST_PATH,
+    );
+    const grants = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUP_GRANTS_LIST_PATH,
+    );
+    const pickerAccounts = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === ACCOUNTS_LIST_PATH &&
+        requests.filter((request) => new URL(request.url()).pathname === ACCOUNTS_LIST_PATH)
+          .length >= 2,
+    );
+    const catalog = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === ADMINISTRATION_CATALOG_PATH,
+    );
+    await page.getByRole("button", { name: "View" }).click();
+    for (const response of await Promise.all([
+      groupView,
+      members,
+      grants,
+      pickerAccounts,
+      catalog,
+    ])) {
+      expect(response.status()).toBe(200);
+      const body = JSON.stringify(await response.json());
+      for (const forbidden of ["account_id", "group_id", "audit_reference", "state_id"]) {
+        expect(body, `the Group detail omits ${forbidden}`).not.toContain(forbidden);
+      }
+    }
+    await expect(page.getByRole("heading", { name: "Administrators" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Access" })).toBeVisible();
+    await expect(
+      page
+        .locator(".groups__association-list span")
+        .filter({ hasText: /^Server Administration Permission$/ }),
+    ).toBeVisible();
+    await expect(page.getByLabel("Add member")).toBeVisible();
+    await expect(page.getByLabel("Grant type")).toBeVisible();
 
     expect(
       sorted(observed.slice(thirdGeneration)),
       "requests against the third generation",
-    ).toEqual(sorted([...operationalLoad(200), `200 ${ACCOUNTS_LIST_PATH}`]));
+    ).toEqual(
+      sorted([
+        ...operationalLoad(200),
+        `200 ${ACCOUNTS_LIST_PATH}`,
+        `200 ${GROUPS_WORKSPACE_ASSET_PATH}`,
+        `200 ${GROUPS_LIST_PATH}`,
+        `200 ${GROUPS_VIEW_PATH}`,
+        `200 ${GROUP_MEMBERS_LIST_PATH}`,
+        `200 ${GROUP_GRANTS_LIST_PATH}`,
+        `200 ${ACCOUNTS_LIST_PATH}`,
+        `200 ${ADMINISTRATION_CATALOG_PATH}`,
+      ]),
+    );
 
     // The presented session resolves to the account the fixture restored, and
     // the probe echoed the CSRF value the browser is actually holding.

@@ -1,4 +1,4 @@
-import { useCallback, useState, type JSX } from "react";
+import { useCallback, useState, type ComponentType, type JSX } from "react";
 
 import { selectSqliteDatabase } from "../api/weavelit-init-database-selection";
 // Design system tokens for component styling integration
@@ -9,7 +9,6 @@ import {
 } from "../hooks/weavelit-init-deployment-status";
 import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
 import { AccountsWorkspace } from "./weavelit-accounts-workspace";
-import { GroupsWorkspace } from "./weavelit-groups-workspace";
 import { InitWorkflow } from "./weavelit-init-workflow";
 import { LoginPanel } from "./weavelit-login-form";
 import { PasswordChangeForm } from "./weavelit-password-change-form";
@@ -42,6 +41,18 @@ type SelectionViewState = "idle" | "submitting" | "failed";
 /** The mutually exclusive first-launch path a person has chosen, if any. */
 type SetupChoice = "init" | "restore";
 
+interface GroupsWorkspaceModule {
+  GroupsWorkspace: ComponentType;
+}
+
+export interface ApplicationShellProps {
+  loadGroupsWorkspace?: () => Promise<GroupsWorkspaceModule>;
+}
+
+function defaultGroupsWorkspaceLoader(): Promise<GroupsWorkspaceModule> {
+  return import("./weavelit-groups-workspace");
+}
+
 function statusMessage(state: StatusViewState): string {
   switch (state.kind) {
     case "loading":
@@ -54,7 +65,9 @@ function statusMessage(state: StatusViewState): string {
 }
 
 /** Root application shell for the restricted pre-operational Web UI. */
-export function ApplicationShell(): JSX.Element {
+export function ApplicationShell({
+  loadGroupsWorkspace = defaultGroupsWorkspaceLoader,
+}: ApplicationShellProps = {}): JSX.Element {
   const { state, applyStatus } = useDeploymentStatus();
   const [selection, setSelection] = useState<SelectionViewState>("idle");
   const [choice, setChoice] = useState<SetupChoice | null>(null);
@@ -62,6 +75,8 @@ export function ApplicationShell(): JSX.Element {
   const [authenticated, setAuthenticated] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [administrationView, setAdministrationView] = useState<"accounts" | "groups">("accounts");
+  const [groupsLoadState, setGroupsLoadState] = useState<"idle" | "loading" | "failed">("idle");
+  const [GroupsWorkspace, setGroupsWorkspace] = useState<ComponentType | null>(null);
 
   const chooseInit = useCallback(() => {
     setChoice("init");
@@ -90,6 +105,18 @@ export function ApplicationShell(): JSX.Element {
     setPasswordChangeRequired(false);
     setAuthenticated(false);
   }, []);
+
+  const loadGroups = useCallback(() => {
+    setGroupsLoadState("loading");
+    void loadGroupsWorkspace().then(
+      (module) => {
+        setGroupsWorkspace(() => module.GroupsWorkspace);
+      },
+      () => {
+        setGroupsLoadState("failed");
+      },
+    );
+  }, [loadGroupsWorkspace]);
 
   const submit = useCallback(() => {
     setSelection("submitting");
@@ -151,6 +178,7 @@ export function ApplicationShell(): JSX.Element {
                 aria-current={administrationView === "groups" ? "page" : undefined}
                 onClick={() => {
                   setAdministrationView("groups");
+                  if (groupsLoadState === "idle") loadGroups();
                 }}
               >
                 Groups
@@ -158,8 +186,26 @@ export function ApplicationShell(): JSX.Element {
             </nav>
             {administrationView === "accounts" ? (
               <AccountsWorkspace onSessionEnded={endAuthenticatedSession} />
-            ) : (
+            ) : GroupsWorkspace !== null ? (
               <GroupsWorkspace />
+            ) : (
+              <section className="groups" aria-labelledby="groups-loading-title">
+                <h2 id="groups-loading-title" className="groups__title">
+                  Groups
+                </h2>
+                {groupsLoadState === "failed" ? (
+                  <>
+                    <p role="alert">Groups could not be loaded.</p>
+                    <button type="button" onClick={loadGroups}>
+                      Retry
+                    </button>
+                  </>
+                ) : (
+                  <p role="status" aria-live="polite">
+                    Loading Groups.
+                  </p>
+                )}
+              </section>
             )}
           </>
         )}

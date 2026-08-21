@@ -347,6 +347,9 @@ pub enum AccountAdministrationAction {
 pub enum GroupAdministrationRead {
     List,
     View(GroupPublicIdentifier),
+    Members(GroupPublicIdentifier),
+    Grants(GroupPublicIdentifier),
+    Catalog,
 }
 
 /// One bounded empty Group creation request.

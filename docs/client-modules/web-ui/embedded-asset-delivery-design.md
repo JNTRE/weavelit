@@ -4,7 +4,7 @@ This document owns the server-side **[Client Module](../../glossary.md#applicati
 
 ## Asset Allowlist And Routes
 
-The `weavelit-module-client-webui` crate embeds exactly three generated files
+The `weavelit-module-client-webui` crate embeds exactly four generated files
 with `include_bytes!` at compile time and mounts each at exactly one path, with
 no wildcard, prefix, manifest-generated, or fallback route:
 
@@ -12,6 +12,7 @@ no wildcard, prefix, manifest-generated, or fallback route:
 | --- | --- | --- |
 | `/` | `dist/index.html` | `text/html; charset=utf-8` |
 | `/assets/weavelit-application.js` | `dist/assets/weavelit-application.js` | `text/javascript; charset=utf-8` |
+| `/assets/weavelit-groups-workspace.js` | `dist/assets/weavelit-groups-workspace.js` | `text/javascript; charset=utf-8` |
 | `/assets/weavelit-application.css` | `dist/assets/weavelit-application.css` | `text/css; charset=utf-8` |
 
 The module performs no filesystem read at runtime; every byte it can ever serve
@@ -22,7 +23,7 @@ cannot expose an arbitrary file.
 ## Build-Time Availability And Freshness
 
 `build.rs` fails the Rust build with an actionable diagnostic when
-`server/web-ui/dist/` or any of its three expected files is absent. It invokes
+`server/web-ui/dist/` or any of its four expected files is absent. It invokes
 no package manager and performs no network access; it only reports the failing
 files and the command that produces them. Generated build output is
 deliberately not committed to version control, so a fresh checkout must build
@@ -36,7 +37,7 @@ input and of each generated asset, and `build.rs` re-hashes both sets at compile
 time. It fails closed on a missing, malformed, or non-object manifest, an
 unrecognized format version or field, an added or removed bundle input, or any
 hash mismatch. It also emits a `cargo:rerun-if-changed` entry for every bundle
-input, the `src/` directory, the manifest, and the three generated assets, so
+input, the `src/` directory, the manifest, and the four generated assets, so
 Cargo re-runs the check after a source edit rather than reusing a cached build.
 
 The manifest is build metadata only. It is never embedded, never added to the
@@ -48,20 +49,23 @@ before it runs the Rust gates.
 
 ## Size Bounds
 
-Every embedded asset is bounded twice: once at compile time and once at
-runtime.
+Every embedded asset is bounded at compile time and runtime.
 
 A `const _: () = assert!(...)` per asset fails compilation if the embedded file
-is empty or exceeds its bound. Independently, the Server runtime's
-`ResponseProfile` enforces the same bound as a maximum response body size when
-serving the asset, so a bound violation cannot reach a client even if a future
-change bypassed the compile-time assertion.
+is empty or exceeds its bound. The build validator applies those same
+asset-specific bounds and additionally keeps the complete output within its
+fixed combined budget. Independently, the Server runtime's `ResponseProfile`
+enforces the media type's maximum response body size when serving an asset. The
+deferred Groups script has a stricter 32 KiB build and compile-time bound while
+sharing the 256 KiB JavaScript wire profile; the compile-time assertion means a
+larger deferred script cannot enter a Server binary.
 
 | Asset | Bound | Built size |
 | --- | --- | --- |
-| `index.html` | 16 KiB | 452 B |
-| `assets/weavelit-application.js` | 256 KiB | 191,481 B |
-| `assets/weavelit-application.css` | 64 KiB | 488 B |
+| `index.html` | 16 KiB | 470 B |
+| `assets/weavelit-application.js` | 256 KiB | 253,711 B |
+| `assets/weavelit-groups-workspace.js` | 32 KiB | 19,608 B |
+| `assets/weavelit-application.css` | 64 KiB | 13,917 B |
 
 Built sizes vary by change and are reported by the build's bundle-size
 validator; the bounds above are fixed.

@@ -1,22 +1,35 @@
 import { CSRF_HEADER_NAME, readCsrfToken } from "./weavelit-authentication";
+import { readAccountProjection, type AccountProjection } from "./weavelit-administration-accounts";
 
 export const GROUPS_LIST_PATH = "/api/v1/administration/groups/list";
 export const GROUPS_VIEW_PATH = "/api/v1/administration/groups/view";
 export const GROUPS_CREATE_PATH = "/api/v1/administration/groups/create";
 export const GROUPS_UPDATE_PATH = "/api/v1/administration/groups/update";
 export const GROUPS_DELETE_PATH = "/api/v1/administration/groups/delete";
+export const GROUP_MEMBERS_LIST_PATH = "/api/v1/administration/groups/members/list";
+export const GROUP_MEMBERS_CHANGE_PATH = "/api/v1/administration/groups/members/change";
+export const GROUP_GRANTS_LIST_PATH = "/api/v1/administration/groups/grants/list";
+export const GROUP_GRANTS_CHANGE_PATH = "/api/v1/administration/groups/grants/change";
+export const ADMINISTRATION_CATALOG_PATH = "/api/v1/administration/catalog";
 
 const FINAL_BASE64URL_CHARACTER = "[AEIMQUYcgkosw048]";
 const PUBLIC_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{21}${FINAL_BASE64URL_CHARACTER}$`);
 const TICKET_PATTERN = new RegExp(`^[A-Za-z0-9_-]{42}${FINAL_BASE64URL_CHARACTER}$`);
 const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
-const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,416}$/;
+const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,512}$/;
 const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
 const PROJECTION_FIELDS = new Set(["public_id", "name", "description"]);
 const PAGE_FIELDS = new Set(["items", "next_cursor"]);
 const ENVELOPE_FIELDS = new Set(["result", "correlation_id"]);
 const MAX_NAME_BYTES = 256;
 const MAX_DESCRIPTION_BYTES = 1024;
+const MAX_PAGE_ITEMS = 100;
+const MAX_CATALOG_ITEMS = 256;
+const GRANT_TYPE_FIELDS = new Set(["type"]);
+const GRANT_VALUE_FIELDS = new Set(["type", "value"]);
+const MEMBER_CHANGE_FIELDS = new Set(["account", "present"]);
+const GRANT_CHANGE_FIELDS = new Set(["grant", "present"]);
+const CATALOG_FIELDS = new Set(["client_modules", "service_modules", "operations"]);
 
 export interface GroupProjection {
   readonly publicId: string;
@@ -26,6 +39,24 @@ export interface GroupProjection {
 export interface GroupsPage {
   readonly items: readonly GroupProjection[];
   readonly nextCursor: string | null;
+}
+export interface GroupMembersPage {
+  readonly items: readonly AccountProjection[];
+  readonly nextCursor: string | null;
+}
+export type GroupGrant =
+  | { readonly type: "client_module"; readonly value: string }
+  | { readonly type: "service_module"; readonly value: string }
+  | { readonly type: "operation"; readonly value: string }
+  | { readonly type: "server_administration" };
+export interface GroupGrantsPage {
+  readonly items: readonly GroupGrant[];
+  readonly nextCursor: string | null;
+}
+export interface AdministrationCatalog {
+  readonly clientModules: readonly string[];
+  readonly serviceModules: readonly string[];
+  readonly operations: readonly string[];
 }
 
 export class GroupsUnavailableError extends Error {
@@ -44,6 +75,12 @@ export class GroupMutationIndeterminateError extends Error {
   constructor() {
     super("group_mutation_indeterminate");
     this.name = "GroupMutationIndeterminateError";
+  }
+}
+export class LastAdministratorRefusedError extends GroupMutationRefusedError {
+  constructor() {
+    super();
+    this.name = "LastAdministratorRefusedError";
   }
 }
 
@@ -98,7 +135,7 @@ export function readGroupsPage(payload: unknown): GroupsPage | null {
     result === null ||
     !exact(result, PAGE_FIELDS) ||
     !Array.isArray(result.items) ||
-    result.items.length > 100
+    result.items.length > MAX_PAGE_ITEMS
   )
     return null;
   const rawItems: unknown[] = result.items;
@@ -112,6 +149,88 @@ export function readGroupsPage(payload: unknown): GroupsPage | null {
   const cursor = result.next_cursor;
   if (cursor !== null && (typeof cursor !== "string" || !CURSOR_PATTERN.test(cursor))) return null;
   return { items, nextCursor: cursor };
+}
+
+function readPage(
+  payload: unknown,
+  parse: (value: unknown) => AccountProjection | GroupGrant | null,
+): {
+  readonly items: readonly (AccountProjection | GroupGrant)[];
+  readonly nextCursor: string | null;
+} | null {
+  const result = objectValue(envelope(payload)?.result);
+  if (
+    result === null ||
+    !exact(result, PAGE_FIELDS) ||
+    !Array.isArray(result.items) ||
+    result.items.length > MAX_PAGE_ITEMS
+  )
+    return null;
+  const items: (AccountProjection | GroupGrant)[] = [];
+  for (const value of result.items) {
+    const item = parse(value);
+    if (item === null) return null;
+    items.push(item);
+  }
+  const cursor = result.next_cursor;
+  if (cursor !== null && (typeof cursor !== "string" || !CURSOR_PATTERN.test(cursor))) return null;
+  return { items, nextCursor: cursor };
+}
+
+export function readGroupMembersPage(payload: unknown): GroupMembersPage | null {
+  const page = readPage(payload, (value) =>
+    readAccountProjection({ result: value, correlation_id: "member-projection" }),
+  );
+  return page === null
+    ? null
+    : { items: page.items as readonly AccountProjection[], nextCursor: page.nextCursor };
+}
+
+export function readGroupGrant(payload: unknown): GroupGrant | null {
+  const value = objectValue(payload);
+  if (value === null || typeof value.type !== "string") return null;
+  if (value.type === "server_administration")
+    return exact(value, GRANT_TYPE_FIELDS) ? { type: "server_administration" } : null;
+  if (
+    !exact(value, GRANT_VALUE_FIELDS) ||
+    !["client_module", "service_module", "operation"].includes(value.type)
+  )
+    return null;
+  const name = safeText(value.value, MAX_NAME_BYTES);
+  if (name === null) return null;
+  if (value.type === "client_module") return { type: "client_module", value: name };
+  if (value.type === "service_module") return { type: "service_module", value: name };
+  return { type: "operation", value: name };
+}
+
+export function readGroupGrantsPage(payload: unknown): GroupGrantsPage | null {
+  const page = readPage(payload, readGroupGrant);
+  return page === null
+    ? null
+    : { items: page.items as readonly GroupGrant[], nextCursor: page.nextCursor };
+}
+
+function sortedNames(value: unknown): readonly string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_CATALOG_ITEMS) return null;
+  const names: string[] = [];
+  for (const item of value) {
+    const name = safeText(item, MAX_NAME_BYTES);
+    const previous = names.at(-1);
+    if (name === null || (previous !== undefined && previous >= name)) return null;
+    names.push(name);
+  }
+  return names;
+}
+
+export function readAdministrationCatalog(payload: unknown): AdministrationCatalog | null {
+  const result = objectValue(envelope(payload)?.result);
+  if (result === null || !exact(result, CATALOG_FIELDS)) return null;
+  const clientModules = sortedNames(result.client_modules);
+  const serviceModules = sortedNames(result.service_modules);
+  const operations = sortedNames(result.operations);
+  return clientModules === null || serviceModules === null || operations === null
+    ? null
+    : { clientModules, serviceModules, operations };
 }
 
 async function request(path: string, body: object, mutation: boolean): Promise<unknown> {
@@ -137,7 +256,9 @@ async function request(path: string, body: object, mutation: boolean): Promise<u
   }
   if (response.status !== 200) {
     if (!mutation) throw new GroupsUnavailableError();
-    if (await reportedRefusal(response)) throw new GroupMutationRefusedError();
+    const refusal = await reportedRefusal(response);
+    if (refusal === "conflict") throw new LastAdministratorRefusedError();
+    if (refusal !== null) throw new GroupMutationRefusedError();
     throw new GroupMutationIndeterminateError();
   }
   try {
@@ -146,7 +267,7 @@ async function request(path: string, body: object, mutation: boolean): Promise<u
     throw mutation ? new GroupMutationIndeterminateError() : new GroupsUnavailableError();
   }
 }
-async function reportedRefusal(response: Response): Promise<boolean> {
+async function reportedRefusal(response: Response): Promise<string | null> {
   const allowed = new Map<number, ReadonlySet<string>>([
     [400, new Set(["bad_request"])],
     [401, new Set(["session_invalid"])],
@@ -156,19 +277,19 @@ async function reportedRefusal(response: Response): Promise<boolean> {
     [409, new Set(["conflict"])],
     [503, new Set(["service_unavailable"])],
   ]).get(response.status);
-  if (allowed === undefined) return false;
+  if (allowed === undefined) return null;
   try {
     const value = objectValue(await response.json());
-    return (
-      value !== null &&
+    return value !== null &&
       Object.keys(value).length === 2 &&
       typeof value.error === "string" &&
       allowed.has(value.error) &&
       typeof value.correlation_id === "string" &&
       CORRELATION_PATTERN.test(value.correlation_id)
-    );
+      ? value.error
+      : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -221,4 +342,116 @@ export async function deleteGroup(publicId: string, ticket: string): Promise<voi
   const result = objectValue(payload?.result);
   if (result === null || Object.keys(result).length !== 1 || result.public_id !== publicId)
     throw new GroupMutationIndeterminateError();
+}
+
+export async function listGroupMembers(
+  groupPublicId: string,
+  cursor?: string,
+): Promise<GroupMembersPage> {
+  if (!validId(groupPublicId)) throw new GroupsUnavailableError();
+  const page = readGroupMembersPage(
+    await request(
+      GROUP_MEMBERS_LIST_PATH,
+      { group_public_id: groupPublicId, ...(cursor === undefined ? {} : { cursor }) },
+      false,
+    ),
+  );
+  if (page === null) throw new GroupsUnavailableError();
+  return page;
+}
+
+export async function changeGroupMember(
+  groupPublicId: string,
+  accountPublicId: string,
+  present: boolean,
+  ticket: string,
+): Promise<AccountProjection> {
+  if (!validId(groupPublicId) || !validId(accountPublicId) || !TICKET_PATTERN.test(ticket))
+    throw new GroupMutationRefusedError();
+  const result = objectValue(
+    envelope(
+      await request(
+        GROUP_MEMBERS_CHANGE_PATH,
+        {
+          group_public_id: groupPublicId,
+          account_public_id: accountPublicId,
+          present,
+          grant_mutation_step_up_ticket: ticket,
+        },
+        true,
+      ),
+    )?.result,
+  );
+  if (result === null || !exact(result, MEMBER_CHANGE_FIELDS) || result.present !== present)
+    throw new GroupMutationIndeterminateError();
+  const account = readAccountProjection({ result: result.account });
+  if (account?.publicId !== accountPublicId) throw new GroupMutationIndeterminateError();
+  return account;
+}
+
+export async function listGroupGrants(
+  groupPublicId: string,
+  cursor?: string,
+): Promise<GroupGrantsPage> {
+  if (!validId(groupPublicId)) throw new GroupsUnavailableError();
+  const page = readGroupGrantsPage(
+    await request(
+      GROUP_GRANTS_LIST_PATH,
+      { group_public_id: groupPublicId, ...(cursor === undefined ? {} : { cursor }) },
+      false,
+    ),
+  );
+  if (page === null) throw new GroupsUnavailableError();
+  return page;
+}
+
+function sameGrant(left: GroupGrant | null, right: GroupGrant): boolean {
+  if (left?.type !== right.type) return false;
+  switch (right.type) {
+    case "server_administration":
+      return left.type === "server_administration";
+    case "client_module":
+      return left.type === "client_module" && left.value === right.value;
+    case "service_module":
+      return left.type === "service_module" && left.value === right.value;
+    case "operation":
+      return left.type === "operation" && left.value === right.value;
+  }
+}
+
+export async function changeGroupGrant(
+  groupPublicId: string,
+  grant: GroupGrant,
+  present: boolean,
+  ticket: string,
+): Promise<void> {
+  if (!validId(groupPublicId) || readGroupGrant(grant) === null || !TICKET_PATTERN.test(ticket))
+    throw new GroupMutationRefusedError();
+  const result = objectValue(
+    envelope(
+      await request(
+        GROUP_GRANTS_CHANGE_PATH,
+        {
+          group_public_id: groupPublicId,
+          grant,
+          present,
+          grant_mutation_step_up_ticket: ticket,
+        },
+        true,
+      ),
+    )?.result,
+  );
+  if (
+    result === null ||
+    !exact(result, GRANT_CHANGE_FIELDS) ||
+    result.present !== present ||
+    !sameGrant(readGroupGrant(result.grant), grant)
+  )
+    throw new GroupMutationIndeterminateError();
+}
+
+export async function loadAdministrationCatalog(): Promise<AdministrationCatalog> {
+  const catalog = readAdministrationCatalog(await request(ADMINISTRATION_CATALOG_PATH, {}, false));
+  if (catalog === null) throw new GroupsUnavailableError();
+  return catalog;
 }

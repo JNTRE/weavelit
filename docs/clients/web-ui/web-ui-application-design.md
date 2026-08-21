@@ -26,9 +26,12 @@ range.
 
 ## Generated Production Output
 
-A clean production build emits exactly three unhashed files: `dist/index.html`,
-`dist/assets/weavelit-application.js`, and `dist/assets/weavelit-application.css`. The build
-produces no source maps, no code-split chunks, and no other emitted file.
+A clean production build emits exactly four unhashed files: `dist/index.html`,
+`dist/assets/weavelit-application.js`, `dist/assets/weavelit-groups-workspace.js`,
+and `dist/assets/weavelit-application.css`. The build produces no source maps
+and no other emitted file. The Groups workspace is the single code-split chunk;
+its fixed name preserves the compile-time asset allowlist while keeping its
+code out of the initial JavaScript response.
 
 Content hashing is deliberately disabled in the build configuration because the
 Web UI **[Client Module](../../glossary.md#applications-and-interfaces)** embeds
@@ -90,7 +93,9 @@ dependencies are `react` and `react-dom`, and `weavelit-application.css` is
 hand-authored. The shell switches between the restricted pre-operational
 experience, sign-in, and the authenticated Accounts workspace from Server
 responses rather than from client-side routes. Navigation remains a usability
-control and never substitutes for Server authorization.
+control and never substitutes for Server authorization. Every page load and
+authenticated session starts in Accounts; the selected administration
+workspace is not written to a URL, cookie, `localStorage`, or `sessionStorage`.
 
 ## Status Presentation States
 
@@ -619,10 +624,37 @@ cookie, `localStorage`, or `sessionStorage`.
 ### Groups Workspace
 
 The authenticated Administration shell provides semantic local navigation
-between Accounts and Groups. Groups loads the first cursor page, appends `Load
-more` results, refreshes from the first page, and views only Group public
+between Accounts and Groups. The shell does not request the Groups workspace
+chunk or mount any of its API clients until an authenticated person selects
+Groups. While that fixed same-origin chunk is loading, the workspace region
+presents a fixed polite loading message. A delivery or module-load failure
+presents one fixed detail-free alert and an explicit retry; it never renders a
+browser, transport, or module-loader diagnostic. A successful retry mounts the
+same workspace without changing the page URL or persisting navigation state.
+
+Once mounted, Groups loads the first cursor page, appends `Load more` results,
+refreshes from the first page, and views only Group public
 identifier, name, and nullable description. It provides create and complete
-name/description update controls and no membership or grant picker.
+name/description update controls. The selected Group detail also loads its safe
+member projections, canonical direct grants, the safe Account collection for a
+member picker, and the compiled-in administration catalog. Member choices use
+only Account Public Identifiers. Direct-grant controls offer only Server
+Administration Permission or catalog-backed Client Module, Service Module, and
+Operation selectors; they provide no free-form grant input or component
+enablement control. The member, grant, and Account-picker collections offer
+bounded `Load more` controls when a cursor exists. Both association collections
+refresh from their first page after a successful change.
+
+Adding a member or direct grant proceeds directly to one six-digit TOTP form.
+Removing either first opens a client-only confirmation that sends no
+confirmation field, then uses the same form. The form requests the
+`grant_mutation` family once, clears the code as step-up starts, holds the
+returned ticket only in a private component ref, clears it before the single
+change request, and retries neither request automatically. A successful change
+reloads both safe association views. The fixed last-Administrator refusal is
+rendered as `Cannot remove the last Server Administration Permission grant.`
+without account, Group, grant, membership, or policy detail. Other reported
+refusals and indeterminate outcomes use fixed reason-free text.
 
 Delete first opens a client-only confirmation and sends no confirmation field
 or text. After confirmation, one form accepts exactly one six-digit TOTP code

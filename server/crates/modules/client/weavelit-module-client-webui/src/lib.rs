@@ -115,6 +115,7 @@ pub fn operational_surface(
 
 const MAX_HTML_ASSET_BYTES: usize = 16 * 1024;
 const MAX_JAVASCRIPT_ASSET_BYTES: usize = 256 * 1024;
+const MAX_GROUPS_JAVASCRIPT_ASSET_BYTES: usize = 32 * 1024;
 const MAX_CSS_ASSET_BYTES: usize = 64 * 1024;
 
 const INDEX_HTML: &[u8] = include_bytes!(concat!(
@@ -124,6 +125,10 @@ const INDEX_HTML: &[u8] = include_bytes!(concat!(
 const APPLICATION_JAVASCRIPT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../../web-ui/dist/assets/weavelit-application.js"
+));
+const GROUPS_JAVASCRIPT: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../../web-ui/dist/assets/weavelit-groups-workspace.js"
 ));
 const APPLICATION_CSS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -140,6 +145,10 @@ const _: () = assert!(
     "the embedded Web UI script must be present and within its 256 KiB bound"
 );
 const _: () = assert!(
+    !GROUPS_JAVASCRIPT.is_empty() && GROUPS_JAVASCRIPT.len() <= MAX_GROUPS_JAVASCRIPT_ASSET_BYTES,
+    "the embedded Web UI Groups script must be present and within its 32 KiB bound"
+);
+const _: () = assert!(
     !APPLICATION_CSS.is_empty() && APPLICATION_CSS.len() <= MAX_CSS_ASSET_BYTES,
     "the embedded Web UI stylesheet must be present and within its 64 KiB bound"
 );
@@ -154,6 +163,7 @@ const ASSET_CONTENT_SECURITY_POLICY: &str = concat!(
 enum EmbeddedAsset {
     Document,
     Script,
+    GroupsScript,
     Stylesheet,
 }
 
@@ -162,6 +172,7 @@ impl EmbeddedAsset {
         match self {
             Self::Document => "/",
             Self::Script => "/assets/weavelit-application.js",
+            Self::GroupsScript => "/assets/weavelit-groups-workspace.js",
             Self::Stylesheet => "/assets/weavelit-application.css",
         }
     }
@@ -170,6 +181,7 @@ impl EmbeddedAsset {
         match self {
             Self::Document => INDEX_HTML,
             Self::Script => APPLICATION_JAVASCRIPT,
+            Self::GroupsScript => GROUPS_JAVASCRIPT,
             Self::Stylesheet => APPLICATION_CSS,
         }
     }
@@ -177,15 +189,16 @@ impl EmbeddedAsset {
     const fn media_type(self) -> &'static str {
         match self {
             Self::Document => "text/html; charset=utf-8",
-            Self::Script => "text/javascript; charset=utf-8",
+            Self::Script | Self::GroupsScript => "text/javascript; charset=utf-8",
             Self::Stylesheet => "text/css; charset=utf-8",
         }
     }
 }
 
-const EMBEDDED_ASSETS: [EmbeddedAsset; 3] = [
+const EMBEDDED_ASSETS: [EmbeddedAsset; 4] = [
     EmbeddedAsset::Document,
     EmbeddedAsset::Script,
+    EmbeddedAsset::GroupsScript,
     EmbeddedAsset::Stylesheet,
 ];
 
@@ -248,6 +261,7 @@ mod tests {
         let relative = match asset {
             EmbeddedAsset::Document => "index.html",
             EmbeddedAsset::Script => "assets/weavelit-application.js",
+            EmbeddedAsset::GroupsScript => "assets/weavelit-groups-workspace.js",
             EmbeddedAsset::Stylesheet => "assets/weavelit-application.css",
         };
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -313,6 +327,7 @@ mod tests {
             [
                 "/",
                 "/assets/weavelit-application.js",
+                "/assets/weavelit-groups-workspace.js",
                 "/assets/weavelit-application.css"
             ]
         );
@@ -380,6 +395,7 @@ mod tests {
             "/assets/..%2Fweavelit-application.js",
             "/%2E%2E/assets/weavelit-application.js",
             "/assets/weavelit-application.js.map",
+            "/assets/weavelit-groups-workspace.js.map",
             "/api/v1/status",
             "/api/",
             "//",

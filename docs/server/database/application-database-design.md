@@ -743,6 +743,16 @@ reciprocal Group identity coverage and every stored value before returning any
 output. The projection contains only public identifier, name, and nullable
 description.
 
+The same store exposes two bounded association reads by exact Group Public
+Identifier. A member read returns `None` for a missing Group or the existing
+safe Account administration projections in deterministic username and Account
+Public Identifier order. A grant read returns `None` for a missing Group or
+canonical typed direct grants in deterministic order. Both run in one database
+snapshot, validate complete reciprocal public-identity coverage before
+returning output, and expose no internal state identifier, Audit Reference,
+credential, factor, session, count, or association provenance. An existing
+Group with no members or direct grants returns an empty collection.
+
 Creation receives independently generated state, public, and Audit identities
 and creates no membership or grant. Update compare-and-sets the complete
 prepared target and replaces name and nullable description. An exact no-op is

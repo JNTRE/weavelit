@@ -10,6 +10,7 @@ import {
   type GroupProjection,
 } from "../api/weavelit-administration-groups";
 import { issueGrantMutationStepUp } from "../api/weavelit-mfa-policy";
+import { GroupAssociations } from "./weavelit-group-associations";
 
 type CollectionState = "loading" | "ready" | "loading-more" | "failed";
 type MutationState = "idle" | "submitting" | "refused" | "indeterminate";
@@ -294,6 +295,7 @@ export function GroupsWorkspace(): JSX.Element {
                   Delete
                 </button>
               </form>
+              <GroupAssociations key={selected.publicId} groupPublicId={selected.publicId} />
             </>
           )}
         </aside>
