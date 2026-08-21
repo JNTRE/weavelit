@@ -85,7 +85,7 @@ describe("account response parsing", () => {
     ["a zero public id", projection({ public_id: "AAAAAAAAAAAAAAAAAAAAAA" })],
     [
       "a public id with non-canonical final character",
-      projection({ public_id: "QUFBQUFBQUFBQUFBQUFBQUE" }),
+      projection({ public_id: "QUFBQUFBQUFBQUFBQUFBUE" }),
     ],
     ["an overlong name", projection({ username: "a".repeat(257) })],
     ["a wrong active type", projection({ active: 1 })],
@@ -153,6 +153,16 @@ describe("account requests", () => {
     expect(requestBody(fetchMock.mock.calls[0]![1])).toEqual({ public_id: PUBLIC_ID });
   });
 
+  it("rejects account view request with non-canonical public identifier", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(viewAccount("QUFBQUFBQUFBQUFBQUFBUE")).rejects.toBeInstanceOf(
+      AccountsUnavailableError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("maps missing CSRF, stable errors, transport failures, and malformed success to one error", async () => {
     await expect(listAccounts()).rejects.toBeInstanceOf(AccountsUnavailableError);
 
@@ -199,6 +209,16 @@ describe("account requests", () => {
       [CSRF_HEADER_NAME]: CSRF,
     });
     expect(requestBody(init)).toEqual({ public_id: PUBLIC_ID, active: false });
+  });
+
+  it("rejects account status change request with non-canonical public identifier", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(changeAccountStatus("QUFBQUFBQUFBQUFBQUFBUE", false)).rejects.toBeInstanceOf(
+      AccountStatusRefusedError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("distinguishes exact reported refusals from indeterminate outcomes without retrying", async () => {

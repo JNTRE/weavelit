@@ -94,7 +94,7 @@ describe("Group API", () => {
   it("rejects public ids with non-canonical base64url final characters", () => {
     expect(
       readGroupProjection({
-        result: { public_id: "QUFBQUFBQUFBQUFBQUFBQUE", name: "Test", description: null },
+        result: { public_id: "QUFBQUFBQUFBQUFBQUFBUE", name: "Test", description: null },
         correlation_id: CORRELATION,
       }),
     ).toBeNull();

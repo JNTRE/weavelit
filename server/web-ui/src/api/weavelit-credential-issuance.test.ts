@@ -94,7 +94,7 @@ describe("credential issuance response parsing", () => {
 
   it.each([
     ["the zero public identifier", "AAAAAAAAAAAAAAAAAAAAAA", TEMPORARY_PASSWORD],
-    ["a noncanonical public identifier", `${"A".repeat(21)}B`, TEMPORARY_PASSWORD],
+    ["a noncanonical public identifier", "QUFBQUFBQUFBQUFBQUFBUE", TEMPORARY_PASSWORD],
     ["a short temporary password", PUBLIC_ID, TEMPORARY_PASSWORD.slice(1)],
     ["an invalid temporary password", PUBLIC_ID, `${TEMPORARY_PASSWORD.slice(1)}!`],
   ])("rejects %s", (_label, publicId, temporaryPassword) => {

@@ -209,9 +209,9 @@ describe("MFA policy requests", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(success(projection(false)));
 
     await expect(
-      changeMfaRequirement("QUFBQUFBQUFBQUFBQUFBQUE", true, TICKET),
+      changeMfaRequirement("QUFBQUFBQUFBQUFBQUFBUE", true, TICKET),
     ).rejects.toBeInstanceOf(MfaPolicyRefusedError);
-    await expect(resetMfaEnrollment("QUFBQUFBQUFBQUFBQUFBQUE", TICKET)).rejects.toBeInstanceOf(
+    await expect(resetMfaEnrollment("QUFBQUFBQUFBQUFBQUFBUE", TICKET)).rejects.toBeInstanceOf(
       MfaPolicyRefusedError,
     );
   });
