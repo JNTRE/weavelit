@@ -13,6 +13,7 @@ import {
   previewTotpEnablement,
   readLogConfiguration,
   readLogConfigurationsPage,
+  readTotpEnablementApplied,
   readTotpEnablementPreview,
 } from "./weavelit-administration-configuration";
 
@@ -112,6 +113,21 @@ describe("Configuration API", () => {
     ).toBeNull();
   });
 
+  it("accepts committed results only without an Audit delivery field", () => {
+    const applied = { module: "totp", current_enabled: false, affected_users: 1 };
+    expect(readTotpEnablementApplied(envelope(applied))).toEqual({
+      currentEnabled: false,
+      affectedUsers: 1,
+    });
+    expect(
+      readTotpEnablementApplied(envelope({ ...applied, audit_delivery: "pending" })),
+    ).toBeNull();
+    expect(readLogConfiguration(envelope(configuration()))).not.toBeNull();
+    expect(
+      readLogConfiguration(envelope({ ...configuration(), audit_delivery: "acknowledged" })),
+    ).toBeNull();
+  });
+
   it("sends one exact same-origin request per action and never retries", async () => {
     csrf();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
@@ -137,9 +153,9 @@ describe("Configuration API", () => {
     });
 
     await previewTotpEnablement(false);
-    await applyTotpEnablement(false, PREVIEW);
+    const applied = await applyTotpEnablement(false, PREVIEW);
     await listLogConfigurations();
-    await changeLogConfiguration({
+    const changed = await changeLogConfiguration({
       configurationName: "primary",
       enabled: true,
       settings: [],
@@ -149,6 +165,14 @@ describe("Configuration API", () => {
       ],
     });
 
+    expect(applied).toEqual({ currentEnabled: false, affectedUsers: 1 });
+    expect(changed).toEqual({
+      configurationName: "primary",
+      module: "sqlite",
+      enabled: true,
+      settings: [],
+      assignedLogTypes: ["system", "audit"],
+    });
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(body(fetchMock.mock.calls[0]![1])).toEqual({ enabled: false });
     expect(body(fetchMock.mock.calls[1]![1])).toEqual({

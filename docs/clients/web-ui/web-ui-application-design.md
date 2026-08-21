@@ -787,13 +787,15 @@ neither request automatically.
 
 Disablement review states that sessions for enrolled accounts end. A reported
 stale-preview conflict requires a new preview. A reported refusal uses fixed
-reason-free text. An unreported, malformed, pending-delivery, or otherwise
-indeterminate apply outcome is rendered as unknown and requires manual refresh
-before another change. After a valid apply success the workspace probes the
-existing session. An authenticated result returns to idle; an unauthenticated
-result, including self-disable session revocation, withdraws the administration
-workspace and returns to sign-in without another mutation; an absent or
-unreadable probe remains indeterminate.
+reason-free text. Every exact safe `200` apply result is committed success and
+contains no Audit delivery state; pending Audit recovery is never surfaced or
+retained by the client. An unreported, malformed, or otherwise indeterminate
+apply outcome is rendered as unknown and requires manual refresh before another
+change. After a valid apply success the workspace probes the existing session.
+An authenticated result returns to idle; an unauthenticated result, including
+self-disable session revocation, withdraws the administration workspace and
+returns to sign-in without another mutation; an absent or unreadable probe
+remains indeterminate.
 
 Log configurations load through the existing cursor pattern, append `Load
 more` pages, refresh from the first page, and view only unique configuration
@@ -804,7 +806,9 @@ configuration name. It never receives an internal identifier or generation.
 Save sends one request and never retries automatically. A reported conflict
 requires refresh; a reported refusal and an indeterminate outcome use distinct
 fixed text without Server code, status, response detail, field path, Audit
-state, or dependency diagnostic.
+state, or dependency diagnostic. Every exact safe `200` change projection is a
+committed success; the client neither receives nor retains internal Audit
+recovery state.
 
 ## Same-Origin Requests
 

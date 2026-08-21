@@ -173,22 +173,21 @@ Init/Restore). Instead:
 
 - Delivery requests fail with a stable, payload-free error
   (`LogDeliveryError::Destination`).
-- For **consequential operations** (those whose failure must be auditable), the
-  route layer propagates the delivery error, causing the operation to fail with
-  a stable error message: "Audit Log unavailable; operation rejected."
+- If required Audit preparation or Attempt delivery fails before a
+  **consequential operation** commits, the route rejects the operation with the
+  stable error "Audit Log unavailable; operation rejected."
+- If terminal delivery fails after the business state and recovery obligation
+  commit, the route returns the ordinary safe committed result. It exposes no
+  Audit delivery state or retry invitation; recovery remains internal.
 - For **non-consequential operations** (read-only queries, health checks, or
   internal-only tasks), the route layer MAY absorb the delivery failure and
   succeed, after recording the failure in System Logs.
-- If pre-commit Attempt delivery fails, a consequential mutation remains
-  rejected with the stable error above. If terminal delivery fails after the
-  mutation and its recovery obligation commit, the mutation is already
-  authoritative: internal recovery reports only that committed Audit terminal
-  delivery remains pending and must never map that failure to `operation
-  rejected`.
 
 A "consequential operation" is an operation that modifies application state
 (account creation, permission grant, policy change, etc.). All Administration
-Plane mutations are consequential and MUST fail if Audit Log delivery fails.
+Plane mutations are consequential and MUST fail closed when required Audit work
+is unavailable before commit. A post-commit terminal-delivery failure MUST NOT
+change or conceal their authoritative committed business result.
 
 ## Destination Preflight And Configuration Validation
 
@@ -303,9 +302,9 @@ last. The workflow then runs the bounded recovery drain. A post-commit delivery
 failure reports the authoritative internal result as committed with delivery
 pending. The specialized
 [Log Configuration Administration contract](../server/api/api-contract-design.md#log-configuration-administration)
-maps that state to `service_unavailable` rather than claiming public success,
-because an automatic client retry would be unsafe. That contract targets only
-an existing unique configuration name and exposes only module, name, enabled
+returns the ordinary safe committed projection without exposing that internal
+delivery state or inviting an automatic retry. That contract targets only an
+existing unique configuration name and exposes only module, name, enabled
 state, ordered module-declared non-secret non-path settings, and assigned Log
 Types. It adds no public identifier or generation, configuration create or
 delete, module replacement, destination credential or path, Log browsing,

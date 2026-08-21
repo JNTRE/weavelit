@@ -249,15 +249,17 @@ post-commit obligations:
   destination authority. If delivery or database acknowledgement cannot
   finish, leave the obligation pending. This is a post-commit failure and must
   not map to the pre-commit `Audit Log unavailable; operation rejected.` result
-  or claim that the mutation was rejected. The runtime recovery path
-  must replay obligations oldest first and refuse a changed current destination
-  identity or binding version before delivery. It must resolve the binding and
-  destination together through the trusted structural pair; binding equality
-  alone does not prove an unrelated handle's identity. The contract is separate
-  from Init and Restore lifecycle obligations. When the workflow asks for
-  correction evidence, the producer constructs the bounded correlated
-  `correction` with a direct link to the same Attempt; it does not decide when
-  one is required.
+  or claim that the mutation was rejected. The public route returns the
+  ordinary safe committed business result without exposing whether terminal
+  delivery is pending or inviting an automatic retry. Audit recovery remains
+  internal. The runtime recovery path must replay obligations oldest first and
+  refuse a changed current destination identity or binding version before
+  delivery. It must resolve the binding and destination together through the
+  trusted structural pair; binding equality alone does not prove an unrelated
+  handle's identity. The contract is separate from Init and Restore lifecycle
+  obligations. When the workflow asks for correction evidence, the producer
+  constructs the bounded correlated `correction` with a direct link to the same
+  Attempt; it does not decide when one is required.
 9. An ordinary Audit destination change retains the old identity, version, and
   resolved handle while an obligation references it. If repair later proves
   that exact destination permanently unavailable, the Administration Plane may

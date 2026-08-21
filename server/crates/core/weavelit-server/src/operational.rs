@@ -120,11 +120,10 @@ use crate::{
         AccountStatusChangeResult, AccountStatusChangeWorkflow, GroupAdministrationMutationResult,
         GroupAdministrationReadResult, GroupAdministrationWorkflow,
         GroupAdministrationWorkflowError, GroupMutationResult, GroupMutationWorkflow,
-        GroupMutationWorkflowError, LogConfigurationChangeDelivery, LogConfigurationChangeError,
-        LogConfigurationChangeResult, LogConfigurationChangeWorkflow, MfaModuleEnablementDelivery,
-        MfaModuleEnablementError, MfaModuleEnablementOutcome, MfaModuleEnablementPreview,
-        MfaModuleEnablementWorkflow, MfaPolicyChangeError, MfaPolicyChangeResult,
-        MfaPolicyChangeWorkflow,
+        GroupMutationWorkflowError, LogConfigurationChangeError, LogConfigurationChangeResult,
+        LogConfigurationChangeWorkflow, MfaModuleEnablementError, MfaModuleEnablementOutcome,
+        MfaModuleEnablementPreview, MfaModuleEnablementResult, MfaModuleEnablementWorkflow,
+        MfaPolicyChangeError, MfaPolicyChangeResult, MfaPolicyChangeWorkflow,
     },
     authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
     authorization::{AuthorizationRuntime, ServedComponents},
@@ -2826,29 +2825,7 @@ fn execute_configuration_administration(
                 preview,
                 &correlation_id,
             ) {
-                Ok(result) => match (result.outcome, result.delivery) {
-                    (
-                        MfaModuleEnablementOutcome::Applied {
-                            desired_state,
-                            affected_users,
-                        },
-                        MfaModuleEnablementDelivery::Acknowledged,
-                    ) if desired_state == desired => {
-                        Ok(ConfigurationAdministrationResult::TotpApplied(
-                            TotpEnablementApplied::new(desired_state, affected_users),
-                        ))
-                    }
-                    (
-                        MfaModuleEnablementOutcome::EnrolledCountChanged { .. },
-                        MfaModuleEnablementDelivery::Acknowledged
-                        | MfaModuleEnablementDelivery::Pending,
-                    ) => Err(ConfigurationAdministrationRejection::Conflict),
-                    (
-                        MfaModuleEnablementOutcome::Applied { .. },
-                        MfaModuleEnablementDelivery::Pending,
-                    ) => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
-                    _ => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
-                },
+                Ok(result) => totp_enablement_apply_result(result, desired),
                 Err(error) => Err(configuration_mfa_workflow_error(error)),
             }
         }
@@ -2923,24 +2900,16 @@ fn execute_configuration_administration(
             match LogConfigurationChangeWorkflow::new(database, audit_recovery)
                 .apply(action, &correlation_id)
             {
-                Ok(LogConfigurationChangeResult::Unchanged)
-                | Ok(LogConfigurationChangeResult::Applied {
-                    delivery: LogConfigurationChangeDelivery::Acknowledged,
-                    ..
-                }) => current_log_configuration_projections(database, log_catalog)?
-                    .into_iter()
-                    .find(|projection| {
-                        projection.configuration_name() == request.configuration_name()
-                    })
-                    .map(ConfigurationAdministrationResult::LogProjection)
-                    .ok_or(ConfigurationAdministrationRejection::ServiceUnavailable),
-                Ok(LogConfigurationChangeResult::Stale { .. }) => {
-                    Err(ConfigurationAdministrationRejection::Conflict)
+                Ok(result) => {
+                    accept_log_configuration_change_result(result)?;
+                    current_log_configuration_projections(database, log_catalog)?
+                        .into_iter()
+                        .find(|projection| {
+                            projection.configuration_name() == request.configuration_name()
+                        })
+                        .map(ConfigurationAdministrationResult::LogProjection)
+                        .ok_or(ConfigurationAdministrationRejection::ServiceUnavailable)
                 }
-                Ok(LogConfigurationChangeResult::Applied {
-                    delivery: LogConfigurationChangeDelivery::Pending,
-                    ..
-                }) => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
                 Err(LogConfigurationChangeError::ChangeRejected) => {
                     Err(ConfigurationAdministrationRejection::Conflict)
                 }
@@ -2949,6 +2918,39 @@ fn execute_configuration_administration(
                     | LogConfigurationChangeError::AuditLogUnavailable,
                 ) => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
             }
+        }
+    }
+}
+
+fn totp_enablement_apply_result(
+    result: MfaModuleEnablementResult,
+    desired: bool,
+) -> Result<ConfigurationAdministrationResult, ConfigurationAdministrationRejection> {
+    match result.outcome {
+        MfaModuleEnablementOutcome::Applied {
+            desired_state,
+            affected_users,
+        } if desired_state == desired => Ok(ConfigurationAdministrationResult::TotpApplied(
+            TotpEnablementApplied::new(desired_state, affected_users),
+        )),
+        MfaModuleEnablementOutcome::EnrolledCountChanged { .. } => {
+            Err(ConfigurationAdministrationRejection::Conflict)
+        }
+        MfaModuleEnablementOutcome::Applied { .. } => {
+            Err(ConfigurationAdministrationRejection::ServiceUnavailable)
+        }
+    }
+}
+
+const fn accept_log_configuration_change_result(
+    result: LogConfigurationChangeResult,
+) -> Result<(), ConfigurationAdministrationRejection> {
+    match result {
+        LogConfigurationChangeResult::Unchanged | LogConfigurationChangeResult::Applied { .. } => {
+            Ok(())
+        }
+        LogConfigurationChangeResult::Stale { .. } => {
+            Err(ConfigurationAdministrationRejection::Conflict)
         }
     }
 }
@@ -3934,6 +3936,8 @@ pub(crate) mod test_support {
 mod tests {
     use std::sync::atomic::Ordering;
 
+    use crate::administration::{LogConfigurationChangeDelivery, MfaModuleEnablementDelivery};
+
     use super::{test_support::activated, *};
 
     fn identifier(byte: u8) -> StateIdentifier {
@@ -4059,6 +4063,44 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn committed_totp_enablement_result_is_public_success_for_each_delivery_state() {
+        for delivery in [
+            MfaModuleEnablementDelivery::Acknowledged,
+            MfaModuleEnablementDelivery::Pending,
+        ] {
+            assert!(matches!(
+                totp_enablement_apply_result(
+                    MfaModuleEnablementResult {
+                        outcome: MfaModuleEnablementOutcome::Applied {
+                            desired_state: true,
+                            affected_users: 2,
+                        },
+                        delivery,
+                    },
+                    true,
+                ),
+                Ok(ConfigurationAdministrationResult::TotpApplied(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn committed_log_configuration_result_is_public_success_for_each_delivery_state() {
+        for delivery in [
+            LogConfigurationChangeDelivery::Acknowledged,
+            LogConfigurationChangeDelivery::Pending,
+        ] {
+            assert_eq!(
+                accept_log_configuration_change_result(LogConfigurationChangeResult::Applied {
+                    generation_count: 2,
+                    delivery,
+                }),
+                Ok(())
+            );
+        }
     }
 
     #[test]

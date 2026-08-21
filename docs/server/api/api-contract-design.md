@@ -402,15 +402,22 @@ Permission. Each body uses strict JSON; an unknown or duplicate member,
 missing member, wrong type, trailing content, malformed identifier, ticket, or
 code, or oversized input is `bad_request`.
 
-The TOTP step-up body is exactly:
+The TOTP step-up body is exactly one of:
 
 ```json
 {"family":"mfa_policy","code":"123456"}
 ```
 
-`code` is exactly six decimal digits. `mfa_policy` is the only public family in
-this contract. A different family, including the internal `GrantMutation`
-family, is `bad_request` and exposes no family-specific route or denial detail.
+```json
+{"family":"grant_mutation","code":"123456"}
+```
+
+`code` is exactly six decimal digits. `mfa_policy` and `grant_mutation` are the
+two public families in this contract. `mfa_policy` is consumed only by account
+MFA-requirement and enrollment-reset actions. `grant_mutation` is consumed only
+by existing-Group membership and direct-grant changes and empty Group deletion.
+Any other family is `bad_request` and exposes no family-specific route or
+denial detail.
 The Server verifies the code only for the exact authenticated session and its
 current enrolled TOTP factor. Verification atomically rechecks session
 liveness, actor activity, factor ownership, TOTP Module enablement, and replay
@@ -424,12 +431,12 @@ rotates no session. Success returns:
 
 The ticket contains 256 bits of operating-system randomness. The process
 retains only its domain-separated digest and the private `MfaStepUpProof` in a
-bounded 64-entry memory store. The ticket is reusable for matching MFA-policy
-actions until the proof's exact five-minute monotonic expiry; the exact expiry
-instant is invalid. It is bound to the issuing actor, session, Client Module,
-factor, and `MfaPolicy` family. A restart invalidates it. It is neither the
-single-use credential-issuance ticket nor a public `GrantMutation` proof, and
-none can substitute for another.
+bounded 64-entry memory store. The ticket is reusable for matching actions in
+its selected family until the proof's exact five-minute monotonic expiry; the
+exact expiry instant is invalid. It is bound to the issuing actor, session,
+Client Module, factor, and selected public family. A restart invalidates it. A
+ticket for one public family cannot authorize the other family, and neither can
+substitute for the single-use credential-issuance ticket.
 
 The requirement body is exactly:
 
@@ -496,7 +503,7 @@ TOTP Module enablement uses two specialized routes:
 | Route | Method | Result |
 | --- | --- | --- |
 | `/api/v1/administration/mfa-modules/totp/enablement/preview` | `PUT` | Current and desired enablement, affected enrolled users, and one single-claim preview credential. |
-| `/api/v1/administration/mfa-modules/totp/enablement/apply` | `PUT` | The acknowledged committed enablement and affected-user count. |
+| `/api/v1/administration/mfa-modules/totp/enablement/apply` | `PUT` | The committed enablement and affected-user count. |
 
 Both routes require an ordinary validated session, exact same-origin `Origin`
 and `Host`, the session's `X-Weavelit-CSRF` value, JSON media types, live Web UI
@@ -549,19 +556,21 @@ atomically. Enrolled optional accounts can later authenticate by password while
 disabled; required accounts are denied until the Module is enabled and a
 verifiable factor is available. Enablement revokes no session.
 
-Only an applied result whose exact terminal Audit delivery was acknowledged is
-rendered as success:
+Every applied business result is rendered as success after the enablement and
+its terminal obligation commit atomically:
 
 ```json
 {"result":{"module":"totp","current_enabled":false,"affected_users":2},
  "correlation_id":"<opaque-server-value>"}
 ```
 
-If the business change committed but terminal delivery remains pending, the
-public route returns `service_unavailable` rather than claiming success. The
-client MUST NOT retry apply automatically because the mutation may already
-have committed. It probes the ordinary session route after every valid success;
-a successful self-disable that revoked the caller returns the application to
+The response is identical whether exact terminal Audit delivery was immediately
+acknowledged or remains pending for internal recovery. It exposes no Audit
+delivery state and does not invite a retry. A client treats the safe `200`
+result as committed success and MUST NOT retry apply automatically after an
+unreported or malformed outcome because the mutation may already have
+committed. It probes the ordinary session route after every valid success; a
+successful self-disable that revoked the caller returns the application to
 sign-in without another mutation.
 
 The stable rejection contract is:
@@ -574,7 +583,7 @@ The stable rejection contract is:
 | Any live Administration Plane authorization denial | `403 Forbidden`, `authorization_denied` |
 | Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
 | Missing, expired, replayed, or mismatched preview, or stale affected-user count | `409 Conflict`, `conflict` |
-| Randomness, capacity, persistence, integrity, time, Audit readiness or delivery, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
+| Randomness, capacity, persistence, integrity, time, pre-commit Audit readiness or delivery, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
 
 ### Log Configuration Administration
 
@@ -584,7 +593,7 @@ Existing Log Module configurations use three specialized routes:
 | --- | --- | --- |
 | `/api/v1/administration/log-configurations/list` | `PUT` | One cursor page of safe current configuration projections. |
 | `/api/v1/administration/log-configurations/view` | `PUT` | One safe current projection selected by unique configuration name. |
-| `/api/v1/administration/log-configurations/change` | `PUT` | The primary configuration's safe projection after an acknowledged change or exact no-op. |
+| `/api/v1/administration/log-configurations/change` | `PUT` | The primary configuration's safe projection after a committed change or exact no-op. |
 
 All routes use the same ordinary-session, same-origin, CSRF, JSON response,
 live Client Module, and Server Administration Permission requirements as TOTP
@@ -630,9 +639,11 @@ Otherwise the existing immutable-generation workflow validates the complete
 result against the module catalog, preflights every assigned destination,
 delivers the Attempt, and atomically commits the selected generations,
 assignments, pointers, and terminal obligation. A stale generation or topology
-commits only the denied terminal and is a conflict. As with TOTP enablement, an
-applied change whose terminal remains pending returns `service_unavailable` and
-MUST NOT be retried automatically.
+commits only the denied terminal and is a conflict. An applied change returns
+the ordinary safe `200` projection whether terminal Audit delivery was
+immediately acknowledged or remains pending for internal recovery. The response
+exposes no Audit delivery state. A client MUST NOT retry after an unreported or
+malformed outcome because the change may already have committed.
 
 The stable rejection contract is:
 
@@ -645,7 +656,7 @@ The stable rejection contract is:
 | Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
 | Unknown existing primary configuration name | `404 Not Found`, `not_found` |
 | Unknown assignment name, invalid or stale topology, generation exhaustion, or stale preparation | `409 Conflict`, `conflict` |
-| Catalog, preflight, Audit, persistence, integrity, or terminal delivery unavailable | `503 Service Unavailable`, `service_unavailable` |
+| Catalog, preflight, pre-commit Audit delivery, persistence, integrity, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
 
 ### Account Credential Issuance
 
