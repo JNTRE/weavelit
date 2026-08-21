@@ -332,6 +332,14 @@ not change either backup format version. Unavailable operating-system
 randomness stops normalization as the existing payload-free `restore_failed`
 internal outcome rather than misclassifying valid legacy content as invalid.
 
+Each version-1 Group entry may also carry `public_id` as exactly 22 canonical
+unpadded Base64url characters encoding a nonzero 16-byte Group Public
+Identifier. Lifecycle carries the selected Application Database's distinct
+Group persistence decoder into Restore. A supplied value is preserved exactly;
+malformed, zero, duplicate, or explicit-null values are invalid backup content.
+Omission remains compatible with legacy version-1 backups and generates a fresh
+independent random value for each Group during normalization.
+
 Version-1 account entries may also carry a nonzero credential revision, a
 `must_change_password` flag, and a nonnegative absolute temporary-credential
 expiry in Unix milliseconds. Omission remains compatible with backups written

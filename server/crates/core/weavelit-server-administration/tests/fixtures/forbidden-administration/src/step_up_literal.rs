@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use weavelit_server_administration::{MfaStepUpProof, StepUpActionFamily};
 use weavelit_server_database::{
-    SESSION_DIGEST_LENGTH, STATE_IDENTIFIER_LENGTH, SessionTokenHash, StateIdentifier,
+    SessionTokenHash, StateIdentifier, SESSION_DIGEST_LENGTH, STATE_IDENTIFIER_LENGTH,
 };
 
 fn main() {

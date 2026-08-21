@@ -36,6 +36,7 @@ pub mod authentication;
 pub mod authorization;
 pub mod cookie;
 pub mod credential_issuance;
+pub mod groups;
 pub mod init;
 pub mod mfa;
 pub mod mfa_policy;
@@ -76,6 +77,16 @@ pub use credential_issuance::{
     CredentialIssuanceStepUpCommit, CredentialIssuanceStepUpSubmission,
     CredentialIssuanceTicketIssued, MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
     MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES, validate_credential_issuance_request,
+};
+pub use groups::{
+    DEFAULT_GROUPS_PAGE_LIMIT, GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE,
+    GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE, GroupAdministrationCapability,
+    GroupAdministrationDeclaration, GroupAdministrationInputRejected,
+    GroupAdministrationProjection, GroupAdministrationRejection, GroupAdministrationRequest,
+    GroupAdministrationResult, GroupAdministrationSubmission, GroupDeleted, GroupsCreateRequest,
+    GroupsDeleteRequest, GroupsListRequest, GroupsPage, GroupsUpdateRequest, GroupsViewRequest,
+    MAX_GROUP_ADMINISTRATION_BODY_BYTES, MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES,
+    MAX_GROUPS_PAGE_LIMIT,
 };
 pub use init::{
     INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE, InitAdministratorSubmission, InitCapability,
@@ -291,6 +302,7 @@ impl PreoperationalSurface {
 #[derive(Default)]
 pub struct OperationalSurface {
     account_administration: Option<AccountAdministrationDeclaration>,
+    group_administration: Option<GroupAdministrationDeclaration>,
     credential_issuance: Option<CredentialIssuanceDeclaration>,
     mfa_policy: Option<MfaPolicyDeclaration>,
     assets: Option<Router>,
@@ -312,6 +324,19 @@ impl OperationalSurface {
         mut self,
     ) -> (Self, Option<AccountAdministrationDeclaration>) {
         let declaration = self.account_administration.take();
+        (self, declaration)
+    }
+
+    /// Declares Group reads, creation, update, and empty deletion.
+    pub fn with_group_administration(mut self, capability: GroupAdministrationCapability) -> Self {
+        self.group_administration = Some(GroupAdministrationDeclaration::new(capability));
+        self
+    }
+
+    /// Separates Group routes so each can retain its transport registration.
+    #[must_use]
+    pub fn split_group_administration(mut self) -> (Self, Option<GroupAdministrationDeclaration>) {
+        let declaration = self.group_administration.take();
         (self, declaration)
     }
 
@@ -354,6 +379,15 @@ impl OperationalSurface {
                 .route(ACCOUNTS_LIST_ROUTE, administration.list_route())
                 .route(ACCOUNTS_VIEW_ROUTE, administration.view_route())
                 .route(ACCOUNTS_STATUS_ROUTE, administration.status_route()),
+            None => router,
+        };
+        let router = match self.group_administration {
+            Some(groups) => router
+                .route(GROUPS_LIST_ROUTE, groups.list_route())
+                .route(GROUPS_VIEW_ROUTE, groups.view_route())
+                .route(GROUPS_CREATE_ROUTE, groups.create_route())
+                .route(GROUPS_UPDATE_ROUTE, groups.update_route())
+                .route(GROUPS_DELETE_ROUTE, groups.delete_route()),
             None => router,
         };
         let router = match self.credential_issuance {

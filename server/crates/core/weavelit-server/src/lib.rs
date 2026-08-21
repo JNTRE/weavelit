@@ -3008,11 +3008,12 @@ pub(crate) mod tests {
         AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
         AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
         AUTH_SESSION_ROUTE, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CSRF_COOKIE_NAME, CookieEffect,
-        CookieValue, DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE,
-        INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, MFA_POLICY_STEP_UP_ROUTE,
-        RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome,
-        ReconciliationRejection, RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME,
-        STATUS_ROUTE,
+        CookieValue, DatabaseSelectionRejection, ExpectedOrigin, GROUPS_CREATE_ROUTE,
+        GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE,
+        INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE,
+        MFA_POLICY_STEP_UP_ROUTE, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
+        RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
+        RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME, STATUS_ROUTE,
     };
     use weavelit_module_mfa_totp::{SECRET_LENGTH, TotpSecret};
     use weavelit_server_authentication::PasswordVerifierFactory;
@@ -3198,6 +3199,11 @@ pub(crate) mod tests {
             (Method::PUT, ACCOUNTS_LIST_ROUTE),
             (Method::PUT, ACCOUNTS_VIEW_ROUTE),
             (Method::PUT, ACCOUNTS_STATUS_ROUTE),
+            (Method::PUT, GROUPS_LIST_ROUTE),
+            (Method::PUT, GROUPS_VIEW_ROUTE),
+            (Method::PUT, GROUPS_CREATE_ROUTE),
+            (Method::PUT, GROUPS_UPDATE_ROUTE),
+            (Method::PUT, GROUPS_DELETE_ROUTE),
             (Method::PUT, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE),
             (Method::PUT, ACCOUNTS_CREATE_ROUTE),
             (Method::PUT, ACCOUNTS_RESET_PASSWORD_ROUTE),
@@ -4993,6 +4999,15 @@ pub(crate) mod tests {
                 )
             })
             .collect();
+        let group_public_identities = groups
+            .iter()
+            .map(|group| {
+                weavelit_server_database::GroupPublicIdentity::new(
+                    group.identifier,
+                    weavelit_server_database::GroupPublicIdentifier::generate().unwrap(),
+                )
+            })
+            .collect();
         let configuration_identifier = StateIdentifier::from_bytes([0x11; 16]).unwrap();
         ApplicationState::new(ApplicationStateInput {
             configuration,
@@ -5002,6 +5017,7 @@ pub(crate) mod tests {
             account_audit_references,
             password_verifiers,
             groups,
+            group_public_identities,
             group_audit_references,
             group_memberships,
             group_grants,

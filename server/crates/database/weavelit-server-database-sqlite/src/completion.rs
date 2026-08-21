@@ -1,8 +1,8 @@
 use rusqlite::{TransactionBehavior, params};
 use weavelit_server_database::{
     AccountPublicIdentifierPersistence, ApplicationState, AuditReferencePersistence, DatabaseError,
-    DatabaseInspection, DeploymentIdentifier, InitializedState, ReconciliationDigest,
-    StateIdentifier, WorkflowCheckpoint,
+    DatabaseInspection, DeploymentIdentifier, GroupPublicIdentifierPersistence, InitializedState,
+    ReconciliationDigest, StateIdentifier, WorkflowCheckpoint,
 };
 
 use crate::SqliteDatabase;
@@ -47,7 +47,16 @@ impl SqliteDatabase {
         session::clear(&transaction)?;
         mfa::clear(&transaction)?;
         reconciliation::replace(&transaction, reconciliation_digest)?;
-        state::write(&transaction, public_identity_persistence, application_state)?;
+        let group_public_identity_persistence =
+            GroupPublicIdentifierPersistence::from_account_public_identifier_persistence(
+                public_identity_persistence,
+            );
+        state::write(
+            &transaction,
+            public_identity_persistence,
+            &group_public_identity_persistence,
+            application_state,
+        )?;
         log_configuration::seed_initial_generations(&transaction)?;
         let replaced = transaction
             .execute(
@@ -81,9 +90,14 @@ impl SqliteDatabase {
             DatabaseInspection::Initialized {
                 deployment_identifier,
             } => {
+                let group_public_identity_persistence =
+                    GroupPublicIdentifierPersistence::from_account_public_identifier_persistence(
+                        public_identity_persistence,
+                    );
                 let (application_state, acknowledged) = state::read(
                     &transaction,
                     public_identity_persistence,
+                    &group_public_identity_persistence,
                     audit_reference_persistence,
                 )?;
                 Ok(InitializedState::new(

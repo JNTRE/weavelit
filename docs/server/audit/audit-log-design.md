@@ -364,6 +364,8 @@ context.
 | `authentication.mfa-module-enablement.changed` | MFA Module enablement or disablement, including dependent-session termination | change-mfa-module; module identifier; enabled state and affected-count summary | Factor data, session identifiers, or arbitrary account data |
 | `authentication.session.revoked` | Explicit session revocation when independently auditable | revoke-session; stable account or session reference; safe reason | Session or CSRF credentials |
 | `authorization.group.created` | Group creation | create-group; stable group reference; result | Arbitrary request fields or secrets |
+| `authorization.group.updated` | Group name or description update | update-group; stable group reference; result | Names, descriptions, public or state identifiers |
+| `authorization.group.deleted` | Empty Group deletion | delete-group; stable group reference; result | Names, public or state identifiers, memberships, grants, counts, TOTP evidence or tickets |
 | `authorization.group-membership.changed` | Group membership changes | change-membership; stable group and account references; result | Unbounded submitted member data |
 | `authorization.group-grant.changed` | Client, Service, Operation, or Server Administration Permission grant changes | change-grant; stable group and grant references; result | Credentials or unbounded policy payloads |
 | `authorization.group-grant.removal-denied` | Rejected membership or direct-grant removal that would remove the last effective Server Administration Permission | remove-membership or remove-grant; stable group and account or canonical grant references; last-administrator rejection | Internal authorization detail beyond the safe reason |

@@ -29,6 +29,27 @@ body {
   max-width: 72rem;
 }
 
+.administration-nav {
+  border-bottom: 1px solid var(--ds-color-border-strong);
+  display: flex;
+  gap: var(--ds-space-xs);
+}
+
+.administration-nav button {
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+}
+
+.administration-nav button[aria-current="page"] {
+  border-bottom-color: currentColor;
+  font-weight: var(--ds-font-weight-semibold);
+}
+
 .shell__title {
   font-size: var(--ds-font-size-heading-lg);
   margin: 0;
@@ -394,6 +415,69 @@ body {
   margin-top: var(--ds-space-xl);
 }
 
+.groups .accounts__header,
+.groups .accounts__layout {
+  display: flex;
+  gap: var(--ds-space-xl);
+  justify-content: space-between;
+}
+
+.groups .accounts__collection {
+  flex: 1 1 65%;
+  overflow-x: auto;
+}
+
+.groups table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.groups th,
+.groups td {
+  border-bottom: 1px solid var(--ds-color-border);
+  padding: var(--ds-space-sm);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.groups .accounts__detail {
+  border-top: 0;
+  flex: 1 1 35%;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.groups form label {
+  display: block;
+  margin-top: var(--ds-space-md);
+}
+
+.groups input,
+.groups textarea {
+  box-sizing: border-box;
+  display: block;
+  font: inherit;
+  margin-top: var(--ds-space-xs);
+  max-width: 100%;
+  width: 100%;
+}
+
+.groups button {
+  margin: var(--ds-space-md) var(--ds-space-sm) 0 0;
+}
+
+.groups .accounts__identifier {
+  font-family: var(--ds-font-family-mono);
+  overflow-wrap: anywhere;
+}
+
+.groups .accounts__confirmation {
+  border-top: 1px solid var(--ds-color-border-strong);
+  margin-top: var(--ds-space-lg);
+  padding-top: var(--ds-space-lg);
+}
+
 .accounts__toolbar {
   align-items: center;
   border-bottom: 1px solid var(--ds-color-border);
@@ -603,6 +687,17 @@ body {
 }
 
 @media (max-width: 48rem) {
+  .groups .accounts__header,
+  .groups .accounts__layout {
+    display: block;
+  }
+
+  .groups .accounts__detail {
+    border-top: 1px solid var(--ds-color-border-strong);
+    margin-top: var(--ds-space-xl);
+    padding-top: var(--ds-space-lg);
+  }
+
   .accounts__detail dl {
     grid-template-columns: 1fr 1fr;
   }

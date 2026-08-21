@@ -4,6 +4,7 @@ use std::fmt;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
+use weavelit_server_administration::StepUpActionFamily;
 use zeroize::Zeroizing;
 
 pub(crate) const MFA_POLICY_TICKET_ENTROPY_BYTES: usize = 32;
@@ -16,6 +17,8 @@ const _: () = assert!(
 
 const MFA_POLICY_TICKET_DIGEST_DOMAIN: &[u8] =
     b"weavelit.administration.mfa-policy-step-up-ticket.v1";
+const GRANT_MUTATION_TICKET_DIGEST_DOMAIN: &[u8] =
+    b"weavelit.administration.grant-mutation-step-up-ticket.v1";
 
 /// One opaque reusable bearer returned after a current-session TOTP step-up.
 pub(crate) struct MfaPolicyStepUpTicket {
@@ -47,9 +50,9 @@ impl MfaPolicyStepUpTicket {
         &self.text
     }
 
-    pub(crate) fn digest(&self) -> MfaPolicyStepUpTicketDigest {
-        MfaPolicyStepUpTicketDigest::of_canonical(&self.text)
-            .expect("a generated MFA policy ticket is canonical")
+    pub(crate) fn digest(&self, family: StepUpActionFamily) -> MfaPolicyStepUpTicketDigest {
+        MfaPolicyStepUpTicketDigest::of_canonical(&self.text, family)
+            .expect("a generated step-up ticket is canonical")
     }
 }
 
@@ -64,7 +67,7 @@ impl fmt::Debug for MfaPolicyStepUpTicket {
 pub(crate) struct MfaPolicyStepUpTicketDigest([u8; 32]);
 
 impl MfaPolicyStepUpTicketDigest {
-    pub(crate) fn of_canonical(ticket: &str) -> Option<Self> {
+    pub(crate) fn of_canonical(ticket: &str, family: StepUpActionFamily) -> Option<Self> {
         if ticket.len() != MFA_POLICY_TICKET_TEXT_BYTES {
             return None;
         }
@@ -75,7 +78,10 @@ impl MfaPolicyStepUpTicketDigest {
             return None;
         }
         let mut digest = Sha256::new();
-        digest.update(MFA_POLICY_TICKET_DIGEST_DOMAIN);
+        digest.update(match family {
+            StepUpActionFamily::MfaPolicy => MFA_POLICY_TICKET_DIGEST_DOMAIN,
+            StepUpActionFamily::GrantMutation => GRANT_MUTATION_TICKET_DIGEST_DOMAIN,
+        });
         digest.update(ticket.as_bytes());
         Some(Self(digest.finalize().into()))
     }
@@ -114,22 +120,52 @@ mod tests {
         let plain: [u8; 32] = Sha256::digest(ticket.as_str().as_bytes()).into();
 
         assert_eq!(ticket.as_str().len(), MFA_POLICY_TICKET_TEXT_BYTES);
-        assert!(MfaPolicyStepUpTicketDigest::of_canonical(ticket.as_str()).is_some());
-        assert!(ticket.digest().matches(&ticket.digest()));
-        assert!(!ticket.digest().matches(&other.digest()));
-        assert!(!ticket.digest().matches(&MfaPolicyStepUpTicketDigest(plain)));
+        assert!(
+            MfaPolicyStepUpTicketDigest::of_canonical(
+                ticket.as_str(),
+                StepUpActionFamily::MfaPolicy
+            )
+            .is_some()
+        );
+        assert!(
+            ticket
+                .digest(StepUpActionFamily::MfaPolicy)
+                .matches(&ticket.digest(StepUpActionFamily::MfaPolicy))
+        );
+        assert!(
+            !ticket
+                .digest(StepUpActionFamily::MfaPolicy)
+                .matches(&other.digest(StepUpActionFamily::MfaPolicy))
+        );
+        assert!(
+            !ticket
+                .digest(StepUpActionFamily::MfaPolicy)
+                .matches(&MfaPolicyStepUpTicketDigest(plain))
+        );
+        assert!(
+            !ticket
+                .digest(StepUpActionFamily::MfaPolicy)
+                .matches(&ticket.digest(StepUpActionFamily::GrantMutation))
+        );
     }
 
     #[test]
     fn ticket_rejects_noncanonical_input_and_never_renders() {
         let ticket = seeded(3);
-        assert!(MfaPolicyStepUpTicketDigest::of_canonical("short").is_none());
         assert!(
-            MfaPolicyStepUpTicketDigest::of_canonical(&format!("{}=", ticket.as_str())).is_none()
+            MfaPolicyStepUpTicketDigest::of_canonical("short", StepUpActionFamily::MfaPolicy)
+                .is_none()
+        );
+        assert!(
+            MfaPolicyStepUpTicketDigest::of_canonical(
+                &format!("{}=", ticket.as_str()),
+                StepUpActionFamily::MfaPolicy,
+            )
+            .is_none()
         );
         assert_eq!(format!("{ticket:?}"), "MfaPolicyStepUpTicket(REDACTED)");
         assert_eq!(
-            format!("{:?}", ticket.digest()),
+            format!("{:?}", ticket.digest(StepUpActionFamily::MfaPolicy)),
             "MfaPolicyStepUpTicketDigest(REDACTED)"
         );
     }

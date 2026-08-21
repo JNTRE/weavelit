@@ -249,6 +249,48 @@ correlation identifier. No rejection carries a message, field path, lookup
 detail, dependency name, or supplied value. Neither route is mounted on a
 Pre-Operational Surface.
 
+### Group Administration
+
+The Group administration surface contains exactly five strict `PUT` routes:
+
+| Route | Body | Result |
+| --- | --- | --- |
+| `/api/v1/administration/groups/list` | optional `limit` and `cursor` | `items` and nullable `next_cursor` |
+| `/api/v1/administration/groups/view` | `public_id` | one Group projection |
+| `/api/v1/administration/groups/create` | `name` and nullable or omitted `description` | the created Group projection |
+| `/api/v1/administration/groups/update` | `public_id`, `name`, and nullable or omitted `description` | the resulting Group projection |
+| `/api/v1/administration/groups/delete` | `public_id` and `grant_mutation_step_up_ticket` | the deleted `public_id` |
+
+Every request requires the ordinary session, exact same-origin `Origin` and
+`Host`, session `X-Weavelit-CSRF`, JSON media types, live Web UI Client Module
+access, and effective Server Administration Permission used by account
+administration. Bodies reject unknown or duplicate members, trailing content,
+wrong types, control characters, over-bound values, malformed identifiers,
+cursors, or tickets as `bad_request`.
+
+The Group Public Identifier is an independent nonzero random 128-bit value
+encoded as exactly 22 canonical unpadded Base64url characters. It is the only
+Group target accepted or returned. A projection contains exactly `public_id`,
+`name`, and nullable `description`; it contains no state identifier, Audit
+Reference Identifier, membership, grant, or count.
+
+List uses limits 1 through 100 and default 50. Its opaque cursor is scoped to
+this route and API version and carries the last returned unique Group name. A
+malformed, cross-route, noncanonical, over-bound, or currently absent position
+is `bad_request`. Reads produce no Audit record.
+
+Create produces an empty Group. Update replaces name and nullable description;
+an exact no-op returns the current projection and produces no Audit record. A
+duplicate name is `409 conflict`. An unknown valid target is `404 not_found`.
+
+Delete requires the five-minute TOTP step-up family `grant_mutation`. The
+shared step-up route accepts `{"family":"grant_mutation","code":"123456"}`.
+Its ticket is bound to that family and cannot substitute for `mfa_policy`.
+Delete succeeds only when the Group has no memberships and no direct grants. A
+nonempty Group is `409 conflict` without a count or association kind. Invalid
+proof is `403 grant_mutation_denied`. Clients MUST NOT automatically retry
+step-up or deletion after an unreadable or unreported outcome.
+
 ### Account Status Administration
 
 The account-status surface contains exactly one route:

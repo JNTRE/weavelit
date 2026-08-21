@@ -725,6 +725,34 @@ member of `ApplicationState`, it never reaches a backup, and completing a state
 replacement clears every watermark inside the same atomic replacement that
 clears every session.
 
+## Group Public Identity And Administration Storage
+
+Every **[Group](../../glossary.md#identities-and-access)** carries exactly one
+Group Public Identifier in normalized application state. It is an independent
+random nonzero 128-bit value with a private binary representation and canonical
+22-character unpadded Base64url public representation. Its type and selected-
+database persistence capability are distinct from Account Public Identifiers,
+state identifiers, Audit Reference Identifiers, names, generations, and every
+other identity type. Aggregate validation requires exact Group coverage and
+rejects duplicate values.
+
+`GroupAdministrationStore` lists projections in ascending unique-name order,
+loads one exact typed public identifier, and prepares an exact target carrying
+the Group Audit Reference and public projection. Every read validates complete
+reciprocal Group identity coverage and every stored value before returning any
+output. The projection contains only public identifier, name, and nullable
+description.
+
+Creation receives independently generated state, public, and Audit identities
+and creates no membership or grant. Update compare-and-sets the complete
+prepared target and replaces name and nullable description. An exact no-op is
+rejected before Audit construction. Delete compare-and-sets the complete target
+and succeeds only when no membership and no direct grant references the Group.
+Each writer rechecks the issuer's exact session, Client Module, lifetime, and
+active state and commits exactly one prevalidated success, conflict, or denied
+Audit terminal with the business result. A nonempty result carries no count or
+association kind. Terminal persistence failure rolls back every business write.
+
 ## Existing-Group Mutation Storage
 
 The Application Database exposes a prepared-target and commit boundary for
@@ -851,6 +879,14 @@ version-1 backup written before this field existed remains accepted when the
 field is omitted; an explicitly present JSON `null` is malformed. Restore
 generates a fresh independent value for each omission during normalization and
 does not change the backup format version.
+
+Group Public Identifiers use the same version-1 compatibility rule in each
+Group entry's `public_id` field. Restore preserves a supplied canonical nonzero
+value exactly through the selected database's Group persistence decoder,
+rejects malformed, zero, explicit-null, or duplicate values, and generates a
+fresh independent random value for each omitted legacy field. It does not
+derive a Group value from any restored identifier, Audit Reference, name,
+membership, grant, or generation.
 
 Account, Group, and Log Module configuration Audit Reference Identifiers are
 restorable application state. The current forward contract for a future backup

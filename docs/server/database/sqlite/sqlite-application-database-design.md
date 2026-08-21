@@ -68,7 +68,8 @@ The registry contains `0001_create_migration_ledger.sql`,
 `0010_migrate_totp_component_enablement.sql`, and
 `0011_add_log_configuration_audit_references.sql`, and
 `0012_add_account_public_identities.sql`, and
-`0013_add_account_credential_state.sql`. Each
+`0013_add_account_credential_state.sql`, and
+`0014_add_group_public_identities.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -209,6 +210,23 @@ fallback; an unknown valid public identifier returns absence. These reads do
 not touch sessions or Audit terminal storage. The normal schema validation
 performed during database open rejects a missing or changed identity table,
 index, or immutability trigger with `IntegrityFailure` before readiness.
+
+`0014_add_group_public_identities.sql` creates the separate `STRICT`
+`weavelit_group_public_identity` table. Its Group owner is the primary key and
+foreign key, its public identifier is an exact nonzero 16-byte BLOB, and a
+unique index prevents reuse. Updates are forbidden. Owner deletion cascades the
+identity only as part of Group deletion. The migration backfills every existing
+Group from SQLite `randomblob`; table, index, trigger, backfill, and ledger row
+share one immediate transaction and roll back together on zero, collision,
+orphan, or later failure.
+
+SQLite Group administration reads join only Group name, nullable description,
+and public identity and validate complete reciprocal coverage before output.
+Create, update, and delete use `BEGIN IMMEDIATE`, recheck the issuer session and
+complete prepared target, and persist the selected opaque Audit terminal in the
+same transaction. Delete first proves both membership and direct-grant absence,
+then removes the Audit Reference and owning Group; the public identity cascades.
+No nonempty count or cause leaves the backend.
 
 ### Immutable Log Module Configuration Generations
 

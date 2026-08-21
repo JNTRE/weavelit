@@ -34,8 +34,13 @@ use weavelit_module_client::{
     AccountCreateSubmission, AccountCredentialIssued, AccountPasswordResetSubmission, AccountsPage,
     AuthenticationRejection, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CredentialIssuanceCapability,
     CredentialIssuanceDeclaration, CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
-    CredentialIssuanceTicketIssued, ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
-    MAX_CREDENTIAL_ISSUANCE_BODY_BYTES, MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES,
+    CredentialIssuanceTicketIssued, ExpectedOrigin, GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE,
+    GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE, GroupAdministrationCapability,
+    GroupAdministrationDeclaration, GroupAdministrationProjection as ClientGroupProjection,
+    GroupAdministrationRejection, GroupAdministrationRequest as ClientGroupRequest,
+    GroupAdministrationResult as ClientGroupResult, GroupAdministrationSubmission, GroupDeleted,
+    GroupsPage, LIFECYCLE_RECONCILIATION_ROUTE, MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
+    MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES, MAX_GROUP_ADMINISTRATION_BODY_BYTES,
     MAX_MFA_POLICY_BODY_BYTES, MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES,
     MFA_POLICY_STEP_UP_ROUTE, MfaPolicyCapability, MfaPolicyDeclaration, MfaPolicyRejection,
     MfaPolicyStepUpFamily, MfaPolicyStepUpSubmission, MfaPolicyTicketIssued,
@@ -49,6 +54,7 @@ use weavelit_server_administration::{
     AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
     AccountStatusChange, AdministrationAction, AdministrationClock, AdministrationPlane,
     AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementSource,
+    GroupAdministrationAction, GroupAdministrationRead, GroupCreate, GroupMutation, GroupUpdate,
     MFA_STEP_UP_LIFETIME, MfaStepUpProof, StepUpActionFamily,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
@@ -66,9 +72,11 @@ use weavelit_server_database::{
     AccountStatus, AccountStatusAuditTerminalWrites, AccountStatusMutation,
     AccountStatusMutationOutcome, AccountStatusTarget, AccountStatusWriterStore,
     AuditReferencePersistence, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
-    GroupGrant, GroupGrantMutationTarget, GroupMembershipMutationTarget,
-    GroupMutationAuditTerminalWrites, GroupMutationOutcome, GroupMutationStore,
-    LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
+    GroupAdministrationAuditTerminalWrites, GroupAdministrationStore, GroupAdministrationTarget,
+    GroupCreateMutation, GroupCreateOutcome, GroupDeleteMutation, GroupDeleteOutcome, GroupGrant,
+    GroupGrantMutationTarget, GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites,
+    GroupMutationOutcome, GroupMutationStore, GroupPublicIdentifier, GroupUpdateMutation,
+    GroupUpdateOutcome, LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
     LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
@@ -91,8 +99,10 @@ use crate::{
         AccountAdministrationReadResult, AccountAdministrationReadWorkflow,
         AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflow,
         AccountCredentialIssuanceWorkflowError, AccountStatusChangeError,
-        AccountStatusChangeResult, AccountStatusChangeWorkflow, MfaPolicyChangeError,
-        MfaPolicyChangeResult, MfaPolicyChangeWorkflow,
+        AccountStatusChangeResult, AccountStatusChangeWorkflow, GroupAdministrationMutationResult,
+        GroupAdministrationReadResult, GroupAdministrationWorkflow,
+        GroupAdministrationWorkflowError, MfaPolicyChangeError, MfaPolicyChangeResult,
+        MfaPolicyChangeWorkflow,
     },
     authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
     authorization::{AuthorizationRuntime, ServedComponents},
@@ -122,6 +132,12 @@ const CREDENTIAL_ISSUANCE_PROFILE: TransportProfile = TransportProfile::admitted
 
 const MFA_POLICY_PROFILE: TransportProfile = TransportProfile::admitted(
     MAX_MFA_POLICY_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+const GROUP_ADMINISTRATION_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_GROUP_ADMINISTRATION_BODY_BYTES,
     crate::REQUEST_READ_TIMEOUT,
     crate::REQUEST_PROCESSING_TIMEOUT,
 );
@@ -259,6 +275,8 @@ impl fmt::Debug for ActiveDatabase {
 pub struct OperationalDatabase {
     database: Arc<Mutex<Option<OperationalDatabaseHandle>>>,
     account_public_identifier_persistence: AccountPublicIdentifierPersistence,
+    pub(crate) group_public_identifier_persistence:
+        weavelit_server_database::GroupPublicIdentifierPersistence,
     audit_reference_persistence: AuditReferencePersistence,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
     log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
@@ -296,6 +314,10 @@ impl OperationalDatabase {
             ))),
             account_public_identifier_persistence:
                 AccountPublicIdentifierPersistence::from_server_authority(&authority),
+            group_public_identifier_persistence:
+                weavelit_server_database::GroupPublicIdentifierPersistence::from_server_authority(
+                    &authority,
+                ),
             audit_reference_persistence: AuditReferencePersistence::from_server_authority(
                 &authority,
             ),
@@ -315,6 +337,7 @@ impl OperationalDatabase {
     fn from_selected(database: SelectedDatabase) -> Self {
         let account_public_identifier_persistence =
             database.account_public_identifier_persistence();
+        let group_public_identifier_persistence = database.group_public_identifier_persistence();
         let audit_reference_persistence = database.audit_reference_persistence();
         let audit_terminal_recovery_persistence = database.audit_terminal_recovery_persistence();
         let log_configuration_generation_persistence =
@@ -326,6 +349,7 @@ impl OperationalDatabase {
                 database,
             )))),
             account_public_identifier_persistence,
+            group_public_identifier_persistence,
             audit_reference_persistence,
             audit_terminal_recovery_persistence,
             log_configuration_generation_persistence,
@@ -407,6 +431,92 @@ impl OperationalDatabase {
         self.account_public_identifier_persistence
             .decode(bytes)
             .map_err(|_| DatabaseError::IntegrityFailure)
+    }
+
+    /// Decodes one canonical public Group identifier through database authority.
+    fn group_public_identifier(
+        &self,
+        encoded: &str,
+    ) -> Result<GroupPublicIdentifier, DatabaseError> {
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        let bytes = decoded
+            .try_into()
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        self.group_public_identifier_persistence
+            .decode(bytes)
+            .map_err(|_| DatabaseError::IntegrityFailure)
+    }
+
+    pub(crate) fn with_group_administration<R>(
+        &self,
+        operation: impl FnOnce(
+            &weavelit_server_database::GroupPublicIdentifierPersistence,
+            &mut dyn GroupAdministrationStore,
+        ) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                &self.group_public_identifier_persistence,
+                database
+                    .group_administration()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    pub(crate) fn prepare_group_administration_target(
+        &self,
+        target: GroupPublicIdentifier,
+    ) -> Result<Option<GroupAdministrationTarget>, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.prepare_group_administration_target(
+                persistence,
+                &self.audit_reference_persistence,
+                target,
+            )
+        })
+    }
+
+    pub(crate) fn create_group(
+        &self,
+        mutation: &GroupCreateMutation,
+        terminals: &GroupAdministrationAuditTerminalWrites<'_>,
+    ) -> Result<GroupCreateOutcome, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.create_group(persistence, mutation, terminals)
+        })
+    }
+
+    pub(crate) fn update_group(
+        &self,
+        mutation: &GroupUpdateMutation,
+        terminals: &GroupAdministrationAuditTerminalWrites<'_>,
+    ) -> Result<GroupUpdateOutcome, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.update_group(
+                persistence,
+                &self.audit_reference_persistence,
+                mutation,
+                terminals,
+            )
+        })
+    }
+
+    pub(crate) fn delete_group(
+        &self,
+        mutation: &GroupDeleteMutation,
+        terminals: &GroupAdministrationAuditTerminalWrites<'_>,
+    ) -> Result<GroupDeleteOutcome, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.delete_group(
+                persistence,
+                &self.audit_reference_persistence,
+                mutation,
+                terminals,
+            )
+        })
     }
 
     /// Resolves one exact password-reset target through both selected decoders.
@@ -1050,11 +1160,12 @@ impl OperationalAdministration {
         }
     }
 
-    /// Verifies current-session TOTP and retains one reusable five-minute MFA-policy proof.
+    /// Verifies current-session TOTP and retains one reusable five-minute family-bound proof.
     pub(crate) fn issue_mfa_policy_step_up(
         &self,
         session: &ValidatedSession,
         code: &str,
+        family: StepUpActionFamily,
     ) -> Result<MfaPolicyStepUpTicket, AuthenticationRejection> {
         let ticket =
             MfaPolicyStepUpTicket::generate().ok_or(AuthenticationRejection::ServiceUnavailable)?;
@@ -1074,11 +1185,7 @@ impl OperationalAdministration {
             .verify_administration_step_up(session, code)?;
         let proof = state
             .plane
-            .issue_step_up(
-                &ServerAdministrationAuthority::new(),
-                &current,
-                StepUpActionFamily::MfaPolicy,
-            )
+            .issue_step_up(&ServerAdministrationAuthority::new(), &current, family)
             .map_err(|_| AuthenticationRejection::AuthenticationFailed)?;
         let expires_after = state
             .clock
@@ -1086,7 +1193,7 @@ impl OperationalAdministration {
             .checked_add(MFA_STEP_UP_LIFETIME)
             .ok_or(AuthenticationRejection::ServiceUnavailable)?;
         state.pending_mfa_policy.push(PendingMfaPolicyStepUp {
-            digest: ticket.digest(),
+            digest: ticket.digest(family),
             expires_after,
             proof,
         });
@@ -1101,7 +1208,8 @@ impl OperationalAdministration {
     ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
     {
         let submitted =
-            MfaPolicyStepUpTicketDigest::of_canonical(submitted).ok_or(AuthorizationDenied)?;
+            MfaPolicyStepUpTicketDigest::of_canonical(submitted, StepUpActionFamily::MfaPolicy)
+                .ok_or(AuthorizationDenied)?;
         let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
         let now = state.clock.now();
         state
@@ -1120,6 +1228,39 @@ impl OperationalAdministration {
         plane.authorize(
             admission,
             AdministrationRequest::new(AdministrationAction::MfaPolicy).with_step_up(proof),
+        )
+    }
+
+    /// Authorizes one exact GrantMutation action through a family-bound opaque ticket.
+    pub(crate) fn authorize_grant_mutation_ticket(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        mutation: weavelit_server_administration::GroupMutation,
+        submitted: &str,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        let submitted =
+            MfaPolicyStepUpTicketDigest::of_canonical(submitted, StepUpActionFamily::GrantMutation)
+                .ok_or(AuthorizationDenied)?;
+        let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
+        let now = state.clock.now();
+        state
+            .pending_mfa_policy
+            .retain(|entry| entry.expires_after > now);
+        let OperationalAdministrationState {
+            plane,
+            pending_mfa_policy,
+            ..
+        } = &mut *state;
+        let proof = pending_mfa_policy
+            .iter()
+            .find(|entry| entry.digest.matches(&submitted))
+            .map(|entry| &entry.proof)
+            .ok_or(AuthorizationDenied)?;
+        plane.authorize(
+            admission,
+            AdministrationRequest::new(AdministrationAction::GrantMutation(mutation))
+                .with_step_up(proof),
         )
     }
 
@@ -1225,6 +1366,22 @@ impl OperationalAdministration {
             .authorize(
                 admission,
                 AdministrationRequest::new(AdministrationAction::Account(action)),
+            )
+    }
+
+    fn authorize_group_administration(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        action: GroupAdministrationAction,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        self.state
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .plane
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Group(action)),
             )
     }
 }
@@ -1386,6 +1543,42 @@ impl OperationalComposer {
                     })
                     .await
                     .unwrap_or(Err(AccountAdministrationRejection::ServiceUnavailable))
+                })
+            }),
+        })
+    }
+
+    fn group_administration_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<GroupAdministrationCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+        Some(GroupAdministrationCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            execute: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_group_administration(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(GroupAdministrationRejection::ServiceUnavailable))
                 })
             }),
         })
@@ -1565,15 +1758,21 @@ impl OperationalComposer {
         let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
         let declared = weavelit_module_client_webui::operational_surface(
             self.account_administration_capability(expected_origin),
+            self.group_administration_capability(expected_origin),
             self.credential_issuance_capability(expected_origin),
             self.mfa_policy_capability(expected_origin),
         );
         let (declared, account_administration) = declared.split_account_administration();
+        let (declared, group_administration) = declared.split_group_administration();
         let (declared, credential_issuance) = declared.split_credential_issuance();
         let (declared, mfa_policy) = declared.split_mfa_policy();
         let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
-        for capability in self.capabilities(account_administration, credential_issuance, mfa_policy)
-        {
+        for capability in self.capabilities(
+            account_administration,
+            group_administration,
+            credential_issuance,
+            mfa_policy,
+        ) {
             surface = surface.with_capability(capability);
         }
         OperationalMount { surface }
@@ -1589,6 +1788,7 @@ impl OperationalComposer {
     fn capabilities(
         &self,
         account_administration: Option<AccountAdministrationDeclaration>,
+        group_administration: Option<GroupAdministrationDeclaration>,
         credential_issuance: Option<CredentialIssuanceDeclaration>,
         mfa_policy: Option<MfaPolicyDeclaration>,
     ) -> Vec<TransportCapability> {
@@ -1680,6 +1880,25 @@ impl OperationalComposer {
                 ),
                 move |router| router.route(ACCOUNTS_STATUS_ROUTE, status.status_route()),
             ));
+        }
+        if let Some(declaration) = group_administration {
+            let declaration = Arc::new(declaration);
+            let view = Arc::clone(&declaration);
+            let create = Arc::clone(&declaration);
+            let update = Arc::clone(&declaration);
+            let delete = Arc::clone(&declaration);
+            for (route, mount) in [
+                (GROUPS_LIST_ROUTE, declaration.list_route()),
+                (GROUPS_VIEW_ROUTE, view.view_route()),
+                (GROUPS_CREATE_ROUTE, create.create_route()),
+                (GROUPS_UPDATE_ROUTE, update.update_route()),
+                (GROUPS_DELETE_ROUTE, delete.delete_route()),
+            ] {
+                capabilities.push(TransportCapability::new(
+                    TransportRegistration::new(Method::PUT, route, GROUP_ADMINISTRATION_PROFILE),
+                    move |router| router.route(route, mount),
+                ));
+            }
         }
         if let (Some(declaration), Some(authentication)) =
             (credential_issuance, self.authentication.as_ref())
@@ -1867,9 +2086,6 @@ fn execute_mfa_policy_step_up(
         correlation_id,
         context: _,
     } = submission;
-    match family {
-        MfaPolicyStepUpFamily::MfaPolicy => {}
-    }
     let session = authentication
         .validated_session(&session_token, &csrf_token)
         .map_err(mfa_policy_authentication_rejection)?;
@@ -1882,7 +2098,14 @@ fn execute_mfa_policy_step_up(
         .authorize_administration(&session, &client_module, &correlation_id)
         .map_err(|_| MfaPolicyRejection::AuthorizationDenied)?;
     let ticket = administration
-        .issue_mfa_policy_step_up(&session, &code)
+        .issue_mfa_policy_step_up(
+            &session,
+            &code,
+            match family {
+                MfaPolicyStepUpFamily::MfaPolicy => StepUpActionFamily::MfaPolicy,
+                MfaPolicyStepUpFamily::GrantMutation => StepUpActionFamily::GrantMutation,
+            },
+        )
         .map_err(mfa_policy_step_up_rejection)?;
     Ok(MfaPolicyTicketIssued {
         totp_step_up_ticket: Zeroizing::new(ticket.as_str().to_owned()),
@@ -2336,6 +2559,177 @@ fn client_account_projection(
         projection.mfa_required(),
     )
     .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)
+}
+
+fn execute_group_administration(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: GroupAdministrationSubmission,
+) -> Result<ClientGroupResult, GroupAdministrationRejection> {
+    let GroupAdministrationSubmission {
+        request,
+        session_token,
+        csrf_token,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(group_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(GroupAdministrationRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+    let workflow = GroupAdministrationWorkflow::new(database, audit_recovery);
+    match request {
+        ClientGroupRequest::List(request) => {
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::List),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            let GroupAdministrationReadResult::List(items) =
+                workflow.read(action).map_err(group_workflow_error)?
+            else {
+                return Err(GroupAdministrationRejection::ServiceUnavailable);
+            };
+            let items = items
+                .into_iter()
+                .map(client_group_projection)
+                .collect::<Result<Vec<_>, _>>()?;
+            GroupsPage::from_ordered(&request, items)
+                .map(ClientGroupResult::List)
+                .map_err(|_| GroupAdministrationRejection::BadRequest)
+        }
+        ClientGroupRequest::View(request) => {
+            let target = database
+                .group_public_identifier(request.public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::View(target)),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            match workflow.read(action).map_err(group_workflow_error)? {
+                GroupAdministrationReadResult::View(Some(value)) => {
+                    client_group_projection(value).map(ClientGroupResult::Projection)
+                }
+                GroupAdministrationReadResult::View(None) => {
+                    Err(GroupAdministrationRejection::NotFound)
+                }
+                GroupAdministrationReadResult::List(_) => {
+                    Err(GroupAdministrationRejection::ServiceUnavailable)
+                }
+            }
+        }
+        ClientGroupRequest::Create(request) => {
+            let change = GroupCreate::new(request.name(), request.description())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Create(change),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            group_mutation_response(workflow.mutate(action).map_err(group_workflow_error)?)
+        }
+        ClientGroupRequest::Update(request) => {
+            let target = database
+                .group_public_identifier(request.public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let change = GroupUpdate::new(target, request.name(), request.description())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Update(change),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            group_mutation_response(workflow.mutate(action).map_err(group_workflow_error)?)
+        }
+        ClientGroupRequest::Delete(request) => {
+            let target = database
+                .group_public_identifier(request.public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_grant_mutation_ticket(
+                    admission,
+                    GroupMutation::Delete(target),
+                    request.ticket(),
+                )
+                .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
+            group_mutation_response(workflow.delete(action).map_err(group_workflow_error)?)
+        }
+    }
+}
+
+fn group_mutation_response(
+    result: GroupAdministrationMutationResult,
+) -> Result<ClientGroupResult, GroupAdministrationRejection> {
+    match result {
+        GroupAdministrationMutationResult::Projection(value) => {
+            client_group_projection(value).map(ClientGroupResult::Projection)
+        }
+        GroupAdministrationMutationResult::Deleted(public_identifier) => {
+            GroupDeleted::new(public_identifier.as_base64url())
+                .map(ClientGroupResult::Deleted)
+                .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)
+        }
+        GroupAdministrationMutationResult::Conflict
+        | GroupAdministrationMutationResult::Nonempty => {
+            Err(GroupAdministrationRejection::Conflict)
+        }
+        GroupAdministrationMutationResult::Denied => {
+            Err(GroupAdministrationRejection::AuthorizationDenied)
+        }
+        GroupAdministrationMutationResult::Stale => {
+            Err(GroupAdministrationRejection::ServiceUnavailable)
+        }
+    }
+}
+
+fn client_group_projection(
+    projection: weavelit_server_database::GroupAdministrationProjection,
+) -> Result<ClientGroupProjection, GroupAdministrationRejection> {
+    ClientGroupProjection::new(
+        projection.public_identifier().as_base64url(),
+        projection.name().as_str().to_owned(),
+        projection
+            .description()
+            .map(|value| value.as_str().to_owned()),
+    )
+    .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)
+}
+
+fn group_authentication_rejection(
+    rejection: AuthenticationRejection,
+) -> GroupAdministrationRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => {
+            GroupAdministrationRejection::ServiceUnavailable
+        }
+        _ => GroupAdministrationRejection::SessionInvalid,
+    }
+}
+
+fn group_workflow_error(error: GroupAdministrationWorkflowError) -> GroupAdministrationRejection {
+    match error {
+        GroupAdministrationWorkflowError::TargetNotFound => GroupAdministrationRejection::NotFound,
+        GroupAdministrationWorkflowError::ActionNotSupported
+        | GroupAdministrationWorkflowError::Unavailable
+        | GroupAdministrationWorkflowError::AuditLogUnavailable => {
+            GroupAdministrationRejection::ServiceUnavailable
+        }
+    }
 }
 
 fn account_authentication_rejection(

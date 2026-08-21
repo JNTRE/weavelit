@@ -10,6 +10,7 @@ mod checkpoint;
 mod completion;
 mod connection;
 mod error;
+mod group_administration;
 mod group_mutation;
 mod inspection;
 mod log_configuration;
@@ -28,10 +29,11 @@ use weavelit_server_database::{
     AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountPublicIdentity,
     AccountStatusWriterStore, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
     AuditTerminalRecoveryStore, ComponentEnablement, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, GroupAuditReference, GroupMutationStore, HumanAuthorizationSnapshot,
-    InitializedState, LogConfigurationAuditReference, LogConfigurationGenerationStore,
-    LogConfigurationMutationStore, MfaPolicyWriterStore, MfaStore, PasswordChangeWriterStore,
-    ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
+    DeploymentIdentifier, GroupAdministrationStore, GroupAuditReference, GroupMutationStore,
+    HumanAuthorizationSnapshot, InitializedState, LogConfigurationAuditReference,
+    LogConfigurationGenerationStore, LogConfigurationMutationStore, MfaPolicyWriterStore, MfaStore,
+    PasswordChangeWriterStore, ReconciliationDigest, ReconciliationStore, SessionStore,
+    StateIdentifier, WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -142,6 +144,10 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn account_administration(&mut self) -> Option<&mut dyn AccountAdministrationStore> {
+        Some(self)
+    }
+
+    fn group_administration(&mut self) -> Option<&mut dyn GroupAdministrationStore> {
         Some(self)
     }
 

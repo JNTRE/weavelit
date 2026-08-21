@@ -132,6 +132,7 @@ fn sealed_application_state() -> ApplicationState {
         account_audit_references: vec![],
         password_verifiers: vec![],
         groups: vec![],
+        group_public_identities: vec![],
         group_audit_references: vec![],
         group_memberships: vec![],
         group_grants: vec![],

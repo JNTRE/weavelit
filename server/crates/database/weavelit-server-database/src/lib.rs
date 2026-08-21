@@ -6,6 +6,7 @@ mod account_administration;
 mod account_status;
 mod account_writer;
 mod audit_recovery;
+mod group_administration;
 mod group_mutation;
 mod log_configuration;
 mod mfa;
@@ -35,6 +36,12 @@ pub use audit_recovery::{
     MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES,
     OpaqueAuditTerminalDisposition, OpaqueAuditTerminalProjection, StoredAuditDestinationBinding,
     ValidatedAuditTerminalObligationWrite,
+};
+pub use group_administration::{
+    GroupAdministrationAuditTerminalWrites, GroupAdministrationMutationError,
+    GroupAdministrationProjection, GroupAdministrationStore, GroupAdministrationTarget,
+    GroupCreateMutation, GroupCreateOutcome, GroupDeleteMutation, GroupDeleteOutcome,
+    GroupUpdateMutation, GroupUpdateOutcome,
 };
 pub use group_mutation::{
     GroupGrantMutationTarget, GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites,
@@ -79,15 +86,17 @@ pub use state::{
     AuditReferenceIdentifierError, AuditReferencePersistence, BoundedText, COMPONENT_ENABLED_VALUE,
     CREDENTIAL_REVISION_LENGTH, CompletionObligation, ComponentEnablement, ComponentKind,
     ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
-    CredentialRevision, Description, Group, GroupAuditReference, GroupGrant, GroupGrantRecord,
-    GroupMembership, HumanAuthorizationSnapshot, InitializedState, LogAssignment,
-    LogClassification, LogConfigurationAuditReference, LogDetail, LogModuleConfiguration,
-    LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH,
-    MAX_DESCRIPTION_LENGTH, MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH,
-    MAX_LOG_DETAIL_LENGTH, MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH,
-    MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier,
-    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
-    StateIdentifier, TemporaryCredentialExpiration,
+    CredentialRevision, Description, GROUP_PUBLIC_IDENTIFIER_LENGTH, Group, GroupAuditReference,
+    GroupGrant, GroupGrantRecord, GroupMembership, GroupPublicIdentifier,
+    GroupPublicIdentifierError, GroupPublicIdentifierPersistence, GroupPublicIdentity,
+    HumanAuthorizationSnapshot, InitializedState, LogAssignment, LogClassification,
+    LogConfigurationAuditReference, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
+    MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
+    MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH, MAX_LOG_DETAIL_LENGTH,
+    MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
+    MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier, ProtectedSecret,
+    ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier,
+    TemporaryCredentialExpiration,
 };
 
 use std::{error::Error as StdError, fmt};
@@ -345,6 +354,11 @@ pub trait ApplicationDatabase: Send {
 
     /// Returns bounded account administration reads, when available.
     fn account_administration(&mut self) -> Option<&mut dyn AccountAdministrationStore> {
+        None
+    }
+
+    /// Returns bounded Group administration reads and writers, when available.
+    fn group_administration(&mut self) -> Option<&mut dyn GroupAdministrationStore> {
         None
     }
 

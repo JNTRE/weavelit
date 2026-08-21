@@ -6,8 +6,8 @@ use std::{error::Error as StdError, fmt};
 
 use weavelit_server_administration::{
     AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
-    AccountStatusChange, AdministrationAction, AuthorizedAdministrationAction, GroupMutation,
-    LogConfigurationChange,
+    AccountStatusChange, AdministrationAction, AuthorizedAdministrationAction,
+    GroupAdministrationAction, GroupAdministrationRead, GroupMutation, LogConfigurationChange,
 };
 use weavelit_server_audit::{
     AccountStatus as AuditAccountStatus, ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail,
@@ -25,12 +25,16 @@ use weavelit_server_database::{
     AccountPasswordResetOutcome, AccountPasswordVerifier, AccountPublicIdentifier,
     AccountPublicIdentity, AccountStatus, AccountStatusAuditTerminalWrites, AccountStatusMutation,
     AccountStatusMutationError, AccountStatusMutationOutcome, AccountStatusRecheck,
-    AuditReferenceIdentifier, ComponentKind, CredentialRevision, DatabaseError, GroupGrant,
-    GroupMutationAuditTerminalWrites, GroupMutationError, GroupMutationOutcome,
-    GroupMutationRecheck, GroupMutationTarget, LogAssignment, LogConfigurationAuditTerminalWrites,
-    LogConfigurationMutationOutcome, LogConfigurationMutationRequest, LogConfigurationPreparation,
-    LogType, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget,
-    MfaPolicyAction, MfaPolicyAuditTerminalWrites, MfaPolicyMutation, MfaPolicyMutationError,
+    AuditReferenceIdentifier, ComponentKind, CredentialRevision, DatabaseError, Group,
+    GroupAdministrationAuditTerminalWrites, GroupAdministrationMutationError,
+    GroupAdministrationProjection, GroupAuditReference, GroupCreateMutation, GroupCreateOutcome,
+    GroupDeleteMutation, GroupDeleteOutcome, GroupGrant, GroupMutationAuditTerminalWrites,
+    GroupMutationError, GroupMutationOutcome, GroupMutationRecheck, GroupMutationTarget,
+    GroupPublicIdentifier, GroupPublicIdentity, GroupUpdateMutation, GroupUpdateOutcome,
+    LogAssignment, LogConfigurationAuditTerminalWrites, LogConfigurationMutationOutcome,
+    LogConfigurationMutationRequest, LogConfigurationPreparation, LogType,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, MfaPolicyAction,
+    MfaPolicyAuditTerminalWrites, MfaPolicyMutation, MfaPolicyMutationError,
     MfaPolicyMutationOutcome, MfaPolicyRecheck, Name, PasswordVerifier, PreparedGroupMutation,
     SessionInstant, StateIdentifier, TemporaryCredentialExpiration,
     ValidatedAuditTerminalObligationWrite,
@@ -525,6 +529,8 @@ fn account_audit_detail(
         | AuditLogClassification::AuthenticationMfaModuleEnablementChanged
         | AuditLogClassification::AuthenticationSessionRevoked
         | AuditLogClassification::AuthorizationGroupCreated
+        | AuditLogClassification::AuthorizationGroupUpdated
+        | AuditLogClassification::AuthorizationGroupDeleted
         | AuditLogClassification::AuthorizationGroupMembershipChanged
         | AuditLogClassification::AuthorizationGroupGrantChanged
         | AuditLogClassification::AuthorizationGroupGrantRemovalDenied
@@ -1228,10 +1234,16 @@ impl<'a> GroupMutationWorkflow<'a> {
                 .map_err(|_| GroupMutationWorkflowError::TargetNotFound)?
                 .map(GroupMutationTarget::Grant)
                 .ok_or(GroupMutationWorkflowError::TargetNotFound)?,
+            GroupMutation::Delete(_) => {
+                return Err(GroupMutationWorkflowError::ActionNotSupported);
+            }
         };
         let desired = match &descriptor {
             GroupMutation::Membership(change) => change.desired(),
             GroupMutation::Grant(change) => change.desired(),
+            GroupMutation::Delete(_) => {
+                return Err(GroupMutationWorkflowError::ActionNotSupported);
+            }
         };
         let recheck = GroupMutationRecheck::new(
             authorization.actor(),
@@ -1385,6 +1397,7 @@ fn group_mutation_audit_detail(
             AuditOutcomeDetail::AuthorizationGroupMembershipChanged(outcome)
         }
         GroupMutation::Grant(_) => AuditOutcomeDetail::AuthorizationGroupGrantChanged(outcome),
+        GroupMutation::Delete(_) => unreachable!("Group deletion uses the Group CRUD workflow"),
     }
 }
 
@@ -1429,6 +1442,342 @@ impl<'a> AccountAdministrationReadWorkflow<'a> {
             })
             .map_err(|_| AccountAdministrationReadError::Unavailable)
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum GroupAdministrationReadResult {
+    List(Vec<GroupAdministrationProjection>),
+    View(Option<GroupAdministrationProjection>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum GroupAdministrationMutationResult {
+    Projection(GroupAdministrationProjection),
+    Deleted(GroupPublicIdentifier),
+    Conflict,
+    Stale,
+    Denied,
+    Nonempty,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GroupAdministrationWorkflowError {
+    ActionNotSupported,
+    TargetNotFound,
+    Unavailable,
+    AuditLogUnavailable,
+}
+
+pub(crate) struct GroupAdministrationWorkflow<'a> {
+    database: &'a OperationalDatabase,
+    audit: &'a OperationalAuditRecovery,
+}
+
+impl<'a> GroupAdministrationWorkflow<'a> {
+    pub(crate) const fn new(
+        database: &'a OperationalDatabase,
+        audit: &'a OperationalAuditRecovery,
+    ) -> Self {
+        Self { database, audit }
+    }
+
+    pub(crate) fn read(
+        &self,
+        authorization: AuthorizedAdministrationAction,
+    ) -> Result<GroupAdministrationReadResult, GroupAdministrationWorkflowError> {
+        let authorization = authorization
+            .into_group_administration()
+            .map_err(|_| GroupAdministrationWorkflowError::ActionNotSupported)?;
+        let GroupAdministrationAction::Read(read) = authorization.into_action() else {
+            return Err(GroupAdministrationWorkflowError::ActionNotSupported);
+        };
+        self.database
+            .with_group_administration(|persistence, store| match read {
+                GroupAdministrationRead::List => store
+                    .list_group_administration_projections(persistence)
+                    .map(GroupAdministrationReadResult::List),
+                GroupAdministrationRead::View(target) => store
+                    .load_group_administration_projection(persistence, target)
+                    .map(GroupAdministrationReadResult::View),
+            })
+            .map_err(|_| GroupAdministrationWorkflowError::Unavailable)
+    }
+
+    pub(crate) fn mutate(
+        &self,
+        authorization: AuthorizedAdministrationAction,
+    ) -> Result<GroupAdministrationMutationResult, GroupAdministrationWorkflowError> {
+        let authorization = authorization
+            .into_group_administration()
+            .map_err(|_| GroupAdministrationWorkflowError::ActionNotSupported)?;
+        let actor = authorization.actor();
+        let session = authorization.session();
+        let client_module = authorization.client_module().clone();
+        match authorization.into_action() {
+            GroupAdministrationAction::Create(change) => {
+                let group = issue_state_identifier()
+                    .map_err(|_| GroupAdministrationWorkflowError::Unavailable)?;
+                let public_identifier = GroupPublicIdentifier::generate()
+                    .map_err(|_| GroupAdministrationWorkflowError::Unavailable)?;
+                let audit_reference = GroupAuditReference::new(
+                    group,
+                    AuditReferenceIdentifier::generate()
+                        .map_err(|_| GroupAdministrationWorkflowError::Unavailable)?,
+                );
+                let mutation = GroupCreateMutation::new(
+                    GroupMutationRecheck::new(
+                        actor,
+                        session,
+                        client_module,
+                        group_administration_now()?,
+                    ),
+                    Group {
+                        identifier: group,
+                        name: change.name().clone(),
+                        description: change.description().cloned(),
+                    },
+                    GroupPublicIdentity::new(group, public_identifier),
+                    audit_reference,
+                )
+                .map_err(|_| GroupAdministrationWorkflowError::Unavailable)?;
+                let projection = GroupAdministrationProjection::from_persistence(
+                    &self.database.group_public_identifier_persistence,
+                    public_identifier,
+                    change.name().clone(),
+                    change.description().cloned(),
+                );
+                self.commit(
+                    actor,
+                    AuditEvent::AuthorizationGroupCreated {
+                        group: audit_reference,
+                    },
+                    AuditLogClassification::AuthorizationGroupCreated,
+                    |terminals| self.database.create_group(&mutation, terminals),
+                )
+                .map(|outcome| match outcome {
+                    GroupCreateOutcome::Created => {
+                        GroupAdministrationMutationResult::Projection(projection)
+                    }
+                    GroupCreateOutcome::Conflict => GroupAdministrationMutationResult::Conflict,
+                    GroupCreateOutcome::Denied => GroupAdministrationMutationResult::Denied,
+                })
+            }
+            GroupAdministrationAction::Update(change) => {
+                let target = self
+                    .database
+                    .prepare_group_administration_target(change.target())
+                    .map_err(|_| GroupAdministrationWorkflowError::Unavailable)?
+                    .ok_or(GroupAdministrationWorkflowError::TargetNotFound)?;
+                let audit_reference = target.group();
+                let public_identifier = target.projection().public_identifier();
+                let mutation = match GroupUpdateMutation::new(
+                    GroupMutationRecheck::new(
+                        actor,
+                        session,
+                        client_module,
+                        group_administration_now()?,
+                    ),
+                    target,
+                    change.name().clone(),
+                    change.description().cloned(),
+                ) {
+                    Ok(value) => value,
+                    Err(GroupAdministrationMutationError::Unchanged) => {
+                        return Ok(GroupAdministrationMutationResult::Projection(
+                            GroupAdministrationProjection::from_persistence(
+                                &self.database.group_public_identifier_persistence,
+                                public_identifier,
+                                change.name().clone(),
+                                change.description().cloned(),
+                            ),
+                        ));
+                    }
+                    Err(GroupAdministrationMutationError::InvalidTarget) => {
+                        return Err(GroupAdministrationWorkflowError::TargetNotFound);
+                    }
+                };
+                let projection = GroupAdministrationProjection::from_persistence(
+                    &self.database.group_public_identifier_persistence,
+                    public_identifier,
+                    change.name().clone(),
+                    change.description().cloned(),
+                );
+                self.commit(
+                    actor,
+                    AuditEvent::AuthorizationGroupUpdated {
+                        group: audit_reference,
+                    },
+                    AuditLogClassification::AuthorizationGroupUpdated,
+                    |terminals| self.database.update_group(&mutation, terminals),
+                )
+                .map(|outcome| match outcome {
+                    GroupUpdateOutcome::Changed => {
+                        GroupAdministrationMutationResult::Projection(projection)
+                    }
+                    GroupUpdateOutcome::Conflict => GroupAdministrationMutationResult::Conflict,
+                    GroupUpdateOutcome::Stale => GroupAdministrationMutationResult::Stale,
+                    GroupUpdateOutcome::Denied => GroupAdministrationMutationResult::Denied,
+                })
+            }
+            GroupAdministrationAction::Read(_) => {
+                Err(GroupAdministrationWorkflowError::ActionNotSupported)
+            }
+        }
+    }
+
+    pub(crate) fn delete(
+        &self,
+        authorization: AuthorizedAdministrationAction,
+    ) -> Result<GroupAdministrationMutationResult, GroupAdministrationWorkflowError> {
+        let authorization = authorization
+            .into_group_mutation()
+            .map_err(|_| GroupAdministrationWorkflowError::ActionNotSupported)?;
+        let GroupMutation::Delete(public_identifier) = authorization.mutation() else {
+            return Err(GroupAdministrationWorkflowError::ActionNotSupported);
+        };
+        let public_identifier = *public_identifier;
+        let target = self
+            .database
+            .prepare_group_administration_target(public_identifier)
+            .map_err(|_| GroupAdministrationWorkflowError::Unavailable)?
+            .ok_or(GroupAdministrationWorkflowError::TargetNotFound)?;
+        let audit_reference = target.group();
+        let mutation = GroupDeleteMutation::new(
+            GroupMutationRecheck::new(
+                authorization.actor(),
+                authorization.session(),
+                authorization.client_module().clone(),
+                group_administration_now()?,
+            ),
+            target,
+        );
+        self.commit(
+            authorization.actor(),
+            AuditEvent::AuthorizationGroupDeleted {
+                group: audit_reference,
+            },
+            AuditLogClassification::AuthorizationGroupDeleted,
+            |terminals| self.database.delete_group(&mutation, terminals),
+        )
+        .map(|outcome| match outcome {
+            GroupDeleteOutcome::Deleted => {
+                GroupAdministrationMutationResult::Deleted(public_identifier)
+            }
+            GroupDeleteOutcome::Nonempty => GroupAdministrationMutationResult::Nonempty,
+            GroupDeleteOutcome::Stale => GroupAdministrationMutationResult::Stale,
+            GroupDeleteOutcome::Denied => GroupAdministrationMutationResult::Denied,
+        })
+    }
+
+    fn commit<Outcome>(
+        &self,
+        actor: StateIdentifier,
+        event: AuditEvent,
+        classification: AuditLogClassification,
+        write: impl FnOnce(
+            &GroupAdministrationAuditTerminalWrites<'_>,
+        ) -> Result<Outcome, DatabaseError>,
+    ) -> Result<Outcome, GroupAdministrationWorkflowError> {
+        if self.audit.drain_before_consequential_operation().active()
+            != AuditRecoverySequenceState::Ready
+        {
+            return Err(GroupAdministrationWorkflowError::AuditLogUnavailable);
+        }
+        let actor = self
+            .database
+            .load_account_audit_reference(actor)
+            .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?
+            .ok_or(GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+        self.audit
+            .with_current_destination(|destination| {
+                destination
+                    .destination()
+                    .preflight(LogRecordType::Audit)
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let correlation = CorrelationId::new(
+                    correlation_identifier()
+                        .ok_or(GroupAdministrationWorkflowError::AuditLogUnavailable)?,
+                )
+                .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let attempt = self
+                    .audit
+                    .producer()
+                    .prepare_attempt(
+                        group_event_time()
+                            .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?,
+                        correlation,
+                        AuditActor::Human(actor),
+                        event,
+                    )
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let LogRecordPersistenceView::Audit(record) = attempt.record().persistence_view()
+                else {
+                    return Err(GroupAdministrationWorkflowError::AuditLogUnavailable);
+                };
+                let identifier = *record.record_id().as_bytes();
+                let event_time = record.event_time().unix_milliseconds();
+                let correlation = record.correlation_id().as_str().to_owned();
+                let delivered = match attempt.deliver(destination.destination()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.audit.reject_attempt_delivery(
+                            error,
+                            identifier,
+                            event_time,
+                            &correlation,
+                            destination.module(),
+                            classification,
+                        );
+                        return Err(GroupAdministrationWorkflowError::AuditLogUnavailable);
+                    }
+                };
+                let terminal = |outcome| {
+                    self.audit.producer().prepare_completion(
+                        &delivered,
+                        group_event_time()?,
+                        match classification {
+                            AuditLogClassification::AuthorizationGroupCreated => {
+                                AuditOutcomeDetail::AuthorizationGroupCreated(outcome)
+                            }
+                            AuditLogClassification::AuthorizationGroupUpdated => {
+                                AuditOutcomeDetail::AuthorizationGroupUpdated(outcome)
+                            }
+                            AuditLogClassification::AuthorizationGroupDeleted => {
+                                AuditOutcomeDetail::AuthorizationGroupDeleted(outcome)
+                            }
+                            _ => unreachable!("Group CRUD uses only its classifications"),
+                        },
+                    )
+                };
+                let succeeded = terminal(ActionOutcome::Succeeded)
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let conflict = terminal(ActionOutcome::Denied)
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let denied = terminal(ActionOutcome::Denied)
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let persistence = self.database.audit_terminal_recovery_persistence();
+                let succeeded = succeeded
+                    .recovery_obligation(persistence, destination.binding())
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let conflict = conflict
+                    .recovery_obligation(persistence, destination.binding())
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                let denied = denied
+                    .recovery_obligation(persistence, destination.binding())
+                    .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?;
+                write(&GroupAdministrationAuditTerminalWrites::new(
+                    &succeeded, &conflict, &denied,
+                ))
+                .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)
+            })
+            .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?
+    }
+}
+
+fn group_administration_now() -> Result<SessionInstant, GroupAdministrationWorkflowError> {
+    let now = system_clock()().ok_or(GroupAdministrationWorkflowError::Unavailable)?;
+    SessionInstant::from_unix_milliseconds(now)
+        .map_err(|_| GroupAdministrationWorkflowError::Unavailable)
 }
 
 /// Delivery state of one committed Log configuration terminal obligation.

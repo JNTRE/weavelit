@@ -249,6 +249,21 @@ self-service or group-scoped access class. An
 **[Administration Plane](glossary.md#applications-and-interfaces)** function
 MUST use the server-administration access class.
 
+Every Group MUST have an independent durable nonzero random 128-bit public
+identifier. A client-facing interface MUST use only its canonical unpadded
+Base64url representation as the Group target and MUST NOT expose or derive it
+from an Application Database state identifier, Audit Reference Identifier,
+name, membership, grant, or generation. Compatible Restore input MAY omit the
+field only under an existing version's documented legacy rule, in which case
+Restore MUST generate a fresh independent value.
+
+An Administrator MAY create an empty Group and update its unique name and
+nullable description. Group deletion MUST require current-session MFA step-up
+for the GrantMutation family and MUST succeed only while the Group has no
+memberships and no direct grants. It MUST NOT implicitly remove memberships or
+grants, disclose association counts through its rejection, or bypass the
+effective-last-Administrator protections on grant mutations.
+
 An **[Administrator](glossary.md#identities-and-access)** who can access a
 Client Module's Administration Plane MAY perform the available local-account
 administration functions for any local Human User, including themselves. These

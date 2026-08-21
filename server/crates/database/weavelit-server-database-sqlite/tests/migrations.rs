@@ -15,6 +15,7 @@ const LOG_CONFIGURATION_GENERATION_TABLE: &str = "weavelit_log_configuration_gen
 const LOG_CONFIGURATION_CURRENT_TABLE: &str = "weavelit_log_configuration_current_generation";
 const LOG_CONFIGURATION_AUDIT_REFERENCE_TABLE: &str = "weavelit_log_configuration_audit_reference";
 const ACCOUNT_PUBLIC_IDENTITY_TABLE: &str = "weavelit_account_public_identity";
+const GROUP_PUBLIC_IDENTITY_TABLE: &str = "weavelit_group_public_identity";
 const RECONCILIATION_TABLE: &str = "weavelit_lifecycle_reconciliation";
 const SESSION_TABLE: &str = "weavelit_session";
 const UPDATE_TRIGGER: &str = "weavelit_migration_ledger_reject_update";
@@ -206,6 +207,23 @@ fn create_0012_database(path: &Path) {
         .unwrap();
 }
 
+fn create_0013_database(path: &Path) {
+    create_0012_database(path);
+    let connection = Connection::open(path).unwrap();
+    let sql = include_str!("../migrations/0013_add_account_credential_state.sql");
+    connection.execute_batch(sql).unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_migration_ledger \
+             (sequence_number, identifier, checksum) VALUES (13, ?1, ?2)",
+            params![
+                "0013_add_account_credential_state",
+                Sha256::digest(sql.as_bytes()).as_slice()
+            ],
+        )
+        .unwrap();
+}
+
 fn assert_integrity_failure_is_redacted(error: DatabaseError, path: &Path) {
     assert_eq!(error, DatabaseError::IntegrityFailure);
     let message = error.to_string();
@@ -226,7 +244,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     let first_schema = schema_rows(&connection);
     drop(connection);
 
-    assert_eq!(first_ledger.len(), 13);
+    assert_eq!(first_ledger.len(), 14);
     assert_eq!(first_ledger[0].0, 1);
     assert_eq!(first_ledger[0].1, "0001_create_migration_ledger");
     assert_eq!(first_ledger[1].0, 2);
@@ -259,6 +277,8 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[11].1, "0012_add_account_public_identities");
     assert_eq!(first_ledger[12].0, 13);
     assert_eq!(first_ledger[12].1, "0013_add_account_credential_state");
+    assert_eq!(first_ledger[13].0, 14);
+    assert_eq!(first_ledger[13].1, "0014_add_group_public_identities");
     assert_eq!(first_ledger[0].2.len(), 32);
     assert_eq!(first_ledger[1].2.len(), 32);
     assert_eq!(first_ledger[2].2.len(), 32);
@@ -272,6 +292,7 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
     assert_eq!(first_ledger[10].2.len(), 32);
     assert_eq!(first_ledger[11].2.len(), 32);
     assert_eq!(first_ledger[12].2.len(), 32);
+    assert_eq!(first_ledger[13].2.len(), 32);
     assert_eq!(
         first_ledger[0].2,
         Sha256::digest(include_bytes!(
@@ -363,6 +384,13 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
         ))
         .to_vec()
     );
+    assert_eq!(
+        first_ledger[13].2,
+        Sha256::digest(include_bytes!(
+            "../migrations/0014_add_group_public_identities.sql"
+        ))
+        .to_vec()
+    );
     assert!(first_schema.iter().any(|(_, name, _)| name == LEDGER_TABLE));
     assert!(
         first_schema
@@ -414,6 +442,11 @@ fn fresh_open_applies_ordered_migrations_and_reopen_is_idempotent() {
             .iter()
             .any(|(_, name, _)| name == ACCOUNT_PUBLIC_IDENTITY_TABLE)
     );
+    assert!(
+        first_schema
+            .iter()
+            .any(|(_, name, _)| name == GROUP_PUBLIC_IDENTITY_TABLE)
+    );
 
     bootstrap(&path);
     let connection = direct_connection(&path);
@@ -462,7 +495,7 @@ fn populated_0008_database_upgrades_and_backfills_version_one() {
     connection
         .pragma_update(None, "foreign_keys", true)
         .unwrap();
-    assert_eq!(ledger_rows(&connection).len(), 13);
+    assert_eq!(ledger_rows(&connection).len(), 14);
     let generation: (Vec<u8>, Vec<u8>, String, String, i64) = connection
         .query_row(
             "SELECT configuration_id, generation_version, module, name, enabled \
@@ -660,7 +693,7 @@ fn populated_0011_database_backfills_immutable_unique_account_public_identities(
     drop(SqliteDatabase::open(&path).unwrap());
 
     let connection = direct_connection(&path);
-    assert_eq!(ledger_rows(&connection).len(), 13);
+    assert_eq!(ledger_rows(&connection).len(), 14);
     let identities = connection
         .prepare(
             "SELECT account_id, public_identifier \
@@ -790,6 +823,158 @@ fn populated_0011_database_backfills_immutable_unique_account_public_identities(
 }
 
 #[test]
+fn populated_0013_database_backfills_unique_group_public_identities() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    create_0013_database(&path);
+    let groups = [
+        ([0x31_u8; 16], "Administrators", Some("Full access")),
+        ([0x32_u8; 16], "運用-équipe", None),
+    ];
+    let connection = direct_connection(&path);
+    for (identifier, name, description) in &groups {
+        connection
+            .execute(
+                "INSERT INTO weavelit_group (group_id, name, description) VALUES (?1, ?2, ?3)",
+                params![identifier.as_slice(), name, description],
+            )
+            .unwrap();
+    }
+    drop(connection);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+
+    let connection = direct_connection(&path);
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .unwrap();
+    assert_eq!(ledger_rows(&connection).len(), 14);
+    let identities = connection
+        .prepare(
+            "SELECT group_id, public_identifier \
+             FROM weavelit_group_public_identity ORDER BY group_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(identities.len(), groups.len());
+    assert_ne!(identities[0].1, identities[1].1);
+    for ((group_id, public_identifier), (expected_id, _, _)) in identities.iter().zip(groups.iter())
+    {
+        assert_eq!(group_id, expected_id);
+        assert_eq!(public_identifier.len(), 16);
+        assert_ne!(public_identifier, &[0; 16]);
+        assert_ne!(public_identifier, group_id);
+    }
+    assert_eq!(
+        connection
+            .prepare("SELECT group_id, name, description FROM weavelit_group ORDER BY group_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        groups
+            .iter()
+            .map(|(identifier, name, description)| (
+                identifier.to_vec(),
+                (*name).to_owned(),
+                description.map(str::to_owned),
+            ))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE weavelit_group_public_identity \
+                 SET public_identifier = ?1 WHERE group_id = ?2",
+                params![[0x41_u8; 16].as_slice(), groups[0].0.as_slice()],
+            )
+            .is_err()
+    );
+    let third_group = [0x33_u8; 16];
+    connection
+        .execute(
+            "INSERT INTO weavelit_group (group_id, name, description) \
+             VALUES (?1, 'Operators', NULL)",
+            [third_group.as_slice()],
+        )
+        .unwrap();
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_public_identity \
+                 (group_id, public_identifier) VALUES (?1, ?2)",
+                params![third_group.as_slice(), identities[0].1.as_slice()],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_public_identity \
+                 (group_id, public_identifier) VALUES (?1, zeroblob(16))",
+                [third_group.as_slice()],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_public_identity \
+                 (group_id, public_identifier) \
+                 VALUES (x'44444444444444444444444444444444', \
+                         x'45454545454545454545454545454545')",
+                [],
+            )
+            .is_err()
+    );
+    connection
+        .execute(
+            "DELETE FROM weavelit_group WHERE group_id = ?1",
+            [groups[1].0.as_slice()],
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_group_public_identity WHERE group_id = ?1",
+                [groups[1].0.as_slice()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    drop(connection);
+
+    drop(SqliteDatabase::open(&path).unwrap());
+    let connection = direct_connection(&path);
+    let reopened = connection
+        .prepare(
+            "SELECT group_id, public_identifier \
+             FROM weavelit_group_public_identity ORDER BY group_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(reopened, identities[..1]);
+}
+
+#[test]
 fn credential_issuance_migration_backfills_state_and_preserves_sessions() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
@@ -824,7 +1009,7 @@ fn credential_issuance_migration_backfills_state_and_preserves_sessions() {
     drop(SqliteDatabase::open(&path).unwrap());
 
     let connection = direct_connection(&path);
-    assert_eq!(ledger_rows(&connection).len(), 13);
+    assert_eq!(ledger_rows(&connection).len(), 14);
     assert_eq!(
         connection
             .query_row(
@@ -964,7 +1149,7 @@ fn initialized_legacy_totp_enablement_migrates_to_one_canonical_authority() {
         drop(SqliteDatabase::open(&path).unwrap());
 
         let connection = direct_connection(&path);
-        assert_eq!(ledger_rows(&connection).len(), 13);
+        assert_eq!(ledger_rows(&connection).len(), 14);
         assert_eq!(
             connection
                 .query_row(
@@ -1110,7 +1295,7 @@ fn unknown_extra_history_is_rejected() {
     connection
         .execute(
             "INSERT INTO weavelit_migration_ledger \
-            (sequence_number, identifier, checksum) VALUES (14, '0014_unknown', ?1)",
+            (sequence_number, identifier, checksum) VALUES (15, '0015_unknown', ?1)",
             [vec![0_u8; 32]],
         )
         .unwrap();
@@ -1135,7 +1320,7 @@ fn missing_applied_history_is_rejected_without_new_ledger_row() {
     drop(connection);
 
     assert_integrity_failure_is_redacted(open_error(&path), &path);
-    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 12);
+    assert_eq!(ledger_rows(&direct_connection(&path)).len(), 13);
 }
 
 #[test]

@@ -80,6 +80,11 @@ const MIGRATIONS: &[Migration] = &[
         identifier: "0013_add_account_credential_state",
         sql: include_str!("../migrations/0013_add_account_credential_state.sql"),
     },
+    Migration {
+        sequence: 14,
+        identifier: "0014_add_group_public_identities",
+        sql: include_str!("../migrations/0014_add_group_public_identities.sql"),
+    },
 ];
 
 struct AppliedMigration {
@@ -639,7 +644,6 @@ mod tests {
             include_str!("../migrations/0013_add_account_credential_state.sql"),
             "INSERT INTO missing_table VALUES (1);"
         );
-
         let mut connection = Connection::open_in_memory().unwrap();
         apply_migrations(&mut connection, &MIGRATIONS[..12]).unwrap();
         connection
@@ -684,6 +688,53 @@ mod tests {
         assert_eq!(
             connection
                 .query_row("SELECT username FROM weavelit_account", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "existing"
+        );
+    }
+
+    #[test]
+    fn failed_group_public_identity_migration_rolls_back_data_schema_and_ledger() {
+        const FAILING_MIGRATION: &str = concat!(
+            include_str!("../migrations/0014_add_group_public_identities.sql"),
+            "INSERT INTO missing_table VALUES (1);"
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..13]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_group (group_id, name, description) \
+                 VALUES (?1, 'existing', 'Existing Group')",
+                [[0x11_u8; 16].as_slice()],
+            )
+            .unwrap();
+        let mut migrations = MIGRATIONS.to_vec();
+        migrations[13].sql = FAILING_MIGRATION;
+
+        assert_eq!(
+            apply_migrations(&mut connection, &migrations),
+            Err(DatabaseError::IntegrityFailure)
+        );
+        assert!(!table_exists_for_test(
+            &connection,
+            "weavelit_group_public_identity"
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM weavelit_migration_ledger",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
+                .unwrap(),
+            13
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT name FROM weavelit_group", [], |row| {
                     row.get::<_, String>(0)
                 })
                 .unwrap(),

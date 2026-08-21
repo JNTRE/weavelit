@@ -13,13 +13,14 @@ use weavelit_server_database::{
     Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
     AccountPublicIdentifierPersistence, AccountPublicIdentity, AuditReferenceIdentifier,
     AuditReferencePersistence, COMPONENT_ENABLED_VALUE, ComponentKind, ConfigurationEntry,
-    ConfigurationKey, ConfigurationValue, CredentialRevision, Group, GroupAuditReference,
-    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogConfigurationAuditReference,
-    LogModuleConfiguration, LogModuleSetting, LogType, MAX_CONFIGURATION_KEY_LENGTH,
-    MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH,
-    MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH, MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name,
-    PasswordVerifier, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, StateIdentifier,
-    TemporaryCredentialExpiration,
+    ConfigurationKey, ConfigurationValue, CredentialRevision, GROUP_PUBLIC_IDENTIFIER_LENGTH,
+    Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership,
+    GroupPublicIdentifier, GroupPublicIdentifierPersistence, GroupPublicIdentity, LogAssignment,
+    LogConfigurationAuditReference, LogModuleConfiguration, LogModuleSetting, LogType,
+    MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
+    MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
+    MAX_RECOVERY_PUBLIC_KEY_LENGTH, Name, PasswordVerifier, RecoveryPublicKey,
+    STATE_IDENTIFIER_LENGTH, StateIdentifier, TemporaryCredentialExpiration,
 };
 use weavelit_server_lifecycle::{
     BackendIdentifier, MAX_IDENTIFIER_LENGTH, MAX_PROTECTED_PLAINTEXT_BYTES,
@@ -140,6 +141,7 @@ pub struct NormalizedBackup {
     account_audit_references: Vec<AccountAuditReference>,
     password_verifiers: Vec<AccountPasswordVerifier>,
     groups: Vec<Group>,
+    group_public_identities: Vec<GroupPublicIdentity>,
     group_audit_references: Vec<GroupAuditReference>,
     group_memberships: Vec<GroupMembership>,
     group_grants: Vec<GroupGrantRecord>,
@@ -190,6 +192,11 @@ impl NormalizedBackup {
     /// Returns the Groups.
     pub fn groups(&self) -> &[Group] {
         &self.groups
+    }
+
+    /// Returns the Group public identity projections.
+    pub fn group_public_identities(&self) -> &[GroupPublicIdentity] {
+        &self.group_public_identities
     }
 
     /// Returns the Group Audit Reference projections.
@@ -262,6 +269,11 @@ const WIRE_ACCOUNT_PUBLIC_IDENTIFIER_LENGTH: usize =
     encoded_length(ACCOUNT_PUBLIC_IDENTIFIER_LENGTH);
 
 const _: () = assert!(WIRE_ACCOUNT_PUBLIC_IDENTIFIER_LENGTH == 22);
+
+/// Encoded length of one backup-only Group Public Identifier.
+const WIRE_GROUP_PUBLIC_IDENTIFIER_LENGTH: usize = encoded_length(GROUP_PUBLIC_IDENTIFIER_LENGTH);
+
+const _: () = assert!(WIRE_GROUP_PUBLIC_IDENTIFIER_LENGTH == 22);
 
 /// Exact length of the canonical internal Audit Reference representation.
 const WIRE_AUDIT_REFERENCE_LENGTH: usize =
@@ -428,6 +440,7 @@ impl<'de, const MAX: usize> Deserialize<'de> for WireSecret<MAX> {
 
 type WireBackendIdentifier = WireText<MAX_IDENTIFIER_LENGTH>;
 type WireAccountPublicIdentifier = WireText<WIRE_ACCOUNT_PUBLIC_IDENTIFIER_LENGTH>;
+type WireGroupPublicIdentifier = WireText<WIRE_GROUP_PUBLIC_IDENTIFIER_LENGTH>;
 type WireAuditReference = WireText<WIRE_AUDIT_REFERENCE_LENGTH>;
 type WireConfigurationKey = WireText<MAX_CONFIGURATION_KEY_LENGTH>;
 type WireConfigurationValue = WireText<MAX_CONFIGURATION_VALUE_LENGTH>;
@@ -454,6 +467,15 @@ where
     Source: Deserializer<'de>,
 {
     WireAccountPublicIdentifier::deserialize(source).map(Some)
+}
+
+fn deserialize_present_group_public_identifier<'de, Source>(
+    source: Source,
+) -> Result<Option<WireGroupPublicIdentifier>, Source::Error>
+where
+    Source: Deserializer<'de>,
+{
+    WireGroupPublicIdentifier::deserialize(source).map(Some)
 }
 
 const fn initial_credential_revision() -> u64 {
@@ -544,6 +566,12 @@ struct PasswordVerifierV1 {
 #[serde(deny_unknown_fields)]
 struct GroupV1 {
     identifier: WireIdentifier,
+    /// Absent in a compatible document written before Group Public Identifiers existed.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_group_public_identifier"
+    )]
+    public_id: Option<WireGroupPublicIdentifier>,
     /// Absent in a compatible document written before Audit References existed.
     #[serde(default, deserialize_with = "deserialize_present_audit_reference")]
     audit_reference: Option<WireAuditReference>,
@@ -642,6 +670,7 @@ pub fn normalize(
     plaintext: &[u8],
     selected_backend: &BackendIdentifier,
     account_public_identifier_persistence: &AccountPublicIdentifierPersistence,
+    group_public_identifier_persistence: &GroupPublicIdentifierPersistence,
     audit_reference_persistence: &AuditReferencePersistence,
     components: &AvailableComponents,
 ) -> Result<NormalizedBackup, ContentError> {
@@ -722,6 +751,8 @@ pub fn normalize(
     })?;
     let group_entries = map_collection(document.groups, |entry| {
         let identifier = identifier(&entry.identifier)?;
+        let public_identifier =
+            resolve_group_public_identifier(entry.public_id, group_public_identifier_persistence)?;
         let audit_reference =
             resolve_audit_reference(entry.audit_reference, audit_reference_persistence)?;
         Ok((
@@ -730,10 +761,18 @@ pub fn normalize(
                 name: name(entry.name)?,
                 description: entry.description.map(bounded).transpose()?,
             },
+            GroupPublicIdentity::new(identifier, public_identifier),
             GroupAuditReference::new(identifier, audit_reference),
         ))
     })?;
-    let (groups, group_audit_references) = group_entries.into_iter().unzip();
+    let mut groups = Vec::with_capacity(group_entries.len());
+    let mut group_public_identities = Vec::with_capacity(group_entries.len());
+    let mut group_audit_references = Vec::with_capacity(group_entries.len());
+    for (group, public_identity, audit_reference) in group_entries {
+        groups.push(group);
+        group_public_identities.push(public_identity);
+        group_audit_references.push(audit_reference);
+    }
     let group_memberships = map_collection(document.group_memberships, |entry| {
         Ok(GroupMembership {
             group: identifier(&entry.group)?,
@@ -808,6 +847,7 @@ pub fn normalize(
         account_audit_references,
         password_verifiers,
         groups,
+        group_public_identities,
         group_audit_references,
         group_memberships,
         group_grants,
@@ -887,6 +927,7 @@ fn order(backup: &mut NormalizedBackup) {
     backup.account_audit_references.sort();
     backup.password_verifiers.sort();
     backup.groups.sort();
+    backup.group_public_identities.sort();
     backup.group_audit_references.sort();
     backup.group_memberships.sort();
     backup.group_grants.sort();
@@ -927,6 +968,12 @@ fn reject_duplicates(backup: &NormalizedBackup) -> Result<(), ContentError> {
         left.identifier == right.identifier
     })?;
     reject_duplicate_keys(&backup.groups, |group| group.name.clone())?;
+    reject_adjacent(&backup.group_public_identities, |left, right| {
+        left.group() == right.group()
+    })?;
+    reject_duplicate_keys(&backup.group_public_identities, |identity| {
+        identity.public_identifier()
+    })?;
     reject_adjacent(&backup.group_audit_references, |left, right| {
         left.group() == right.group()
     })?;
@@ -1049,6 +1096,23 @@ fn resolve_account_public_identifier(
         None => {
             AccountPublicIdentifier::generate().map_err(|_| ContentError::RandomnessUnavailable)
         }
+    }
+}
+
+fn resolve_group_public_identifier(
+    persisted: Option<WireGroupPublicIdentifier>,
+    persistence: &GroupPublicIdentifierPersistence,
+) -> Result<GroupPublicIdentifier, ContentError> {
+    match persisted {
+        Some(value) => {
+            let bytes: [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH] = decode_bytes(&value)?
+                .try_into()
+                .map_err(|_| ContentError::EncodingInvalid)?;
+            persistence
+                .decode(bytes)
+                .map_err(|_| ContentError::DomainInvalid)
+        }
+        None => GroupPublicIdentifier::generate().map_err(|_| ContentError::RandomnessUnavailable),
     }
 }
 

@@ -41,9 +41,9 @@ pub use weavelit_server_database::{
     Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
     AccountPublicIdentifierPersistence, AccountPublicIdentity, AuditReferenceIdentifier,
     AuditReferencePersistence, ConfigurationEntry, ConfigurationKey, DeploymentIdentifier, Group,
-    GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
-    LogModuleConfiguration, LogModuleSetting, LogType, Name, PasswordVerifier, RecoveryPublicKey,
-    StateIdentifier,
+    GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership, GroupPublicIdentifier,
+    GroupPublicIdentifierPersistence, GroupPublicIdentity, LogAssignment, LogModuleConfiguration,
+    LogModuleSetting, LogType, Name, PasswordVerifier, RecoveryPublicKey, StateIdentifier,
 };
 pub use weavelit_server_lifecycle::{BackendIdentifier, LifecycleError};
 pub use weavelit_server_recovery_key::{
@@ -69,6 +69,7 @@ pub struct RestoreTarget {
     deployment_identifier: DeploymentIdentifier,
     selected_backend: BackendIdentifier,
     account_public_identifier_persistence: AccountPublicIdentifierPersistence,
+    group_public_identifier_persistence: GroupPublicIdentifierPersistence,
     audit_reference_persistence: AuditReferencePersistence,
 }
 
@@ -78,12 +79,14 @@ impl RestoreTarget {
         deployment_identifier: DeploymentIdentifier,
         selected_backend: BackendIdentifier,
         account_public_identifier_persistence: AccountPublicIdentifierPersistence,
+        group_public_identifier_persistence: GroupPublicIdentifierPersistence,
         audit_reference_persistence: AuditReferencePersistence,
     ) -> Self {
         Self {
             deployment_identifier,
             selected_backend,
             account_public_identifier_persistence,
+            group_public_identifier_persistence,
             audit_reference_persistence,
         }
     }
@@ -103,6 +106,11 @@ impl RestoreTarget {
         &self,
     ) -> &AccountPublicIdentifierPersistence {
         &self.account_public_identifier_persistence
+    }
+
+    /// Returns the selected Application Database's Group Public Identifier persistence.
+    pub const fn group_public_identifier_persistence(&self) -> &GroupPublicIdentifierPersistence {
+        &self.group_public_identifier_persistence
     }
 
     /// Returns the selected Application Database's persistence decoder.
@@ -220,6 +228,7 @@ impl RestoreValidator {
             &plaintext,
             target.selected_backend(),
             target.account_public_identifier_persistence(),
+            target.group_public_identifier_persistence(),
             target.audit_reference_persistence(),
             &self.components,
         )?;

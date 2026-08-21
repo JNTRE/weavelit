@@ -14,8 +14,9 @@ use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authorization::{AuthorizationDenied, AuthorizedAdministration};
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    AccountPublicIdentifier, AccountStatus, ComponentEnablement, ComponentKind, GroupGrant,
-    LogModuleSetting, LogType, Name, SessionTokenHash, StateIdentifier,
+    AccountPublicIdentifier, AccountStatus, ComponentEnablement, ComponentKind, Description,
+    GroupGrant, GroupPublicIdentifier, LogModuleSetting, LogType, Name, SessionTokenHash,
+    StateIdentifier,
 };
 
 /// Lifetime of one current-session MFA step-up proof.
@@ -341,6 +342,86 @@ pub enum AccountAdministrationAction {
     StatusChange(AccountStatusChange),
 }
 
+/// One bounded Group administration read admitted by the action gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GroupAdministrationRead {
+    List,
+    View(GroupPublicIdentifier),
+}
+
+/// One bounded empty Group creation request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupCreate {
+    name: Name,
+    description: Option<Description>,
+}
+
+impl GroupCreate {
+    pub fn new(
+        name: impl Into<Box<str>>,
+        description: Option<impl Into<Box<str>>>,
+    ) -> Result<Self, AdministrationInputRejected> {
+        Ok(Self {
+            name: Name::new(name).map_err(|_| AdministrationInputRejected)?,
+            description: description
+                .map(|value| Description::new(value).map_err(|_| AdministrationInputRejected))
+                .transpose()?,
+        })
+    }
+
+    pub const fn name(&self) -> &Name {
+        &self.name
+    }
+
+    pub const fn description(&self) -> Option<&Description> {
+        self.description.as_ref()
+    }
+}
+
+/// One exact Group name and description replacement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupUpdate {
+    target: GroupPublicIdentifier,
+    name: Name,
+    description: Option<Description>,
+}
+
+impl GroupUpdate {
+    pub fn new(
+        target: GroupPublicIdentifier,
+        name: impl Into<Box<str>>,
+        description: Option<impl Into<Box<str>>>,
+    ) -> Result<Self, AdministrationInputRejected> {
+        Ok(Self {
+            target,
+            name: Name::new(name).map_err(|_| AdministrationInputRejected)?,
+            description: description
+                .map(|value| Description::new(value).map_err(|_| AdministrationInputRejected))
+                .transpose()?,
+        })
+    }
+
+    pub const fn target(&self) -> GroupPublicIdentifier {
+        self.target
+    }
+
+    pub const fn name(&self) -> &Name {
+        &self.name
+    }
+
+    pub const fn description(&self) -> Option<&Description> {
+        self.description.as_ref()
+    }
+}
+
+/// Closed ordinary Group administration actions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupAdministrationAction {
+    Read(GroupAdministrationRead),
+    Create(GroupCreate),
+    Update(GroupUpdate),
+}
+
 /// One exact existing-Group membership change.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GroupMembershipMutation {
@@ -437,6 +518,8 @@ pub enum GroupMutation {
     Membership(GroupMembershipMutation),
     /// Add or remove one direct Group grant.
     Grant(GroupGrantMutation),
+    /// Delete one exact existing Group after proving the GrantMutation family.
+    Delete(GroupPublicIdentifier),
 }
 
 /// Closed Administration Plane action families owned by this foundation.
@@ -444,6 +527,8 @@ pub enum GroupMutation {
 pub enum AdministrationAction {
     /// Account administration; credential issuance has its own exact-session gate.
     Account(AccountAdministrationAction),
+    /// Ordinary Group reads, creation, and metadata update.
+    Group(GroupAdministrationAction),
     /// MFA requirement or enrollment-reset administration.
     MfaPolicy,
     /// Group membership or grant mutation.
@@ -460,6 +545,7 @@ impl AdministrationAction {
     fn step_up_family(&self) -> Option<StepUpActionFamily> {
         match self {
             Self::Account(_)
+            | Self::Group(_)
             | Self::ComponentOperation(_)
             | Self::ComponentEnablementChange(_)
             | Self::LogConfigurationChange(_) => None,
@@ -715,6 +801,24 @@ impl AuthorizedAdministrationAction {
         })
     }
 
+    /// Consumes an authorized action into the exact ordinary Group workflow proof.
+    pub fn into_group_administration(
+        self,
+    ) -> Result<AuthorizedGroupAdministrationAction, AuthorizationDenied> {
+        let Self {
+            admission, action, ..
+        } = self;
+        let AdministrationAction::Group(action) = action else {
+            return Err(AuthorizationDenied);
+        };
+        Ok(AuthorizedGroupAdministrationAction {
+            actor: admission.actor,
+            session: admission.session,
+            client_module: admission.authorization.client_module().clone(),
+            action,
+        })
+    }
+
     /// Consumes an authorized action into the exact Group-mutation proof.
     ///
     /// A non-Group action is consumed and denied rather than returned for
@@ -853,6 +957,42 @@ impl AuthorizedAccountAdministrationAction {
 impl fmt::Debug for AuthorizedAccountAdministrationAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthorizedAccountAdministrationAction(REDACTED)")
+    }
+}
+
+/// One authorized ordinary Group action bound to its exact validated session.
+pub struct AuthorizedGroupAdministrationAction {
+    actor: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+    action: GroupAdministrationAction,
+}
+
+impl AuthorizedGroupAdministrationAction {
+    pub const fn actor(&self) -> StateIdentifier {
+        self.actor
+    }
+
+    pub const fn session(&self) -> SessionTokenHash {
+        self.session
+    }
+
+    pub const fn client_module(&self) -> &Name {
+        &self.client_module
+    }
+
+    pub const fn action(&self) -> &GroupAdministrationAction {
+        &self.action
+    }
+
+    pub fn into_action(self) -> GroupAdministrationAction {
+        self.action
+    }
+}
+
+impl fmt::Debug for AuthorizedGroupAdministrationAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedGroupAdministrationAction(REDACTED)")
     }
 }
 
@@ -1220,7 +1360,8 @@ mod tests {
                 authorized.action(),
                 match &action {
                     AdministrationAction::Account(action) => action,
-                    AdministrationAction::MfaPolicy
+                    AdministrationAction::Group(_)
+                    | AdministrationAction::MfaPolicy
                     | AdministrationAction::GrantMutation(_)
                     | AdministrationAction::ComponentOperation(_)
                     | AdministrationAction::ComponentEnablementChange(_)
@@ -1485,6 +1626,41 @@ mod tests {
                 .unwrap_err(),
             AuthorizationDenied
         );
+        let delete_target = weavelit_server_database::GroupPublicIdentifier::generate().unwrap();
+        assert_eq!(
+            plane
+                .authorize(
+                    administration_admission(&authority, 1, 11),
+                    AdministrationRequest::new(AdministrationAction::GrantMutation(
+                        GroupMutation::Delete(delete_target),
+                    )),
+                )
+                .unwrap_err(),
+            AuthorizationDenied
+        );
+        assert_eq!(
+            plane
+                .authorize(
+                    administration_admission(&authority, 1, 11),
+                    AdministrationRequest::new(AdministrationAction::GrantMutation(
+                        GroupMutation::Delete(delete_target),
+                    ))
+                    .with_step_up(&mfa_proof),
+                )
+                .unwrap_err(),
+            AuthorizationDenied
+        );
+        assert!(
+            plane
+                .authorize(
+                    administration_admission(&authority, 1, 11),
+                    AdministrationRequest::new(AdministrationAction::GrantMutation(
+                        GroupMutation::Delete(delete_target),
+                    ))
+                    .with_step_up(&grant_proof),
+                )
+                .is_ok()
+        );
         assert_eq!(
             plane
                 .authorize(
@@ -1563,6 +1739,29 @@ mod tests {
                 .unwrap_err(),
             AuthorizationDenied
         );
+    }
+
+    #[test]
+    fn ordinary_group_actions_need_administration_but_not_step_up() {
+        let authority = ServerAdministrationAuthority::new();
+        let enablement = TestEnablement::new(ComponentEnablement::default());
+        let mut plane = plane(TestClock::new(Duration::ZERO), enablement.clone());
+        let action = AdministrationAction::Group(GroupAdministrationAction::Read(
+            GroupAdministrationRead::List,
+        ));
+        let authorized = plane
+            .authorize(
+                administration_admission(&authority, 1, 11),
+                AdministrationRequest::new(action),
+            )
+            .unwrap()
+            .into_group_administration()
+            .unwrap();
+        assert!(matches!(
+            authorized.action(),
+            GroupAdministrationAction::Read(GroupAdministrationRead::List)
+        ));
+        assert_eq!(enablement.reads(), 0);
     }
 
     #[test]

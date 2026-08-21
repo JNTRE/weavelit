@@ -2923,6 +2923,7 @@ mod tests {
             account_audit_references: Vec::new(),
             password_verifiers: Vec::new(),
             groups: Vec::new(),
+            group_public_identities: Vec::new(),
             group_audit_references: Vec::new(),
             group_memberships: Vec::new(),
             group_grants: Vec::new(),

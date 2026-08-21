@@ -16,10 +16,11 @@ use weavelit_server_database::{
     CompletionObligation, ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey,
     ConfigurationValue, CorrelationIdentifier, CredentialRevision, DatabaseError,
     DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference, GroupGrant,
-    GroupGrantRecord, GroupMembership, LogAssignment, LogClassification,
-    LogConfigurationAuditReference, LogConfigurationGenerationPersistence, LogConfigurationVersion,
-    LogDetail, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget,
-    MfaStore, MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
+    GroupGrantRecord, GroupMembership, GroupPublicIdentifier, GroupPublicIdentifierPersistence,
+    GroupPublicIdentity, LogAssignment, LogClassification, LogConfigurationAuditReference,
+    LogConfigurationGenerationPersistence, LogConfigurationVersion, LogDetail,
+    LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore,
+    MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
     ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
     ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
     StateIdentifier, StoredAuditDestinationBinding, TemporaryCredentialExpiration,
@@ -38,7 +39,7 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 29] = [
+const EXPECTED_TABLES: [&str; 30] = [
     "weavelit_account",
     "weavelit_account_audit_reference",
     "weavelit_account_public_identity",
@@ -50,6 +51,7 @@ const EXPECTED_TABLES: [&str; 29] = [
     "weavelit_group_audit_reference",
     "weavelit_group_grant",
     "weavelit_group_membership",
+    "weavelit_group_public_identity",
     "weavelit_lifecycle_state",
     "weavelit_lifecycle_reconciliation",
     "weavelit_log_configuration_current_generation",
@@ -109,6 +111,20 @@ fn account_public_identifier_persistence() -> AccountPublicIdentifierPersistence
 
     *PERSISTENCE.get_or_init(|| {
         AccountPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+    })
+}
+
+fn group_public_identifier(byte: u8) -> GroupPublicIdentifier {
+    group_public_identifier_persistence()
+        .decode([byte; 16])
+        .unwrap()
+}
+
+fn group_public_identifier_persistence() -> GroupPublicIdentifierPersistence {
+    static PERSISTENCE: OnceLock<GroupPublicIdentifierPersistence> = OnceLock::new();
+
+    *PERSISTENCE.get_or_init(|| {
+        GroupPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
     })
 }
 
@@ -287,6 +303,10 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 name: name("運用-équipe"),
                 description: None,
             },
+        ],
+        group_public_identities: vec![
+            GroupPublicIdentity::new(identifier(3), group_public_identifier(0x93)),
+            GroupPublicIdentity::new(identifier(7), group_public_identifier(0x97)),
         ],
         group_audit_references: vec![
             GroupAuditReference::new(identifier(3), audit_reference(0xB3)),

@@ -4,8 +4,9 @@ use weavelit_server_database::{
     AccountAuditReference, AccountPublicIdentifier, AccountPublicIdentifierPersistence,
     AccountPublicIdentity, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
     AuditTerminalRecoveryPersistence, DatabaseError, DeploymentIdentifier, GroupAuditReference,
-    InitializedState, LogConfigurationAuditReference, LogConfigurationGenerationPersistence,
-    LogConfigurationMutationPersistence, ReconciliationDigest, StateIdentifier, WorkflowCheckpoint,
+    GroupPublicIdentifierPersistence, InitializedState, LogConfigurationAuditReference,
+    LogConfigurationGenerationPersistence, LogConfigurationMutationPersistence,
+    ReconciliationDigest, StateIdentifier, WorkflowCheckpoint,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
@@ -17,6 +18,7 @@ use weavelit_server_database_authority::ServerDatabaseAuthority;
 pub struct SelectedDatabase {
     database: Box<dyn ApplicationDatabase>,
     account_public_identity_persistence: AccountPublicIdentifierPersistence,
+    group_public_identity_persistence: GroupPublicIdentifierPersistence,
     audit_reference_persistence: AuditReferencePersistence,
     audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
     log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
@@ -42,6 +44,8 @@ impl SelectedDatabase {
             database,
             account_public_identity_persistence:
                 AccountPublicIdentifierPersistence::from_server_authority(authority),
+            group_public_identity_persistence:
+                GroupPublicIdentifierPersistence::from_server_authority(authority),
             audit_reference_persistence: AuditReferencePersistence::from_server_authority(
                 authority,
             ),
@@ -74,6 +78,12 @@ impl SelectedDatabase {
         &self,
     ) -> AccountPublicIdentifierPersistence {
         self.account_public_identity_persistence
+    }
+
+    /// Returns Group Public Identifier persistence bound to this selected database.
+    #[must_use]
+    pub const fn group_public_identifier_persistence(&self) -> GroupPublicIdentifierPersistence {
+        self.group_public_identity_persistence
     }
 
     /// Returns the opaque recovery decoder bound to this selected database.

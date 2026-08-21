@@ -8,10 +8,11 @@ use weavelit_server_database::{
     ApplicationState, ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
     BoundedText, COMPONENT_ENABLED_VALUE, CompletionObligation, ComponentEnablement, ComponentKind,
     ConfigurationEntry, CredentialRevision, DatabaseError, Group, GroupAuditReference, GroupGrant,
-    GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot, LogAssignment,
-    LogConfigurationAuditReference, LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor,
-    PasswordVerifier, ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH,
-    ServiceConnection, StateIdentifier, TemporaryCredentialExpiration, WorkflowKind,
+    GroupGrantRecord, GroupMembership, GroupPublicIdentifierPersistence, GroupPublicIdentity,
+    HumanAuthorizationSnapshot, LogAssignment, LogConfigurationAuditReference,
+    LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, PasswordVerifier,
+    ProtectedSecret, ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection,
+    StateIdentifier, TemporaryCredentialExpiration, WorkflowKind,
 };
 
 use crate::SqliteDatabase;
@@ -55,6 +56,8 @@ const PASSWORD_VERIFIER_QUERY: &str = "SELECT account_id, encoded_verifier \
      FROM weavelit_password_verifier ORDER BY account_id";
 const GROUP_QUERY: &str =
     "SELECT group_id, name, description FROM weavelit_group ORDER BY group_id";
+const GROUP_PUBLIC_IDENTITY_QUERY: &str = "SELECT group_id, public_identifier \
+    FROM weavelit_group_public_identity ORDER BY group_id";
 const GROUP_AUDIT_REFERENCE_QUERY: &str = "SELECT group_id, audit_reference \
     FROM weavelit_group_audit_reference ORDER BY group_id";
 const GROUP_AUDIT_REFERENCE_LOOKUP: &str = "SELECT audit_reference \
@@ -123,6 +126,7 @@ type AccountAdministrationRow = (Vec<u8>, String, Option<String>, i64, i64);
 type AuditReferenceRow = (Vec<u8>, String);
 type PasswordVerifierRow = (Vec<u8>, String);
 type GroupRow = (Vec<u8>, String, Option<String>);
+type GroupPublicIdentityRow = (Vec<u8>, Vec<u8>);
 type GroupMembershipRow = (Vec<u8>, Vec<u8>);
 type GroupGrantRow = (Vec<u8>, String, String);
 type MfaFactorRow = (Vec<u8>, Vec<u8>, String, Vec<u8>);
@@ -396,7 +400,8 @@ fn read_human_authorization(
 
 pub(super) fn write(
     connection: &Connection,
-    public_identity_persistence: &AccountPublicIdentifierPersistence,
+    account_public_identity_persistence: &AccountPublicIdentifierPersistence,
+    group_public_identity_persistence: &GroupPublicIdentifierPersistence,
     state: &ApplicationState,
 ) -> Result<(), DatabaseError> {
     for entry in state.configuration() {
@@ -446,7 +451,8 @@ pub(super) fn write(
         )?;
     }
     for identity in state.account_public_identities() {
-        let public_identifier = public_identity_persistence.encode(&identity.public_identifier());
+        let public_identifier =
+            account_public_identity_persistence.encode(&identity.public_identifier());
         execute(
             connection,
             "INSERT INTO weavelit_account_public_identity \
@@ -476,6 +482,19 @@ pub(super) fn write(
                 group.identifier.as_bytes().as_slice(),
                 group.name.as_str(),
                 group.description.as_ref().map(BoundedText::as_str),
+            ],
+        )?;
+    }
+    for identity in state.group_public_identities() {
+        let public_identifier =
+            group_public_identity_persistence.encode(&identity.public_identifier());
+        execute(
+            connection,
+            "INSERT INTO weavelit_group_public_identity \
+             (group_id, public_identifier) VALUES (?1, ?2)",
+            params![
+                identity.group().as_bytes().as_slice(),
+                public_identifier.as_slice(),
             ],
         )?;
     }
@@ -617,7 +636,8 @@ pub(super) fn write(
 
 pub(super) fn read(
     connection: &Connection,
-    public_identity_persistence: &AccountPublicIdentifierPersistence,
+    account_public_identity_persistence: &AccountPublicIdentifierPersistence,
+    group_public_identity_persistence: &GroupPublicIdentifierPersistence,
     audit_reference_persistence: &AuditReferencePersistence,
 ) -> Result<(ApplicationState, bool), DatabaseError> {
     let configuration = rows::<ConfigurationRow>(connection, CONFIGURATION_QUERY, three_columns)?
@@ -692,7 +712,10 @@ pub(super) fn read(
             .map(|(account_id, public_identifier)| {
                 Ok(AccountPublicIdentity::new(
                     identifier(&account_id)?,
-                    account_public_identifier(public_identity_persistence, &public_identifier)?,
+                    account_public_identifier(
+                        account_public_identity_persistence,
+                        &public_identifier,
+                    )?,
                 ))
             })
             .collect::<Result<Vec<_>, DatabaseError>>()?;
@@ -730,6 +753,17 @@ pub(super) fn read(
             })
         })
         .collect::<Result<Vec<_>, DatabaseError>>()?;
+
+    let group_public_identities =
+        rows::<GroupPublicIdentityRow>(connection, GROUP_PUBLIC_IDENTITY_QUERY, two_columns)?
+            .into_iter()
+            .map(|(group_id, public_identifier)| {
+                Ok(GroupPublicIdentity::new(
+                    identifier(&group_id)?,
+                    group_public_identifier(group_public_identity_persistence, &public_identifier)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
 
     let group_audit_references =
         rows::<AuditReferenceRow>(connection, GROUP_AUDIT_REFERENCE_QUERY, two_columns)?
@@ -883,6 +917,7 @@ pub(super) fn read(
         account_audit_references,
         password_verifiers,
         groups,
+        group_public_identities,
         group_audit_references,
         group_memberships,
         group_grants,
@@ -1067,6 +1102,18 @@ fn account_public_identifier(
     value: &[u8],
 ) -> Result<AccountPublicIdentifier, DatabaseError> {
     let bytes: [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] = value
+        .try_into()
+        .map_err(|_| DatabaseError::IntegrityFailure)?;
+    persistence
+        .decode(bytes)
+        .map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+fn group_public_identifier(
+    persistence: &GroupPublicIdentifierPersistence,
+    value: &[u8],
+) -> Result<weavelit_server_database::GroupPublicIdentifier, DatabaseError> {
+    let bytes = value
         .try_into()
         .map_err(|_| DatabaseError::IntegrityFailure)?;
     persistence

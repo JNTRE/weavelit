@@ -130,8 +130,16 @@ async function mfaPolicyRequest(path: string, body: object): Promise<unknown> {
 }
 
 export async function issueMfaPolicyStepUp(code: string): Promise<string> {
+  return issueStepUp("mfa_policy", code);
+}
+
+export async function issueGrantMutationStepUp(code: string): Promise<string> {
+  return issueStepUp("grant_mutation", code);
+}
+
+async function issueStepUp(family: "mfa_policy" | "grant_mutation", code: string): Promise<string> {
   const payload = await mfaPolicyRequest(MFA_POLICY_STEP_UP_PATH, {
-    family: "mfa_policy",
+    family,
     code,
   });
   const ticket = readMfaPolicyTicket(payload);

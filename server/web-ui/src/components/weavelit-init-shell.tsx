@@ -9,6 +9,7 @@ import {
 } from "../hooks/weavelit-init-deployment-status";
 import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
 import { AccountsWorkspace } from "./weavelit-accounts-workspace";
+import { GroupsWorkspace } from "./weavelit-groups-workspace";
 import { InitWorkflow } from "./weavelit-init-workflow";
 import { LoginPanel } from "./weavelit-login-form";
 import { PasswordChangeForm } from "./weavelit-password-change-form";
@@ -60,6 +61,7 @@ export function ApplicationShell(): JSX.Element {
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
+  const [administrationView, setAdministrationView] = useState<"accounts" | "groups">("accounts");
 
   const chooseInit = useCallback(() => {
     setChoice("init");
@@ -133,7 +135,33 @@ export function ApplicationShell(): JSX.Element {
         {passwordChangeRequired ? (
           <PasswordChangeForm onCompleted={completePasswordChange} />
         ) : (
-          <AccountsWorkspace onSessionEnded={endAuthenticatedSession} />
+          <>
+            <nav className="administration-nav" aria-label="Administration">
+              <button
+                type="button"
+                aria-current={administrationView === "accounts" ? "page" : undefined}
+                onClick={() => {
+                  setAdministrationView("accounts");
+                }}
+              >
+                Accounts
+              </button>
+              <button
+                type="button"
+                aria-current={administrationView === "groups" ? "page" : undefined}
+                onClick={() => {
+                  setAdministrationView("groups");
+                }}
+              >
+                Groups
+              </button>
+            </nav>
+            {administrationView === "accounts" ? (
+              <AccountsWorkspace onSessionEnded={endAuthenticatedSession} />
+            ) : (
+              <GroupsWorkspace />
+            )}
+          </>
         )}
       </main>
     );

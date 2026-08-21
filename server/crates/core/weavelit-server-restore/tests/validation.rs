@@ -5,8 +5,8 @@ mod support;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use support::{
-    account_public_identifier_persistence, committed, committed_text, components, persistence,
-    validate,
+    account_public_identifier_persistence, committed, committed_text, components,
+    group_public_identifier_persistence, persistence, validate,
 };
 use weavelit_server_restore::{
     LogType, RequestBudget, RequestDeadline, RestoreError, RestoreRequest, RestoreValidator,
@@ -51,14 +51,24 @@ fn the_decrypted_plaintext_matches_the_committed_expectation() {
 
     // Normalization only succeeds when decryption produced exactly this
     // plaintext, so an independent parse of the expectation must agree. The
-    // fixture predates Audit References, so supply the independently generated
-    // values from the first normalization before comparing the complete state.
+    // fixture predates Group Public Identifiers and Audit References, so supply
+    // the independently generated values from the first normalization before
+    // comparing the complete state.
     let validated = validate(&artifact, &identity()).expect("the fixture backup is valid");
     let expected = expected.replace(
         "\"username\":\"administrator\"",
         &format!(
             "\"audit_reference\":\"{}\",\"username\":\"administrator\"",
             validated.backup().account_audit_references()[0].audit_reference()
+        ),
+    );
+    let expected = expected.replace(
+        "\"name\":\"Administrators\"",
+        &format!(
+            "\"public_id\":\"{}\",\"name\":\"Administrators\"",
+            validated.backup().group_public_identities()[0]
+                .public_identifier()
+                .as_base64url()
         ),
     );
     let expected = expected.replace(
@@ -79,6 +89,7 @@ fn the_decrypted_plaintext_matches_the_committed_expectation() {
         expected.as_bytes(),
         validated.backup().source_backend(),
         &account_public_identifier_persistence(),
+        &group_public_identifier_persistence(),
         &persistence(),
         &components(),
     )

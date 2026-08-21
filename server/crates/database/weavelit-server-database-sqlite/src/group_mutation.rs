@@ -301,7 +301,7 @@ fn mutate(
     .map_err(|error| map_sqlite_error(error, ErrorContext::GroupMutation))
 }
 
-fn accept_issuer(
+pub(super) fn accept_issuer(
     transaction: &Transaction<'_>,
     recheck: &GroupMutationRecheck,
 ) -> Result<bool, DatabaseError> {

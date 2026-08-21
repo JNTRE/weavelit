@@ -319,18 +319,14 @@ factor, inactive actor, disabled Module, or different session mints no proof.
 The MFA-policy and Group-mutation contracts borrow the resulting proof through
 `AdministrationRequest`; ordinary account contracts do not request one.
 
-The public `/api/v1/administration/step-up/totp` route exposes only the
-`MfaPolicy` family. Because the private proof cannot cross the Client Module
-boundary, the Server retains it behind a separate domain-separated opaque
-process-memory ticket. Ticket lookup never bypasses this gate: each use supplies
-the retained proof to a newly authorized `MfaPolicy` request, and the gate again
-checks exact actor, session, family, monotonic time, and expiry. The authorized
-result retains the exact factor only until it is consumed into the final policy
-writer recheck. The ticket is reusable within the proof's fixed window and is
-neither the credential-issuance ticket nor a `GrantMutation` proof.
-
-`GrantMutation` remains an internal family with unchanged proof issuance and
-reuse behavior. No public family literal or route mints one in this delivery.
+The public `/api/v1/administration/step-up/totp` route exposes the closed
+`MfaPolicy` and `GrantMutation` families. Because the private proof cannot cross
+the Client Module boundary, the Server retains it behind a bounded opaque
+process-memory ticket. Ticket digests are domain-separated by family and each
+retained proof is bound to the exact actor, session, Client Module, factor, and
+five-minute monotonic window. Every use re-enters this gate. A ticket from one
+family cannot authorize the other and neither can substitute for the separate
+credential-issuance proof.
 
 ### Existing-Group Membership, Grant, And Deletion Mutations
 
@@ -348,6 +344,12 @@ action, credential-issuance proof operation, or component change. The consuming
 workflow remains responsible for target validation, last-administrator
 protection, Audit sequencing, and the atomic deletion; this authorization
 classification does not itself add a route or mutation implementation.
+
+Ordinary Group list, view, creation, and metadata update use a separate typed
+`Group` action and require no step-up beyond live Administration authorization.
+Deletion is represented only as `GrantMutation(Delete(GroupPublicIdentifier))`
+and is consumed by the Group CRUD workflow rather than the membership or
+direct-grant writer.
 
 The current exact-session five-minute TOTP proof is the complete additional
 authorization for this action family. It requires neither password

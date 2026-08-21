@@ -6,8 +6,8 @@ use std::{
 use weavelit_server_database::{
     AccountPublicIdentifierPersistence, ApplicationDatabase, ApplicationState,
     AuditReferencePersistence, CheckpointMetadata, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, InitializedState, ProtectedValue, ReconciliationDigest, StateIdentifier,
-    WorkflowCheckpoint, WorkflowKind,
+    DeploymentIdentifier, GroupPublicIdentifierPersistence, InitializedState, ProtectedValue,
+    ReconciliationDigest, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 use zeroize::Zeroizing;
 
@@ -345,6 +345,11 @@ impl<'arbiter> WorkflowPermit<'arbiter> {
     /// Returns the selected Application Database's Account Public Identifier persistence.
     pub fn account_public_identifier_persistence(&self) -> AccountPublicIdentifierPersistence {
         self.database.account_public_identifier_persistence()
+    }
+
+    /// Returns the selected Application Database's Group Public Identifier persistence.
+    pub fn group_public_identifier_persistence(&self) -> GroupPublicIdentifierPersistence {
+        self.database.group_public_identifier_persistence()
     }
 
     /// Returns the capability that protects application secrets at rest.

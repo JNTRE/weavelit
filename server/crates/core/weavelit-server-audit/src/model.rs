@@ -179,6 +179,12 @@ pub enum AuditEvent {
     AuthorizationGroupCreated {
         group: GroupAuditReference,
     },
+    AuthorizationGroupUpdated {
+        group: GroupAuditReference,
+    },
+    AuthorizationGroupDeleted {
+        group: GroupAuditReference,
+    },
     AuthorizationGroupMembershipChanged {
         group: GroupAuditReference,
         account: AccountAuditReference,
@@ -270,6 +276,12 @@ impl AuditEvent {
             Self::AuthorizationGroupCreated { .. } => {
                 AuditLogClassification::AuthorizationGroupCreated
             }
+            Self::AuthorizationGroupUpdated { .. } => {
+                AuditLogClassification::AuthorizationGroupUpdated
+            }
+            Self::AuthorizationGroupDeleted { .. } => {
+                AuditLogClassification::AuthorizationGroupDeleted
+            }
             Self::AuthorizationGroupMembershipChanged { .. } => {
                 AuditLogClassification::AuthorizationGroupMembershipChanged
             }
@@ -322,6 +334,8 @@ impl AuditEvent {
             Self::AuthenticationMfaModuleEnablementChanged { .. } => "change-mfa-module",
             Self::AuthenticationSessionRevoked { .. } => "revoke-session",
             Self::AuthorizationGroupCreated { .. } => "create-group",
+            Self::AuthorizationGroupUpdated { .. } => "update-group",
+            Self::AuthorizationGroupDeleted { .. } => "delete-group",
             Self::AuthorizationGroupMembershipChanged { .. } => "change-membership",
             Self::AuthorizationGroupGrantChanged { .. } => "change-grant",
             Self::AuthorizationAutomationScopeChanged { .. } => "change-automation-scope",
@@ -353,7 +367,9 @@ impl AuditEvent {
             | Self::AuthenticationSessionRevoked { account }
             | Self::InternalUserStatusChanged { account } => render_account(account),
             Self::AuthenticationMfaModuleEnablementChanged { module } => module.render(),
-            Self::AuthorizationGroupCreated { group } => render_group(group),
+            Self::AuthorizationGroupCreated { group }
+            | Self::AuthorizationGroupUpdated { group }
+            | Self::AuthorizationGroupDeleted { group } => render_group(group),
             Self::AuthorizationGroupMembershipChanged { group, account } => {
                 join_targets(render_group(group), render_account(account))
             }
@@ -397,6 +413,8 @@ impl AuditEvent {
             }
             Self::AuthenticationSessionRevoked { .. } => DetailKind::AuthenticationSessionRevoked,
             Self::AuthorizationGroupCreated { .. } => DetailKind::AuthorizationGroupCreated,
+            Self::AuthorizationGroupUpdated { .. } => DetailKind::AuthorizationGroupUpdated,
+            Self::AuthorizationGroupDeleted { .. } => DetailKind::AuthorizationGroupDeleted,
             Self::AuthorizationGroupMembershipChanged { .. } => {
                 DetailKind::AuthorizationGroupMembershipChanged
             }
@@ -442,6 +460,8 @@ impl AuditEvent {
             | Detail::AuthenticationMfaEnrolled(outcome)
             | Detail::AuthenticationSessionRevoked(outcome)
             | Detail::AuthorizationGroupCreated(outcome)
+            | Detail::AuthorizationGroupUpdated(outcome)
+            | Detail::AuthorizationGroupDeleted(outcome)
             | Detail::AuthorizationAutomationScopeChanged(outcome)
             | Detail::DependencyLogModuleConfigurationChanged(outcome)
             | Detail::DependencyServiceConnectionChanged(outcome)
@@ -581,6 +601,8 @@ pub enum AuditOutcomeDetail {
     AuthenticationMfaModuleEnablementChanged(StateChangeOutcome<MfaModuleChange>),
     AuthenticationSessionRevoked(ActionOutcome),
     AuthorizationGroupCreated(ActionOutcome),
+    AuthorizationGroupUpdated(ActionOutcome),
+    AuthorizationGroupDeleted(ActionOutcome),
     AuthorizationGroupMembershipChanged(GroupMutationOutcome),
     AuthorizationGroupGrantChanged(GroupMutationOutcome),
     AuthorizationAutomationScopeChanged(ActionOutcome),
@@ -613,6 +635,8 @@ impl AuditOutcomeDetail {
             }
             Self::AuthenticationSessionRevoked(_) => DetailKind::AuthenticationSessionRevoked,
             Self::AuthorizationGroupCreated(_) => DetailKind::AuthorizationGroupCreated,
+            Self::AuthorizationGroupUpdated(_) => DetailKind::AuthorizationGroupUpdated,
+            Self::AuthorizationGroupDeleted(_) => DetailKind::AuthorizationGroupDeleted,
             Self::AuthorizationGroupMembershipChanged(_) => {
                 DetailKind::AuthorizationGroupMembershipChanged
             }
@@ -652,6 +676,8 @@ enum DetailKind {
     AuthenticationMfaModuleEnablementChanged,
     AuthenticationSessionRevoked,
     AuthorizationGroupCreated,
+    AuthorizationGroupUpdated,
+    AuthorizationGroupDeleted,
     AuthorizationGroupMembershipChanged,
     AuthorizationGroupGrantChanged,
     AuthorizationAutomationScopeChanged,

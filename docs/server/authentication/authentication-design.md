@@ -269,7 +269,7 @@ denial and an indeterminate transport outcome carry no reason. Neither causes
 automatic assurance, action, or disclosure retry; an explicit later reset
 creates a new credential rather than recovering the earlier plaintext.
 
-### MFA Policy Step-Up Ticket
+### Administration Step-Up Ticket
 
 MFA requirement and enrollment-reset actions use the Administration action
 gate's `MfaPolicy` family, not credential-issuance assurance. The public TOTP
@@ -292,8 +292,11 @@ actor, session, family, clock-rollback, and expiry checks.
 The policy ticket is not persisted and never enters a cookie, URL, log, Audit
 record, account projection, or credential-issuance workflow. It is distinct
 from credential issuance's single-use password-plus-conditional-TOTP ticket.
-It also cannot authorize the separate internal `GrantMutation` family, whose
-proof behavior is unchanged and has no public route.
+The route accepts the closed `MfaPolicy` and `GrantMutation` families. Ticket
+digests are domain-separated by family and each retained private proof carries
+that same family. A cross-family, cross-session, expired, rolled-back,
+malformed, or unknown ticket authorizes nothing. `GrantMutation` is exposed
+only for public actions assigned that family, including empty Group deletion.
 
 The final MFA policy writer receives the consumed authorized policy action and
 rechecks the exact issuer session, Client Module, active actor, verified factor,

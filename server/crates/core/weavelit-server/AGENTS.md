@@ -69,7 +69,7 @@ Apply instructions in this order:
 - `src/operational.rs`: The single operational composition seam: the shared
   Application Database handle a sealed workflow hands over, the operational
   composer that mounts the Web UI operational surface, authentication routes,
-  and authorized account-read, account-status, and account MFA-policy routes
+  and authorized account, Group, and account MFA-policy routes
   together with their transport registrations, activates bounded Audit
   terminal recovery, exposes the internal pre-consequential drain gate, and
   builds the mounted surface value the serving-mode switch accepts.

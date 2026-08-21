@@ -57,6 +57,8 @@ const RESET_FIELDS: &[&str] = &["public_id", "totp_step_up_ticket"];
 pub enum MfaPolicyStepUpFamily {
     /// MFA requirement and enrollment-reset administration.
     MfaPolicy,
+    /// Group membership, grant, and deletion administration.
+    GrantMutation,
 }
 
 /// Validated TOTP step-up submission handed to Server core.
@@ -290,6 +292,7 @@ impl<'de> Deserialize<'de> for StepUpBody {
                 }
                 let family = match family.as_deref() {
                     Some("mfa_policy") => MfaPolicyStepUpFamily::MfaPolicy,
+                    Some("grant_mutation") => MfaPolicyStepUpFamily::GrantMutation,
                     _ => return Err(de::Error::custom("unsupported step-up family")),
                 };
                 let code = code.ok_or_else(|| de::Error::missing_field("code"))?;
@@ -632,7 +635,10 @@ mod tests {
                 let recorder = Arc::clone(&step_up_recorder);
                 Box::pin(async move {
                     recorder.step_up.fetch_add(1, Ordering::Relaxed);
-                    assert_eq!(submission.family, MfaPolicyStepUpFamily::MfaPolicy);
+                    assert!(matches!(
+                        submission.family,
+                        MfaPolicyStepUpFamily::MfaPolicy | MfaPolicyStepUpFamily::GrantMutation
+                    ));
                     assert_eq!(&*submission.code, "123456");
                     drop(submission);
                     match rejection {
@@ -774,11 +780,16 @@ mod tests {
     #[tokio::test]
     async fn strict_bodies_reject_unsupported_family_and_malformed_values() {
         let (recorder, router) = harness(None);
-        let cases = [
-            (
+        let grant_mutation = router
+            .clone()
+            .oneshot(request(
                 MFA_POLICY_STEP_UP_ROUTE,
-                r#"{"family":"grant_mutation","code":"123456"}"#.to_owned(),
-            ),
+                r#"{"family":"grant_mutation","code":"123456"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(grant_mutation.status(), StatusCode::OK);
+        let cases = [
             (
                 MFA_POLICY_STEP_UP_ROUTE,
                 r#"{"family":"mfa_policy","code":"12345"}"#.to_owned(),
@@ -836,7 +847,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(recorder.step_up.load(Ordering::Relaxed), 0);
+        assert_eq!(recorder.step_up.load(Ordering::Relaxed), 1);
         assert_eq!(recorder.requirement.load(Ordering::Relaxed), 0);
         assert_eq!(recorder.reset.load(Ordering::Relaxed), 0);
     }

@@ -12,8 +12,9 @@ use weavelit_server_database::{
     AccountPublicIdentity, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
     CompletionObligation, ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
     CredentialRevision, Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership,
-    LogAssignment, LogConfigurationAuditReference, LogModuleConfiguration, LogType, Name,
-    PasswordVerifier, ProtectedSecret, STATE_IDENTIFIER_LENGTH, StateIdentifier,
+    GroupPublicIdentifier, GroupPublicIdentity, LogAssignment, LogConfigurationAuditReference,
+    LogModuleConfiguration, LogType, Name, PasswordVerifier, ProtectedSecret,
+    STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
 use weavelit_server_lifecycle::{ProtectedValueKind, ProtectedValueSealer};
 
@@ -51,6 +52,8 @@ pub(crate) fn build_initial_state(
     let group_identifier = state_identifier()?;
     let account_public_identifier =
         AccountPublicIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
+    let group_public_identifier =
+        GroupPublicIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
     let account_audit_reference =
         AuditReferenceIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
     let group_audit_reference =
@@ -159,6 +162,10 @@ pub(crate) fn build_initial_state(
             verifier,
         }],
         groups: vec![group],
+        group_public_identities: vec![GroupPublicIdentity::new(
+            group_identifier,
+            group_public_identifier,
+        )],
         group_audit_references: vec![GroupAuditReference::new(
             group_identifier,
             group_audit_reference,

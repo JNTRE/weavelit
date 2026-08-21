@@ -5,7 +5,7 @@ mod support;
 use base64::Engine as _;
 use support::{
     FIXTURE_TOTP_SECRET, account_public_identifier_persistence, committed, committed_text,
-    components, persistence,
+    components, group_public_identifier_persistence, persistence,
 };
 use weavelit_server_database::{CredentialRevision, MAX_NAME_LENGTH};
 use weavelit_server_restore::{
@@ -24,6 +24,7 @@ fn normalize(
         plaintext,
         selected_backend,
         &account_public_identifier_persistence(),
+        &group_public_identifier_persistence(),
         &persistence(),
         available_components,
     )
@@ -38,10 +39,16 @@ fn plaintext() -> String {
 }
 
 const FIXTURE_ACCOUNT_PUBLIC_ID: &str = "kpOUlZaXmJmam5ydnp-goQ";
+const FIXTURE_GROUP_PUBLIC_ID: &str = "MTExMTExMTExMTExMTExMQ";
 
 fn persisted_public_id(backup: &NormalizedBackup) -> [u8; 16] {
     account_public_identifier_persistence()
         .encode(&backup.account_public_identities()[0].public_identifier())
+}
+
+fn persisted_group_public_id(backup: &NormalizedBackup) -> [u8; 16] {
+    group_public_identifier_persistence()
+        .encode(&backup.group_public_identities()[0].public_identifier())
 }
 
 fn decoded_public_id(value: &str) -> [u8; 16] {
@@ -246,6 +253,81 @@ fn duplicate_account_public_ids_are_rejected() {
         "{{\"identifier\":\"AAAAAAAAAAAAAAAAAAAAAQ\",\"public_id\":\"{FIXTURE_ACCOUNT_PUBLIC_ID}\",\"username\":\"second\",\"display_name\":null,\"active\":true}},"
     );
     let document = replaced("\"accounts\":[", &format!("\"accounts\":[{duplicate}"));
+
+    assert_eq!(reject(&document), ContentError::DuplicateEntry);
+}
+
+#[test]
+fn supplied_group_public_id_survives_normalization_exactly() {
+    let document = replaced(
+        "\"name\":\"Administrators\"",
+        &format!("\"public_id\":\"{FIXTURE_GROUP_PUBLIC_ID}\",\"name\":\"Administrators\""),
+    );
+    let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_eq!(backup.group_public_identities().len(), 1);
+    assert_eq!(
+        backup.group_public_identities()[0].group(),
+        backup.groups()[0].identifier
+    );
+    assert_eq!(
+        persisted_group_public_id(&backup),
+        decoded_public_id(FIXTURE_GROUP_PUBLIC_ID)
+    );
+}
+
+#[test]
+fn omitted_group_public_id_generates_a_fresh_nonzero_value() {
+    let first = normalize(plaintext().as_bytes(), &sqlite(), &components()).unwrap();
+    let second = normalize(plaintext().as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_ne!(persisted_group_public_id(&first), [0; 16]);
+    assert_ne!(persisted_group_public_id(&second), [0; 16]);
+    assert_ne!(
+        persisted_group_public_id(&first),
+        persisted_group_public_id(&second)
+    );
+}
+
+#[test]
+fn invalid_supplied_group_public_ids_are_rejected_without_payloads() {
+    let wrong_length = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x51_u8; 15]);
+    for (candidate, expected) in [
+        ("not_base64url", ContentError::EncodingInvalid),
+        ("MTExMTExMTExMTExMTExMQ=", ContentError::Malformed),
+        (wrong_length.as_str(), ContentError::EncodingInvalid),
+        ("AAAAAAAAAAAAAAAAAAAAAA", ContentError::DomainInvalid),
+    ] {
+        let document = replaced(
+            "\"name\":\"Administrators\"",
+            &format!("\"public_id\":\"{candidate}\",\"name\":\"Administrators\""),
+        );
+        let error = reject(&document);
+        assert_eq!(error, expected);
+        assert!(!error.to_string().contains(candidate));
+        assert_eq!(
+            RestoreError::from(error).category_reason(),
+            ("backup_invalid", "backup_invalid")
+        );
+    }
+
+    let explicit_null = replaced(
+        "\"name\":\"Administrators\"",
+        "\"public_id\":null,\"name\":\"Administrators\"",
+    );
+    assert_eq!(reject(&explicit_null), ContentError::Malformed);
+}
+
+#[test]
+fn duplicate_group_public_ids_are_rejected() {
+    let duplicate = format!(
+        "{{\"identifier\":\"AAAAAAAAAAAAAAAAAAAAAQ\",\"public_id\":\"{FIXTURE_GROUP_PUBLIC_ID}\",\"name\":\"Operators\",\"description\":null}},"
+    );
+    let document = replaced("\"groups\":[", &format!("\"groups\":[{duplicate}"));
+    let document = document.replace(
+        "\"name\":\"Administrators\"",
+        &format!("\"public_id\":\"{FIXTURE_GROUP_PUBLIC_ID}\",\"name\":\"Administrators\""),
+    );
 
     assert_eq!(reject(&document), ContentError::DuplicateEntry);
 }

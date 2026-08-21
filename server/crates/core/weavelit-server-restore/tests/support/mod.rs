@@ -27,7 +27,9 @@ use sha2::{Digest, Sha256};
 use weavelit_server_authentication::{
     Argon2Engine as _, CURRENT_ARGON2_PROFILE, PasswordPolicy, RustCryptoArgon2,
 };
-use weavelit_server_database::{AccountPublicIdentifierPersistence, AuditReferencePersistence};
+use weavelit_server_database::{
+    AccountPublicIdentifierPersistence, AuditReferencePersistence, GroupPublicIdentifierPersistence,
+};
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_restore::{
     AvailableComponents, BackendIdentifier, DeploymentIdentifier, LogSettingsFormat,
@@ -44,6 +46,11 @@ pub fn persistence() -> AuditReferencePersistence {
 /// Returns Account Public Identifier persistence issued through test-only authority.
 pub fn account_public_identifier_persistence() -> AccountPublicIdentifierPersistence {
     AccountPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+}
+
+/// Returns Group Public Identifier persistence issued through test-only authority.
+pub fn group_public_identifier_persistence() -> GroupPublicIdentifierPersistence {
+    GroupPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
 }
 
 /// Fixed backup recovery secret used by every valid fixture.
@@ -812,6 +819,7 @@ impl TestAuthority {
                 deployment(),
                 BackendIdentifier::new(backend).expect("the backend identifier is valid"),
                 account_public_identifier_persistence(),
+                group_public_identifier_persistence(),
                 persistence(),
             )),
         }

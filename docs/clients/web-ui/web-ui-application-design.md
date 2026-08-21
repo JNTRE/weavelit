@@ -616,6 +616,24 @@ The workspace renders no Server code, status number, response detail, field
 path, or transport diagnostic. It stores no account result or cursor in a URL,
 cookie, `localStorage`, or `sessionStorage`.
 
+### Groups Workspace
+
+The authenticated Administration shell provides semantic local navigation
+between Accounts and Groups. Groups loads the first cursor page, appends `Load
+more` results, refreshes from the first page, and views only Group public
+identifier, name, and nullable description. It provides create and complete
+name/description update controls and no membership or grant picker.
+
+Delete first opens a client-only confirmation and sends no confirmation field
+or text. After confirmation, one form accepts exactly one six-digit TOTP code
+for the `grant_mutation` family. The code is cleared when step-up starts; the
+returned ticket exists only in a private component ref, is cleared before the
+single delete request starts, and is never rendered, logged, placed in a URL,
+cookie, `localStorage`, or `sessionStorage`. The application retries neither
+request automatically. Reported refusal renders `The Group was not deleted.`;
+an unreadable or unknown outcome requires manual refresh before another Group
+action.
+
 Each account row and the safe detail view offer `Disable` for an active account
 or `Re-enable` for a disabled account. Choosing either command opens an in-page
 confirmation that names only the already displayed account. The disable

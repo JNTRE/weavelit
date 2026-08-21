@@ -86,12 +86,17 @@ pub fn finalization_surface(init: InitCapability) -> PreoperationalSurface {
 /// than mounted and denied.
 pub fn operational_surface(
     account_administration: Option<AccountAdministrationCapability>,
+    group_administration: Option<weavelit_module_client::GroupAdministrationCapability>,
     credential_issuance: Option<CredentialIssuanceCapability>,
     mfa_policy: Option<MfaPolicyCapability>,
 ) -> OperationalSurface {
     let surface = OperationalSurface::default().with_assets(embedded_asset_routes());
     let surface = match account_administration {
         Some(capability) => surface.with_account_administration(capability),
+        None => surface,
+    };
+    let surface = match group_administration {
+        Some(capability) => surface.with_group_administration(capability),
         None => surface,
     };
     let surface = match credential_issuance {

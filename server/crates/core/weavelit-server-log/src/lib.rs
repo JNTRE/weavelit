@@ -349,6 +349,8 @@ audit_log_classifications! {
     AuthenticationMfaModuleEnablementChanged => "authentication.mfa-module-enablement.changed",
     AuthenticationSessionRevoked => "authentication.session.revoked",
     AuthorizationGroupCreated => "authorization.group.created",
+    AuthorizationGroupUpdated => "authorization.group.updated",
+    AuthorizationGroupDeleted => "authorization.group.deleted",
     AuthorizationGroupMembershipChanged => "authorization.group-membership.changed",
     AuthorizationGroupGrantChanged => "authorization.group-grant.changed",
     AuthorizationGroupGrantRemovalDenied => "authorization.group-grant.removal-denied",

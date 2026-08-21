@@ -19,10 +19,14 @@ pub const STATE_IDENTIFIER_LENGTH: usize = 16;
 /// Number of random bytes in an Account Public Identifier.
 pub const ACCOUNT_PUBLIC_IDENTIFIER_LENGTH: usize = 16;
 
+/// Number of random bytes in a Group Public Identifier.
+pub const GROUP_PUBLIC_IDENTIFIER_LENGTH: usize = 16;
+
 /// Bytes in the persisted big-endian representation of a credential revision.
 pub const CREDENTIAL_REVISION_LENGTH: usize = size_of::<u64>();
 
 const ACCOUNT_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS: usize = 8;
+const GROUP_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS: usize = 8;
 
 /// Monotonically increasing generation of one account's credential state.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -202,6 +206,121 @@ impl AccountPublicIdentifierPersistence {
 impl fmt::Debug for AccountPublicIdentifierPersistence {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AccountPublicIdentifierPersistence(REDACTED)")
+    }
+}
+
+/// Failure to generate or decode an internal Group Public Identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GroupPublicIdentifierError {
+    /// Operating-system randomness was unavailable.
+    RandomnessUnavailable,
+    /// A persisted identifier was not the required nonzero binary value.
+    InvalidPersistedValue,
+}
+
+impl fmt::Display for GroupPublicIdentifierError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::RandomnessUnavailable => "group public identity is unavailable",
+            Self::InvalidPersistedValue => "persisted group public identity is invalid",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for GroupPublicIdentifierError {}
+
+/// Independent opaque identifier used as one Group's stable public identity.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct GroupPublicIdentifier([u8; GROUP_PUBLIC_IDENTIFIER_LENGTH]);
+
+impl GroupPublicIdentifier {
+    /// Generates an identifier from operating-system randomness without a fallback.
+    pub fn generate() -> Result<Self, GroupPublicIdentifierError> {
+        Self::generate_with(|bytes| {
+            getrandom::fill(bytes).map_err(|_| GroupPublicIdentifierError::RandomnessUnavailable)
+        })
+    }
+
+    /// Returns the canonical unpadded Base64url public representation.
+    #[must_use]
+    pub fn as_base64url(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.0)
+    }
+
+    fn from_persisted_bytes(
+        bytes: [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH],
+    ) -> Result<Self, GroupPublicIdentifierError> {
+        if bytes == [0; GROUP_PUBLIC_IDENTIFIER_LENGTH] {
+            return Err(GroupPublicIdentifierError::InvalidPersistedValue);
+        }
+        Ok(Self(bytes))
+    }
+
+    fn generate_with(
+        mut fill: impl FnMut(
+            &mut [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH],
+        ) -> Result<(), GroupPublicIdentifierError>,
+    ) -> Result<Self, GroupPublicIdentifierError> {
+        for _ in 0..GROUP_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS {
+            let mut bytes = [0_u8; GROUP_PUBLIC_IDENTIFIER_LENGTH];
+            fill(&mut bytes)?;
+            if bytes != [0; GROUP_PUBLIC_IDENTIFIER_LENGTH] {
+                return Ok(Self(bytes));
+            }
+        }
+
+        Err(GroupPublicIdentifierError::RandomnessUnavailable)
+    }
+}
+
+impl fmt::Debug for GroupPublicIdentifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GroupPublicIdentifier(REDACTED)")
+    }
+}
+
+/// Capability to access Group Public Identifier values in trusted persistence.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct GroupPublicIdentifierPersistence {
+    _private: (),
+}
+
+impl GroupPublicIdentifierPersistence {
+    /// Issues persistence access to the Server-owned database selection authority.
+    #[must_use]
+    pub const fn from_server_authority(_authority: &ServerDatabaseAuthority) -> Self {
+        Self { _private: () }
+    }
+
+    /// Issues the companion capability for the same selected database binding.
+    #[must_use]
+    pub const fn from_account_public_identifier_persistence(
+        _persistence: &AccountPublicIdentifierPersistence,
+    ) -> Self {
+        Self { _private: () }
+    }
+
+    /// Decodes an exact nonzero 16-byte value from trusted persistence.
+    pub fn decode(
+        &self,
+        bytes: [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH],
+    ) -> Result<GroupPublicIdentifier, GroupPublicIdentifierError> {
+        GroupPublicIdentifier::from_persisted_bytes(bytes)
+    }
+
+    /// Returns the exact binary value for trusted persistence.
+    pub const fn encode(
+        &self,
+        identifier: &GroupPublicIdentifier,
+    ) -> [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH] {
+        identifier.0
+    }
+}
+
+impl fmt::Debug for GroupPublicIdentifierPersistence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GroupPublicIdentifierPersistence(REDACTED)")
     }
 }
 
@@ -668,6 +787,33 @@ pub struct Group {
     pub description: Option<Description>,
 }
 
+/// Stable public identity assigned to one Group.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct GroupPublicIdentity {
+    group: StateIdentifier,
+    public_identifier: GroupPublicIdentifier,
+}
+
+impl GroupPublicIdentity {
+    /// Associates one Group with its independently generated public identifier.
+    pub const fn new(group: StateIdentifier, public_identifier: GroupPublicIdentifier) -> Self {
+        Self {
+            group,
+            public_identifier,
+        }
+    }
+
+    /// Returns the Group this projection references.
+    pub const fn group(&self) -> StateIdentifier {
+        self.group
+    }
+
+    /// Returns the typed Group Public Identifier.
+    pub const fn public_identifier(&self) -> GroupPublicIdentifier {
+        self.public_identifier
+    }
+}
+
 /// Typed Audit Reference Identifier assigned to one Group.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct GroupAuditReference {
@@ -1030,6 +1176,8 @@ pub struct ApplicationStateInput {
     pub password_verifiers: Vec<AccountPasswordVerifier>,
     /// Groups.
     pub groups: Vec<Group>,
+    /// Stable public identities for Groups.
+    pub group_public_identities: Vec<GroupPublicIdentity>,
     /// Stable Audit Reference Identifiers for Groups.
     pub group_audit_references: Vec<GroupAuditReference>,
     /// Group memberships.
@@ -1065,6 +1213,7 @@ pub struct ApplicationState {
     account_audit_references: Vec<AccountAuditReference>,
     password_verifiers: Vec<AccountPasswordVerifier>,
     groups: Vec<Group>,
+    group_public_identities: Vec<GroupPublicIdentity>,
     group_audit_references: Vec<GroupAuditReference>,
     group_memberships: Vec<GroupMembership>,
     group_grants: Vec<GroupGrantRecord>,
@@ -1088,6 +1237,7 @@ impl ApplicationState {
             mut account_audit_references,
             mut password_verifiers,
             mut groups,
+            mut group_public_identities,
             mut group_audit_references,
             mut group_memberships,
             mut group_grants,
@@ -1107,6 +1257,7 @@ impl ApplicationState {
         account_audit_references.sort();
         password_verifiers.sort();
         groups.sort();
+        group_public_identities.sort();
         group_audit_references.sort();
         group_memberships.sort();
         group_grants.sort();
@@ -1141,6 +1292,12 @@ impl ApplicationState {
         })?;
         reject_adjacent_duplicates(&groups, |left, right| left.identifier == right.identifier)?;
         reject_duplicate_keys(&groups, |group| group.name.clone())?;
+        reject_adjacent_duplicates(&group_public_identities, |left, right| {
+            left.group == right.group
+        })?;
+        reject_duplicate_keys(&group_public_identities, |identity| {
+            identity.public_identifier
+        })?;
         reject_adjacent_duplicates(&group_audit_references, |left, right| {
             left.group == right.group
         })?;
@@ -1178,6 +1335,8 @@ impl ApplicationState {
 
         let publicly_identified_accounts =
             sorted_identifiers(&account_public_identities, |entry| entry.account);
+        let publicly_identified_groups =
+            sorted_identifiers(&group_public_identities, |entry| entry.group);
         let referenced_accounts =
             sorted_identifiers(&account_audit_references, |entry| entry.account);
         let referenced_groups = sorted_identifiers(&group_audit_references, |entry| entry.group);
@@ -1187,6 +1346,7 @@ impl ApplicationState {
             });
         if account_identifiers != publicly_identified_accounts
             || account_identifiers != referenced_accounts
+            || group_identifiers != publicly_identified_groups
             || group_identifiers != referenced_groups
             || log_module_identifiers != referenced_log_configurations
         {
@@ -1266,6 +1426,7 @@ impl ApplicationState {
             account_audit_references,
             password_verifiers,
             groups,
+            group_public_identities,
             group_audit_references,
             group_memberships,
             group_grants,
@@ -1312,6 +1473,11 @@ impl ApplicationState {
     /// Returns the Groups.
     pub fn groups(&self) -> &[Group] {
         &self.groups
+    }
+
+    /// Returns the Group public identity projections.
+    pub fn group_public_identities(&self) -> &[GroupPublicIdentity] {
+        &self.group_public_identities
     }
 
     /// Returns the Group Audit Reference projections.
@@ -1531,6 +1697,69 @@ mod tests {
         );
     }
 
+    fn group_public_identifier(byte: u8) -> GroupPublicIdentifier {
+        GroupPublicIdentifier::from_persisted_bytes([byte; GROUP_PUBLIC_IDENTIFIER_LENGTH]).unwrap()
+    }
+
+    #[test]
+    fn group_public_identifier_generation_is_nonzero_and_redacted() {
+        let mut attempts = 0;
+        let generated = GroupPublicIdentifier::generate_with(|bytes| {
+            attempts += 1;
+            if attempts == 2 {
+                bytes.fill(0x5a);
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert_eq!(format!("{generated:?}"), "GroupPublicIdentifier(REDACTED)");
+    }
+
+    #[test]
+    fn group_public_identifier_generation_fails_closed() {
+        assert_eq!(
+            GroupPublicIdentifier::generate_with(|_| {
+                Err(GroupPublicIdentifierError::RandomnessUnavailable)
+            }),
+            Err(GroupPublicIdentifierError::RandomnessUnavailable)
+        );
+        assert_eq!(
+            GroupPublicIdentifier::generate_with(|_| Ok(())),
+            Err(GroupPublicIdentifierError::RandomnessUnavailable)
+        );
+    }
+
+    #[test]
+    fn group_public_identifier_uses_canonical_unpadded_base64url() {
+        assert_eq!(
+            group_public_identifier(0x31).as_base64url(),
+            "MTExMTExMTExMTExMTExMQ"
+        );
+    }
+
+    #[test]
+    fn group_public_identifier_persistence_is_authority_gated() {
+        let persistence = GroupPublicIdentifierPersistence::from_server_authority(
+            &ServerDatabaseAuthority::new(),
+        );
+        let identifier = group_public_identifier(0x31);
+
+        assert_eq!(
+            persistence.decode(persistence.encode(&identifier)),
+            Ok(identifier)
+        );
+        assert_eq!(
+            persistence.decode([0; GROUP_PUBLIC_IDENTIFIER_LENGTH]),
+            Err(GroupPublicIdentifierError::InvalidPersistedValue)
+        );
+        assert_eq!(
+            format!("{persistence:?}"),
+            "GroupPublicIdentifierPersistence(REDACTED)"
+        );
+    }
+
     fn name(value: &str) -> Name {
         Name::new(value).unwrap()
     }
@@ -1590,6 +1819,10 @@ mod tests {
                 name: name("Administrators"),
                 description: None,
             }],
+            group_public_identities: vec![GroupPublicIdentity::new(
+                identifier(2),
+                group_public_identifier(0x92),
+            )],
             group_audit_references: vec![GroupAuditReference::new(
                 identifier(2),
                 audit_reference(0xB2),
@@ -1916,6 +2149,12 @@ mod tests {
             account_public_identifier(0x91)
         );
         assert_eq!(ordered.account_audit_references().len(), 1);
+        assert_eq!(ordered.group_public_identities().len(), 1);
+        assert_eq!(ordered.group_public_identities()[0].group(), identifier(2));
+        assert_eq!(
+            ordered.group_public_identities()[0].public_identifier(),
+            group_public_identifier(0x92)
+        );
         assert_eq!(ordered.group_audit_references().len(), 1);
         assert_eq!(ordered.log_configuration_audit_references().len(), 1);
         assert_eq!(ordered.group_grants().len(), 2);
@@ -2106,6 +2345,50 @@ mod tests {
             .push(AccountAuditReference::new(
                 identifier(0x22),
                 audit_reference(0xA2),
+            ));
+        assert_eq!(
+            reject(duplicate_identifier),
+            ContractInputError::DuplicateEntry
+        );
+    }
+
+    #[test]
+    fn every_group_requires_one_unique_public_identity() {
+        let mut missing = valid_input();
+        missing.group_public_identities.clear();
+        assert_eq!(reject(missing), ContractInputError::UnknownReference);
+
+        let mut unknown = valid_input();
+        unknown.group_public_identities[0] =
+            GroupPublicIdentity::new(identifier(0x22), group_public_identifier(0x92));
+        assert_eq!(reject(unknown), ContractInputError::UnknownReference);
+
+        let mut duplicate_group = valid_input();
+        duplicate_group
+            .group_public_identities
+            .push(GroupPublicIdentity::new(
+                identifier(2),
+                group_public_identifier(0x93),
+            ));
+        assert_eq!(reject(duplicate_group), ContractInputError::DuplicateEntry);
+
+        let mut duplicate_identifier = valid_input();
+        duplicate_identifier.groups.push(Group {
+            identifier: identifier(0x22),
+            name: name("Operators"),
+            description: None,
+        });
+        duplicate_identifier
+            .group_public_identities
+            .push(GroupPublicIdentity::new(
+                identifier(0x22),
+                group_public_identifier(0x92),
+            ));
+        duplicate_identifier
+            .group_audit_references
+            .push(GroupAuditReference::new(
+                identifier(0x22),
+                audit_reference(0xB3),
             ));
         assert_eq!(
             reject(duplicate_identifier),
