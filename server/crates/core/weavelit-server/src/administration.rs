@@ -1461,14 +1461,35 @@ pub(crate) enum GroupAdministrationReadResult {
     Grants(Option<Vec<GroupGrant>>),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GroupAdministrationDelivery {
+    Acknowledged,
+    Pending,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum GroupAdministrationMutationResult {
-    Projection(GroupAdministrationProjection),
-    Deleted(GroupPublicIdentifier),
-    Conflict,
-    Stale,
-    Denied,
-    Nonempty,
+    Unchanged(GroupAdministrationProjection),
+    Projection {
+        projection: GroupAdministrationProjection,
+        delivery: GroupAdministrationDelivery,
+    },
+    Deleted {
+        public_identifier: GroupPublicIdentifier,
+        delivery: GroupAdministrationDelivery,
+    },
+    Conflict {
+        delivery: GroupAdministrationDelivery,
+    },
+    Stale {
+        delivery: GroupAdministrationDelivery,
+    },
+    Denied {
+        delivery: GroupAdministrationDelivery,
+    },
+    Nonempty {
+        delivery: GroupAdministrationDelivery,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1584,12 +1605,17 @@ impl<'a> GroupAdministrationWorkflow<'a> {
                     correlation_id,
                     |terminals| self.database.create_group(&mutation, terminals),
                 )
-                .map(|outcome| match outcome {
-                    GroupCreateOutcome::Created => {
-                        GroupAdministrationMutationResult::Projection(projection)
+                .map(|(outcome, delivery)| match outcome {
+                    GroupCreateOutcome::Created => GroupAdministrationMutationResult::Projection {
+                        projection,
+                        delivery,
+                    },
+                    GroupCreateOutcome::Conflict => {
+                        GroupAdministrationMutationResult::Conflict { delivery }
                     }
-                    GroupCreateOutcome::Conflict => GroupAdministrationMutationResult::Conflict,
-                    GroupCreateOutcome::Denied => GroupAdministrationMutationResult::Denied,
+                    GroupCreateOutcome::Denied => {
+                        GroupAdministrationMutationResult::Denied { delivery }
+                    }
                 })
             }
             GroupAdministrationAction::Update(change) => {
@@ -1613,7 +1639,7 @@ impl<'a> GroupAdministrationWorkflow<'a> {
                 ) {
                     Ok(value) => value,
                     Err(GroupAdministrationMutationError::Unchanged) => {
-                        return Ok(GroupAdministrationMutationResult::Projection(
+                        return Ok(GroupAdministrationMutationResult::Unchanged(
                             GroupAdministrationProjection::from_persistence(
                                 &self.database.group_public_identifier_persistence,
                                 public_identifier,
@@ -1641,13 +1667,20 @@ impl<'a> GroupAdministrationWorkflow<'a> {
                     correlation_id,
                     |terminals| self.database.update_group(&mutation, terminals),
                 )
-                .map(|outcome| match outcome {
-                    GroupUpdateOutcome::Changed => {
-                        GroupAdministrationMutationResult::Projection(projection)
+                .map(|(outcome, delivery)| match outcome {
+                    GroupUpdateOutcome::Changed => GroupAdministrationMutationResult::Projection {
+                        projection,
+                        delivery,
+                    },
+                    GroupUpdateOutcome::Conflict => {
+                        GroupAdministrationMutationResult::Conflict { delivery }
                     }
-                    GroupUpdateOutcome::Conflict => GroupAdministrationMutationResult::Conflict,
-                    GroupUpdateOutcome::Stale => GroupAdministrationMutationResult::Stale,
-                    GroupUpdateOutcome::Denied => GroupAdministrationMutationResult::Denied,
+                    GroupUpdateOutcome::Stale => {
+                        GroupAdministrationMutationResult::Stale { delivery }
+                    }
+                    GroupUpdateOutcome::Denied => {
+                        GroupAdministrationMutationResult::Denied { delivery }
+                    }
                 })
             }
             GroupAdministrationAction::Read(_) => {
@@ -1692,13 +1725,16 @@ impl<'a> GroupAdministrationWorkflow<'a> {
             correlation_id,
             |terminals| self.database.delete_group(&mutation, terminals),
         )
-        .map(|outcome| match outcome {
-            GroupDeleteOutcome::Deleted => {
-                GroupAdministrationMutationResult::Deleted(public_identifier)
+        .map(|(outcome, delivery)| match outcome {
+            GroupDeleteOutcome::Deleted => GroupAdministrationMutationResult::Deleted {
+                public_identifier,
+                delivery,
+            },
+            GroupDeleteOutcome::Nonempty => {
+                GroupAdministrationMutationResult::Nonempty { delivery }
             }
-            GroupDeleteOutcome::Nonempty => GroupAdministrationMutationResult::Nonempty,
-            GroupDeleteOutcome::Stale => GroupAdministrationMutationResult::Stale,
-            GroupDeleteOutcome::Denied => GroupAdministrationMutationResult::Denied,
+            GroupDeleteOutcome::Stale => GroupAdministrationMutationResult::Stale { delivery },
+            GroupDeleteOutcome::Denied => GroupAdministrationMutationResult::Denied { delivery },
         })
     }
 
@@ -1711,7 +1747,7 @@ impl<'a> GroupAdministrationWorkflow<'a> {
         write: impl FnOnce(
             &GroupAdministrationAuditTerminalWrites<'_>,
         ) -> Result<Outcome, DatabaseError>,
-    ) -> Result<Outcome, GroupAdministrationWorkflowError> {
+    ) -> Result<(Outcome, GroupAdministrationDelivery), GroupAdministrationWorkflowError> {
         if self.audit.drain_before_consequential_operation().active()
             != AuditRecoverySequenceState::Ready
         {
@@ -1722,7 +1758,8 @@ impl<'a> GroupAdministrationWorkflow<'a> {
             .load_account_audit_reference(actor)
             .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?
             .ok_or(GroupAdministrationWorkflowError::AuditLogUnavailable)?;
-        self.audit
+        let outcome = self
+            .audit
             .with_current_destination(|destination| {
                 destination
                     .destination()
@@ -1801,7 +1838,15 @@ impl<'a> GroupAdministrationWorkflow<'a> {
                 ))
                 .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)
             })
-            .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)?
+            .map_err(|_| GroupAdministrationWorkflowError::AuditLogUnavailable)??;
+        let delivery = if self.audit.drain_after_consequential_operation().active()
+            == AuditRecoverySequenceState::Ready
+        {
+            GroupAdministrationDelivery::Acknowledged
+        } else {
+            GroupAdministrationDelivery::Pending
+        };
+        Ok((outcome, delivery))
     }
 }
 
@@ -2394,7 +2439,8 @@ pub(crate) mod tests {
     use weavelit_server_administration::{
         AccountAdministrationRead, AccountStatusChange, AdministrationClock, AdministrationPlane,
         AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementChange,
-        ComponentEnablementSource, LogAssignmentChange, LogConfigurationChange,
+        ComponentEnablementSource, CurrentAdministrationSession, GroupCreate, GroupUpdate,
+        LogAssignmentChange, LogConfigurationChange, StepUpActionFamily,
     };
     use weavelit_server_administration_authority::ServerAdministrationAuthority;
     use weavelit_server_authorization::{
@@ -3007,6 +3053,103 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    fn authorized_group_administration(
+        action: GroupAdministrationAction,
+    ) -> AuthorizedAdministrationAction {
+        let client_module = name(CLIENT_MODULE);
+        let authorization = authorize_administration(
+            &HumanAuthorizationSnapshot::new(
+                true,
+                vec![
+                    GroupGrant::ClientModule(client_module.clone()),
+                    GroupGrant::ServerAdministration,
+                ],
+            ),
+            &AuthorizationCatalog::new(
+                vec![ClientModuleDeclaration::new(
+                    client_module,
+                    true,
+                    &[Plane::Administration],
+                )],
+                vec![],
+                vec![],
+            )
+            .unwrap(),
+            AuthorizationRequest {
+                client_module: &name(CLIENT_MODULE),
+            },
+        )
+        .unwrap();
+        let authority = ServerAdministrationAuthority::new();
+        let admission = AuthorizedAdministrationAdmission::from_server_authority(
+            &authority,
+            authorization,
+            identifier(1),
+            SessionTokenHash::from_bytes([0x31; SESSION_DIGEST_LENGTH]).unwrap(),
+        );
+        AdministrationPlane::new(FixedClock, NoEnablementRead, AvailableComponents::default())
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Group(action)),
+            )
+            .unwrap()
+    }
+
+    fn authorized_group_delete(target: GroupPublicIdentifier) -> AuthorizedAdministrationAction {
+        let client_module = name(CLIENT_MODULE);
+        let authorization = authorize_administration(
+            &HumanAuthorizationSnapshot::new(
+                true,
+                vec![
+                    GroupGrant::ClientModule(client_module.clone()),
+                    GroupGrant::ServerAdministration,
+                ],
+            ),
+            &AuthorizationCatalog::new(
+                vec![ClientModuleDeclaration::new(
+                    client_module,
+                    true,
+                    &[Plane::Administration],
+                )],
+                vec![],
+                vec![],
+            )
+            .unwrap(),
+            AuthorizationRequest {
+                client_module: &name(CLIENT_MODULE),
+            },
+        )
+        .unwrap();
+        let authority = ServerAdministrationAuthority::new();
+        let session = SessionTokenHash::from_bytes([0x31; SESSION_DIGEST_LENGTH]).unwrap();
+        let current = CurrentAdministrationSession::from_server_authority(
+            &authority,
+            identifier(1),
+            session,
+            identifier(0x51),
+        );
+        let mut plane =
+            AdministrationPlane::new(FixedClock, NoEnablementRead, AvailableComponents::default());
+        let proof = plane
+            .issue_step_up(&authority, &current, StepUpActionFamily::GrantMutation)
+            .unwrap();
+        let admission = AuthorizedAdministrationAdmission::from_server_authority(
+            &authority,
+            authorization,
+            identifier(1),
+            session,
+        );
+        plane
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::GrantMutation(
+                    GroupMutation::Delete(target),
+                ))
+                .with_step_up(&proof),
+            )
+            .unwrap()
+    }
+
     fn authorized_log_change(change: LogConfigurationChange) -> AuthorizedAdministrationAction {
         let client_module = name(CLIENT_MODULE);
         let authorization = authorize_administration(
@@ -3075,6 +3218,56 @@ pub(crate) mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    fn insert_group(
+        surface: &Surface,
+        group_byte: u8,
+        public_identifier_byte: u8,
+        group_name: &str,
+        description: Option<&str>,
+    ) -> GroupPublicIdentifier {
+        let public_identifier = surface
+            .database
+            .group_public_identifier_persistence
+            .decode([public_identifier_byte; 16])
+            .unwrap();
+        let encoded = surface
+            .database
+            .group_public_identifier_persistence
+            .encode(&public_identifier);
+        let connection = Connection::open(&surface.path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_group (group_id, name, description) VALUES (?1, ?2, ?3)",
+                params![
+                    identifier(group_byte).as_bytes().as_slice(),
+                    group_name,
+                    description,
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_public_identity \
+                 (group_id, public_identifier) VALUES (?1, ?2)",
+                params![
+                    identifier(group_byte).as_bytes().as_slice(),
+                    encoded.as_slice(),
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_group_audit_reference \
+                 (group_id, audit_reference) VALUES (?1, ?2)",
+                params![
+                    identifier(group_byte).as_bytes().as_slice(),
+                    format!("ar-{}", format!("{group_byte:02x}").repeat(16)),
+                ],
+            )
+            .unwrap();
+        public_identifier
     }
 
     #[test]
@@ -3438,6 +3631,279 @@ pub(crate) mod tests {
             })
         );
         assert_eq!(stored_account_status(&surface.path, 2), (false, 8));
+        assert_eq!(records.lock().unwrap().len(), 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            1
+        );
+
+        drop(audit);
+        let (restarted, recovered_records, _) = recovery(surface.database.clone(), None);
+        assert_eq!(
+            restarted.drain_for_activation().active(),
+            AuditRecoverySequenceState::Ready
+        );
+        assert_eq!(recovered_records.lock().unwrap().len(), 1);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn group_crud_immediately_drains_each_terminal_and_exact_update_no_op_emits_none() {
+        let surface = surface(false, false, false);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let (audit, records, attempts) = recovery(surface.database.clone(), None);
+        let workflow = GroupAdministrationWorkflow::new(&surface.database, &audit);
+
+        let created = match workflow
+            .mutate(
+                authorized_group_administration(GroupAdministrationAction::Create(
+                    GroupCreate::new("operators", Some("Initial description")).unwrap(),
+                )),
+                TEST_CORRELATION,
+            )
+            .unwrap()
+        {
+            GroupAdministrationMutationResult::Projection {
+                projection,
+                delivery: GroupAdministrationDelivery::Acknowledged,
+            } => projection,
+            result => panic!("unexpected Group create result: {result:?}"),
+        };
+        assert_eq!(records.lock().unwrap().len(), 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            0
+        );
+
+        let unchanged = workflow
+            .mutate(
+                authorized_group_administration(GroupAdministrationAction::Update(
+                    GroupUpdate::new(
+                        created.public_identifier(),
+                        "operators",
+                        Some("Initial description"),
+                    )
+                    .unwrap(),
+                )),
+                TEST_CORRELATION,
+            )
+            .unwrap();
+        assert_eq!(
+            unchanged,
+            GroupAdministrationMutationResult::Unchanged(created.clone())
+        );
+        assert_eq!(records.lock().unwrap().len(), 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            count(&surface.path, "weavelit_audit_terminal_obligation", "",),
+            1
+        );
+
+        let updated = match workflow
+            .mutate(
+                authorized_group_administration(GroupAdministrationAction::Update(
+                    GroupUpdate::new(
+                        created.public_identifier(),
+                        "incident-operators",
+                        Some("Updated description"),
+                    )
+                    .unwrap(),
+                )),
+                TEST_CORRELATION,
+            )
+            .unwrap()
+        {
+            GroupAdministrationMutationResult::Projection {
+                projection,
+                delivery: GroupAdministrationDelivery::Acknowledged,
+            } => projection,
+            result => panic!("unexpected Group update result: {result:?}"),
+        };
+        assert_eq!(updated.name().as_str(), "incident-operators");
+        assert_eq!(records.lock().unwrap().len(), 4);
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
+
+        assert_eq!(
+            workflow
+                .delete(
+                    authorized_group_delete(updated.public_identifier()),
+                    TEST_CORRELATION,
+                )
+                .unwrap(),
+            GroupAdministrationMutationResult::Deleted {
+                public_identifier: updated.public_identifier(),
+                delivery: GroupAdministrationDelivery::Acknowledged,
+            }
+        );
+        assert_eq!(count(&surface.path, "weavelit_group", ""), 0);
+        assert_eq!(records.lock().unwrap().len(), 6);
+        assert_eq!(attempts.load(Ordering::SeqCst), 6);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn group_create_postcommit_failure_preserves_commit_and_restart_recovers() {
+        let surface = surface(false, false, false);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let (audit, records, attempts) = recovery(surface.database.clone(), Some(2));
+        let workflow = GroupAdministrationWorkflow::new(&surface.database, &audit);
+
+        let result = workflow
+            .mutate(
+                authorized_group_administration(GroupAdministrationAction::Create(
+                    GroupCreate::new("pending-create", None::<&str>).unwrap(),
+                )),
+                TEST_CORRELATION,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            GroupAdministrationMutationResult::Projection {
+                delivery: GroupAdministrationDelivery::Pending,
+                ..
+            }
+        ));
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_group",
+                "WHERE name = 'pending-create'",
+            ),
+            1
+        );
+        assert_eq!(records.lock().unwrap().len(), 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            1
+        );
+
+        drop(audit);
+        let (restarted, recovered_records, _) = recovery(surface.database.clone(), None);
+        assert_eq!(
+            restarted.drain_for_activation().active(),
+            AuditRecoverySequenceState::Ready
+        );
+        assert_eq!(recovered_records.lock().unwrap().len(), 1);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn group_update_postcommit_failure_preserves_commit_and_restart_recovers() {
+        let surface = surface(false, false, false);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let target = insert_group(&surface, 0x51, 0xa1, "before-update", None);
+        let (audit, records, attempts) = recovery(surface.database.clone(), Some(2));
+        let workflow = GroupAdministrationWorkflow::new(&surface.database, &audit);
+
+        let result = workflow
+            .mutate(
+                authorized_group_administration(GroupAdministrationAction::Update(
+                    GroupUpdate::new(target, "after-update", Some("Committed")).unwrap(),
+                )),
+                TEST_CORRELATION,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            GroupAdministrationMutationResult::Projection {
+                delivery: GroupAdministrationDelivery::Pending,
+                ..
+            }
+        ));
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_group",
+                "WHERE name = 'after-update' AND description = 'Committed'",
+            ),
+            1
+        );
+        assert_eq!(records.lock().unwrap().len(), 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            1
+        );
+
+        drop(audit);
+        let (restarted, recovered_records, _) = recovery(surface.database.clone(), None);
+        assert_eq!(
+            restarted.drain_for_activation().active(),
+            AuditRecoverySequenceState::Ready
+        );
+        assert_eq!(recovered_records.lock().unwrap().len(), 1);
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn group_delete_postcommit_failure_preserves_commit_and_restart_recovers() {
+        let surface = surface(false, false, false);
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let target = insert_group(&surface, 0x51, 0xa1, "pending-delete", None);
+        let (audit, records, attempts) = recovery(surface.database.clone(), Some(2));
+        let workflow = GroupAdministrationWorkflow::new(&surface.database, &audit);
+
+        let result = workflow
+            .delete(authorized_group_delete(target), TEST_CORRELATION)
+            .unwrap();
+
+        assert_eq!(
+            result,
+            GroupAdministrationMutationResult::Deleted {
+                public_identifier: target,
+                delivery: GroupAdministrationDelivery::Pending,
+            }
+        );
+        assert_eq!(count(&surface.path, "weavelit_group", ""), 0);
         assert_eq!(records.lock().unwrap().len(), 1);
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert_eq!(

@@ -3571,22 +3571,23 @@ fn group_mutation_response(
     result: GroupAdministrationMutationResult,
 ) -> Result<ClientGroupResult, GroupAdministrationRejection> {
     match result {
-        GroupAdministrationMutationResult::Projection(value) => {
-            client_group_projection(value).map(ClientGroupResult::Projection)
-        }
-        GroupAdministrationMutationResult::Deleted(public_identifier) => {
-            GroupDeleted::new(public_identifier.as_base64url())
-                .map(ClientGroupResult::Deleted)
-                .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)
-        }
-        GroupAdministrationMutationResult::Conflict
-        | GroupAdministrationMutationResult::Nonempty => {
+        GroupAdministrationMutationResult::Unchanged(value)
+        | GroupAdministrationMutationResult::Projection {
+            projection: value, ..
+        } => client_group_projection(value).map(ClientGroupResult::Projection),
+        GroupAdministrationMutationResult::Deleted {
+            public_identifier, ..
+        } => GroupDeleted::new(public_identifier.as_base64url())
+            .map(ClientGroupResult::Deleted)
+            .map_err(|_| GroupAdministrationRejection::ServiceUnavailable),
+        GroupAdministrationMutationResult::Conflict { .. }
+        | GroupAdministrationMutationResult::Nonempty { .. } => {
             Err(GroupAdministrationRejection::Conflict)
         }
-        GroupAdministrationMutationResult::Denied => {
+        GroupAdministrationMutationResult::Denied { .. } => {
             Err(GroupAdministrationRejection::AuthorizationDenied)
         }
-        GroupAdministrationMutationResult::Stale => {
+        GroupAdministrationMutationResult::Stale { .. } => {
             Err(GroupAdministrationRejection::ServiceUnavailable)
         }
     }
