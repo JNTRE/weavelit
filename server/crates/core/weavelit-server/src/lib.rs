@@ -75,6 +75,9 @@ pub mod restore;
 pub mod transport;
 
 pub use weavelit_module_client::typed_json;
+use weavelit_module_client::{
+    AccountAdministrationEnvelope, MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES,
+};
 
 use operational::{
     ActiveDatabase, OperationalComposer, OperationalDatabase, OperationalMount, OperationalRuntime,
@@ -268,6 +271,8 @@ enum ResponseProfile {
     Json,
     /// Envelopes the listener serializes itself, used by every other route.
     TypedJson,
+    /// Bounded account collection or exact-view envelopes.
+    AccountAdministrationJson,
     Html,
     JavaScript,
     Css,
@@ -276,7 +281,9 @@ enum ResponseProfile {
 impl ResponseProfile {
     const fn media_type(self) -> &'static str {
         match self {
-            Self::Json | Self::TypedJson => "application/json; charset=utf-8",
+            Self::Json | Self::TypedJson | Self::AccountAdministrationJson => {
+                "application/json; charset=utf-8"
+            }
             Self::Html => "text/html; charset=utf-8",
             Self::JavaScript => "text/javascript; charset=utf-8",
             Self::Css => "text/css; charset=utf-8",
@@ -287,6 +294,7 @@ impl ResponseProfile {
         match self {
             Self::Json => MAX_JSON_BODY_BYTES,
             Self::TypedJson => MAX_TYPED_JSON_BODY_BYTES,
+            Self::AccountAdministrationJson => MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES,
             Self::Html => MAX_HTML_BODY_BYTES,
             Self::JavaScript => MAX_JAVASCRIPT_BODY_BYTES,
             Self::Css => MAX_CSS_BODY_BYTES,
@@ -295,7 +303,7 @@ impl ResponseProfile {
 
     const fn security_headers(self) -> &'static str {
         match self {
-            Self::Json | Self::TypedJson => "",
+            Self::Json | Self::TypedJson | Self::AccountAdministrationJson => "",
             Self::Html | Self::JavaScript | Self::Css => ASSET_SECURITY_HEADERS,
         }
     }
@@ -2093,6 +2101,25 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
     // The typed profile serializes the route's envelope itself and ignores the
     // response body and every header the route set, so it can emit no
     // cross-origin header, message, path, trace, or dependency detail.
+    if let Some(envelope) = response.extensions().get::<AccountAdministrationEnvelope>() {
+        let Some(body) = envelope.serialize() else {
+            return redacted_response(status, allow);
+        };
+        if body.len() > ResponseProfile::AccountAdministrationJson.max_body_bytes()
+            || effect.is_some()
+            || acknowledgement.is_some()
+        {
+            return redacted_response(status, allow);
+        }
+        return BoundedResponse {
+            status,
+            profile: ResponseProfile::AccountAdministrationJson,
+            body: Bytes::from_owner(WipedResponseBytes::from_text(body)),
+            allow,
+            cookies: None,
+            acknowledgement: None,
+        };
+    }
     if let Some(envelope) = response.extensions().get::<TypedJsonEnvelope>() {
         let body = envelope.serialize();
         if body.len() > ResponseProfile::TypedJson.max_body_bytes() {
@@ -2973,8 +3000,8 @@ pub(crate) mod tests {
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
     use weavelit_module_client::{
-        APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
-        AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
+        ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE,
+        AUTH_LOGOUT_ROUTE, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
         AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_SESSION_ROUTE, CookieEffect,
         CookieValue, DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE,
         INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, RESTORE_ARTIFACT_ROUTE,
@@ -3145,8 +3172,8 @@ pub(crate) mod tests {
 
     /// The exact transport registrations a sealed deployment's surface carries.
     ///
-    /// This build serves one Server-owned operational family, authentication,
-    /// and each of its three routes is registered for `PUT` alone.
+    /// This build serves lifecycle reconciliation, authentication, and
+    /// read-only account administration, each registered for `PUT` alone.
     fn operational_registrations() -> Vec<(Method, &'static str)> {
         vec![
             (Method::PUT, LIFECYCLE_RECONCILIATION_ROUTE),
@@ -3157,6 +3184,8 @@ pub(crate) mod tests {
             (Method::PUT, AUTH_MFA_ENROLLMENT_ROUTE),
             (Method::PUT, AUTH_MFA_SELF_ENROLLMENT_ROUTE),
             (Method::PUT, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE),
+            (Method::PUT, ACCOUNTS_LIST_ROUTE),
+            (Method::PUT, ACCOUNTS_VIEW_ROUTE),
         ]
     }
 

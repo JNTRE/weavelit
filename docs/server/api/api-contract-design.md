@@ -158,6 +158,85 @@ Route groups:
   [Server Authentication Design](../authentication/authentication-design.md).
 - `/api/v1/user/` and `/api/v1/administration/` carry the two normal planes.
 
+### Account Administration Reads
+
+The account-read surface contains exactly two routes:
+
+| Route | Method | Result |
+| --- | --- | --- |
+| `/api/v1/administration/accounts/list` | `PUT` | One bounded account page in ascending immutable username order. |
+| `/api/v1/administration/accounts/view` | `PUT` | One account selected by its Account Public Identifier. |
+
+Both routes require an ordinary validated session, exact same-origin `Origin`
+and `Host`, the session's `X-Weavelit-CSRF` value, an acceptable JSON response
+media type, live Web UI Client Module access, and the effective Server
+Administration Permission. Authorization uses the Client Module stored in the
+session and accepts no caller-supplied account, Group, grant, or permission
+claim. Reads create no Audit record and change no account, session, or MFA
+state.
+
+The list body is optional. An absent body and `{}` both select the default
+limit of 50. A supplied object accepts only `limit` and `cursor`; `limit` is an
+integer from 1 through 100. The result is:
+
+```json
+{"result":{"items":[{"public_id":"<22-character Base64url>",
+                      "username":"administrator",
+                      "display_name":"First Administrator",
+                      "active":true,
+                      "mfa_required":false}],
+           "next_cursor":null},
+ "correlation_id":"<opaque-server-value>"}
+```
+
+`display_name` is a string or `null`. Each item contains exactly these five
+account fields. It contains no password verifier, credential state, temporary
+credential value or metadata, MFA factor, session value, internal state
+identifier, or Audit Reference Identifier.
+
+The cursor is canonical unpadded URL-safe Base64 and opaque to the client. It
+is scoped to this exact route and API version and carries the last returned
+immutable unique username as its keyset position. A cursor from another route
+or version, a padded or otherwise noncanonical encoding, an over-bound value,
+or a position that is not present is `bad_request`. A page sets
+`next_cursor` to a string only when another item remains; otherwise it is
+`null`. Accounts are not deleted and usernames are immutable, so a previously
+issued valid position remains stable under the supported account semantics.
+
+The view body is exactly:
+
+```json
+{"public_id":"<22-character Base64url>"}
+```
+
+The Account Public Identifier is the account-administration target. Its public
+representation is exactly 22 unpadded Base64url characters encoding the
+account's nonzero independent 128-bit identifier. It is not an account state
+identifier, Audit Reference Identifier, session value, or credential. The
+lowercase hexadecimal `account_id` remains only in the additive authentication
+session result for compatibility and is not accepted here. A successful view
+returns the same five-field projection directly as `result`; an unknown valid
+identifier is `404 not_found`.
+
+Both bodies use strict JSON. Unknown or duplicate members, missing required
+members, wrong types, trailing content, malformed identifiers or cursors, and
+oversized input are `bad_request`. The stable rejection contract is:
+
+| Condition | Response |
+| --- | --- |
+| Malformed headers, body, schema, identifier, or cursor | `400 Bad Request`, `bad_request` |
+| Missing, malformed, unknown, expired, mismatched, or restricted session | `401 Unauthorized`, `session_invalid` |
+| Failed exact origin or host check | `403 Forbidden`, `request_origin_denied` |
+| Any live authorization denial | `403 Forbidden`, `authorization_denied` |
+| Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
+| Unknown valid view identifier | `404 Not Found`, `not_found` |
+| Persistence, integrity, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
+
+Every code is carried by the typed error envelope with a Server-generated
+correlation identifier. No rejection carries a message, field path, lookup
+detail, dependency name, or supplied value. Neither route is mounted on a
+Pre-Operational Surface.
+
 ### Client Module Identity
 
 Because Client Modules share routes, a request does not name its Client Module

@@ -23,7 +23,6 @@ const RESTORE_ACTION_NAME = "Restore backup";
 const LOGIN_ACTION_NAME = "Sign in";
 const VERIFY_ACTION_NAME = "Verify code";
 const CONFIRM_ACTION_NAME = "Confirm authenticator app";
-const AUTHENTICATED_MESSAGE = "You are signed in.";
 const ATTEMPT_ENDED_MESSAGE =
   "That code was not accepted. This sign-in attempt has ended, so sign in again to start a new one.";
 
@@ -239,8 +238,8 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
   await expect(verify).toBeEnabled();
   await verify.click();
 
-  await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-  await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+  await expect(login).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
 
   expect(verified, "the code was submitted exactly once").toHaveLength(1);
   const submitted = verified[0] as Request;
@@ -355,8 +354,8 @@ test("an enrollment after a 202 mfa_enrollment_required discloses its key and li
 
   await page.locator(CODE_INPUT).fill(CODE);
   await page.getByRole("button", { name: CONFIRM_ACTION_NAME }).click();
-  await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-  await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+  await expect(login).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
 
   expect(confirmed).toHaveLength(1);
   expect((confirmed[0] as Request).postData()).toBe(

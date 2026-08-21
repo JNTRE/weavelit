@@ -22,7 +22,6 @@ const RESTORE_CHOICE_NAME = "Restore from a backup";
 const RESTORE_ACTION_NAME = "Restore backup";
 const LOGIN_ACTION_NAME = "Sign in";
 const LOGIN_FAILED_MESSAGE = "Sign-in failed.";
-const AUTHENTICATED_MESSAGE = "You are signed in.";
 
 const STATUS_PATH = "/api/v1/status";
 const SELECTION_PATH = "/api/v1/application-database";
@@ -30,6 +29,7 @@ const RESTORE_KEY_PATH = "/api/v1/restore";
 const RESTORE_ARTIFACT_PATH = "/api/v1/restore/artifact";
 const LOGIN_PATH = "/api/v1/auth/login";
 const SESSION_PATH = "/api/v1/auth/session";
+const ACCOUNTS_LIST_PATH = "/api/v1/administration/accounts/list";
 
 const ARTIFACT_INPUT = "#weavelit-restore-artifact";
 const RECOVERY_KEY_INPUT = "#weavelit-restore-recovery-key";
@@ -285,21 +285,37 @@ test("an operator signs in to a restored deployment and the session survives a r
     const accepted = page.waitForResponse(
       (response) => new URL(response.url()).pathname === LOGIN_PATH,
     );
+    const accountsLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === ACCOUNTS_LIST_PATH,
+    );
     await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
     await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
     await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
     const acceptedResponse = await accepted;
     expect(acceptedResponse.request().method()).toBe("PUT");
-    expect(acceptedResponse.status(), `rendered sign-in state: ${await login.innerText()}`).toBe(
-      200,
-    );
+    expect(acceptedResponse.status()).toBe(200);
     // The Server returns no token in the body: the session travels in cookies.
     expect(await acceptedResponse.json()).toEqual({
       result: { authenticated: true },
       correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
-    await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-    await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+    const accountsResponse = await accountsLoaded;
+    expect(accountsResponse.status()).toBe(200);
+    await expect(login).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+    await expect(page.getByRole("rowheader", { name: FIXTURE_USERNAME })).toBeVisible();
+    const accountsBody = JSON.stringify(await accountsResponse.json());
+    for (const forbidden of [
+      "password",
+      "verifier",
+      "session",
+      "temporary",
+      "account_id",
+      "audit_reference",
+      "state_id",
+    ]) {
+      expect(accountsBody, `the account projection omits ${forbidden}`).not.toContain(forbidden);
+    }
 
     expect(
       sorted(observed.slice(secondGeneration)),
@@ -310,6 +326,7 @@ test("an operator signs in to a restored deployment and the session survives a r
         `401 ${LOGIN_PATH}`,
         `401 ${LOGIN_PATH}`,
         `200 ${LOGIN_PATH}`,
+        `200 ${ACCOUNTS_LIST_PATH}`,
       ]),
     );
 
@@ -382,13 +399,14 @@ test("an operator signs in to a restored deployment and the session survives a r
     expect(restored?.status()).toBe(200);
     // No credential is re-entered: the new process recognises the cookies the
     // previous process issued, which is only possible from a persisted session.
-    await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-    await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+    await expect(login).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+    await expect(page.getByRole("rowheader", { name: FIXTURE_USERNAME })).toBeVisible();
 
     expect(
       sorted(observed.slice(thirdGeneration)),
       "requests against the third generation",
-    ).toEqual(sorted(operationalLoad(200)));
+    ).toEqual(sorted([...operationalLoad(200), `200 ${ACCOUNTS_LIST_PATH}`]));
 
     // The presented session resolves to the account the fixture restored, and
     // the probe echoed the CSRF value the browser is actually holding.
@@ -407,6 +425,11 @@ test("an operator signs in to a restored deployment and the session survives a r
       },
       correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
+    const accountRequest = requests
+      .slice(requestsBeforeRestart)
+      .find((request) => new URL(request.url()).pathname === ACCOUNTS_LIST_PATH);
+    expect(accountRequest, "the authenticated workspace loaded through its API").toBeDefined();
+    expect((await (accountRequest as Request).allHeaders())[CSRF_HEADER]).toBe(csrfValue);
 
     // ---- Nothing sensitive escaped its one permitted channel. ---------------
 

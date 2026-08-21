@@ -83,6 +83,7 @@ use weavelit_server_observability::ServerObservability;
 use zeroize::Zeroizing;
 
 use crate::{
+    authorization::{AuthorizationRuntime, ServedComponents},
     operational::OperationalDatabase,
     restore::assigned_configuration,
     transport::{
@@ -396,6 +397,19 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                 },
             ),
         ]
+    }
+
+    /// Composes live authorization from the same database, clock, and System Log.
+    pub(crate) fn authorization_runtime(
+        &self,
+        components: ServedComponents,
+    ) -> AuthorizationRuntime {
+        AuthorizationRuntime::new(
+            self.database.clone(),
+            components,
+            Arc::clone(&self.clock),
+            self.system_log.clone(),
+        )
     }
 
     /// Binds this runtime's decisions to the Client Module route contract.

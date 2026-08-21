@@ -31,6 +31,7 @@ use serde::Deserialize;
 use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
 use zeroize::Zeroize;
 
+pub mod administration;
 pub mod authentication;
 pub mod authorization;
 pub mod cookie;
@@ -40,6 +41,15 @@ pub mod reconciliation;
 pub mod restore;
 pub mod typed_json;
 
+pub use administration::{
+    ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, AccountAdministrationCapability,
+    AccountAdministrationDeclaration, AccountAdministrationEnvelope,
+    AccountAdministrationInputRejected, AccountAdministrationProjection,
+    AccountAdministrationRejection, AccountAdministrationRequest, AccountAdministrationResult,
+    AccountAdministrationSubmission, AccountsListRequest, AccountsPage, AccountsViewRequest,
+    DEFAULT_ACCOUNTS_PAGE_LIMIT, MAX_ACCOUNT_ADMINISTRATION_BODY_BYTES,
+    MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES, MAX_ACCOUNTS_PAGE_LIMIT,
+};
 pub use authentication::{
     AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE, AuthenticationCapability,
     AuthenticationDeclaration, AuthenticationRejection, CorrelationSource, LoginCommit,
@@ -256,10 +266,29 @@ impl PreoperationalSurface {
 /// deployment cannot mount them at all rather than mounting and denying them.
 #[derive(Default)]
 pub struct OperationalSurface {
+    account_administration: Option<AccountAdministrationDeclaration>,
     assets: Option<Router>,
 }
 
 impl OperationalSurface {
+    /// Declares authenticated read-only account administration.
+    pub fn with_account_administration(
+        mut self,
+        capability: AccountAdministrationCapability,
+    ) -> Self {
+        self.account_administration = Some(AccountAdministrationDeclaration::new(capability));
+        self
+    }
+
+    /// Separates account routes so the Server can mount each with its transport registration.
+    #[must_use]
+    pub fn split_account_administration(
+        mut self,
+    ) -> (Self, Option<AccountAdministrationDeclaration>) {
+        let declaration = self.account_administration.take();
+        (self, declaration)
+    }
+
     /// Declares client-specific asset delivery, which owns its own exact paths.
     pub fn with_assets(mut self, assets: Router) -> Self {
         self.assets = Some(assets);
@@ -268,6 +297,12 @@ impl OperationalSurface {
 
     /// Mounts every declared capability at its canonical path.
     pub fn mount(self, router: Router) -> Router {
+        let router = match self.account_administration {
+            Some(administration) => router
+                .route(ACCOUNTS_LIST_ROUTE, administration.list_route())
+                .route(ACCOUNTS_VIEW_ROUTE, administration.view_route()),
+            None => router,
+        };
         match self.assets {
             Some(assets) => router.merge(assets),
             None => router,

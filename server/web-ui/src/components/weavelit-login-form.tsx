@@ -125,7 +125,11 @@ function isCredentialState(state: LoginViewState): boolean {
  * them, and dropped as soon as that attempt settles. Nothing that outlives the
  * enrollment retains them.
  */
-export function LoginPanel(): JSX.Element | null {
+export interface LoginPanelProps {
+  readonly onAuthenticated?: () => void;
+}
+
+export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Element | null {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -159,6 +163,12 @@ export function LoginPanel(): JSX.Element | null {
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (state === "authenticated") {
+      onAuthenticated?.();
+    }
+  }, [onAuthenticated, state]);
 
   const changeUsername = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     setUsername(event.target.value);

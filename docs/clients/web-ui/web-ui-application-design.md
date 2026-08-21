@@ -87,9 +87,10 @@ The application has a single root component, `ApplicationShell`, mounted into
 `#weavelit-root` by `main.tsx`. It deliberately has no router, no
 state-management library, and no CSS framework: its only production
 dependencies are `react` and `react-dom`, and `weavelit-application.css` is
-hand-authored. This reflects the current absence of any client-side route and
-the single control the pre-operational experience offers; a later
-normal-operation experience revisits this shell.
+hand-authored. The shell switches between the restricted pre-operational
+experience, sign-in, and the authenticated Accounts workspace from Server
+responses rather than from client-side routes. Navigation remains a usability
+control and never substitutes for Server authorization.
 
 ## Status Presentation States
 
@@ -489,7 +490,7 @@ absent authentication surface both render nothing; the remaining states are:
 | Enrollment submitting | An enrollment confirmation is in flight. | The inputs and the action are disabled. |
 | Indeterminate | A session-establishing submission reported no outcome and no session probe has yet authenticated this browser. | A fixed checking message while automatic probes run; afterwards, a fixed unresolved message and one `Check again` action. The submission controls and all attempt secrets are absent. |
 | Attempt ended | A one-time value was spent by a reported refusal. | The credential inputs return and the one fixed attempt-ended message is presented in an assertive live region. |
-| Authenticated | The session probe, or a completed sign-in, reports an established session. | The inputs and action are replaced by a fixed confirmation message in a polite live region. |
+| Authenticated | The session probe, or a completed sign-in, reports an established session. | The sign-in control is withdrawn and the Accounts workspace is mounted. |
 
 The failure message is fixed and redacted: `Sign-in failed.` The login route
 deliberately reports no cause for a denial and returns the identical response
@@ -589,6 +590,29 @@ only two values this application renders at all, because an operator cannot
 capture them otherwise, and they are removed from the rendered output as soon
 as the enrollment they belong to settles or reconciliation begins. Nothing that
 outlives that enrollment retains them.
+
+## Accounts Workspace
+
+The authenticated shell opens a read-only Accounts workspace backed only by
+the two account-read routes in the
+[Server API Contract](../../server/api/api-contract-design.md#account-administration-reads).
+It loads the first account page on entry, presents the safe projection in a
+table, offers `Load more` only when the response carries a cursor, and appends
+the next page without replacing rows already displayed. `Refresh` discards the
+current collection and reloads from the first page.
+
+Each row presents username, optional display name, active state, and MFA-required
+state. Its `View` action requests that row's Account Public Identifier and
+presents the returned safe projection, including the public identifier. The
+application never requests or presents password verifiers, credential or
+temporary-password state, MFA factors, session values, internal state
+identifiers, or Audit Reference Identifiers.
+
+Collection, paging, view, transport, authorization, session, and malformed
+response failures all render the same fixed `Accounts are unavailable.` text.
+The workspace renders no Server code, status number, response detail, field
+path, or transport diagnostic. It stores no account result or cursor in a URL,
+cookie, `localStorage`, or `sessionStorage`.
 
 ## Same-Origin Requests
 

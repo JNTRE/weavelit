@@ -467,9 +467,12 @@ Every account carries exactly one Account Public Identifier in normalized
 application state. It is an independently generated, nonzero 16-byte value
 that remains stable when application state is persisted or restored. It is
 distinct from the account's `StateIdentifier`, username, and Audit Reference
-Identifier and has no conversion from those values, public text codec, or
-ordinary raw-byte accessor. Its diagnostic representation and errors expose no
-identifier value.
+Identifier and has no conversion from those values or ordinary raw-byte
+accessor. Its diagnostic representation and errors expose no identifier value.
+The identifier's public representation is canonical unpadded Base64url; the
+[Server API Contract](../api/api-contract-design.md#account-administration-reads)
+owns where that representation is returned or accepted, while persistence
+continues to decode only through database authority.
 
 The Application Database contract generates new Account Public Identifiers
 from operating-system randomness through the same exact-pinned `getrandom`
@@ -491,8 +494,8 @@ coverage and every stored identifier before returning output. Invalid coverage,
 malformed values, or duplicate identifiers fail with a payload-free database
 integrity error rather than omitting an account or substituting an internal
 identifier. An unknown valid typed public identifier returns absence. The
-contract defines no mutation, string parsing or encoding, public route,
-response, cursor, or pagination behavior.
+store contract defines no mutation, string parsing, public route, response,
+cursor, or pagination behavior.
 
 Every account, Group, and Log Module configuration carries exactly one
 **[Audit Reference Identifier](../../glossary.md#applications-and-interfaces)**

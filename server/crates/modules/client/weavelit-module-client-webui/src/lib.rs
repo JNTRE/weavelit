@@ -18,8 +18,8 @@ use axum::{
     routing::any,
 };
 pub use weavelit_module_client::{
-    ExpectedOrigin, InitCapability, OperationalSurface, PreoperationalSurface, ProjectionSource,
-    RestoreCapability, SelectionCommit,
+    AccountAdministrationCapability, ExpectedOrigin, InitCapability, OperationalSurface,
+    PreoperationalSurface, ProjectionSource, RestoreCapability, SelectionCommit,
 };
 use weavelit_module_client::{has_request_body, json_response, json_response_with_allow};
 
@@ -83,8 +83,14 @@ pub fn finalization_surface(init: InitCapability) -> PreoperationalSurface {
 /// A sealed deployment's Web UI declares only browser asset delivery, so the
 /// pre-operational status and Application Database routes are absent rather
 /// than mounted and denied.
-pub fn operational_surface() -> OperationalSurface {
-    OperationalSurface::default().with_assets(embedded_asset_routes())
+pub fn operational_surface(
+    account_administration: Option<AccountAdministrationCapability>,
+) -> OperationalSurface {
+    let surface = OperationalSurface::default().with_assets(embedded_asset_routes());
+    match account_administration {
+        Some(capability) => surface.with_account_administration(capability),
+        None => surface,
+    }
 }
 
 // ---------------------------------------------------------------------------

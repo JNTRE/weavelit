@@ -263,7 +263,9 @@ username, optional display name, active state, and MFA-required state. The
 workflow does not produce an Audit terminal record, read or change a session,
 or accept a state identifier, Audit Reference Identifier, password verifier,
 MFA factor, temporary credential value, or temporary credential metadata. It
-adds no route, public identifier codec, response schema, or pagination contract.
+adds no route, public identifier codec, response schema, or pagination contract;
+the [Server API Contract](../api/api-contract-design.md#account-administration-reads)
+owns that public wire surface and consumes this exact action boundary.
 
 `ComponentOperation` means an administration action performed through an
 already enabled target. It is not an enablement mutation. A

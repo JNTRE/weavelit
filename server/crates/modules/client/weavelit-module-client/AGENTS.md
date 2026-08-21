@@ -25,6 +25,7 @@ Apply instructions in this order:
 
 - `Cargo.toml`: Compiled-in shared Client Module package manifest.
 - `src/lib.rs`: Canonical route paths, the pre-operational and operational capability declarations and their mounting, pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the shared fixed-profile response helpers, the shared release-time clearing owner every collected secret-bearing request body is parsed through, and contract tests.
+- `src/administration.rs`: The shared account-list and account-view Administration Plane contract: canonical routes, strict session-bearing requests, route-scoped cursor paging, safe public projections, bounded typed envelopes, stable rejections, and Server-core hooks.
 - `src/restore.rs`: The two-step Restore submission contract: both canonical
   route paths, the ticket header, every header precondition, the recovery-key
   request schema and the shared release-time clearing of its collected body,

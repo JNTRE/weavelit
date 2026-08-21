@@ -659,4 +659,54 @@ describe("ApplicationShell sign-in panel gating", () => {
       expect(loginSection()).toBeNull();
     });
   });
+
+  it("opens the Accounts workspace when the Server session probe authenticates", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+            },
+          }),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              items: [
+                {
+                  public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+                  username: "administrator",
+                  display_name: "First Administrator",
+                  active: true,
+                  mfa_required: false,
+                },
+              ],
+              next_cursor: null,
+            },
+          }),
+        );
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+
+    render(<ApplicationShell />);
+
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(await screen.findByRole("rowheader", { name: "administrator" })).toBeTruthy();
+    expect(screen.getByText("Administration")).toBeTruthy();
+    expect(loginSection()).toBeNull();
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
 });

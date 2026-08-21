@@ -22,31 +22,38 @@ use std::{
 };
 
 use axum::http::Method;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::task;
 use weavelit_module_client::{
-    AuthenticationRejection, ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
+    ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, AccountAdministrationCapability,
+    AccountAdministrationDeclaration, AccountAdministrationProjection as ClientAccountProjection,
+    AccountAdministrationRejection, AccountAdministrationRequest,
+    AccountAdministrationResult as ClientAccountResult, AccountAdministrationSubmission,
+    AccountsPage, AuthenticationRejection, ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
     ReconciliationCapability as ClientReconciliationCapability, ReconciliationOutcome,
     ReconciliationRejection, validate_reconciliation_request,
 };
 use weavelit_server_administration::{
-    AdministrationClock, AdministrationPlane, AuthorizedAdministrationAdmission,
-    ComponentEnablementSource, MfaStepUpProof, StepUpActionFamily,
+    AccountAdministrationAction, AccountAdministrationRead, AdministrationAction,
+    AdministrationClock, AdministrationPlane, AdministrationRequest,
+    AuthorizedAdministrationAdmission, ComponentEnablementSource, MfaStepUpProof,
+    StepUpActionFamily,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authentication::RustCryptoArgon2;
 use weavelit_server_authorization::AuthorizationDenied;
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    AccountAdministrationStore, AccountAuditReference, AccountCreateMutation, AccountCreateOutcome,
-    AccountCredentialAuditTerminalWrites, AccountCredentialWriterStore,
-    AccountPasswordResetMutation, AccountPasswordResetOutcome, AccountPasswordResetTarget,
-    AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountStatusAuditTerminalWrites,
-    AccountStatusMutation, AccountStatusMutationOutcome, AccountStatusTarget,
-    AccountStatusWriterStore, AuditReferencePersistence, AuditTerminalRecoveryPersistence,
-    AuditTerminalRecoveryStore, GroupGrant, GroupGrantMutationTarget,
-    GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites, GroupMutationOutcome,
-    GroupMutationStore, LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
-    LogConfigurationGeneration, LogConfigurationGenerationKey,
+    AccountAdministrationProjection, AccountAdministrationStore, AccountAuditReference,
+    AccountCreateMutation, AccountCreateOutcome, AccountCredentialAuditTerminalWrites,
+    AccountCredentialWriterStore, AccountPasswordResetMutation, AccountPasswordResetOutcome,
+    AccountPasswordResetTarget, AccountPublicIdentifier, AccountPublicIdentifierPersistence,
+    AccountStatusAuditTerminalWrites, AccountStatusMutation, AccountStatusMutationOutcome,
+    AccountStatusTarget, AccountStatusWriterStore, AuditReferencePersistence,
+    AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, GroupGrant,
+    GroupGrantMutationTarget, GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites,
+    GroupMutationOutcome, GroupMutationStore, LogConfigurationAuditReference,
+    LogConfigurationAuditTerminalWrites, LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
     LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
@@ -62,7 +69,9 @@ use weavelit_server_restore::Name;
 use zeroize::Zeroizing;
 
 use crate::{
-    authentication::{AuthenticationRuntime, ValidatedSession},
+    administration::{AccountAdministrationReadResult, AccountAdministrationReadWorkflow},
+    authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
+    authorization::{AuthorizationRuntime, ServedComponents},
     fallback_router,
     operational_audit::{OperationalAuditRecovery, OperationalAuditRecoveryState},
     transport::{
@@ -318,6 +327,22 @@ impl OperationalDatabase {
                     .ok_or(DatabaseError::Unavailable)?,
             )
         })?
+    }
+
+    /// Decodes one canonical public account identifier through database authority.
+    fn account_public_identifier(
+        &self,
+        encoded: &str,
+    ) -> Result<AccountPublicIdentifier, DatabaseError> {
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        let bytes: [u8; 16] = decoded
+            .try_into()
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        self.account_public_identifier_persistence
+            .decode(bytes)
+            .map_err(|_| DatabaseError::IntegrityFailure)
     }
 
     /// Resolves one exact password-reset target through both selected decoders.
@@ -780,6 +805,7 @@ pub struct OperationalComposer {
     /// authentication route, so a Server that cannot deny safely serves no
     /// login at all rather than one that decides on a broken authenticator.
     authentication: Option<Arc<AuthenticationRuntime<RustCryptoArgon2>>>,
+    authorization: Option<Arc<AuthorizationRuntime>>,
     #[allow(dead_code)]
     administration: Option<Arc<OperationalAdministration>>,
 }
@@ -869,6 +895,24 @@ impl OperationalAdministration {
                 .with_step_up(proof),
             )
     }
+
+    /// Consumes one exact Administration Plane admission for one account read.
+    fn authorize_account_read(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        read: AccountAdministrationRead,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        self.plane
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Account(
+                    AccountAdministrationAction::Read(read),
+                )),
+            )
+    }
 }
 
 impl OperationalComposer {
@@ -895,6 +939,9 @@ impl OperationalComposer {
             &runtime.log_catalog,
             Arc::clone(&runtime.protection),
         );
+        let authorization = authentication.as_ref().map(|authentication| {
+            Arc::new(authentication.authorization_runtime(ServedComponents::compiled_in()))
+        });
         let administration = authentication.as_ref().map(|authentication| {
             Arc::new(OperationalAdministration::new(
                 Arc::clone(authentication),
@@ -910,6 +957,7 @@ impl OperationalComposer {
             #[cfg(test)]
             activation_audit_recovery_state,
             authentication,
+            authorization,
             administration,
         }
     }
@@ -932,6 +980,9 @@ impl OperationalComposer {
             &runtime.log_catalog,
             Arc::clone(&runtime.protection),
         );
+        let authorization = authentication.as_ref().map(|authentication| {
+            Arc::new(authentication.authorization_runtime(ServedComponents::compiled_in()))
+        });
         let administration = authentication.as_ref().map(|authentication| {
             Arc::new(OperationalAdministration::new(
                 Arc::clone(authentication),
@@ -946,6 +997,7 @@ impl OperationalComposer {
             audit_recovery,
             activation_audit_recovery_state,
             authentication,
+            authorization,
             administration,
         }
     }
@@ -954,6 +1006,7 @@ impl OperationalComposer {
     #[cfg(test)]
     pub(crate) fn without_authentication(mut self) -> Self {
         self.authentication = None;
+        self.authorization = None;
         self.administration = None;
         self
     }
@@ -982,6 +1035,40 @@ impl OperationalComposer {
         )
     }
 
+    fn account_administration_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<AccountAdministrationCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+
+        Some(AccountAdministrationCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            read: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_account_administration_read(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(AccountAdministrationRejection::ServiceUnavailable))
+                })
+            }),
+        })
+    }
+
     /// Returns the state observed by the activation drain.
     #[cfg(test)]
     pub(crate) const fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
@@ -997,9 +1084,13 @@ impl OperationalComposer {
     /// [`TransportCapability`] and therefore cannot be built without the
     /// registration that admits the route it mounts.
     pub(crate) fn mount(&self) -> OperationalMount {
-        let declared = weavelit_module_client_webui::operational_surface();
+        let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
+        let declared = weavelit_module_client_webui::operational_surface(
+            self.account_administration_capability(expected_origin),
+        );
+        let (declared, account_administration) = declared.split_account_administration();
         let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
-        for capability in self.capabilities() {
+        for capability in self.capabilities(account_administration) {
             surface = surface.with_capability(capability);
         }
         OperationalMount { surface }
@@ -1012,7 +1103,10 @@ impl OperationalComposer {
     /// it remains reachable when optional authentication cannot compose. Each
     /// authentication route arrives as a [`TransportCapability`], so login's
     /// single-permit admission lane travels with the route it bounds.
-    fn capabilities(&self) -> Vec<TransportCapability> {
+    fn capabilities(
+        &self,
+        account_administration: Option<AccountAdministrationDeclaration>,
+    ) -> Vec<TransportCapability> {
         let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
         let database = self.database.clone();
         let route = ClientReconciliationCapability {
@@ -1040,7 +1134,129 @@ impl OperationalComposer {
         if let Some(runtime) = &self.authentication {
             capabilities.extend(runtime.capabilities(expected_origin));
         }
+        if let Some(declaration) = account_administration {
+            let declaration = Arc::new(declaration);
+            let view = Arc::clone(&declaration);
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_LIST_ROUTE,
+                    TransportProfile::DEFAULT,
+                ),
+                move |router| router.route(ACCOUNTS_LIST_ROUTE, declaration.list_route()),
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_VIEW_ROUTE,
+                    TransportProfile::DEFAULT,
+                ),
+                move |router| router.route(ACCOUNTS_VIEW_ROUTE, view.view_route()),
+            ));
+        }
         capabilities
+    }
+}
+
+fn execute_account_administration_read(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    submission: AccountAdministrationSubmission,
+) -> Result<ClientAccountResult, AccountAdministrationRejection> {
+    let AccountAdministrationSubmission {
+        request,
+        session_token,
+        csrf_token,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(account_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(AccountAdministrationRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+    let read = match &request {
+        AccountAdministrationRequest::List(_) => AccountAdministrationRead::List,
+        AccountAdministrationRequest::View(view) => AccountAdministrationRead::View(
+            database
+                .account_public_identifier(view.public_id())
+                .map_err(|_| AccountAdministrationRejection::BadRequest)?,
+        ),
+    };
+    let action = administration
+        .authorize_account_read(admission, read)
+        .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+    let result = AccountAdministrationReadWorkflow::new(database)
+        .read(action)
+        .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?;
+
+    match (request, result) {
+        (
+            AccountAdministrationRequest::List(request),
+            AccountAdministrationReadResult::List(items),
+        ) => {
+            let items = items
+                .into_iter()
+                .map(client_account_projection)
+                .collect::<Result<Vec<_>, _>>()?;
+            if items
+                .windows(2)
+                .any(|pair| pair[0].username() >= pair[1].username())
+            {
+                return Err(AccountAdministrationRejection::ServiceUnavailable);
+            }
+            AccountsPage::from_ordered(&request, items)
+                .map(ClientAccountResult::List)
+                .map_err(|_| AccountAdministrationRejection::BadRequest)
+        }
+        (
+            AccountAdministrationRequest::View(_),
+            AccountAdministrationReadResult::View(Some(item)),
+        ) => client_account_projection(item).map(ClientAccountResult::View),
+        (AccountAdministrationRequest::View(_), AccountAdministrationReadResult::View(None)) => {
+            Err(AccountAdministrationRejection::NotFound)
+        }
+        _ => Err(AccountAdministrationRejection::ServiceUnavailable),
+    }
+}
+
+fn client_account_projection(
+    projection: AccountAdministrationProjection,
+) -> Result<ClientAccountProjection, AccountAdministrationRejection> {
+    ClientAccountProjection::new(
+        projection.public_identifier().as_base64url(),
+        projection.username().as_str().to_owned(),
+        projection
+            .display_name()
+            .map(|display_name| display_name.as_str().to_owned()),
+        projection.active(),
+        projection.mfa_required(),
+    )
+    .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)
+}
+
+fn account_authentication_rejection(
+    rejection: AuthenticationRejection,
+) -> AccountAdministrationRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => {
+            AccountAdministrationRejection::ServiceUnavailable
+        }
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => {
+            AccountAdministrationRejection::SessionInvalid
+        }
     }
 }
 

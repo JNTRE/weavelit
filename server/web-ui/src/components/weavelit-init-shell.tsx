@@ -8,6 +8,7 @@ import {
   type StatusViewState,
 } from "../hooks/weavelit-init-deployment-status";
 import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
+import { AccountsWorkspace } from "./weavelit-accounts-workspace";
 import { InitWorkflow } from "./weavelit-init-workflow";
 import { LoginPanel } from "./weavelit-login-form";
 
@@ -56,6 +57,7 @@ export function ApplicationShell(): JSX.Element {
   const [selection, setSelection] = useState<SelectionViewState>("idle");
   const [choice, setChoice] = useState<SetupChoice | null>(null);
   const [initialized, setInitialized] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
 
   const chooseInit = useCallback(() => {
     setChoice("init");
@@ -69,6 +71,9 @@ export function ApplicationShell(): JSX.Element {
   // served.
   const completeSetup = useCallback(() => {
     setInitialized(true);
+  }, []);
+  const completeAuthentication = useCallback(() => {
+    setAuthenticated(true);
   }, []);
 
   const submit = useCallback(() => {
@@ -106,6 +111,16 @@ export function ApplicationShell(): JSX.Element {
   // renders nothing when that surface is absent, so an unreachable Server does
   // not produce a sign-in form that could never succeed.
   const offerLogin = state.kind === "unavailable" || initialized;
+
+  if (authenticated) {
+    return (
+      <main className="shell shell--administration">
+        <h1 className="shell__title">Weavelit Server</h1>
+        <p className="shell__subtitle">Administration</p>
+        <AccountsWorkspace />
+      </main>
+    );
+  }
 
   return (
     <main className="shell">
@@ -164,7 +179,7 @@ export function ApplicationShell(): JSX.Element {
       ) : null}
       {offerRestore ? <RestoreSubmissionForm onCompleted={completeSetup} /> : null}
       {offerInit ? <InitWorkflow onCompleted={completeSetup} /> : null}
-      {offerLogin ? <LoginPanel /> : null}
+      {offerLogin ? <LoginPanel onAuthenticated={completeAuthentication} /> : null}
     </main>
   );
 }

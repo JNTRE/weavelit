@@ -25,6 +25,10 @@ body {
   padding: var(--ds-space-2xl) var(--ds-space-lg);
 }
 
+.shell--administration {
+  max-width: 72rem;
+}
+
 .shell__title {
   font-size: var(--ds-font-size-heading-lg);
   margin: 0;
@@ -344,4 +348,134 @@ body {
 
 .shell__init-review-value {
   margin: 0;
+}
+
+.accounts {
+  margin-top: var(--ds-space-xl);
+}
+
+.accounts__toolbar {
+  align-items: center;
+  border-bottom: 1px solid var(--ds-color-border);
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: var(--ds-space-md);
+  padding-bottom: var(--ds-space-md);
+}
+
+.accounts__title {
+  font-size: var(--ds-font-size-heading-md);
+  margin: 0;
+}
+
+.accounts__count {
+  color: var(--ds-color-text-secondary);
+  font-size: var(--ds-font-size-sm);
+  margin: var(--ds-space-xs) 0 0;
+}
+
+.accounts__action,
+.accounts__view {
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: var(--ds-radius-sm);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+}
+
+.accounts__action:disabled,
+.accounts__view:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.accounts__table-wrap {
+  margin-bottom: var(--ds-space-md);
+  overflow-x: auto;
+}
+
+.accounts__table {
+  border-collapse: collapse;
+  min-width: 46rem;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.accounts__table th,
+.accounts__table td {
+  border-bottom: 1px solid var(--ds-color-border);
+  padding: var(--ds-space-sm) var(--ds-space-md);
+  text-align: left;
+  vertical-align: middle;
+  word-break: break-word;
+}
+
+.accounts__table thead th {
+  color: var(--ds-color-text-secondary);
+  font-size: var(--ds-font-size-sm);
+  font-weight: var(--ds-font-weight-semibold);
+}
+
+.accounts__row-action {
+  text-align: right !important;
+}
+
+.accounts__view {
+  padding: var(--ds-space-xs) var(--ds-space-sm);
+}
+
+.accounts__failure {
+  align-items: center;
+  display: flex;
+  gap: var(--ds-space-md);
+}
+
+.accounts__failure p {
+  margin: 0;
+}
+
+.accounts__detail {
+  border-top: 1px solid var(--ds-color-border-strong);
+  margin-top: var(--ds-space-xl);
+  padding-top: var(--ds-space-lg);
+}
+
+.accounts__detail h3 {
+  font-size: var(--ds-font-size-heading-sm);
+  margin: 0 0 var(--ds-space-md);
+}
+
+.accounts__detail dl {
+  display: grid;
+  gap: var(--ds-space-md);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.accounts__detail dt {
+  color: var(--ds-color-text-secondary);
+  font-size: var(--ds-font-size-sm);
+}
+
+.accounts__detail dd {
+  margin: var(--ds-space-xs) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.accounts__visually-hidden {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+@media (max-width: 48rem) {
+  .accounts__detail dl {
+    grid-template-columns: 1fr 1fr;
+  }
 }
