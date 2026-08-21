@@ -263,11 +263,14 @@ the committed module, configuration name, enabled state, ordered non-secret
 settings, and Log Type membership. It contains no destination credential or
 Log-owned authority.
 
-The read contract exposes only the current Audit generation and exact
-historical lookup. Construction requires database persistence authority, and
-the Application Database's optional accessor defaults to absent until a
-concrete backend implements generation persistence. The MVP SQLite Application
-Database implements immutable snapshot, setting, membership, and current-pointer
+The read contract exposes a complete current-generation list ordered by unique
+configuration name, the current Audit generation, and exact historical lookup.
+The list validates current pointers, snapshots, settings, and the complete
+System and Audit assignment topology in one database snapshot before returning
+anything. Construction requires database persistence authority, and the
+Application Database's optional accessor defaults to absent until a concrete
+backend implements generation persistence. The MVP SQLite Application Database
+implements immutable snapshot, setting, membership, and current-pointer
 storage; version `1` is backfilled on migration or seeded atomically with fresh
 Init and Restore state. Its history survives restart but remains outside
 `ApplicationState`, backup content, and normalized Restore input.
@@ -297,10 +300,17 @@ topology. A stale result commits only its denied terminal obligation. A match
 commits all configuration state, assignments, immutable generations, the
 applied terminal obligation, and each affected pointer, with pointer updates
 last. The workflow then runs the bounded recovery drain. A post-commit delivery
-failure reports the authoritative result as committed with delivery pending;
-it never reports a rejection. This internal workflow adds no public route,
-wire identifier, Client Module or UI surface, generation deletion, or terminal
-supersession implementation.
+failure reports the authoritative internal result as committed with delivery
+pending. The specialized
+[Log Configuration Administration contract](../server/api/api-contract-design.md#log-configuration-administration)
+maps that state to `service_unavailable` rather than claiming public success,
+because an automatic client retry would be unsafe. That contract targets only
+an existing unique configuration name and exposes only module, name, enabled
+state, ordered module-declared non-secret non-path settings, and assigned Log
+Types. It adds no public identifier or generation, configuration create or
+delete, module replacement, destination credential or path, Log browsing,
+retention or purge control, generation deletion, or terminal supersession
+surface.
 
 Trusted Server runtime reconstructs an Audit destination only from one exact
 authority-materialized generation. Before module factory access, it verifies

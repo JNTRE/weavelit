@@ -991,6 +991,14 @@ mod tests {
     }
 
     impl LogConfigurationGenerationStore for RecoveryDatabase {
+        fn list_current_log_configuration_generations(
+            &mut self,
+            _persistence: &LogConfigurationGenerationPersistence,
+        ) -> Result<Vec<LogConfigurationGeneration>, DatabaseError> {
+            let state = self.state.lock().map_err(|_| DatabaseError::Unavailable)?;
+            Ok(state.current_generation.iter().cloned().collect())
+        }
+
         fn load_current_audit_log_configuration_generation(
             &mut self,
             _persistence: &LogConfigurationGenerationPersistence,
@@ -2602,6 +2610,13 @@ mod tests {
         }
 
         impl LogConfigurationGenerationStore for GenerationStoreDouble {
+            fn list_current_log_configuration_generations(
+                &mut self,
+                _persistence: &LogConfigurationGenerationPersistence,
+            ) -> Result<Vec<LogConfigurationGeneration>, DatabaseError> {
+                Ok(vec![self.current.clone()])
+            }
+
             fn load_current_audit_log_configuration_generation(
                 &mut self,
                 _persistence: &LogConfigurationGenerationPersistence,
@@ -2763,6 +2778,13 @@ mod tests {
         struct AbsentGenerationStoreDouble;
 
         impl LogConfigurationGenerationStore for AbsentGenerationStoreDouble {
+            fn list_current_log_configuration_generations(
+                &mut self,
+                _persistence: &LogConfigurationGenerationPersistence,
+            ) -> Result<Vec<LogConfigurationGeneration>, DatabaseError> {
+                Ok(Vec::new())
+            }
+
             fn load_current_audit_log_configuration_generation(
                 &mut self,
                 _persistence: &LogConfigurationGenerationPersistence,

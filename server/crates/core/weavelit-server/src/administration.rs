@@ -2059,11 +2059,31 @@ fn log_configuration_request(
 /// Target-bound preview of Human Users affected by one TOTP enablement change.
 pub(crate) struct MfaModuleEnablementPreview {
     target: MfaModuleTarget,
+    current_enabled: bool,
     desired_state: bool,
     affected_users: usize,
 }
 
 impl MfaModuleEnablementPreview {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        current_enabled: bool,
+        desired_state: bool,
+        affected_users: usize,
+    ) -> Self {
+        Self {
+            target: totp_target().expect("the fixed TOTP target is valid"),
+            current_enabled,
+            desired_state,
+            affected_users,
+        }
+    }
+
+    /// Returns whether the Module was enabled in the preview snapshot.
+    pub(crate) const fn current_enabled(&self) -> bool {
+        self.current_enabled
+    }
+
     /// Returns the number of distinct enrolled Human Users observed for the preview.
     pub(crate) const fn affected_users(&self) -> usize {
         self.affected_users
@@ -2150,14 +2170,15 @@ impl<'a> MfaModuleEnablementWorkflow<'a> {
     ) -> Result<MfaModuleEnablementPreview, MfaModuleEnablementError> {
         let desired_state = exact_totp_change(action)?;
         let target = totp_target()?;
-        let affected_users = self
+        let state = self
             .database
-            .with_mfa(|store| store.enrolled_accounts(&target))
+            .with_mfa(|store| store.enablement_preview(&target))
             .map_err(audit_unavailable)?;
         Ok(MfaModuleEnablementPreview {
             target,
+            current_enabled: state.current_enabled(),
             desired_state,
-            affected_users,
+            affected_users: state.affected_users(),
         })
     }
 

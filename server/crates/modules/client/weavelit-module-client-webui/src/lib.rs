@@ -18,9 +18,10 @@ use axum::{
     routing::any,
 };
 pub use weavelit_module_client::{
-    AccountAdministrationCapability, CredentialIssuanceCapability, ExpectedOrigin, InitCapability,
-    MfaPolicyCapability, OperationalSurface, PreoperationalSurface, ProjectionSource,
-    RestoreCapability, SelectionCommit,
+    AccountAdministrationCapability, ConfigurationAdministrationCapability,
+    CredentialIssuanceCapability, ExpectedOrigin, InitCapability, MfaPolicyCapability,
+    OperationalSurface, PreoperationalSurface, ProjectionSource, RestoreCapability,
+    SelectionCommit,
 };
 use weavelit_module_client::{has_request_body, json_response, json_response_with_allow};
 
@@ -87,6 +88,7 @@ pub fn finalization_surface(init: InitCapability) -> PreoperationalSurface {
 pub fn operational_surface(
     account_administration: Option<AccountAdministrationCapability>,
     group_administration: Option<weavelit_module_client::GroupAdministrationCapability>,
+    configuration_administration: Option<ConfigurationAdministrationCapability>,
     credential_issuance: Option<CredentialIssuanceCapability>,
     mfa_policy: Option<MfaPolicyCapability>,
 ) -> OperationalSurface {
@@ -97,6 +99,10 @@ pub fn operational_surface(
     };
     let surface = match group_administration {
         Some(capability) => surface.with_group_administration(capability),
+        None => surface,
+    };
+    let surface = match configuration_administration {
+        Some(capability) => surface.with_configuration_administration(capability),
         None => surface,
     };
     let surface = match credential_issuance {
@@ -116,6 +122,7 @@ pub fn operational_surface(
 const MAX_HTML_ASSET_BYTES: usize = 16 * 1024;
 const MAX_JAVASCRIPT_ASSET_BYTES: usize = 256 * 1024;
 const MAX_GROUPS_JAVASCRIPT_ASSET_BYTES: usize = 32 * 1024;
+const MAX_CONFIGURATION_JAVASCRIPT_ASSET_BYTES: usize = 48 * 1024;
 const MAX_CSS_ASSET_BYTES: usize = 64 * 1024;
 
 const INDEX_HTML: &[u8] = include_bytes!(concat!(
@@ -129,6 +136,10 @@ const APPLICATION_JAVASCRIPT: &[u8] = include_bytes!(concat!(
 const GROUPS_JAVASCRIPT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../../web-ui/dist/assets/weavelit-groups-workspace.js"
+));
+const CONFIGURATION_JAVASCRIPT: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../../web-ui/dist/assets/weavelit-configuration-workspace.js"
 ));
 const APPLICATION_CSS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -149,6 +160,11 @@ const _: () = assert!(
     "the embedded Web UI Groups script must be present and within its 32 KiB bound"
 );
 const _: () = assert!(
+    !CONFIGURATION_JAVASCRIPT.is_empty()
+        && CONFIGURATION_JAVASCRIPT.len() <= MAX_CONFIGURATION_JAVASCRIPT_ASSET_BYTES,
+    "the embedded Web UI Configuration script must be present and within its 48 KiB bound"
+);
+const _: () = assert!(
     !APPLICATION_CSS.is_empty() && APPLICATION_CSS.len() <= MAX_CSS_ASSET_BYTES,
     "the embedded Web UI stylesheet must be present and within its 64 KiB bound"
 );
@@ -164,6 +180,7 @@ enum EmbeddedAsset {
     Document,
     Script,
     GroupsScript,
+    ConfigurationScript,
     Stylesheet,
 }
 
@@ -173,6 +190,7 @@ impl EmbeddedAsset {
             Self::Document => "/",
             Self::Script => "/assets/weavelit-application.js",
             Self::GroupsScript => "/assets/weavelit-groups-workspace.js",
+            Self::ConfigurationScript => "/assets/weavelit-configuration-workspace.js",
             Self::Stylesheet => "/assets/weavelit-application.css",
         }
     }
@@ -182,6 +200,7 @@ impl EmbeddedAsset {
             Self::Document => INDEX_HTML,
             Self::Script => APPLICATION_JAVASCRIPT,
             Self::GroupsScript => GROUPS_JAVASCRIPT,
+            Self::ConfigurationScript => CONFIGURATION_JAVASCRIPT,
             Self::Stylesheet => APPLICATION_CSS,
         }
     }
@@ -189,16 +208,19 @@ impl EmbeddedAsset {
     const fn media_type(self) -> &'static str {
         match self {
             Self::Document => "text/html; charset=utf-8",
-            Self::Script | Self::GroupsScript => "text/javascript; charset=utf-8",
+            Self::Script | Self::GroupsScript | Self::ConfigurationScript => {
+                "text/javascript; charset=utf-8"
+            }
             Self::Stylesheet => "text/css; charset=utf-8",
         }
     }
 }
 
-const EMBEDDED_ASSETS: [EmbeddedAsset; 4] = [
+const EMBEDDED_ASSETS: [EmbeddedAsset; 5] = [
     EmbeddedAsset::Document,
     EmbeddedAsset::Script,
     EmbeddedAsset::GroupsScript,
+    EmbeddedAsset::ConfigurationScript,
     EmbeddedAsset::Stylesheet,
 ];
 
@@ -262,6 +284,7 @@ mod tests {
             EmbeddedAsset::Document => "index.html",
             EmbeddedAsset::Script => "assets/weavelit-application.js",
             EmbeddedAsset::GroupsScript => "assets/weavelit-groups-workspace.js",
+            EmbeddedAsset::ConfigurationScript => "assets/weavelit-configuration-workspace.js",
             EmbeddedAsset::Stylesheet => "assets/weavelit-application.css",
         };
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -328,6 +351,7 @@ mod tests {
                 "/",
                 "/assets/weavelit-application.js",
                 "/assets/weavelit-groups-workspace.js",
+                "/assets/weavelit-configuration-workspace.js",
                 "/assets/weavelit-application.css"
             ]
         );
@@ -396,6 +420,7 @@ mod tests {
             "/%2E%2E/assets/weavelit-application.js",
             "/assets/weavelit-application.js.map",
             "/assets/weavelit-groups-workspace.js.map",
+            "/assets/weavelit-configuration-workspace.js.map",
             "/api/v1/status",
             "/api/",
             "//",

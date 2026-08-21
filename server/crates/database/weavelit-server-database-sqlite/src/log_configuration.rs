@@ -87,6 +87,27 @@ impl SqliteDatabase {
 }
 
 impl LogConfigurationGenerationStore for SqliteDatabase {
+    fn list_current_log_configuration_generations(
+        &mut self,
+        persistence: &LogConfigurationGenerationPersistence,
+    ) -> Result<Vec<LogConfigurationGeneration>, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(log_configuration_error)?;
+        let mut generations = load_current_generations(&transaction, persistence)?;
+        validate_complete_topology(&generations, &load_current_assignments(&transaction)?)?;
+        generations.sort_by(|left, right| left.name().cmp(right.name()));
+        if generations
+            .windows(2)
+            .any(|pair| pair[0].name() == pair[1].name())
+        {
+            return Err(DatabaseError::IntegrityFailure);
+        }
+        transaction.commit().map_err(log_configuration_error)?;
+        Ok(generations)
+    }
+
     fn load_current_audit_log_configuration_generation(
         &mut self,
         persistence: &LogConfigurationGenerationPersistence,

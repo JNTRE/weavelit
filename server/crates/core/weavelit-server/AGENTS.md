@@ -70,7 +70,8 @@ Apply instructions in this order:
   Application Database handle a sealed workflow hands over, the operational
   composer that mounts the Web UI operational surface, authentication routes,
   and authorized account, Group CRUD, Group membership/direct-grant, compiled
-  administration catalog, and account MFA-policy routes
+  administration catalog, account MFA-policy, specialized TOTP enablement, and
+  existing Log configuration routes
   together with their transport registrations, activates bounded Audit
   terminal recovery, exposes the internal pre-consequential drain gate, and
   builds the mounted surface value the serving-mode switch accepts.
@@ -94,6 +95,7 @@ Apply instructions in this order:
   and calls the library composition function.
 - `src/mfa_policy_ticket.rs`: Opaque process-memory MFA-policy step-up ticket
   generation and domain-separated digest validation.
+- `src/totp_enablement_preview.rs`: Opaque single-claim TOTP enablement preview credential generation and domain-separated digest validation.
 - `tests/audit_generation_resolver_authority.rs`: Compile-fail boundary proving the active Audit configuration-generation resolver is not a public construction surface.
 - `tests/startup.rs`: Composition and process-level tests for restricted startup
   covering fresh start, restart persistence, selection, pending states, and

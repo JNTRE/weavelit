@@ -38,6 +38,28 @@ body {
 .administration-nav button {
   background: transparent;
   border: 0;
+
+  .configuration__totp {
+    border-block: 1px solid var(--ds-color-border-strong);
+    padding-block: var(--ds-space-md);
+  }
+
+  .configuration__totp h3 {
+    margin-block: 0 var(--ds-space-sm);
+  }
+
+  .configuration__actions,
+  .configuration__review {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ds-space-sm);
+  }
+
+  .configuration__review p {
+    flex-basis: 100%;
+    margin: 0;
+  }
   border-bottom: 3px solid transparent;
   color: inherit;
   cursor: pointer;

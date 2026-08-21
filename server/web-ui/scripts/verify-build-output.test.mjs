@@ -53,6 +53,7 @@ function createWebUi() {
   writeFileSync(join(dist, "index.html"), "<!doctype html>built");
   writeFileSync(join(dist, "assets", "weavelit-application.js"), "console.log(1);");
   writeFileSync(join(dist, "assets", "weavelit-groups-workspace.js"), "console.log(2);");
+  writeFileSync(join(dist, "assets", "weavelit-configuration-workspace.js"), "console.log(3);");
   writeFileSync(join(dist, "assets", "weavelit-application.css"), "body{}");
 
   return { root, dist };
@@ -84,6 +85,7 @@ test("write mode records the format version, inputs, and generated assets", () =
   deepStrictEqual(Object.keys(manifest.assets), [
     "assets/weavelit-application.css",
     "assets/weavelit-application.js",
+    "assets/weavelit-configuration-workspace.js",
     "assets/weavelit-groups-workspace.js",
     "index.html",
   ]);

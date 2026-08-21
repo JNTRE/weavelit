@@ -489,6 +489,164 @@ reset after an unreported or malformed outcome. It must discard the code and
 ticket, report the outcome as unknown, and require a manual refresh before
 another MFA policy action.
 
+### TOTP Module Enablement Administration
+
+TOTP Module enablement uses two specialized routes:
+
+| Route | Method | Result |
+| --- | --- | --- |
+| `/api/v1/administration/mfa-modules/totp/enablement/preview` | `PUT` | Current and desired enablement, affected enrolled users, and one single-claim preview credential. |
+| `/api/v1/administration/mfa-modules/totp/enablement/apply` | `PUT` | The acknowledged committed enablement and affected-user count. |
+
+Both routes require an ordinary validated session, exact same-origin `Origin`
+and `Host`, the session's `X-Weavelit-CSRF` value, JSON media types, live Web UI
+Client Module access, and the effective Server Administration Permission.
+Enablement is an ordinary `ComponentEnablementChange(MfaModule, "totp",
+desired_state)` Administration action. It is deliberately not the `MfaPolicy`
+or `GrantMutation` step-up family: requiring proof from the disabled TOTP
+Module would make re-enablement impossible. Neither MFA-policy nor
+credential-issuance tickets can substitute for the specialized preview
+credential.
+
+The preview body is exactly:
+
+```json
+{"enabled":false}
+```
+
+Success returns:
+
+```json
+{"result":{"module":"totp","current_enabled":true,
+ "desired_enabled":false,"affected_users":2,
+ "totp_enablement_preview":"<43-character canonical Base64url>"},
+ "correlation_id":"<opaque-server-value>"}
+```
+
+The credential contains 256 bits of operating-system randomness. The process
+retains only its domain-separated SHA-256 digest in a bounded 64-entry memory
+store for five minutes measured by a monotonic clock; the exact expiry instant
+is invalid and restart invalidates every entry. It binds the exact actor,
+session digest, Client Module, desired state, and retained preview. Apply claims
+it once before consequential work, so replay, concurrent duplicate use, an
+actor, session, Client Module, or desired-state mismatch, and expiry are all
+the same conflict. The plaintext credential MUST NOT enter a rendered page,
+URL, cookie, browser storage, Log record, or Audit record.
+
+The apply body is exactly:
+
+```json
+{"enabled":false,"totp_enablement_preview":"<preview>"}
+```
+
+A missing preview member reaches the claim decision and is a conflict; a
+present noncanonical value is malformed input. The transaction recounts
+enrolled Human Users against the retained preview. A changed count commits only
+the denied Audit terminal obligation and changes no enablement or session
+state. A matching disable preserves every factor and MFA requirement, writes
+the disabled state, and revokes every session belonging to an enrolled account
+atomically. Enrolled optional accounts can later authenticate by password while
+disabled; required accounts are denied until the Module is enabled and a
+verifiable factor is available. Enablement revokes no session.
+
+Only an applied result whose exact terminal Audit delivery was acknowledged is
+rendered as success:
+
+```json
+{"result":{"module":"totp","current_enabled":false,"affected_users":2},
+ "correlation_id":"<opaque-server-value>"}
+```
+
+If the business change committed but terminal delivery remains pending, the
+public route returns `service_unavailable` rather than claiming success. The
+client MUST NOT retry apply automatically because the mutation may already
+have committed. It probes the ordinary session route after every valid success;
+a successful self-disable that revoked the caller returns the application to
+sign-in without another mutation.
+
+The stable rejection contract is:
+
+| Condition | Response |
+| --- | --- |
+| Malformed headers, media, schema, or present preview shape | `400 Bad Request`, `bad_request` |
+| Missing, malformed, unknown, expired, mismatched, or restricted session | `401 Unauthorized`, `session_invalid` |
+| Failed exact origin or host check | `403 Forbidden`, `request_origin_denied` |
+| Any live Administration Plane authorization denial | `403 Forbidden`, `authorization_denied` |
+| Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
+| Missing, expired, replayed, or mismatched preview, or stale affected-user count | `409 Conflict`, `conflict` |
+| Randomness, capacity, persistence, integrity, time, Audit readiness or delivery, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
+
+### Log Configuration Administration
+
+Existing Log Module configurations use three specialized routes:
+
+| Route | Method | Result |
+| --- | --- | --- |
+| `/api/v1/administration/log-configurations/list` | `PUT` | One cursor page of safe current configuration projections. |
+| `/api/v1/administration/log-configurations/view` | `PUT` | One safe current projection selected by unique configuration name. |
+| `/api/v1/administration/log-configurations/change` | `PUT` | The primary configuration's safe projection after an acknowledged change or exact no-op. |
+
+All routes use the same ordinary-session, same-origin, CSRF, JSON response,
+live Client Module, and Server Administration Permission requirements as TOTP
+enablement. They accept no generic component or Operation target, internal
+identifier, generation, destination path, credential, protected setting,
+terminal obligation, or record identifier.
+
+List uses the existing cursor pattern: an absent body or an exact object with
+optional `limit` and `cursor`, a default limit of `50`, and an inclusive maximum
+of `100`. The cursor is opaque, route-scoped, and bound to the exact prior
+configuration name. Results are strictly ordered by unique configuration name.
+View accepts exactly:
+
+```json
+{"configuration_name":"primary"}
+```
+
+Each safe projection is exactly:
+
+```json
+{"configuration_name":"primary","module":"sqlite","enabled":true,
+ "settings":[],"assigned_log_types":["system","audit"]}
+```
+
+`settings` is the complete canonically key-ordered set of non-secret,
+non-path settings declared by that compiled-in Log Module.
+`assigned_log_types` is ordered as System then Audit. The projection omits
+application state and Audit identifiers, generations, local or remote paths,
+credentials and protected settings, Audit terminal state, retention and purge
+state, and Log records.
+
+Change names one existing primary configuration and supplies at least one of
+`enabled`, complete `settings`, or complete `assignments`. When present,
+`assignments` contains exactly one System and one Audit entry in canonical
+order, each shaped as `{"log_type":"audit","configuration_name":"primary"}`.
+Unknown or duplicate members, duplicate setting keys or Log Types, partial
+settings or assignments, unsupported settings, and noncanonical ordering are
+rejected. The Server resolves every public name to the current internal
+configuration identity only after session validation and authorization.
+
+An exact no-op returns the current safe projection and creates no Audit record.
+Otherwise the existing immutable-generation workflow validates the complete
+result against the module catalog, preflights every assigned destination,
+delivers the Attempt, and atomically commits the selected generations,
+assignments, pointers, and terminal obligation. A stale generation or topology
+commits only the denied terminal and is a conflict. As with TOTP enablement, an
+applied change whose terminal remains pending returns `service_unavailable` and
+MUST NOT be retried automatically.
+
+The stable rejection contract is:
+
+| Condition | Response |
+| --- | --- |
+| Malformed headers, media, body, schema, cursor, name, unsupported or incomplete setting input | `400 Bad Request`, `bad_request` |
+| Missing, malformed, unknown, expired, mismatched, or restricted session | `401 Unauthorized`, `session_invalid` |
+| Failed exact origin or host check | `403 Forbidden`, `request_origin_denied` |
+| Any live Administration Plane authorization denial | `403 Forbidden`, `authorization_denied` |
+| Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
+| Unknown existing primary configuration name | `404 Not Found`, `not_found` |
+| Unknown assignment name, invalid or stale topology, generation exhaustion, or stale preparation | `409 Conflict`, `conflict` |
+| Catalog, preflight, Audit, persistence, integrity, or terminal delivery unavailable | `503 Service Unavailable`, `service_unavailable` |
+
 ### Account Credential Issuance
 
 The account credential-issuance surface contains exactly three routes:

@@ -515,6 +515,14 @@ account only when disabling. The stale-preview branch writes no configuration
 or session state and commits only its conflict obligation. An obligation insert
 failure rolls back configuration and session changes with it.
 
+The enablement preview uses one read transaction to load the canonical
+`totp` / `mfa-module.enabled` value and count distinct enrolled account
+identifiers. The current Log configuration list likewise uses one read
+transaction to load every current immutable generation, validate its pointer
+against current configuration, settings and Log Type membership, validate the
+complete System and Audit assignment topology, and sort by unique configuration
+name. Both reads use the existing schema; no migration is required.
+
 Issuing the session a login receives when no second factor gates it uses one
 `BEGIN IMMEDIATE` transaction in the same way: it reads the Module's enabled
 setting, tests whether the account holds a factor for that Module, and inserts

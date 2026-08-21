@@ -823,8 +823,16 @@ obligations, then commits the selected obligation with recount, enablement, and
 disablement session revocation in one transaction. After commit it invokes the
 bounded active-then-late recovery drain and reports terminal delivery as
 acknowledged or pending. A pending terminal never changes an applied result into
-a rejection. No Administration Plane route or client contract exposes this
-internal workflow yet.
+a rejection internally. The public
+[TOTP Module Enablement Administration contract](../api/api-contract-design.md#totp-module-enablement-administration)
+exposes it only through a specialized preview and apply pair. That pair uses an
+ordinary Administration action so a disabled TOTP Module can be re-enabled; it
+does not request or accept an `MfaPolicy`, `GrantMutation`, or
+credential-issuance proof. The process retains the exact preview behind a
+single-claim, digest-only, actor-, session-, Client Module-, and desired-state
+bound credential. A public apply whose business change committed while terminal
+delivery remains pending returns `service_unavailable` and does not claim
+success.
 
 ## Related Documents
 

@@ -237,6 +237,15 @@ impl LogConfigurationChange {
     }
 }
 
+/// One bounded existing Log configuration administration read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LogConfigurationRead {
+    /// List current configurations in canonical order.
+    List,
+    /// View one exact unique configuration name.
+    View(Name),
+}
+
 /// One bounded account administration read admitted by the action gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountAdministrationRead {
@@ -540,6 +549,8 @@ pub enum AdministrationAction {
     ComponentOperation(ComponentOperation),
     /// A requested enablement change for one known compiled-in component.
     ComponentEnablementChange(ComponentEnablementChange),
+    /// A bounded read of existing Log Module configurations.
+    LogConfigurationRead(LogConfigurationRead),
     /// A requested internal Log Module configuration and assignment change.
     LogConfigurationChange(LogConfigurationChange),
 }
@@ -551,6 +562,7 @@ impl AdministrationAction {
             | Self::Group(_)
             | Self::ComponentOperation(_)
             | Self::ComponentEnablementChange(_)
+            | Self::LogConfigurationRead(_)
             | Self::LogConfigurationChange(_) => None,
             Self::MfaPolicy => Some(StepUpActionFamily::MfaPolicy),
             Self::GrantMutation(_) => Some(StepUpActionFamily::GrantMutation),
@@ -1368,6 +1380,7 @@ mod tests {
                     | AdministrationAction::GrantMutation(_)
                     | AdministrationAction::ComponentOperation(_)
                     | AdministrationAction::ComponentEnablementChange(_)
+                    | AdministrationAction::LogConfigurationRead(_)
                     | AdministrationAction::LogConfigurationChange(_) => unreachable!(),
                 }
             );

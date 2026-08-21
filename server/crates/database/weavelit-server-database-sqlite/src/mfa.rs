@@ -3,8 +3,8 @@ use weavelit_server_database::{
     AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck, COMPONENT_ENABLED_VALUE,
     ComponentKind, CredentialIssuanceStepUpAcceptance, DatabaseError, MfaAcceptance,
     MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
-    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnrollment, MfaFactor,
-    MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnablementPreviewState,
+    MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
 };
 
 use crate::SqliteDatabase;
@@ -72,6 +72,24 @@ pub(super) fn clear(connection: &Connection) -> Result<(), DatabaseError> {
 impl MfaStore for SqliteDatabase {
     fn enrolled_accounts(&mut self, target: &MfaModuleTarget) -> Result<usize, DatabaseError> {
         enrolled_account_count(&self.connection, target)
+    }
+
+    fn enablement_preview(
+        &mut self,
+        target: &MfaModuleTarget,
+    ) -> Result<MfaEnablementPreviewState, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        let preview = MfaEnablementPreviewState::new(
+            enabled(&transaction, target)?,
+            enrolled_account_count(&transaction, target)?,
+        );
+        transaction
+            .commit()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        Ok(preview)
     }
 
     fn accepted_step(

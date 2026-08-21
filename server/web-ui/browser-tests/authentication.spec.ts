@@ -32,6 +32,10 @@ const SESSION_PATH = "/api/v1/auth/session";
 const ACCOUNTS_LIST_PATH = "/api/v1/administration/accounts/list";
 const GROUPS_LIST_PATH = "/api/v1/administration/groups/list";
 const GROUPS_WORKSPACE_ASSET_PATH = "/assets/weavelit-groups-workspace.js";
+const CONFIGURATION_WORKSPACE_ASSET_PATH = "/assets/weavelit-configuration-workspace.js";
+const LOG_CONFIGURATIONS_LIST_PATH = "/api/v1/administration/log-configurations/list";
+const LOG_CONFIGURATIONS_VIEW_PATH = "/api/v1/administration/log-configurations/view";
+const TOTP_ENABLEMENT_PREVIEW_PATH = "/api/v1/administration/mfa-modules/totp/enablement/preview";
 const GROUPS_VIEW_PATH = "/api/v1/administration/groups/view";
 const GROUP_MEMBERS_LIST_PATH = "/api/v1/administration/groups/members/list";
 const GROUP_GRANTS_LIST_PATH = "/api/v1/administration/groups/grants/list";
@@ -162,6 +166,7 @@ test("an operator signs in to a restored deployment and the session survives a r
     const baseUrl = `https://${configuration.listenerAddress}`;
     const observed = observeResponses(page);
     const requests = observeRequests(page);
+    let observedTotpPreview = "";
 
     // ---- Generation 1: restore a deployment that carries an account. --------
 
@@ -439,7 +444,7 @@ test("an operator signs in to a restored deployment and the session survives a r
     const catalog = page.waitForResponse(
       (response) => new URL(response.url()).pathname === ADMINISTRATION_CATALOG_PATH,
     );
-    await page.getByRole("button", { name: "View" }).click();
+    await page.getByRole("button", { name: "View", exact: true }).click();
     for (const response of await Promise.all([
       groupView,
       members,
@@ -504,9 +509,96 @@ test("an operator signs in to a restored deployment and the session survives a r
     expect(accountRequest, "the authenticated workspace loaded through its API").toBeDefined();
     expect((await (accountRequest as Request).allHeaders())[CSRF_HEADER]).toBe(csrfValue);
 
+    // ---- Generation 4: Configuration is independently lazy and safe. -------
+
+    exit = await terminateServer(server);
+    server = null;
+    expect(exit.signal, "the Server was not killed").toBeNull();
+    expect(exit.code).toBe(0);
+
+    server = spawnServer(configuration);
+    await waitForServerReady(server, configuration);
+
+    const fourthGeneration = observed.length;
+    const configurationReload = await page.reload({ waitUntil: "load" });
+    expect(configurationReload?.status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+    expect(observed.slice(fourthGeneration)).not.toContain(
+      `200 ${CONFIGURATION_WORKSPACE_ASSET_PATH}`,
+    );
+    expect(observed.slice(fourthGeneration)).not.toContain(`200 ${GROUPS_WORKSPACE_ASSET_PATH}`);
+
+    const configurationChunk = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === CONFIGURATION_WORKSPACE_ASSET_PATH,
+    );
+    const configurationsLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === LOG_CONFIGURATIONS_LIST_PATH,
+    );
+    await page.getByRole("button", { name: "Configuration" }).click();
+    expect((await configurationChunk).status()).toBe(200);
+    const configurationsResponse = await configurationsLoaded;
+    expect(configurationsResponse.status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Configuration" })).toBeVisible();
+    const configurationsBody = JSON.stringify(await configurationsResponse.json());
+    for (const forbidden of [
+      "configuration_id",
+      "generation",
+      "path",
+      "credential",
+      "terminal",
+      "record_id",
+    ]) {
+      expect(configurationsBody, `the Log configuration list omits ${forbidden}`).not.toContain(
+        forbidden,
+      );
+    }
+
+    const configurationView = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === LOG_CONFIGURATIONS_VIEW_PATH,
+    );
+    await page.getByRole("button", { name: "View", exact: true }).click();
+    const configurationViewResponse = await configurationView;
+    expect(configurationViewResponse.status()).toBe(200);
+    await expect(page.getByRole("button", { name: "Save configuration" })).toBeVisible();
+
+    const preview = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === TOTP_ENABLEMENT_PREVIEW_PATH,
+    );
+    await page.getByRole("button", { name: "Review enablement" }).click();
+    const previewResponse = await preview;
+    expect(previewResponse.status()).toBe(200);
+    const previewBody = (await previewResponse.json()) as {
+      result: { totp_enablement_preview: string };
+    };
+    observedTotpPreview = previewBody.result.totp_enablement_preview;
+    expect(observedTotpPreview).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await expect(page.getByRole("button", { name: "Apply enablement" })).toBeVisible();
+    expect(await page.content()).not.toContain(observedTotpPreview);
+    expect(page.url()).not.toContain(observedTotpPreview);
+
+    expect(
+      sorted(observed.slice(fourthGeneration)),
+      "requests against the fourth generation",
+    ).toEqual(
+      sorted([
+        ...operationalLoad(200),
+        `200 ${ACCOUNTS_LIST_PATH}`,
+        `200 ${CONFIGURATION_WORKSPACE_ASSET_PATH}`,
+        `200 ${LOG_CONFIGURATIONS_LIST_PATH}`,
+        `200 ${LOG_CONFIGURATIONS_VIEW_PATH}`,
+        `200 ${TOTP_ENABLEMENT_PREVIEW_PATH}`,
+      ]),
+    );
+
     // ---- Nothing sensitive escaped its one permitted channel. ---------------
 
-    const confidential = [FIXTURE_PASSWORD, WRONG_PASSWORD, sessionValue, csrfValue];
+    const confidential = [
+      FIXTURE_PASSWORD,
+      WRONG_PASSWORD,
+      sessionValue,
+      csrfValue,
+      observedTotpPreview,
+    ];
     const requestedUrls = [page.url(), ...requests.map((request) => request.url())];
     for (const url of requestedUrls) {
       for (const secret of confidential) {

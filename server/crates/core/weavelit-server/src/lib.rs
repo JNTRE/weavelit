@@ -73,12 +73,14 @@ pub mod operational_logging;
 pub(crate) mod password_change;
 pub mod reconciliation;
 pub mod restore;
+mod totp_enablement_preview;
 pub mod transport;
 
 pub use weavelit_module_client::typed_json;
 use weavelit_module_client::{
-    AccountAdministrationEnvelope, GroupAdministrationEnvelope,
-    MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES, MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES,
+    AccountAdministrationEnvelope, ConfigurationAdministrationEnvelope,
+    GroupAdministrationEnvelope, MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES,
+    MAX_CONFIGURATION_ADMINISTRATION_RESPONSE_BYTES, MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES,
 };
 
 use operational::{
@@ -277,6 +279,8 @@ enum ResponseProfile {
     AccountAdministrationJson,
     /// Bounded Group administration result envelopes.
     GroupAdministrationJson,
+    /// Bounded TOTP and Log configuration administration result envelopes.
+    ConfigurationAdministrationJson,
     Html,
     JavaScript,
     Css,
@@ -288,7 +292,8 @@ impl ResponseProfile {
             Self::Json
             | Self::TypedJson
             | Self::AccountAdministrationJson
-            | Self::GroupAdministrationJson => "application/json; charset=utf-8",
+            | Self::GroupAdministrationJson
+            | Self::ConfigurationAdministrationJson => "application/json; charset=utf-8",
             Self::Html => "text/html; charset=utf-8",
             Self::JavaScript => "text/javascript; charset=utf-8",
             Self::Css => "text/css; charset=utf-8",
@@ -301,6 +306,9 @@ impl ResponseProfile {
             Self::TypedJson => MAX_TYPED_JSON_BODY_BYTES,
             Self::AccountAdministrationJson => MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES,
             Self::GroupAdministrationJson => MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES,
+            Self::ConfigurationAdministrationJson => {
+                MAX_CONFIGURATION_ADMINISTRATION_RESPONSE_BYTES
+            }
             Self::Html => MAX_HTML_BODY_BYTES,
             Self::JavaScript => MAX_JAVASCRIPT_BODY_BYTES,
             Self::Css => MAX_CSS_BODY_BYTES,
@@ -312,7 +320,8 @@ impl ResponseProfile {
             Self::Json
             | Self::TypedJson
             | Self::AccountAdministrationJson
-            | Self::GroupAdministrationJson => "",
+            | Self::GroupAdministrationJson
+            | Self::ConfigurationAdministrationJson => "",
             Self::Html | Self::JavaScript | Self::Css => ASSET_SECURITY_HEADERS,
         }
     }
@@ -2148,6 +2157,28 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             acknowledgement: None,
         };
     }
+    if let Some(envelope) = response
+        .extensions()
+        .get::<ConfigurationAdministrationEnvelope>()
+    {
+        let Some(body) = envelope.serialize() else {
+            return redacted_response(status, allow);
+        };
+        if body.len() > ResponseProfile::ConfigurationAdministrationJson.max_body_bytes()
+            || effect.is_some()
+            || acknowledgement.is_some()
+        {
+            return redacted_response(status, allow);
+        }
+        return BoundedResponse {
+            status,
+            profile: ResponseProfile::ConfigurationAdministrationJson,
+            body: Bytes::from_owner(WipedResponseBytes::from_text(body)),
+            allow,
+            cookies: None,
+            acknowledgement: None,
+        };
+    }
     if let Some(envelope) = response.extensions().get::<TypedJsonEnvelope>() {
         let body = envelope.serialize();
         if body.len() > ResponseProfile::TypedJson.max_body_bytes() {
@@ -3039,9 +3070,11 @@ pub(crate) mod tests {
         GROUP_GRANTS_CHANGE_ROUTE, GROUP_GRANTS_LIST_ROUTE, GROUP_MEMBERS_CHANGE_ROUTE,
         GROUP_MEMBERS_LIST_ROUTE, GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE,
         GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE, INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE, InitRejection,
-        LIFECYCLE_RECONCILIATION_ROUTE, MFA_POLICY_STEP_UP_ROUTE, RESTORE_ARTIFACT_ROUTE,
-        RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
-        RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME, STATUS_ROUTE,
+        LIFECYCLE_RECONCILIATION_ROUTE, LOG_CONFIGURATIONS_CHANGE_ROUTE,
+        LOG_CONFIGURATIONS_LIST_ROUTE, LOG_CONFIGURATIONS_VIEW_ROUTE, MFA_POLICY_STEP_UP_ROUTE,
+        RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome,
+        ReconciliationRejection, RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME,
+        STATUS_ROUTE, TOTP_ENABLEMENT_APPLY_ROUTE, TOTP_ENABLEMENT_PREVIEW_ROUTE,
     };
     use weavelit_module_mfa_totp::{SECRET_LENGTH, TotpSecret};
     use weavelit_server_authentication::PasswordVerifierFactory;
@@ -3237,6 +3270,11 @@ pub(crate) mod tests {
             (Method::PUT, GROUP_GRANTS_LIST_ROUTE),
             (Method::PUT, GROUP_GRANTS_CHANGE_ROUTE),
             (Method::PUT, ADMINISTRATION_CATALOG_ROUTE),
+            (Method::PUT, TOTP_ENABLEMENT_PREVIEW_ROUTE),
+            (Method::PUT, TOTP_ENABLEMENT_APPLY_ROUTE),
+            (Method::PUT, LOG_CONFIGURATIONS_LIST_ROUTE),
+            (Method::PUT, LOG_CONFIGURATIONS_VIEW_ROUTE),
+            (Method::PUT, LOG_CONFIGURATIONS_CHANGE_ROUTE),
             (Method::PUT, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE),
             (Method::PUT, ACCOUNTS_CREATE_ROUTE),
             (Method::PUT, ACCOUNTS_RESET_PASSWORD_ROUTE),
@@ -5204,6 +5242,7 @@ pub(crate) mod tests {
             "/",
             "/assets/weavelit-application.js",
             "/assets/weavelit-groups-workspace.js",
+            "/assets/weavelit-configuration-workspace.js",
             "/assets/weavelit-application.css",
             STATUS_ROUTE,
             APPLICATION_DATABASE_ROUTE,

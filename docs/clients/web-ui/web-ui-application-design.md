@@ -26,12 +26,14 @@ range.
 
 ## Generated Production Output
 
-A clean production build emits exactly four unhashed files: `dist/index.html`,
+A clean production build emits exactly five unhashed files: `dist/index.html`,
 `dist/assets/weavelit-application.js`, `dist/assets/weavelit-groups-workspace.js`,
+`dist/assets/weavelit-configuration-workspace.js`,
 and `dist/assets/weavelit-application.css`. The build produces no source maps
-and no other emitted file. The Groups workspace is the single code-split chunk;
-its fixed name preserves the compile-time asset allowlist while keeping its
-code out of the initial JavaScript response.
+and no other emitted file. Groups and Configuration are independent code-split
+chunks. Their fixed names preserve the compile-time asset allowlist while
+keeping both workspaces and their API clients out of the initial JavaScript
+response.
 
 Content hashing is deliberately disabled in the build configuration because the
 Web UI **[Client Module](../../glossary.md#applications-and-interfaces)** embeds
@@ -757,9 +759,56 @@ self-reset that revoked the current session, withdraws the workspace and
 returns to sign-in. An absent or unreadable probe is indeterminate and causes
 neither a mutation retry nor an automatic refresh.
 
+### Configuration Workspace
+
+The authenticated Administration shell provides Configuration beside Accounts
+and Groups. Accounts remains the default. The shell does not request the fixed
+Configuration chunk or mount its API client until an authenticated person
+selects Configuration. Loading is announced through a polite status. A chunk
+failure renders one fixed detail-free alert and explicit retry; it never
+renders module-loader or transport diagnostics and does not change or persist
+the page URL. Groups remains independently lazy and selecting either workspace
+does not fetch the other.
+
+The workspace contains only specialized TOTP enablement and existing Log
+configuration controls. It has no generic component or Operation control,
+configuration create or delete, Log Module replacement, destination credential
+or path input, Log record browsing, retention or purge control, or Audit
+terminal supersession control.
+
+TOTP enablement is preview then apply. Choosing enablement or disablement sends
+one preview request and displays only current and desired state and the affected
+enrolled-account count. The returned `totp_enablement_preview` exists only in a
+private component ref: it is never rendered, logged, copied into component
+state, placed in a URL or cookie, or written to `localStorage` or
+`sessionStorage`. Cancel, unmount, a second preview, denial, or starting apply
+clears it. Apply receives the preview exactly once and the application retries
+neither request automatically.
+
+Disablement review states that sessions for enrolled accounts end. A reported
+stale-preview conflict requires a new preview. A reported refusal uses fixed
+reason-free text. An unreported, malformed, pending-delivery, or otherwise
+indeterminate apply outcome is rendered as unknown and requires manual refresh
+before another change. After a valid apply success the workspace probes the
+existing session. An authenticated result returns to idle; an unauthenticated
+result, including self-disable session revocation, withdraws the administration
+workspace and returns to sign-in without another mutation; an absent or
+unreadable probe remains indeterminate.
+
+Log configurations load through the existing cursor pattern, append `Load
+more` pages, refresh from the first page, and view only unique configuration
+name, module, enabled state, ordered module-declared non-secret non-path
+settings, and assigned Log Types. The edit form changes enabled state, the
+complete settings collection, and complete System and Audit assignments by
+configuration name. It never receives an internal identifier or generation.
+Save sends one request and never retries automatically. A reported conflict
+requires refresh; a reported refusal and an indeterminate outcome use distinct
+fixed text without Server code, status, response detail, field path, Audit
+state, or dependency diagnostic.
+
 ## Same-Origin Requests
 
-The application issues exactly twenty-two outbound request kinds, all same-origin,
+The application issues exactly twenty-seven outbound request kinds, all same-origin,
 all with `cache: no-store` and `redirect: error`:
 
 - `GET /api/v1/status` with `Accept: application/json` and `credentials: omit`;
@@ -827,7 +876,17 @@ all with `cache: no-store` and `redirect: error`:
   body; and
 - `PUT /api/v1/administration/accounts/mfa-reset` with the session's CSRF value,
   `credentials: same-origin`, and exactly the target Account Public Identifier
-  and one TOTP step-up ticket in the JSON body.
+  and one TOTP step-up ticket in the JSON body;
+- `PUT /api/v1/administration/mfa-modules/totp/enablement/preview` and
+  `/apply` with the session's CSRF value, `credentials: same-origin`, the
+  desired enabled state, and, for apply only, the single-claim preview in the
+  JSON body;
+- `PUT /api/v1/administration/log-configurations/list` and `/view` with the
+  session's CSRF value, `credentials: same-origin`, and only their documented
+  cursor or unique configuration-name fields; and
+- `PUT /api/v1/administration/log-configurations/change` with the session's
+  CSRF value, `credentials: same-origin`, the primary configuration name, and
+  at least one complete enabled, settings, or assignments member.
 
 The three second-factor requests carry the pre-session literal rather than a
 per-session token, because they carry no session either: the one-time value in
@@ -836,7 +895,7 @@ use `credentials: same-origin` so the cookies a completed step issues are
 stored. This application does not issue the session-bearing self-enrollment
 request the Server also serves.
 
-Only the last fifteen request kinds use `credentials: same-origin`; the first
+Only the last twenty request kinds use `credentials: same-origin`; the first
 seven use `credentials: omit` because no session exists yet to send or receive
 while the pre-operational or submission-bound reconciliation surface is in use.
 

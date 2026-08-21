@@ -693,8 +693,10 @@ well as the factor: the store reads that component's enabled setting, refuses
 the enrollment when the Module is not enabled, and otherwise writes the factor,
 its confirming watermark, and the session, all in one transaction. It reports
 whether the factor was enrolled, was already present, or was refused because the
-Module was disabled. The store also exposes a target-scoped count of distinct
-enrolled Human Users for the Administrator preview.
+Module was disabled. The store also exposes one target-scoped preview snapshot
+that reads the canonical current enablement and count of distinct enrolled
+Human Users in the same database transaction. A client therefore cannot combine
+an enablement value and affected-user count observed from different states.
 
 Changing enabled state accepts the expected enrolled-Human-User count and two
 opaque, Server Audit-validated terminal writes: applied and count-changed. One
@@ -782,6 +784,24 @@ backend never parses or invents an Audit terminal. A committed membership or
 grant change becomes visible through the existing live authorization projection
 on the next request; it does not change a session or populate an authorization
 cache.
+
+## Log Configuration Generation Storage
+
+The Application Database exposes immutable Log Module configuration generation
+reads and optimistic mutation storage separately from restorable
+`ApplicationState`. A complete current read returns every logical
+configuration's current generation in ascending unique configuration-name
+order. The backend validates exact current pointers, immutable snapshots,
+ordered settings, Log Type membership, and the complete System and Audit
+assignment topology in one snapshot before returning anything. It also supports
+the narrower current Audit generation and exact historical generation reads
+needed by terminal recovery.
+
+The current list is the only persistence input to the public safe Log
+configuration projection. Internal state identifiers and generation versions
+remain private. The existing immutable-generation and assignment state is
+sufficient for these reads; the public list and view contract introduces no new
+persisted identifier, table, or migration.
 
 ## Deployment Record, Locator, And Operational State
 

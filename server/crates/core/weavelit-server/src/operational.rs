@@ -34,8 +34,11 @@ use weavelit_module_client::{
     AccountAdministrationSubmission, AccountCreateSubmission, AccountCredentialIssued,
     AccountPasswordResetSubmission, AccountsPage,
     AdministrationCatalog as ClientAdministrationCatalog, AuthenticationRejection,
-    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CredentialIssuanceCapability, CredentialIssuanceDeclaration,
-    CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
+    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, ConfigurationAdministrationCapability,
+    ConfigurationAdministrationDeclaration, ConfigurationAdministrationRejection,
+    ConfigurationAdministrationRequest, ConfigurationAdministrationResult,
+    ConfigurationAdministrationSubmission, CredentialIssuanceCapability,
+    CredentialIssuanceDeclaration, CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
     CredentialIssuanceTicketIssued, ExpectedOrigin, GROUP_GRANTS_CHANGE_ROUTE,
     GROUP_GRANTS_LIST_ROUTE, GROUP_MEMBERS_CHANGE_ROUTE, GROUP_MEMBERS_LIST_ROUTE,
     GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE,
@@ -46,23 +49,29 @@ use weavelit_module_client::{
     GroupGrantChanged as ClientGroupGrantChanged,
     GroupGrantProjection as ClientGroupGrantProjection, GroupGrantsPage,
     GroupMemberChanged as ClientGroupMemberChanged, GroupMembersPage, GroupsPage,
-    LIFECYCLE_RECONCILIATION_ROUTE, MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
-    MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES, MAX_GROUP_ADMINISTRATION_BODY_BYTES,
-    MAX_MFA_POLICY_BODY_BYTES, MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES,
-    MFA_POLICY_STEP_UP_ROUTE, MfaPolicyCapability, MfaPolicyDeclaration, MfaPolicyRejection,
-    MfaPolicyStepUpFamily, MfaPolicyStepUpSubmission, MfaPolicyTicketIssued,
-    MfaRequirementSubmission, MfaResetSubmission, PasswordChangeCapability,
+    LIFECYCLE_RECONCILIATION_ROUTE, LOG_CONFIGURATIONS_CHANGE_ROUTE, LOG_CONFIGURATIONS_LIST_ROUTE,
+    LOG_CONFIGURATIONS_VIEW_ROUTE, LogConfigurationProjection as ClientLogConfigurationProjection,
+    LogConfigurationsPage, LogSettingProjection as ClientLogSettingProjection,
+    LogTypeProjection as ClientLogType, MAX_CONFIGURATION_ADMINISTRATION_BODY_BYTES,
+    MAX_CREDENTIAL_ISSUANCE_BODY_BYTES, MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES,
+    MAX_GROUP_ADMINISTRATION_BODY_BYTES, MAX_MFA_POLICY_BODY_BYTES, MAX_PASSWORD_CHANGE_BODY_BYTES,
+    MAX_PASSWORD_CHANGE_PASSWORD_BYTES, MFA_POLICY_STEP_UP_ROUTE, MfaPolicyCapability,
+    MfaPolicyDeclaration, MfaPolicyRejection, MfaPolicyStepUpFamily, MfaPolicyStepUpSubmission,
+    MfaPolicyTicketIssued, MfaRequirementSubmission, MfaResetSubmission, PasswordChangeCapability,
     PasswordChangeDeclaration, PasswordChangeSubmission,
     ReconciliationCapability as ClientReconciliationCapability, ReconciliationOutcome,
-    ReconciliationRejection, validate_credential_issuance_request, validate_mfa_policy_request,
-    validate_password_change_request, validate_reconciliation_request,
+    ReconciliationRejection, TOTP_ENABLEMENT_APPLY_ROUTE, TOTP_ENABLEMENT_PREVIEW_ROUTE,
+    TotpEnablementApplied, TotpEnablementPreviewProjection,
+    validate_configuration_administration_request, validate_credential_issuance_request,
+    validate_mfa_policy_request, validate_password_change_request, validate_reconciliation_request,
 };
 use weavelit_server_administration::{
     AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
     AccountStatusChange, AdministrationAction, AdministrationClock, AdministrationPlane,
-    AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementSource,
-    GroupAdministrationAction, GroupAdministrationRead, GroupCreate, GroupGrantMutation,
-    GroupMembershipMutation, GroupMutation, GroupUpdate, MFA_STEP_UP_LIFETIME, MfaStepUpProof,
+    AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementChange,
+    ComponentEnablementSource, GroupAdministrationAction, GroupAdministrationRead, GroupCreate,
+    GroupGrantMutation, GroupMembershipMutation, GroupMutation, GroupUpdate, LogAssignmentChange,
+    LogConfigurationChange, LogConfigurationRead, MFA_STEP_UP_LIFETIME, MfaStepUpProof,
     StepUpActionFamily,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
@@ -80,25 +89,26 @@ use weavelit_server_database::{
     AccountStatus, AccountStatusAuditTerminalWrites, AccountStatusMutation,
     AccountStatusMutationOutcome, AccountStatusTarget, AccountStatusWriterStore,
     AuditReferencePersistence, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
-    GroupAdministrationAuditTerminalWrites, GroupAdministrationStore, GroupAdministrationTarget,
-    GroupCreateMutation, GroupCreateOutcome, GroupDeleteMutation, GroupDeleteOutcome, GroupGrant,
-    GroupGrantMutationTarget, GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites,
-    GroupMutationOutcome, GroupMutationStore, GroupPublicIdentifier, GroupUpdateMutation,
-    GroupUpdateOutcome, LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
+    ComponentKind, ConfigurationKey, ConfigurationValue, GroupAdministrationAuditTerminalWrites,
+    GroupAdministrationStore, GroupAdministrationTarget, GroupCreateMutation, GroupCreateOutcome,
+    GroupDeleteMutation, GroupDeleteOutcome, GroupGrant, GroupGrantMutationTarget,
+    GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites, GroupMutationOutcome,
+    GroupMutationStore, GroupPublicIdentifier, GroupUpdateMutation, GroupUpdateOutcome,
+    LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
     LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
     LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
-    MfaPolicyAuditTerminalWrites, MfaPolicyMutation, MfaPolicyMutationOutcome, MfaPolicyTarget,
-    MfaPolicyWriterStore, MfaStore, PasswordChangeAuditTerminalWrites, PasswordChangeMutation,
-    PasswordChangeOutcome, PreparedGroupMutation, PreparedLogConfigurationMutation,
-    StateIdentifier,
+    LogModuleSetting, LogType, MfaPolicyAuditTerminalWrites, MfaPolicyMutation,
+    MfaPolicyMutationOutcome, MfaPolicyTarget, MfaPolicyWriterStore, MfaStore,
+    PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeOutcome,
+    PreparedGroupMutation, PreparedLogConfigurationMutation, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
     SelectedDatabase,
 };
-use weavelit_server_log::LogModuleCatalog;
+use weavelit_server_log::{LogModuleCatalog, LogModuleIdentifier};
 use weavelit_server_restore::Name;
 use zeroize::Zeroizing;
 
@@ -110,7 +120,10 @@ use crate::{
         AccountStatusChangeResult, AccountStatusChangeWorkflow, GroupAdministrationMutationResult,
         GroupAdministrationReadResult, GroupAdministrationWorkflow,
         GroupAdministrationWorkflowError, GroupMutationResult, GroupMutationWorkflow,
-        GroupMutationWorkflowError, MfaPolicyChangeError, MfaPolicyChangeResult,
+        GroupMutationWorkflowError, LogConfigurationChangeDelivery, LogConfigurationChangeError,
+        LogConfigurationChangeResult, LogConfigurationChangeWorkflow, MfaModuleEnablementDelivery,
+        MfaModuleEnablementError, MfaModuleEnablementOutcome, MfaModuleEnablementPreview,
+        MfaModuleEnablementWorkflow, MfaPolicyChangeError, MfaPolicyChangeResult,
         MfaPolicyChangeWorkflow,
     },
     authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
@@ -119,6 +132,7 @@ use crate::{
     mfa_policy_ticket::{MfaPolicyStepUpTicket, MfaPolicyStepUpTicketDigest},
     operational_audit::{OperationalAuditRecovery, OperationalAuditRecoveryState},
     password_change::{PasswordChangeResult, PasswordChangeWorkflow, PasswordChangeWorkflowError},
+    totp_enablement_preview::{TotpEnablementPreviewCredential, TotpEnablementPreviewDigest},
     transport::{
         BodyAdmission, MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection,
         TransportCapability, TransportProfile, TransportRegistration,
@@ -151,8 +165,17 @@ const GROUP_ADMINISTRATION_PROFILE: TransportProfile = TransportProfile::admitte
     crate::REQUEST_PROCESSING_TIMEOUT,
 );
 
+const CONFIGURATION_ADMINISTRATION_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_CONFIGURATION_ADMINISTRATION_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
 /// Maximum reusable MFA-policy step-up proofs retained by one Server process.
 const MAX_OUTSTANDING_MFA_POLICY_TICKETS: usize = 64;
+
+/// Maximum unexpired TOTP enablement previews retained by one Server process.
+const MAX_OUTSTANDING_TOTP_ENABLEMENT_PREVIEWS: usize = 64;
 
 const _: () = assert!(
     MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES
@@ -871,6 +894,15 @@ impl OperationalDatabase {
         })
     }
 
+    /// Lists every current Log configuration generation from one validated snapshot.
+    pub(crate) fn list_current_log_configuration_generations(
+        &self,
+    ) -> Result<Vec<LogConfigurationGeneration>, DatabaseError> {
+        self.with_log_configuration_generations(|persistence, store| {
+            store.list_current_log_configuration_generations(persistence)
+        })
+    }
+
     /// Loads one exact historical configuration generation from a capable backend.
     pub(crate) fn load_log_configuration_generation(
         &self,
@@ -1053,6 +1085,10 @@ struct MfaPolicyPreconditions {
     expected_origin: ExpectedOrigin,
 }
 
+struct ConfigurationAdministrationPreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
 impl PreBodyCheck for CredentialIssuancePreconditions {
     fn check(
         &self,
@@ -1086,6 +1122,32 @@ impl PreBodyCheck for MfaPolicyPreconditions {
                 Err(PreBodyRejection::RequestOriginDenied)
             }
             Err(MfaPolicyRejection::SessionInvalid) => Err(PreBodyRejection::SessionInvalid),
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
+impl PreBodyCheck for ConfigurationAdministrationPreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        let body_required = uri.path() != LOG_CONFIGURATIONS_LIST_ROUTE;
+        match validate_configuration_administration_request(
+            method,
+            headers,
+            self.expected_origin,
+            body_required,
+        ) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(ConfigurationAdministrationRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(ConfigurationAdministrationRejection::SessionInvalid) => {
+                Err(PreBodyRejection::SessionInvalid)
+            }
             Err(_) => Err(PreBodyRejection::BadRequest),
         }
     }
@@ -1162,12 +1224,85 @@ struct OperationalAdministrationState {
     clock: OperationalAdministrationClock,
     plane: AdministrationPlane<OperationalAdministrationClock, OperationalComponentEnablement>,
     pending_mfa_policy: Vec<PendingMfaPolicyStepUp>,
+    pending_totp_enablement: TotpEnablementPreviewRegistry,
 }
 
 struct PendingMfaPolicyStepUp {
     digest: MfaPolicyStepUpTicketDigest,
     expires_after: Duration,
     proof: MfaStepUpProof,
+}
+
+struct PendingTotpEnablementPreview {
+    digest: TotpEnablementPreviewDigest,
+    expires_after: Duration,
+    actor: StateIdentifier,
+    session: weavelit_server_database::SessionTokenHash,
+    client_module: Name,
+    desired_state: bool,
+    preview: MfaModuleEnablementPreview,
+}
+
+#[derive(Default)]
+struct TotpEnablementPreviewRegistry {
+    pending: Vec<PendingTotpEnablementPreview>,
+}
+
+impl TotpEnablementPreviewRegistry {
+    fn issue(
+        &mut self,
+        now: Duration,
+        actor: StateIdentifier,
+        session: weavelit_server_database::SessionTokenHash,
+        client_module: Name,
+        desired_state: bool,
+        preview: MfaModuleEnablementPreview,
+    ) -> Result<TotpEnablementPreviewCredential, AuthorizationDenied> {
+        self.pending.retain(|entry| entry.expires_after > now);
+        if self.pending.len() >= MAX_OUTSTANDING_TOTP_ENABLEMENT_PREVIEWS {
+            return Err(AuthorizationDenied);
+        }
+        let credential = TotpEnablementPreviewCredential::generate().ok_or(AuthorizationDenied)?;
+        let expires_after = now
+            .checked_add(MFA_STEP_UP_LIFETIME)
+            .ok_or(AuthorizationDenied)?;
+        self.pending.push(PendingTotpEnablementPreview {
+            digest: credential.digest(),
+            expires_after,
+            actor,
+            session,
+            client_module,
+            desired_state,
+            preview,
+        });
+        Ok(credential)
+    }
+
+    fn claim(
+        &mut self,
+        now: Duration,
+        actor: StateIdentifier,
+        session: weavelit_server_database::SessionTokenHash,
+        client_module: &Name,
+        desired_state: bool,
+        submitted: &str,
+    ) -> Result<MfaModuleEnablementPreview, AuthorizationDenied> {
+        let submitted =
+            TotpEnablementPreviewDigest::of_canonical(submitted).ok_or(AuthorizationDenied)?;
+        self.pending.retain(|entry| entry.expires_after > now);
+        let position = self
+            .pending
+            .iter()
+            .position(|entry| {
+                entry.digest.matches(&submitted)
+                    && entry.actor == actor
+                    && entry.session.matches(&session)
+                    && entry.client_module == *client_module
+                    && entry.desired_state == desired_state
+            })
+            .ok_or(AuthorizationDenied)?;
+        Ok(self.pending.remove(position).preview)
+    }
 }
 
 impl OperationalAdministration {
@@ -1187,8 +1322,47 @@ impl OperationalAdministration {
                     components,
                 ),
                 pending_mfa_policy: Vec::new(),
+                pending_totp_enablement: TotpEnablementPreviewRegistry::default(),
             }),
         }
+    }
+
+    /// Retains one exact preview behind a random digest-only process-local credential.
+    fn issue_totp_enablement_preview(
+        &self,
+        session: &ValidatedSession,
+        desired_state: bool,
+        preview: MfaModuleEnablementPreview,
+    ) -> Result<TotpEnablementPreviewCredential, AuthorizationDenied> {
+        let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
+        let now = state.clock.now();
+        state.pending_totp_enablement.issue(
+            now,
+            session.account(),
+            session.session_token_hash(),
+            session.client_module().clone(),
+            desired_state,
+            preview,
+        )
+    }
+
+    /// Claims one preview exactly once for its bound actor, session, client, and desired state.
+    fn claim_totp_enablement_preview(
+        &self,
+        session: &ValidatedSession,
+        desired_state: bool,
+        submitted: &str,
+    ) -> Result<MfaModuleEnablementPreview, AuthorizationDenied> {
+        let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
+        let now = state.clock.now();
+        state.pending_totp_enablement.claim(
+            now,
+            session.account(),
+            session.session_token_hash(),
+            session.client_module(),
+            desired_state,
+            submitted,
+        )
     }
 
     /// Verifies current-session TOTP and retains one reusable five-minute family-bound proof.
@@ -1414,6 +1588,27 @@ impl OperationalAdministration {
                 admission,
                 AdministrationRequest::new(AdministrationAction::Group(action)),
             )
+    }
+
+    fn authorize_configuration_action(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        action: AdministrationAction,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        if !matches!(
+            action,
+            AdministrationAction::ComponentEnablementChange(_)
+                | AdministrationAction::LogConfigurationRead(_)
+                | AdministrationAction::LogConfigurationChange(_)
+        ) {
+            return Err(AuthorizationDenied);
+        }
+        self.state
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .plane
+            .authorize(admission, AdministrationRequest::new(action))
     }
 }
 
@@ -1774,6 +1969,47 @@ impl OperationalComposer {
         })
     }
 
+    fn configuration_administration_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<ConfigurationAdministrationCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+        let log_catalog = Arc::clone(&self.runtime.log_catalog);
+        Some(ConfigurationAdministrationCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            execute: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                let log_catalog = Arc::clone(&log_catalog);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_configuration_administration(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            &log_catalog,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(
+                        ConfigurationAdministrationRejection::ServiceUnavailable,
+                    ))
+                })
+            }),
+        })
+    }
+
     /// Returns the state observed by the activation drain.
     #[cfg(test)]
     pub(crate) const fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
@@ -1793,17 +2029,21 @@ impl OperationalComposer {
         let declared = weavelit_module_client_webui::operational_surface(
             self.account_administration_capability(expected_origin),
             self.group_administration_capability(expected_origin),
+            self.configuration_administration_capability(expected_origin),
             self.credential_issuance_capability(expected_origin),
             self.mfa_policy_capability(expected_origin),
         );
         let (declared, account_administration) = declared.split_account_administration();
         let (declared, group_administration) = declared.split_group_administration();
+        let (declared, configuration_administration) =
+            declared.split_configuration_administration();
         let (declared, credential_issuance) = declared.split_credential_issuance();
         let (declared, mfa_policy) = declared.split_mfa_policy();
         let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
         for capability in self.capabilities(
             account_administration,
             group_administration,
+            configuration_administration,
             credential_issuance,
             mfa_policy,
         ) {
@@ -1823,6 +2063,7 @@ impl OperationalComposer {
         &self,
         account_administration: Option<AccountAdministrationDeclaration>,
         group_administration: Option<GroupAdministrationDeclaration>,
+        configuration_administration: Option<ConfigurationAdministrationDeclaration>,
         credential_issuance: Option<CredentialIssuanceDeclaration>,
         mfa_policy: Option<MfaPolicyDeclaration>,
     ) -> Vec<TransportCapability> {
@@ -1943,6 +2184,38 @@ impl OperationalComposer {
             ] {
                 capabilities.push(TransportCapability::new(
                     TransportRegistration::new(Method::PUT, route, GROUP_ADMINISTRATION_PROFILE),
+                    move |router| router.route(route, mount),
+                ));
+            }
+        }
+        if let Some(declaration) = configuration_administration {
+            let declaration = Arc::new(declaration);
+            let totp_apply = Arc::clone(&declaration);
+            let log_list = Arc::clone(&declaration);
+            let log_view = Arc::clone(&declaration);
+            let log_change = Arc::clone(&declaration);
+            for (route, mount) in [
+                (
+                    TOTP_ENABLEMENT_PREVIEW_ROUTE,
+                    declaration.totp_preview_route(),
+                ),
+                (TOTP_ENABLEMENT_APPLY_ROUTE, totp_apply.totp_apply_route()),
+                (LOG_CONFIGURATIONS_LIST_ROUTE, log_list.log_list_route()),
+                (LOG_CONFIGURATIONS_VIEW_ROUTE, log_view.log_view_route()),
+                (
+                    LOG_CONFIGURATIONS_CHANGE_ROUTE,
+                    log_change.log_change_route(),
+                ),
+            ] {
+                capabilities.push(TransportCapability::new(
+                    TransportRegistration::new(
+                        Method::PUT,
+                        route,
+                        CONFIGURATION_ADMINISTRATION_PROFILE,
+                    )
+                    .with_pre_body_check(Arc::new(
+                        ConfigurationAdministrationPreconditions { expected_origin },
+                    )),
                     move |router| router.route(route, mount),
                 ));
             }
@@ -2464,6 +2737,352 @@ fn account_credential_workflow_error(
         | AccountCredentialIssuanceWorkflowError::Unavailable
         | AccountCredentialIssuanceWorkflowError::AuditLogUnavailable => {
             CredentialIssuanceRejection::ServiceUnavailable
+        }
+    }
+}
+
+fn execute_configuration_administration(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    log_catalog: &LogModuleCatalog,
+    submission: ConfigurationAdministrationSubmission,
+) -> Result<ConfigurationAdministrationResult, ConfigurationAdministrationRejection> {
+    let ConfigurationAdministrationSubmission {
+        request,
+        session_token,
+        csrf_token,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(configuration_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(ConfigurationAdministrationRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+
+    match request {
+        ConfigurationAdministrationRequest::TotpPreview(request) => {
+            let action = administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::ComponentEnablementChange(
+                        ComponentEnablementChange::new(
+                            ComponentKind::MfaModule,
+                            "totp",
+                            request.enabled(),
+                        )
+                        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?,
+                    ),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            let preview = MfaModuleEnablementWorkflow::new(database, audit_recovery)
+                .preview(&action)
+                .map_err(configuration_mfa_workflow_error)?;
+            let current_enabled = preview.current_enabled();
+            let affected_users = preview.affected_users();
+            let credential = administration
+                .issue_totp_enablement_preview(&session, request.enabled(), preview)
+                .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+            TotpEnablementPreviewProjection::new(
+                current_enabled,
+                request.enabled(),
+                affected_users,
+                Zeroizing::new(credential.as_str().to_owned()),
+            )
+            .map(ConfigurationAdministrationResult::TotpPreview)
+            .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)
+        }
+        ConfigurationAdministrationRequest::TotpApply(request) => {
+            let desired = request.enabled();
+            let action = administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::ComponentEnablementChange(
+                        ComponentEnablementChange::new(ComponentKind::MfaModule, "totp", desired)
+                            .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?,
+                    ),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            let preview = administration
+                .claim_totp_enablement_preview(
+                    &session,
+                    desired,
+                    request
+                        .preview()
+                        .ok_or(ConfigurationAdministrationRejection::Conflict)?,
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::Conflict)?;
+            match MfaModuleEnablementWorkflow::new(database, audit_recovery).apply(action, preview)
+            {
+                Ok(result) => match (result.outcome, result.delivery) {
+                    (
+                        MfaModuleEnablementOutcome::Applied {
+                            desired_state,
+                            affected_users,
+                        },
+                        MfaModuleEnablementDelivery::Acknowledged,
+                    ) if desired_state == desired => {
+                        Ok(ConfigurationAdministrationResult::TotpApplied(
+                            TotpEnablementApplied::new(desired_state, affected_users),
+                        ))
+                    }
+                    (
+                        MfaModuleEnablementOutcome::EnrolledCountChanged { .. },
+                        MfaModuleEnablementDelivery::Acknowledged
+                        | MfaModuleEnablementDelivery::Pending,
+                    ) => Err(ConfigurationAdministrationRejection::Conflict),
+                    (
+                        MfaModuleEnablementOutcome::Applied { .. },
+                        MfaModuleEnablementDelivery::Pending,
+                    ) => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
+                    _ => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
+                },
+                Err(error) => Err(configuration_mfa_workflow_error(error)),
+            }
+        }
+        ConfigurationAdministrationRequest::LogList(request) => {
+            administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::LogConfigurationRead(LogConfigurationRead::List),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            let projections = current_log_configuration_projections(database, log_catalog)?;
+            LogConfigurationsPage::from_ordered(&request, projections)
+                .map(ConfigurationAdministrationResult::LogList)
+                .map_err(|_| ConfigurationAdministrationRejection::Conflict)
+        }
+        ConfigurationAdministrationRequest::LogView(request) => {
+            let name = Name::new(request.configuration_name().to_owned())
+                .map_err(|_| ConfigurationAdministrationRejection::BadRequest)?;
+            administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::LogConfigurationRead(LogConfigurationRead::View(name)),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            current_log_configuration_projections(database, log_catalog)?
+                .into_iter()
+                .find(|projection| projection.configuration_name() == request.configuration_name())
+                .map(ConfigurationAdministrationResult::LogProjection)
+                .ok_or(ConfigurationAdministrationRejection::NotFound)
+        }
+        ConfigurationAdministrationRequest::LogChange(request) => {
+            let current = database
+                .list_current_log_configuration_generations()
+                .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+            let primary = current
+                .iter()
+                .find(|generation| generation.name().as_str() == request.configuration_name())
+                .ok_or(ConfigurationAdministrationRejection::NotFound)?;
+            let settings = request
+                .settings()
+                .map(|settings| validate_log_settings(primary, settings, log_catalog))
+                .transpose()?;
+            let assignments = request
+                .assignments()
+                .iter()
+                .map(|assignment| {
+                    let generation = current
+                        .iter()
+                        .find(|generation| {
+                            generation.name().as_str() == assignment.configuration_name()
+                        })
+                        .ok_or(ConfigurationAdministrationRejection::Conflict)?;
+                    Ok(LogAssignmentChange::new(
+                        database_log_type(assignment.log_type()),
+                        generation.key().configuration(),
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let change = LogConfigurationChange::new(
+                primary.key().configuration(),
+                request.enabled(),
+                settings,
+                assignments,
+            )
+            .map_err(|_| ConfigurationAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::LogConfigurationChange(change),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            match LogConfigurationChangeWorkflow::new(database, audit_recovery).apply(action) {
+                Ok(LogConfigurationChangeResult::Unchanged)
+                | Ok(LogConfigurationChangeResult::Applied {
+                    delivery: LogConfigurationChangeDelivery::Acknowledged,
+                    ..
+                }) => current_log_configuration_projections(database, log_catalog)?
+                    .into_iter()
+                    .find(|projection| {
+                        projection.configuration_name() == request.configuration_name()
+                    })
+                    .map(ConfigurationAdministrationResult::LogProjection)
+                    .ok_or(ConfigurationAdministrationRejection::ServiceUnavailable),
+                Ok(LogConfigurationChangeResult::Stale { .. }) => {
+                    Err(ConfigurationAdministrationRejection::Conflict)
+                }
+                Ok(LogConfigurationChangeResult::Applied {
+                    delivery: LogConfigurationChangeDelivery::Pending,
+                    ..
+                }) => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
+                Err(LogConfigurationChangeError::ChangeRejected) => {
+                    Err(ConfigurationAdministrationRejection::Conflict)
+                }
+                Err(
+                    LogConfigurationChangeError::ActionNotSupported
+                    | LogConfigurationChangeError::AuditLogUnavailable,
+                ) => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
+            }
+        }
+    }
+}
+
+fn current_log_configuration_projections(
+    database: &OperationalDatabase,
+    log_catalog: &LogModuleCatalog,
+) -> Result<Vec<ClientLogConfigurationProjection>, ConfigurationAdministrationRejection> {
+    database
+        .list_current_log_configuration_generations()
+        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?
+        .into_iter()
+        .map(|generation| client_log_configuration_projection(&generation, log_catalog))
+        .collect()
+}
+
+fn client_log_configuration_projection(
+    generation: &LogConfigurationGeneration,
+    log_catalog: &LogModuleCatalog,
+) -> Result<ClientLogConfigurationProjection, ConfigurationAdministrationRejection> {
+    let module = LogModuleIdentifier::new(generation.module().as_str())
+        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let declaration = log_catalog
+        .declaration(&module)
+        .ok_or(ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let settings = generation
+        .settings()
+        .iter()
+        .map(|setting| {
+            if !declaration
+                .accepted_settings()
+                .defines(setting.key.as_str())
+                || path_like_setting(setting.key.as_str())
+            {
+                return Err(ConfigurationAdministrationRejection::ServiceUnavailable);
+            }
+            ClientLogSettingProjection::new(
+                setting.key.as_str().to_owned(),
+                setting.value.as_str().to_owned(),
+            )
+            .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let assigned_log_types = generation
+        .log_types()
+        .iter()
+        .copied()
+        .map(client_log_type)
+        .collect();
+    ClientLogConfigurationProjection::new(
+        generation.name().as_str().to_owned(),
+        generation.module().as_str().to_owned(),
+        generation.enabled(),
+        settings,
+        assigned_log_types,
+    )
+    .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)
+}
+
+fn validate_log_settings(
+    generation: &LogConfigurationGeneration,
+    settings: &[ClientLogSettingProjection],
+    log_catalog: &LogModuleCatalog,
+) -> Result<Vec<LogModuleSetting>, ConfigurationAdministrationRejection> {
+    let module = LogModuleIdentifier::new(generation.module().as_str())
+        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let declaration = log_catalog
+        .declaration(&module)
+        .ok_or(ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let accepted = declaration.accepted_settings();
+    if settings.len() != accepted.keys().len()
+        || settings
+            .iter()
+            .zip(accepted.keys())
+            .any(|(setting, accepted)| setting.key() != accepted || path_like_setting(accepted))
+    {
+        return Err(ConfigurationAdministrationRejection::BadRequest);
+    }
+    settings
+        .iter()
+        .map(|setting| {
+            Ok(LogModuleSetting {
+                key: ConfigurationKey::new(setting.key().to_owned())
+                    .map_err(|_| ConfigurationAdministrationRejection::BadRequest)?,
+                value: ConfigurationValue::new(setting.value().to_owned())
+                    .map_err(|_| ConfigurationAdministrationRejection::BadRequest)?,
+            })
+        })
+        .collect()
+}
+
+fn path_like_setting(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key == "path"
+        || key == "file"
+        || key == "directory"
+        || key.ends_with("_path")
+        || key.ends_with("_file")
+        || key.ends_with("_directory")
+}
+
+const fn database_log_type(log_type: ClientLogType) -> LogType {
+    match log_type {
+        ClientLogType::System => LogType::System,
+        ClientLogType::Audit => LogType::Audit,
+    }
+}
+
+const fn client_log_type(log_type: LogType) -> ClientLogType {
+    match log_type {
+        LogType::System => ClientLogType::System,
+        LogType::Audit => ClientLogType::Audit,
+    }
+}
+
+fn configuration_authentication_rejection(
+    rejection: AuthenticationRejection,
+) -> ConfigurationAdministrationRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => {
+            ConfigurationAdministrationRejection::ServiceUnavailable
+        }
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => {
+            ConfigurationAdministrationRejection::SessionInvalid
+        }
+    }
+}
+
+fn configuration_mfa_workflow_error(
+    error: MfaModuleEnablementError,
+) -> ConfigurationAdministrationRejection {
+    match error {
+        MfaModuleEnablementError::ActionNotSupported
+        | MfaModuleEnablementError::AuditLogUnavailable => {
+            ConfigurationAdministrationRejection::ServiceUnavailable
         }
     }
 }
@@ -3296,6 +3915,131 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::{test_support::activated, *};
+
+    fn identifier(byte: u8) -> StateIdentifier {
+        StateIdentifier::from_bytes([byte; 16]).unwrap()
+    }
+
+    fn session_hash(byte: u8) -> weavelit_server_database::SessionTokenHash {
+        weavelit_server_database::SessionTokenHash::from_bytes([byte; 32]).unwrap()
+    }
+
+    #[test]
+    fn totp_preview_claim_is_exact_single_use_and_replay_safe() {
+        let mut registry = TotpEnablementPreviewRegistry::default();
+        let actor = identifier(1);
+        let session = session_hash(2);
+        let client = Name::new("web-ui").unwrap();
+        let credential = registry
+            .issue(
+                Duration::ZERO,
+                actor,
+                session,
+                client.clone(),
+                false,
+                MfaModuleEnablementPreview::for_test(true, false, 3),
+            )
+            .unwrap();
+
+        for (candidate_actor, candidate_session, candidate_client, candidate_desired) in [
+            (identifier(9), session, client.clone(), false),
+            (actor, session_hash(9), client.clone(), false),
+            (actor, session, Name::new("other-client").unwrap(), false),
+            (actor, session, client.clone(), true),
+        ] {
+            assert!(
+                registry
+                    .claim(
+                        Duration::ZERO,
+                        candidate_actor,
+                        candidate_session,
+                        &candidate_client,
+                        candidate_desired,
+                        credential.as_str(),
+                    )
+                    .is_err()
+            );
+        }
+
+        let preview = registry
+            .claim(
+                Duration::ZERO,
+                actor,
+                session,
+                &client,
+                false,
+                credential.as_str(),
+            )
+            .unwrap();
+        assert_eq!(preview.affected_users(), 3);
+        assert!(
+            registry
+                .claim(
+                    Duration::ZERO,
+                    actor,
+                    session,
+                    &client,
+                    false,
+                    credential.as_str(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn totp_preview_expires_at_five_minutes_and_retention_is_bounded() {
+        let mut registry = TotpEnablementPreviewRegistry::default();
+        let actor = identifier(1);
+        let session = session_hash(2);
+        let client = Name::new("web-ui").unwrap();
+        let expired = registry
+            .issue(
+                Duration::ZERO,
+                actor,
+                session,
+                client.clone(),
+                true,
+                MfaModuleEnablementPreview::for_test(false, true, 0),
+            )
+            .unwrap();
+        assert!(
+            registry
+                .claim(
+                    MFA_STEP_UP_LIFETIME,
+                    actor,
+                    session,
+                    &client,
+                    true,
+                    expired.as_str(),
+                )
+                .is_err()
+        );
+
+        for _ in 0..MAX_OUTSTANDING_TOTP_ENABLEMENT_PREVIEWS {
+            registry
+                .issue(
+                    Duration::ZERO,
+                    actor,
+                    session,
+                    client.clone(),
+                    true,
+                    MfaModuleEnablementPreview::for_test(false, true, 0),
+                )
+                .unwrap();
+        }
+        assert!(
+            registry
+                .issue(
+                    Duration::ZERO,
+                    actor,
+                    session,
+                    client,
+                    true,
+                    MfaModuleEnablementPreview::for_test(false, true, 0),
+                )
+                .is_err()
+        );
+    }
 
     #[test]
     fn an_owner_with_no_activated_database_closes_cleanly() {

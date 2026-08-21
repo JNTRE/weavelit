@@ -24,9 +24,10 @@ pub const MANIFEST_FILE_NAME: &str = "build-manifest.json";
 pub const MANIFEST_FORMAT_VERSION: u64 = 1;
 
 /// The generated browser assets this crate embeds, relative to `dist/`.
-pub const GENERATED_ASSETS: [&str; 4] = [
+pub const GENERATED_ASSETS: [&str; 5] = [
     "assets/weavelit-application.css",
     "assets/weavelit-application.js",
+    "assets/weavelit-configuration-workspace.js",
     "assets/weavelit-groups-workspace.js",
     "index.html",
 ];

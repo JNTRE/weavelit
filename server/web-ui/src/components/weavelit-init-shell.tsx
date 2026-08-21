@@ -45,12 +45,21 @@ interface GroupsWorkspaceModule {
   GroupsWorkspace: ComponentType;
 }
 
+interface ConfigurationWorkspaceModule {
+  ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+}
+
 export interface ApplicationShellProps {
   loadGroupsWorkspace?: () => Promise<GroupsWorkspaceModule>;
+  loadConfigurationWorkspace?: () => Promise<ConfigurationWorkspaceModule>;
 }
 
 function defaultGroupsWorkspaceLoader(): Promise<GroupsWorkspaceModule> {
   return import("./weavelit-groups-workspace");
+}
+
+function defaultConfigurationWorkspaceLoader(): Promise<ConfigurationWorkspaceModule> {
+  return import("./weavelit-configuration-workspace");
 }
 
 function statusMessage(state: StatusViewState): string {
@@ -67,6 +76,7 @@ function statusMessage(state: StatusViewState): string {
 /** Root application shell for the restricted pre-operational Web UI. */
 export function ApplicationShell({
   loadGroupsWorkspace = defaultGroupsWorkspaceLoader,
+  loadConfigurationWorkspace = defaultConfigurationWorkspaceLoader,
 }: ApplicationShellProps = {}): JSX.Element {
   const { state, applyStatus } = useDeploymentStatus();
   const [selection, setSelection] = useState<SelectionViewState>("idle");
@@ -74,9 +84,17 @@ export function ApplicationShell({
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
-  const [administrationView, setAdministrationView] = useState<"accounts" | "groups">("accounts");
+  const [administrationView, setAdministrationView] = useState<
+    "accounts" | "groups" | "configuration"
+  >("accounts");
   const [groupsLoadState, setGroupsLoadState] = useState<"idle" | "loading" | "failed">("idle");
   const [GroupsWorkspace, setGroupsWorkspace] = useState<ComponentType | null>(null);
+  const [configurationLoadState, setConfigurationLoadState] = useState<
+    "idle" | "loading" | "failed"
+  >("idle");
+  const [ConfigurationWorkspace, setConfigurationWorkspace] = useState<ComponentType<{
+    readonly onSessionEnded?: () => void;
+  }> | null>(null);
 
   const chooseInit = useCallback(() => {
     setChoice("init");
@@ -117,6 +135,18 @@ export function ApplicationShell({
       },
     );
   }, [loadGroupsWorkspace]);
+
+  const loadConfiguration = useCallback(() => {
+    setConfigurationLoadState("loading");
+    void loadConfigurationWorkspace().then(
+      (module) => {
+        setConfigurationWorkspace(() => module.ConfigurationWorkspace);
+      },
+      () => {
+        setConfigurationLoadState("failed");
+      },
+    );
+  }, [loadConfigurationWorkspace]);
 
   const submit = useCallback(() => {
     setSelection("submitting");
@@ -183,26 +213,58 @@ export function ApplicationShell({
               >
                 Groups
               </button>
+              <button
+                type="button"
+                aria-current={administrationView === "configuration" ? "page" : undefined}
+                onClick={() => {
+                  setAdministrationView("configuration");
+                  if (configurationLoadState === "idle") loadConfiguration();
+                }}
+              >
+                Configuration
+              </button>
             </nav>
             {administrationView === "accounts" ? (
               <AccountsWorkspace onSessionEnded={endAuthenticatedSession} />
-            ) : GroupsWorkspace !== null ? (
-              <GroupsWorkspace />
+            ) : administrationView === "groups" ? (
+              GroupsWorkspace !== null ? (
+                <GroupsWorkspace />
+              ) : (
+                <section className="groups" aria-labelledby="groups-loading-title">
+                  <h2 id="groups-loading-title" className="groups__title">
+                    Groups
+                  </h2>
+                  {groupsLoadState === "failed" ? (
+                    <>
+                      <p role="alert">Groups could not be loaded.</p>
+                      <button type="button" onClick={loadGroups}>
+                        Retry
+                      </button>
+                    </>
+                  ) : (
+                    <p role="status" aria-live="polite">
+                      Loading Groups.
+                    </p>
+                  )}
+                </section>
+              )
+            ) : ConfigurationWorkspace !== null ? (
+              <ConfigurationWorkspace onSessionEnded={endAuthenticatedSession} />
             ) : (
-              <section className="groups" aria-labelledby="groups-loading-title">
-                <h2 id="groups-loading-title" className="groups__title">
-                  Groups
+              <section className="configuration" aria-labelledby="configuration-loading-title">
+                <h2 id="configuration-loading-title" className="accounts__title">
+                  Configuration
                 </h2>
-                {groupsLoadState === "failed" ? (
+                {configurationLoadState === "failed" ? (
                   <>
-                    <p role="alert">Groups could not be loaded.</p>
-                    <button type="button" onClick={loadGroups}>
+                    <p role="alert">Configuration could not be loaded.</p>
+                    <button type="button" onClick={loadConfiguration}>
                       Retry
                     </button>
                   </>
                 ) : (
                   <p role="status" aria-live="polite">
-                    Loading Groups.
+                    Loading Configuration.
                   </p>
                 )}
               </section>

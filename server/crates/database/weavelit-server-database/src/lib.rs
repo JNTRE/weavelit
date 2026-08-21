@@ -60,8 +60,8 @@ pub use log_configuration::{
 pub use mfa::{
     CredentialIssuanceStepUpAcceptance, MAX_MFA_TIME_STEP, MfaAcceptance,
     MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
-    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnrollment, MfaModuleTarget,
-    MfaStore, MfaTimeStep,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnablementPreviewState,
+    MfaEnrollment, MfaModuleTarget, MfaStore, MfaTimeStep,
 };
 pub use mfa_policy::{
     MfaPolicyAction, MfaPolicyAuditTerminalWrites, MfaPolicyMutation, MfaPolicyMutationError,

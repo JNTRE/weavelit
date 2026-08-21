@@ -193,6 +193,36 @@ pub struct MfaModuleTarget {
     pub component: Name,
 }
 
+/// Current state shown before one MFA Module enablement decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MfaEnablementPreviewState {
+    current_enabled: bool,
+    affected_users: usize,
+}
+
+impl MfaEnablementPreviewState {
+    /// Constructs one snapshot from values read in a single database transaction.
+    #[must_use]
+    pub const fn new(current_enabled: bool, affected_users: usize) -> Self {
+        Self {
+            current_enabled,
+            affected_users,
+        }
+    }
+
+    /// Returns whether the Module is currently enabled.
+    #[must_use]
+    pub const fn current_enabled(self) -> bool {
+        self.current_enabled
+    }
+
+    /// Returns the number of distinct enrolled Human Users.
+    #[must_use]
+    pub const fn affected_users(self) -> usize {
+        self.affected_users
+    }
+}
+
 /// The result of changing one MFA Module's enabled state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MfaEnablementOutcome {
@@ -262,6 +292,12 @@ impl std::fmt::Debug for MfaEnablementAuditTerminalWrites<'_> {
 pub trait MfaStore {
     /// Counts distinct Human Users holding a factor for the target Module.
     fn enrolled_accounts(&mut self, target: &MfaModuleTarget) -> Result<usize, DatabaseError>;
+
+    /// Reads current enablement and affected Human Users in one snapshot.
+    fn enablement_preview(
+        &mut self,
+        target: &MfaModuleTarget,
+    ) -> Result<MfaEnablementPreviewState, DatabaseError>;
 
     /// Returns the last step one factor accepted, when it has accepted one.
     fn accepted_step(

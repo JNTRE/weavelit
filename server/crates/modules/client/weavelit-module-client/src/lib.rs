@@ -34,6 +34,7 @@ use zeroize::Zeroize;
 pub mod administration;
 pub mod authentication;
 pub mod authorization;
+pub mod configuration;
 pub mod cookie;
 pub mod credential_issuance;
 pub mod groups;
@@ -64,6 +65,20 @@ pub use authentication::{
 };
 pub use authorization::{
     AUTHORIZATION_DENIED_CODE, AUTHORIZATION_DENIED_STATUS, AuthorizationRejection,
+};
+pub use configuration::{
+    ConfigurationAdministrationCapability, ConfigurationAdministrationDeclaration,
+    ConfigurationAdministrationEnvelope, ConfigurationAdministrationInputRejected,
+    ConfigurationAdministrationRejection, ConfigurationAdministrationRequest,
+    ConfigurationAdministrationResult, ConfigurationAdministrationSubmission,
+    DEFAULT_LOG_CONFIGURATIONS_PAGE_LIMIT, LOG_CONFIGURATIONS_CHANGE_ROUTE,
+    LOG_CONFIGURATIONS_LIST_ROUTE, LOG_CONFIGURATIONS_VIEW_ROUTE, LogAssignmentRequest,
+    LogConfigurationChangeRequest, LogConfigurationProjection, LogConfigurationViewRequest,
+    LogConfigurationsListRequest, LogConfigurationsPage, LogSettingProjection, LogTypeProjection,
+    MAX_CONFIGURATION_ADMINISTRATION_BODY_BYTES, MAX_CONFIGURATION_ADMINISTRATION_RESPONSE_BYTES,
+    MAX_LOG_CONFIGURATIONS_PAGE_LIMIT, TOTP_ENABLEMENT_APPLY_ROUTE, TOTP_ENABLEMENT_PREVIEW_ROUTE,
+    TotpEnablementApplied, TotpEnablementApplyRequest, TotpEnablementPreviewProjection,
+    TotpEnablementPreviewRequest, validate_configuration_administration_request,
 };
 pub use cookie::{
     CSRF_COOKIE_NAME, CookieEffect, CookieLines, CookieValue, MAX_COOKIE_HEADER_BYTES,
@@ -308,6 +323,7 @@ impl PreoperationalSurface {
 pub struct OperationalSurface {
     account_administration: Option<AccountAdministrationDeclaration>,
     group_administration: Option<GroupAdministrationDeclaration>,
+    configuration_administration: Option<ConfigurationAdministrationDeclaration>,
     credential_issuance: Option<CredentialIssuanceDeclaration>,
     mfa_policy: Option<MfaPolicyDeclaration>,
     assets: Option<Router>,
@@ -342,6 +358,25 @@ impl OperationalSurface {
     #[must_use]
     pub fn split_group_administration(mut self) -> (Self, Option<GroupAdministrationDeclaration>) {
         let declaration = self.group_administration.take();
+        (self, declaration)
+    }
+
+    /// Declares TOTP enablement and existing Log configuration administration.
+    pub fn with_configuration_administration(
+        mut self,
+        capability: ConfigurationAdministrationCapability,
+    ) -> Self {
+        self.configuration_administration =
+            Some(ConfigurationAdministrationDeclaration::new(capability));
+        self
+    }
+
+    /// Separates Configuration routes so each retains its transport registration.
+    #[must_use]
+    pub fn split_configuration_administration(
+        mut self,
+    ) -> (Self, Option<ConfigurationAdministrationDeclaration>) {
+        let declaration = self.configuration_administration.take();
         (self, declaration)
     }
 
@@ -398,6 +433,30 @@ impl OperationalSurface {
                 .route(GROUP_GRANTS_LIST_ROUTE, groups.grants_list_route())
                 .route(GROUP_GRANTS_CHANGE_ROUTE, groups.grant_change_route())
                 .route(ADMINISTRATION_CATALOG_ROUTE, groups.catalog_route()),
+            None => router,
+        };
+        let router = match self.configuration_administration {
+            Some(configuration) => router
+                .route(
+                    TOTP_ENABLEMENT_PREVIEW_ROUTE,
+                    configuration.totp_preview_route(),
+                )
+                .route(
+                    TOTP_ENABLEMENT_APPLY_ROUTE,
+                    configuration.totp_apply_route(),
+                )
+                .route(
+                    LOG_CONFIGURATIONS_LIST_ROUTE,
+                    configuration.log_list_route(),
+                )
+                .route(
+                    LOG_CONFIGURATIONS_VIEW_ROUTE,
+                    configuration.log_view_route(),
+                )
+                .route(
+                    LOG_CONFIGURATIONS_CHANGE_ROUTE,
+                    configuration.log_change_route(),
+                ),
             None => router,
         };
         let router = match self.credential_issuance {

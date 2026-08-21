@@ -22,7 +22,7 @@ Apply instructions in this order:
 
 ## Asset Inventory
 
-- `weavelit-server-database/`: Backend-neutral Application Database contract crate, including Group public identity and administration contracts.
+- `weavelit-server-database/`: Backend-neutral Application Database contract crate, including Group public identity and administration, atomic TOTP enablement preview, and current Log configuration generation read contracts.
 - `weavelit-server-database-authority/`: Server-owned capability key that gates persisted Audit Reference and opaque Audit terminal recovery decoding.
 - `weavelit-server-database-sqlite/`: MVP SQLite Application Database backend crate boundary.
 

@@ -98,6 +98,37 @@ fn set_enablement(path: &Path, value: &str) {
         .unwrap();
 }
 
+#[test]
+fn enablement_preview_reads_current_state_and_distinct_enrolled_accounts() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = opened_with_accounts(&path);
+    let connection = Connection::open(&path).unwrap();
+    for (factor_byte, account_byte) in [(0x31, 1), (0x32, 2)] {
+        connection
+            .execute(
+                "INSERT INTO weavelit_mfa_factor \
+                 (factor_id, account_id, module, protected_factor_data) \
+                 VALUES (?1, ?2, 'totp', ?3)",
+                rusqlite::params![
+                    factor(factor_byte).as_bytes().as_slice(),
+                    factor(account_byte).as_bytes().as_slice(),
+                    [0x55_u8; 20].as_slice(),
+                ],
+            )
+            .unwrap();
+    }
+
+    let disabled = database.enablement_preview(&target()).unwrap();
+    assert!(!disabled.current_enabled());
+    assert_eq!(disabled.affected_users(), 2);
+
+    set_enablement(&path, COMPONENT_ENABLED_VALUE);
+    let enabled = database.enablement_preview(&target()).unwrap();
+    assert!(enabled.current_enabled());
+    assert_eq!(enabled.affected_users(), 2);
+}
+
 fn session_count(path: &Path) -> i64 {
     Connection::open(path)
         .unwrap()

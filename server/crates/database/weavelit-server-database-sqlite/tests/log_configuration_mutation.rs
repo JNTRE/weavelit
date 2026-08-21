@@ -196,6 +196,29 @@ fn current_version(path: &Path, configuration: StateIdentifier) -> Vec<u8> {
 }
 
 #[test]
+fn current_generation_list_is_complete_and_ordered_by_configuration_name() {
+    let mut surface = surface();
+    let (generation, _, _) = persistence();
+
+    let current = surface
+        .database
+        .list_current_log_configuration_generations(&generation)
+        .unwrap();
+
+    assert_eq!(
+        current
+            .iter()
+            .map(|entry| entry.name().as_str())
+            .collect::<Vec<_>>(),
+        ["primary", "second", "third"]
+    );
+    assert_eq!(current[0].module().as_str(), "sqlite");
+    assert!(current[0].enabled());
+    assert_eq!(current[0].settings(), [setting("mode", "old")]);
+    assert_eq!(current[0].log_types(), [LogType::System, LogType::Audit]);
+}
+
+#[test]
 fn exact_no_op_including_same_configuration_assignment_writes_nothing() {
     let mut surface = surface();
     let (generation, mutation, audit) = persistence();

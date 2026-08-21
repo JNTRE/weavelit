@@ -29,10 +29,11 @@ export const EXPECTED_ASSETS = new Map([
   ["index.html", 16 * KIB],
   ["assets/weavelit-application.js", 256 * KIB],
   ["assets/weavelit-groups-workspace.js", 32 * KIB],
+  ["assets/weavelit-configuration-workspace.js", 48 * KIB],
   ["assets/weavelit-application.css", 64 * KIB],
 ]);
 
-const COMBINED_LIMIT = 336 * KIB;
+const COMBINED_LIMIT = 384 * KIB;
 
 // Bundle inputs are the files that can change the production bundle: the Vite
 // entry document, the non-test application sources, and the build, compiler,

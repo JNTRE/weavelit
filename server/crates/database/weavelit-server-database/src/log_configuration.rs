@@ -183,6 +183,12 @@ impl fmt::Debug for LogConfigurationGeneration {
 
 /// Read-only internal lookup of current and exact historical generations.
 pub trait LogConfigurationGenerationStore {
+    /// Lists every current generation in ascending unique configuration-name order.
+    fn list_current_log_configuration_generations(
+        &mut self,
+        persistence: &LogConfigurationGenerationPersistence,
+    ) -> Result<Vec<LogConfigurationGeneration>, DatabaseError>;
+
     /// Loads the generation currently assigned to Audit Logs.
     fn load_current_audit_log_configuration_generation(
         &mut self,

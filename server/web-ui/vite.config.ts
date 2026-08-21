@@ -22,7 +22,15 @@ export default defineConfig({
       input: "index.html",
       output: {
         entryFileNames: "assets/weavelit-application.js",
-        chunkFileNames: "assets/weavelit-groups-workspace.js",
+        chunkFileNames: (chunk) => {
+          if (chunk.name === "weavelit-groups-workspace") {
+            return "assets/weavelit-groups-workspace.js";
+          }
+          if (chunk.name === "weavelit-configuration-workspace") {
+            return "assets/weavelit-configuration-workspace.js";
+          }
+          return "assets/weavelit-[name].js";
+        },
         assetFileNames: "assets/weavelit-application.[ext]",
       },
     },

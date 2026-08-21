@@ -60,6 +60,10 @@ impl WebUi {
             "dist/assets/weavelit-groups-workspace.js",
             "console.log(2);",
         );
+        web_ui.write(
+            "dist/assets/weavelit-configuration-workspace.js",
+            "console.log(3);",
+        );
         web_ui.write("dist/assets/weavelit-application.css", "body{}");
         web_ui.write_manifest();
         web_ui

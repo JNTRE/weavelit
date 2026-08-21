@@ -789,6 +789,60 @@ describe("ApplicationShell sign-in panel gating", () => {
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 
+  it("loads Configuration only after authenticated navigation selects it", async () => {
+    mockAuthenticatedAdministrationFetch();
+    let completeLoad: (module: {
+      ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+    }) => void = () => {};
+    const loadConfigurationWorkspace = vi.fn(
+      () =>
+        new Promise<{
+          ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+        }>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+
+    render(<ApplicationShell loadConfigurationWorkspace={loadConfigurationWorkspace} />);
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(loadConfigurationWorkspace).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
+    expect(loadConfigurationWorkspace).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toBe("Loading Configuration.");
+    completeLoad({ ConfigurationWorkspace: () => <h2>Configuration</h2> });
+    expect(await screen.findByRole("heading", { name: "Configuration" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Configuration" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("offers a redacted retry when the Configuration chunk fails", async () => {
+    mockAuthenticatedAdministrationFetch();
+    const loadConfigurationWorkspace = vi
+      .fn<
+        () => Promise<{
+          ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+        }>
+      >()
+      .mockRejectedValueOnce(new Error("private Configuration chunk detail"))
+      .mockResolvedValueOnce({ ConfigurationWorkspace: () => <h2>Configuration</h2> });
+
+    render(<ApplicationShell loadConfigurationWorkspace={loadConfigurationWorkspace} />);
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
+
+    const failure = await screen.findByRole("alert");
+    expect(failure.textContent).toBe("Configuration could not be loaded.");
+    expect(document.body.textContent).not.toContain("private Configuration chunk detail");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("heading", { name: "Configuration" })).toBeTruthy();
+    expect(loadConfigurationWorkspace).toHaveBeenCalledTimes(2);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
   it("returns to sign-in after self-disable succeeds without retrying the mutation", async () => {
     const publicId = "QUFBQUFBQUFBQUFBQUFBQQ";
     Object.defineProperty(globalThis.document, "cookie", {
