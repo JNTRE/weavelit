@@ -138,7 +138,17 @@ impl TotpEnablementPreviewRequest {
 #[serde(deny_unknown_fields)]
 struct TotpApplyBody {
     enabled: bool,
-    totp_enablement_preview: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_zeroizing_string")]
+    totp_enablement_preview: Option<Zeroizing<String>>,
+}
+
+fn deserialize_optional_zeroizing_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Zeroizing<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(|value| value.map(Zeroizing::new))
 }
 
 pub struct TotpEnablementApplyRequest {
@@ -167,7 +177,7 @@ impl TotpEnablementApplyRequest {
         }
         Ok(Self {
             enabled: parsed.enabled,
-            preview: parsed.totp_enablement_preview.map(Zeroizing::new),
+            preview: parsed.totp_enablement_preview,
         })
     }
 
@@ -964,13 +974,28 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(TotpEnablementApplyRequest::from_json(br#"{"enabled":false}"#).is_ok());
+    }
+
+    #[test]
+    fn totp_preview_schema_retains_a_zeroizing_owner_before_validation() {
+        fn assert_zeroizing(_: &Zeroizing<String>) {}
+
+        let accepted: TotpApplyBody = required_json(
+            format!(r#"{{"enabled":false,"totp_enablement_preview":"{TOKEN}"}}"#).as_bytes(),
+        )
+        .unwrap();
+        let rejected: TotpApplyBody =
+            required_json(br#"{"enabled":false,"totp_enablement_preview":"short"}"#).unwrap();
+        assert_zeroizing(accepted.totp_enablement_preview.as_ref().unwrap());
+        assert_zeroizing(rejected.totp_enablement_preview.as_ref().unwrap());
+
         assert!(
             TotpEnablementApplyRequest::from_json(
                 br#"{"enabled":false,"totp_enablement_preview":"short"}"#
             )
             .is_err()
         );
-        assert!(TotpEnablementApplyRequest::from_json(br#"{"enabled":false}"#).is_ok());
     }
 
     #[test]
