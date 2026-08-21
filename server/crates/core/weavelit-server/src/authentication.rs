@@ -51,25 +51,25 @@ use weavelit_module_client::{
 use weavelit_module_mfa_totp::{SECRET_LENGTH, TotpSecret};
 use weavelit_server_administration::{
     AccountAdministrationAction, AuthorizedAccountAdministrationAction,
-    CurrentAdministrationSession,
+    AuthorizedCredentialIssuance, CurrentAdministrationSession,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authentication::{
     ACCEPTED_ARGON2_PROFILES, AccountCredentialIssuanceInput, Argon2Engine, Continuation,
-    ContinuationDigest, CsrfTokenDigest, PasswordAuthenticator, PasswordPolicy,
-    PasswordReplacementError, PasswordReplacementInput, PasswordVerdict,
-    PreparedPasswordReplacement, RustCryptoArgon2, SessionSecrets, SessionTokenDigest,
-    StoredCredential,
+    ContinuationDigest, CredentialIssuanceTicket, CredentialIssuanceTicketDigest, CsrfTokenDigest,
+    PasswordAuthenticator, PasswordPolicy, PasswordReplacementError, PasswordReplacementInput,
+    PasswordVerdict, PreparedPasswordReplacement, RustCryptoArgon2, SessionSecrets,
+    SessionTokenDigest, StoredCredential,
 };
 #[cfg(test)]
 use weavelit_server_database::MfaEnablementOutcome;
 use weavelit_server_database::{
     Account, AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck,
-    AccountPasswordVerifier, ApplicationState, ComponentKind, CredentialRevision, DatabaseError,
-    DeploymentIdentifier, InitializedState, LogType, MfaAcceptance,
-    MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
-    MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
-    PasswordChangeMutation, PasswordChangeRecheck, PasswordVerifier, SessionCsrfHash,
+    AccountPasswordVerifier, ApplicationState, ComponentKind, CredentialIssuanceStepUpAcceptance,
+    CredentialRevision, DatabaseError, DeploymentIdentifier, InitializedState, LogType,
+    MfaAcceptance, MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck,
+    MfaDirectSession, MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name,
+    NewSession, PasswordChangeMutation, PasswordChangeRecheck, PasswordVerifier, SessionCsrfHash,
     SessionInstant, SessionPosture, SessionStore, SessionTokenHash, SessionValidation,
     StateIdentifier, StoredSession,
 };
@@ -151,6 +151,18 @@ const _: () = assert!(
     "a continuation store that retains nothing, or retains forever, is not a bounded handoff"
 );
 
+/// Monotonic claim lifetime of one credential-issuance ticket.
+const CREDENTIAL_ISSUANCE_TICKET_LIFETIME: Duration = Duration::from_secs(5 * 60);
+
+/// Maximum credential assurances retained by one Server process.
+const MAX_OUTSTANDING_CREDENTIAL_ISSUANCE_TICKETS: usize = 64;
+
+const _: () = assert!(
+    !CREDENTIAL_ISSUANCE_TICKET_LIFETIME.is_zero()
+        && MAX_OUTSTANDING_CREDENTIAL_ISSUANCE_TICKETS > 0,
+    "credential-issuance proofs must be short-lived and bounded"
+);
+
 /// Reads the current UTC time in Unix milliseconds.
 ///
 /// Injected so a test observes session lifetime decisions at chosen instants
@@ -226,6 +238,8 @@ pub struct AuthenticationRuntime<E> {
     protection: Arc<dyn ProtectedValueAccess>,
     /// The half-authenticated logins waiting for their second factor.
     continuations: ContinuationStore,
+    /// Fresh credential assurances waiting for one create or reset claim.
+    credential_issuance_tickets: CredentialIssuanceTicketStore,
     /// The System Log destination denials are recorded to, when one is
     /// configured and could be opened.
     ///
@@ -262,6 +276,11 @@ impl AuthenticationRuntime<RustCryptoArgon2> {
 }
 
 impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
+    /// Returns the shared single-permit Argon2 lane for another password route.
+    pub(crate) fn password_admission_lane(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.login_lane)
+    }
+
     /// Composes authentication over an explicit verification engine and clocks.
     ///
     /// A test injects a counting engine here to observe that a denial performs
@@ -289,7 +308,8 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                 &log_authority,
             )),
             protection,
-            continuations: ContinuationStore::new(clocks.elapsed),
+            continuations: ContinuationStore::new(Arc::clone(&clocks.elapsed)),
+            credential_issuance_tickets: CredentialIssuanceTicketStore::new(clocks.elapsed),
             system_log,
         }))
     }
@@ -680,26 +700,93 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         }
     }
 
-    /// Verifies fresh issuer credentials for one exact authorized account writer.
-    ///
-    /// Every evaluated path performs exactly one password verification against
-    /// the actor snapshot. The returned admission is process-private,
-    /// non-clonable, and still requires a final exact-session database recheck.
-    pub(crate) fn admit_account_credential_issuance(
+    /// Verifies fresh assurance and atomically mints one process-memory ticket.
+    pub(crate) fn issue_credential_issuance_ticket(
+        &self,
+        authorization: AuthorizedCredentialIssuance,
+        input: AccountCredentialIssuanceInput,
+    ) -> Result<CredentialIssuanceTicket, AccountCredentialIssuanceError> {
+        let proof = self.verify_account_credential_issuance(
+            authorization.actor(),
+            authorization.session(),
+            authorization.client_module().clone(),
+            input,
+        )?;
+        let ticket = CredentialIssuanceTicket::generate()
+            .map_err(|_| AccountCredentialIssuanceError::Unavailable)?;
+        let elapsed = (self.credential_issuance_tickets.elapsed)();
+        let expires_after = elapsed
+            .checked_add(CREDENTIAL_ISSUANCE_TICKET_LIFETIME)
+            .ok_or(AccountCredentialIssuanceError::Unavailable)?;
+        let mut pending = self
+            .credential_issuance_tickets
+            .pending
+            .lock()
+            .map_err(|_| AccountCredentialIssuanceError::Unavailable)?;
+        pending.retain(|entry| entry.expires_after > elapsed);
+        if pending.len() >= MAX_OUTSTANDING_CREDENTIAL_ISSUANCE_TICKETS {
+            return Err(AccountCredentialIssuanceError::Unavailable);
+        }
+
+        let recheck = proof.recheck(
+            self.now()
+                .map_err(|_| AccountCredentialIssuanceError::Unavailable)?,
+        );
+        let accepted = self
+            .database
+            .with_mfa(|store| store.accept_credential_issuance_step_up(&recheck))
+            .map_err(|_| AccountCredentialIssuanceError::Unavailable)?;
+        match accepted {
+            CredentialIssuanceStepUpAcceptance::Accepted => {}
+            CredentialIssuanceStepUpAcceptance::Rejected
+            | CredentialIssuanceStepUpAcceptance::Replayed => {
+                return Err(AccountCredentialIssuanceError::Denied);
+            }
+        }
+
+        pending.push(PendingCredentialIssuance {
+            digest: ticket.digest(),
+            expires_after,
+            proof,
+        });
+        Ok(ticket)
+    }
+
+    /// Spends one ticket and binds its proof to one separately authorized action.
+    pub(crate) fn claim_credential_issuance_ticket(
         &self,
         authorization: AuthorizedAccountAdministrationAction,
-        input: AccountCredentialIssuanceInput,
+        submitted: &str,
     ) -> Result<AccountCredentialIssuanceAdmission, AccountCredentialIssuanceError> {
-        if matches!(
+        if !matches!(
             authorization.action(),
-            AccountAdministrationAction::StatusChange(_)
+            AccountAdministrationAction::Create(_) | AccountAdministrationAction::PasswordReset(_)
         ) {
             return Err(AccountCredentialIssuanceError::Denied);
         }
+        let proof = self
+            .credential_issuance_tickets
+            .claim(submitted)
+            .ok_or(AccountCredentialIssuanceError::Denied)?;
+        if proof.actor != authorization.actor()
+            || !proof.session.matches(&authorization.session())
+            || proof.client_module != *authorization.client_module()
+        {
+            return Err(AccountCredentialIssuanceError::Denied);
+        }
+        Ok(proof.into_admission(authorization.into_action()))
+    }
+
+    fn verify_account_credential_issuance(
+        &self,
+        actor: StateIdentifier,
+        session: SessionTokenHash,
+        client_module: Name,
+        input: AccountCredentialIssuanceInput,
+    ) -> Result<CredentialIssuanceStepUpProof, AccountCredentialIssuanceError> {
         let state = self
             .initialized_state()
             .map_err(|_| AccountCredentialIssuanceError::Unavailable)?;
-        let actor = authorization.actor();
         let account = state
             .state()
             .accounts()
@@ -730,14 +817,16 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         if !matches!(verdict, PasswordVerdict::Verified { .. })
             || account.must_change_password
             || account.temporary_credential_expiration.is_some()
-            || matches!(authorization.action(), AccountAdministrationAction::Read(_))
         {
             return Err(AccountCredentialIssuanceError::Denied);
         }
 
         let target = totp_target().map_err(|_| AccountCredentialIssuanceError::Unavailable)?;
         let factor = match (enrolled_factor(state.state(), actor), input.totp_code()) {
-            (None, None) => AccountCredentialIssuanceFactor::NoneObserved { target },
+            (None, None) => AccountCredentialIssuanceFactor::NoneObserved {
+                target,
+                module_enabled: module_enabled(state.state()),
+            },
             (None, Some(_)) | (Some(_), None) => {
                 return Err(AccountCredentialIssuanceError::Denied);
             }
@@ -766,11 +855,10 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
             }
         };
 
-        Ok(AccountCredentialIssuanceAdmission {
+        Ok(CredentialIssuanceStepUpProof {
             actor,
-            session: authorization.session(),
-            client_module: authorization.client_module().clone(),
-            action: authorization.into_action(),
+            session,
+            client_module,
             expected_revision: account.credential_revision,
             factor,
         })
@@ -1676,6 +1764,48 @@ enum PasswordOutcome {
 }
 
 /// Fresh exact-session credential issuance proof retained only by Server workflow code.
+struct CredentialIssuanceStepUpProof {
+    actor: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+    expected_revision: CredentialRevision,
+    factor: AccountCredentialIssuanceFactor,
+}
+
+impl CredentialIssuanceStepUpProof {
+    fn recheck(&self, now: SessionInstant) -> AccountCredentialIssuanceRecheck {
+        AccountCredentialIssuanceRecheck::new(
+            self.actor,
+            self.session,
+            self.client_module.clone(),
+            self.expected_revision,
+            now,
+            self.factor.clone(),
+        )
+    }
+
+    fn into_admission(
+        self,
+        action: AccountAdministrationAction,
+    ) -> AccountCredentialIssuanceAdmission {
+        AccountCredentialIssuanceAdmission {
+            actor: self.actor,
+            session: self.session,
+            client_module: self.client_module,
+            action,
+            expected_revision: self.expected_revision,
+            factor: self.factor,
+        }
+    }
+}
+
+impl std::fmt::Debug for CredentialIssuanceStepUpProof {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CredentialIssuanceStepUpProof(REDACTED)")
+    }
+}
+
+/// Fresh exact-session credential issuance proof retained only by Server workflow code.
 pub(crate) struct AccountCredentialIssuanceAdmission {
     actor: StateIdentifier,
     session: SessionTokenHash,
@@ -1875,6 +2005,43 @@ impl ContinuationStore {
             .iter()
             .position(|entry| entry.digest.matches(&submitted))?;
         Some(pending.swap_remove(found).claim)
+    }
+}
+
+/// One outstanding credential assurance and its monotonic expiry.
+struct PendingCredentialIssuance {
+    digest: CredentialIssuanceTicketDigest,
+    expires_after: Duration,
+    proof: CredentialIssuanceStepUpProof,
+}
+
+/// Bounded process-memory credential-issuance proofs.
+///
+/// Only domain-separated ticket digests are retained. A restart drops the
+/// complete store, and a claim removes its entry before the caller checks any
+/// later action binding, so every submitted live ticket authorizes one attempt.
+struct CredentialIssuanceTicketStore {
+    elapsed: ElapsedClock,
+    pending: Mutex<Vec<PendingCredentialIssuance>>,
+}
+
+impl CredentialIssuanceTicketStore {
+    fn new(elapsed: ElapsedClock) -> Self {
+        Self {
+            elapsed,
+            pending: Mutex::default(),
+        }
+    }
+
+    fn claim(&self, submitted: &str) -> Option<CredentialIssuanceStepUpProof> {
+        let submitted = CredentialIssuanceTicketDigest::of_canonical(submitted)?;
+        let now = (self.elapsed)();
+        let mut pending = self.pending.lock().ok()?;
+        pending.retain(|entry| entry.expires_after > now);
+        let found = pending
+            .iter()
+            .position(|entry| entry.digest.matches(&submitted))?;
+        Some(pending.swap_remove(found).proof)
     }
 }
 
@@ -2767,7 +2934,48 @@ pub(crate) mod tests {
         action: AccountAdministrationAction,
         session: SessionTokenHash,
     ) -> weavelit_server_administration::AuthorizedAdministrationAction {
-        let client_module = name(CLIENT_MODULE);
+        authorized_issuance_administration_action_for(
+            action,
+            StateIdentifier::from_bytes(ACTIVE_ACCOUNT_BYTES).unwrap(),
+            session,
+            CLIENT_MODULE,
+        )
+    }
+
+    fn authorized_issuance_administration_action_for(
+        action: AccountAdministrationAction,
+        actor: StateIdentifier,
+        session: SessionTokenHash,
+        client_module: &str,
+    ) -> weavelit_server_administration::AuthorizedAdministrationAction {
+        AdministrationPlane::new(
+            IssuanceAdministrationClock,
+            IssuanceEnablement,
+            AvailableComponents::default(),
+        )
+        .authorize(
+            authorized_issuance_admission_for(actor, session, client_module),
+            AdministrationRequest::new(AdministrationAction::Account(action)),
+        )
+        .unwrap()
+    }
+
+    fn authorized_issuance_admission(
+        session: SessionTokenHash,
+    ) -> AuthorizedAdministrationAdmission {
+        authorized_issuance_admission_for(
+            StateIdentifier::from_bytes(ACTIVE_ACCOUNT_BYTES).unwrap(),
+            session,
+            CLIENT_MODULE,
+        )
+    }
+
+    fn authorized_issuance_admission_for(
+        actor: StateIdentifier,
+        session: SessionTokenHash,
+        client_module: &str,
+    ) -> AuthorizedAdministrationAdmission {
+        let client_module = name(client_module);
         let authorization = authorize_administration(
             &HumanAuthorizationSnapshot::new(
                 true,
@@ -2792,22 +3000,37 @@ pub(crate) mod tests {
         )
         .unwrap();
         let authority = ServerAdministrationAuthority::new();
-        let admission = AuthorizedAdministrationAdmission::from_server_authority(
+        AuthorizedAdministrationAdmission::from_server_authority(
             &authority,
             authorization,
-            StateIdentifier::from_bytes(ACTIVE_ACCOUNT_BYTES).unwrap(),
+            actor,
             session,
-        );
-        AdministrationPlane::new(
-            IssuanceAdministrationClock,
-            IssuanceEnablement,
-            AvailableComponents::default(),
         )
-        .authorize(
-            admission,
-            AdministrationRequest::new(AdministrationAction::Account(action)),
+    }
+
+    fn credential_issuance_ticket(
+        surface: &AuthSurface,
+        session: SessionTokenHash,
+        password: &[u8],
+        code: Option<&[u8]>,
+    ) -> Result<CredentialIssuanceTicket, AccountCredentialIssuanceError> {
+        surface.runtime.issue_credential_issuance_ticket(
+            authorized_issuance_admission(session).into_credential_issuance(),
+            issuance_input(password, code),
         )
-        .unwrap()
+    }
+
+    fn admit_account_credential_issuance(
+        surface: &AuthSurface,
+        action: AccountAdministrationAction,
+        password: &[u8],
+        code: Option<&[u8]>,
+    ) -> Result<AccountCredentialIssuanceAdmission, AccountCredentialIssuanceError> {
+        let session = surface.credential_issuance_session();
+        let ticket = credential_issuance_ticket(surface, session, password, code)?;
+        surface
+            .runtime
+            .claim_credential_issuance_ticket(authorized_issuance_action(action), ticket.as_str())
     }
 
     fn issuance_input(password: &[u8], code: Option<&[u8]>) -> AccountCredentialIssuanceInput {
@@ -2819,7 +3042,7 @@ pub(crate) mod tests {
 
     fn create_action() -> AccountAdministrationAction {
         AccountAdministrationAction::Create(
-            AccountCreate::new("created-user", "Created User").unwrap(),
+            AccountCreate::new("created-user", Some("Created User")).unwrap(),
         )
     }
 
@@ -2830,13 +3053,7 @@ pub(crate) mod tests {
         code: Option<&[u8]>,
     ) {
         let before = surface.engine.verifications();
-        let error = surface
-            .runtime
-            .admit_account_credential_issuance(
-                authorized_issuance_action(action),
-                issuance_input(password, code),
-            )
-            .unwrap_err();
+        let error = admit_account_credential_issuance(surface, action, password, code).unwrap_err();
 
         assert_eq!(error, AccountCredentialIssuanceError::Denied);
         assert_eq!(surface.engine.verifications(), before + 1);
@@ -2849,13 +3066,13 @@ pub(crate) mod tests {
     #[test]
     fn account_credential_issuance_performs_one_equal_work_password_check() {
         let allowed = AuthSurface::new();
-        let admission = allowed
-            .runtime
-            .admit_account_credential_issuance(
-                authorized_issuance_action(create_action()),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
-            )
-            .unwrap();
+        let admission = admit_account_credential_issuance(
+            &allowed,
+            create_action(),
+            CORRECT_PASSWORD.as_bytes(),
+            None,
+        )
+        .unwrap();
         assert_eq!(allowed.engine.verifications(), 1);
         assert_eq!(
             format!("{admission:?}"),
@@ -2894,21 +3111,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn account_status_action_never_enters_credential_reauthentication() {
+    fn account_status_action_never_enters_credential_issuance_reauthentication() {
         let surface = AuthSurface::new();
         let error = surface
             .runtime
-            .admit_account_credential_issuance(
+            .claim_credential_issuance_ticket(
                 authorized_issuance_action(AccountAdministrationAction::StatusChange(
                     AccountStatusChange::new(
                         AccountPublicIdentifier::generate().unwrap(),
                         AccountStatus::Disabled,
                     ),
                 )),
-                issuance_input(
-                    CORRECT_PASSWORD.as_bytes(),
-                    Some(ENROLLED_VECTOR_CODE.as_bytes()),
-                ),
+                "not-a-ticket",
             )
             .unwrap_err();
 
@@ -2917,19 +3131,149 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn credential_issuance_ticket_claim_is_bound_single_use_and_restart_invalid() {
+        let surface = AuthSurface::new();
+        let session = surface.credential_issuance_session();
+
+        let claimed =
+            credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                .unwrap();
+        surface
+            .runtime
+            .claim_credential_issuance_ticket(
+                authorized_issuance_action(create_action()),
+                claimed.as_str(),
+            )
+            .unwrap();
+        assert_eq!(
+            surface
+                .runtime
+                .claim_credential_issuance_ticket(
+                    authorized_issuance_action(create_action()),
+                    claimed.as_str(),
+                )
+                .unwrap_err(),
+            AccountCredentialIssuanceError::Denied
+        );
+
+        for authorization in [
+            authorized_issuance_administration_action_for(
+                create_action(),
+                StateIdentifier::from_bytes(INACTIVE_ACCOUNT_BYTES).unwrap(),
+                session,
+                CLIENT_MODULE,
+            ),
+            authorized_issuance_administration_action_for(
+                create_action(),
+                StateIdentifier::from_bytes(ACTIVE_ACCOUNT_BYTES).unwrap(),
+                SessionTokenHash::from_bytes([0x41; SESSION_DIGEST_LENGTH]).unwrap(),
+                CLIENT_MODULE,
+            ),
+            authorized_issuance_administration_action_for(
+                create_action(),
+                StateIdentifier::from_bytes(ACTIVE_ACCOUNT_BYTES).unwrap(),
+                session,
+                "other-client",
+            ),
+        ] {
+            let ticket =
+                credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                    .unwrap();
+            assert_eq!(
+                surface
+                    .runtime
+                    .claim_credential_issuance_ticket(
+                        authorization.into_account().unwrap(),
+                        ticket.as_str(),
+                    )
+                    .unwrap_err(),
+                AccountCredentialIssuanceError::Denied
+            );
+            assert_eq!(
+                surface
+                    .runtime
+                    .claim_credential_issuance_ticket(
+                        authorized_issuance_action(create_action()),
+                        ticket.as_str(),
+                    )
+                    .unwrap_err(),
+                AccountCredentialIssuanceError::Denied
+            );
+        }
+
+        let restart_ticket =
+            credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                .unwrap();
+        let restarted_store = CredentialIssuanceTicketStore::new(Arc::new(|| Duration::ZERO));
+        assert!(restarted_store.claim(restart_ticket.as_str()).is_none());
+        surface
+            .runtime
+            .claim_credential_issuance_ticket(
+                authorized_issuance_action(create_action()),
+                restart_ticket.as_str(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn credential_issuance_ticket_expires_at_exact_monotonic_boundary() {
+        let surface = AuthSurface::new();
+        let session = surface.credential_issuance_session();
+        let ticket =
+            credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                .unwrap();
+
+        surface.set_elapsed(CREDENTIAL_ISSUANCE_TICKET_LIFETIME);
+
+        assert_eq!(
+            surface
+                .runtime
+                .claim_credential_issuance_ticket(
+                    authorized_issuance_action(create_action()),
+                    ticket.as_str(),
+                )
+                .unwrap_err(),
+            AccountCredentialIssuanceError::Denied
+        );
+    }
+
+    #[test]
+    fn credential_issuance_ticket_capacity_is_bounded_and_recovers_after_claim() {
+        let surface = AuthSurface::new();
+        let session = surface.credential_issuance_session();
+        let tickets = (0..MAX_OUTSTANDING_CREDENTIAL_ISSUANCE_TICKETS)
+            .map(|_| {
+                credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None,)
+                .unwrap_err(),
+            AccountCredentialIssuanceError::Unavailable
+        );
+        surface
+            .runtime
+            .claim_credential_issuance_ticket(
+                authorized_issuance_action(create_action()),
+                tickets[0].as_str(),
+            )
+            .unwrap();
+        credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None).unwrap();
+    }
+
+    #[test]
     fn account_credential_issuance_totp_evidence_is_exact_and_denies_uniformly() {
         let enrolled = AuthSurface::with_mfa(MfaFixture::enabled().enrolled());
         enrolled.set_clock(i64::try_from(ENROLLED_VECTOR_SECONDS * 1_000).unwrap());
-        let admission = enrolled
-            .runtime
-            .admit_account_credential_issuance(
-                authorized_issuance_action(create_action()),
-                issuance_input(
-                    CORRECT_PASSWORD.as_bytes(),
-                    Some(ENROLLED_VECTOR_CODE.as_bytes()),
-                ),
-            )
-            .unwrap();
+        let admission = admit_account_credential_issuance(
+            &enrolled,
+            create_action(),
+            CORRECT_PASSWORD.as_bytes(),
+            Some(ENROLLED_VECTOR_CODE.as_bytes()),
+        )
+        .unwrap();
         assert_eq!(enrolled.engine.verifications(), 1);
         let (_, recheck) = enrolled
             .runtime
@@ -3042,7 +3386,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn audited_account_create_and_reset_disclose_only_committed_temporary_passwords() {
+    fn credential_issuance_audited_create_and_reset_disclose_only_committed_passwords() {
         let surface = AuthSurface::new();
         let session = surface.credential_issuance_session();
         let database = surface.runtime.database.clone();
@@ -3053,7 +3397,9 @@ pub(crate) mod tests {
         let created = workflow
             .issue(
                 authorized_issuance_administration_action(create_action(), session),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
+                credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                    .unwrap()
+                    .as_str(),
             )
             .unwrap();
         assert_eq!(
@@ -3090,7 +3436,9 @@ pub(crate) mod tests {
                     ),
                     session,
                 ),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
+                credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                    .unwrap()
+                    .as_str(),
             )
             .unwrap();
         let second_secret = match reset {
@@ -3144,7 +3492,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn duplicate_create_and_lost_reset_result_return_no_reusable_disclosure() {
+    fn credential_issuance_duplicate_create_and_lost_reset_have_no_reusable_disclosure() {
         let surface = AuthSurface::new();
         let session = surface.credential_issuance_session();
         let database = surface.runtime.database.clone();
@@ -3155,7 +3503,9 @@ pub(crate) mod tests {
         let created = workflow
             .issue(
                 authorized_issuance_administration_action(create_action(), session),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
+                credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                    .unwrap()
+                    .as_str(),
             )
             .unwrap();
         let account = match created {
@@ -3165,7 +3515,9 @@ pub(crate) mod tests {
         let duplicate = workflow
             .issue(
                 authorized_issuance_administration_action(create_action(), session),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
+                credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                    .unwrap()
+                    .as_str(),
             )
             .unwrap();
         assert!(matches!(
@@ -3182,7 +3534,9 @@ pub(crate) mod tests {
                     ),
                     session,
                 ),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
+                credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                    .unwrap()
+                    .as_str(),
             )
             .unwrap();
         assert!(matches!(
@@ -3199,7 +3553,9 @@ pub(crate) mod tests {
                     ),
                     session,
                 ),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
+                credential_issuance_ticket(&surface, session, CORRECT_PASSWORD.as_bytes(), None)
+                    .unwrap()
+                    .as_str(),
             )
             .unwrap();
         let disclosed = match explicit {
@@ -3218,7 +3574,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn account_writer_audit_outages_split_precommit_refusal_from_postcommit_disclosure() {
+    fn credential_issuance_writer_audit_outages_split_precommit_and_postcommit() {
         let precommit = AuthSurface::new();
         let precommit_session = precommit.credential_issuance_session();
         let precommit_database = precommit.runtime.database.clone();
@@ -3232,7 +3588,14 @@ pub(crate) mod tests {
         assert!(matches!(
             workflow.issue(
                 authorized_issuance_administration_action(create_action(), precommit_session),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
+                credential_issuance_ticket(
+                    &precommit,
+                    precommit_session,
+                    CORRECT_PASSWORD.as_bytes(),
+                    None,
+                )
+                .unwrap()
+                .as_str(),
             ),
             Err(AccountCredentialIssuanceWorkflowError::AuditLogUnavailable)
         ));
@@ -3252,7 +3615,14 @@ pub(crate) mod tests {
         let result = workflow
             .issue(
                 authorized_issuance_administration_action(create_action(), postcommit_session),
-                issuance_input(CORRECT_PASSWORD.as_bytes(), None),
+                credential_issuance_ticket(
+                    &postcommit,
+                    postcommit_session,
+                    CORRECT_PASSWORD.as_bytes(),
+                    None,
+                )
+                .unwrap()
+                .as_str(),
             )
             .unwrap();
         let secret = match result {

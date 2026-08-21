@@ -9,8 +9,9 @@
 //! deployment's history.
 
 use crate::{
-    ContractInputError, DatabaseError, MfaFactor, Name, NewSession, SessionInstant,
-    SessionTokenHash, StateIdentifier, ValidatedAuditTerminalObligationWrite,
+    AccountCredentialIssuanceRecheck, ContractInputError, DatabaseError, MfaFactor, Name,
+    NewSession, SessionInstant, SessionTokenHash, StateIdentifier,
+    ValidatedAuditTerminalObligationWrite,
 };
 
 /// Largest accepted time step.
@@ -125,6 +126,17 @@ pub enum MfaAdministrationStepUpAcceptance {
     Replayed,
     /// The factor's MFA Module was disabled.
     ModuleDisabled,
+}
+
+/// Authoritative result of accepting credential-issuance assurance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialIssuanceStepUpAcceptance {
+    /// Exact live state was accepted and any TOTP watermark was advanced.
+    Accepted,
+    /// Session, actor, credential, factor, or Module state was no longer exact.
+    Rejected,
+    /// The verified TOTP step did not advance its factor watermark.
+    Replayed,
 }
 
 /// The result of issuing a session no second factor was found to gate.
@@ -292,6 +304,17 @@ pub trait MfaStore {
         step: MfaTimeStep,
         recheck: &MfaAdministrationStepUpRecheck,
     ) -> Result<MfaAdministrationStepUpAcceptance, DatabaseError>;
+
+    /// Atomically accepts one credential-issuance assurance snapshot.
+    ///
+    /// The transaction rechecks the exact live session, active ordinary actor
+    /// credential revision, factor identity or absence, and Module state. A
+    /// present factor's verified step must advance its replay watermark. No
+    /// account business state, Audit record, or session is written.
+    fn accept_credential_issuance_step_up(
+        &mut self,
+        recheck: &AccountCredentialIssuanceRecheck,
+    ) -> Result<CredentialIssuanceStepUpAcceptance, DatabaseError>;
 
     /// Writes one session for a login no second factor was found to gate.
     ///

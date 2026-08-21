@@ -249,18 +249,22 @@ pub enum AccountAdministrationRead {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountCreate {
     username: Name,
-    display_name: Name,
+    display_name: Option<Name>,
 }
 
 impl AccountCreate {
     /// Validates the username and display name against persisted-name bounds.
     pub fn new(
         username: impl Into<Box<str>>,
-        display_name: impl Into<Box<str>>,
+        display_name: Option<impl Into<Box<str>>>,
     ) -> Result<Self, AdministrationInputRejected> {
         Ok(Self {
             username: Name::new(username).map_err(|_| AdministrationInputRejected)?,
-            display_name: Name::new(display_name).map_err(|_| AdministrationInputRejected)?,
+            display_name: display_name
+                .map(|display_name| {
+                    Name::new(display_name).map_err(|_| AdministrationInputRejected)
+                })
+                .transpose()?,
         })
     }
 
@@ -272,8 +276,8 @@ impl AccountCreate {
 
     /// Returns the requested display name.
     #[must_use]
-    pub const fn display_name(&self) -> &Name {
-        &self.display_name
+    pub const fn display_name(&self) -> Option<&Name> {
+        self.display_name.as_ref()
     }
 }
 
@@ -501,11 +505,61 @@ impl AuthorizedAdministrationAdmission {
             session,
         }
     }
+
+    /// Consumes live Administration authorization into credential assurance.
+    ///
+    /// The proof route does not select an account action. A later create or
+    /// reset request must independently authorize its exact action before it
+    /// can claim the ticket minted from this handoff.
+    #[must_use]
+    pub fn into_credential_issuance(self) -> AuthorizedCredentialIssuance {
+        AuthorizedCredentialIssuance {
+            actor: self.actor,
+            session: self.session,
+            client_module: self.authorization.client_module().clone(),
+        }
+    }
 }
 
 impl fmt::Debug for AuthorizedAdministrationAdmission {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthorizedAdministrationAdmission(REDACTED)")
+    }
+}
+
+/// Live Administration authorization for one credential-assurance attempt.
+///
+/// This value carries no create or reset target. It is not clonable and can be
+/// obtained only by consuming the Server-bound Administration admission.
+pub struct AuthorizedCredentialIssuance {
+    actor: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+}
+
+impl AuthorizedCredentialIssuance {
+    /// Returns the authenticated Administrator account.
+    #[must_use]
+    pub const fn actor(&self) -> StateIdentifier {
+        self.actor
+    }
+
+    /// Returns the exact validated session digest.
+    #[must_use]
+    pub const fn session(&self) -> SessionTokenHash {
+        self.session
+    }
+
+    /// Returns the Client Module through which assurance was authorized.
+    #[must_use]
+    pub const fn client_module(&self) -> &Name {
+        &self.client_module
+    }
+}
+
+impl fmt::Debug for AuthorizedCredentialIssuance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedCredentialIssuance(REDACTED)")
     }
 }
 
@@ -1054,7 +1108,7 @@ mod tests {
                 AccountPublicIdentifier::generate().unwrap(),
             )),
             AccountAdministrationAction::Create(
-                AccountCreate::new("new-user", "New User").unwrap(),
+                AccountCreate::new("new-user", Some("New User")).unwrap(),
             ),
             AccountAdministrationAction::PasswordReset(AccountPasswordReset::new(
                 AccountPublicIdentifier::generate().unwrap(),
@@ -1121,9 +1175,15 @@ mod tests {
 
     #[test]
     fn account_write_inputs_are_bounded_and_rejection_is_payload_free() {
-        let create = AccountCreate::new("new-user", "New User").unwrap();
+        let create = AccountCreate::new("new-user", Some("New User")).unwrap();
         assert_eq!(create.username().as_str(), "new-user");
-        assert_eq!(create.display_name().as_str(), "New User");
+        assert_eq!(create.display_name().unwrap().as_str(), "New User");
+        assert!(
+            AccountCreate::new("without-display", None::<&str>)
+                .unwrap()
+                .display_name()
+                .is_none()
+        );
 
         let target = AccountPublicIdentifier::generate().unwrap();
         assert_eq!(AccountPasswordReset::new(target).target(), target);
@@ -1133,8 +1193,8 @@ mod tests {
 
         let oversized = "sensitive".repeat(MAX_NAME_LENGTH + 1);
         for rejected in [
-            AccountCreate::new(oversized.clone(), "display").unwrap_err(),
-            AccountCreate::new("username", oversized).unwrap_err(),
+            AccountCreate::new(oversized.clone(), Some("display")).unwrap_err(),
+            AccountCreate::new("username", Some(oversized)).unwrap_err(),
         ] {
             assert_eq!(rejected.to_string(), "administration input rejected");
             assert_eq!(format!("{rejected:?}"), "AdministrationInputRejected");

@@ -123,8 +123,6 @@ impl AccountCredentialWriterStore for SqliteDatabase {
             return Ok(AccountCreateOutcome::Conflict);
         }
 
-        advance_issuer_watermark(&transaction, mutation.recheck())?;
-
         let account = mutation.account();
         transaction
             .execute(
@@ -212,8 +210,6 @@ impl AccountCredentialWriterStore for SqliteDatabase {
             return Err(DatabaseError::IntegrityFailure);
         }
 
-        advance_issuer_watermark(&transaction, mutation.recheck())?;
-
         transaction
             .execute(
                 UPSERT_PASSWORD_VERIFIER,
@@ -236,6 +232,26 @@ impl AccountCredentialWriterStore for SqliteDatabase {
 }
 
 fn accept_issuer(
+    transaction: &Transaction<'_>,
+    recheck: &AccountCredentialIssuanceRecheck,
+) -> Result<bool, DatabaseError> {
+    Ok(credential_issuance_identity_matches(transaction, recheck)?
+        && credential_issuance_factor_matches(
+            transaction,
+            recheck,
+            WatermarkRequirement::Accepted,
+        )?)
+}
+
+pub(super) fn credential_issuance_step_up_matches(
+    transaction: &Transaction<'_>,
+    recheck: &AccountCredentialIssuanceRecheck,
+) -> Result<bool, DatabaseError> {
+    Ok(credential_issuance_identity_matches(transaction, recheck)?
+        && credential_issuance_factor_matches(transaction, recheck, WatermarkRequirement::Any)?)
+}
+
+fn credential_issuance_identity_matches(
     transaction: &Transaction<'_>,
     recheck: &AccountCredentialIssuanceRecheck,
 ) -> Result<bool, DatabaseError> {
@@ -277,10 +293,28 @@ fn accept_issuer(
         return Ok(false);
     }
 
+    Ok(true)
+}
+
+#[derive(Clone, Copy)]
+enum WatermarkRequirement {
+    Any,
+    Accepted,
+}
+
+fn credential_issuance_factor_matches(
+    transaction: &Transaction<'_>,
+    recheck: &AccountCredentialIssuanceRecheck,
+    watermark: WatermarkRequirement,
+) -> Result<bool, DatabaseError> {
     match recheck.factor() {
-        AccountCredentialIssuanceFactor::NoneObserved { target } => {
-            Ok(mfa::factor_for_account(transaction, recheck.actor(), target)?.is_none())
-        }
+        AccountCredentialIssuanceFactor::NoneObserved {
+            target,
+            module_enabled,
+        } => Ok(
+            mfa::factor_for_account(transaction, recheck.actor(), target)?.is_none()
+                && mfa::enabled(transaction, target)? == *module_enabled,
+        ),
         AccountCredentialIssuanceFactor::Totp {
             target,
             factor,
@@ -290,27 +324,14 @@ fn accept_issuer(
             if current != Some(*factor) || !mfa::enabled(transaction, target)? {
                 return Ok(false);
             }
-            mfa::watermark_accepts(transaction, *factor, *verified_step)
+            match watermark {
+                WatermarkRequirement::Any => Ok(true),
+                WatermarkRequirement::Accepted => {
+                    mfa::watermark_matches(transaction, *factor, *verified_step)
+                }
+            }
         }
     }
-}
-
-fn advance_issuer_watermark(
-    transaction: &Transaction<'_>,
-    recheck: &AccountCredentialIssuanceRecheck,
-) -> Result<(), DatabaseError> {
-    let AccountCredentialIssuanceFactor::Totp {
-        factor,
-        verified_step,
-        ..
-    } = recheck.factor()
-    else {
-        return Ok(());
-    };
-    if !mfa::advance_watermark(transaction, *factor, *verified_step)? {
-        return Err(DatabaseError::IntegrityFailure);
-    }
-    Ok(())
 }
 
 fn create_conflicts(

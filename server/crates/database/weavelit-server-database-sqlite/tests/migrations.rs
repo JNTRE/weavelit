@@ -790,7 +790,7 @@ fn populated_0011_database_backfills_immutable_unique_account_public_identities(
 }
 
 #[test]
-fn populated_0012_database_backfills_credential_state_and_preserves_sessions() {
+fn credential_issuance_migration_backfills_state_and_preserves_sessions() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     create_0012_database(&path);

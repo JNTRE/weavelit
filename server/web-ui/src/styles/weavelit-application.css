@@ -431,6 +431,54 @@ body {
   opacity: 0.6;
 }
 
+.accounts__create,
+.accounts__assurance,
+.accounts__credential-disclosure {
+  border-bottom: 1px solid var(--ds-color-border);
+  margin-bottom: var(--ds-space-lg);
+  padding-bottom: var(--ds-space-lg);
+}
+
+.accounts__create h3,
+.accounts__assurance h3,
+.accounts__credential-disclosure h3 {
+  font-size: var(--ds-font-size-heading-sm);
+  margin: 0;
+}
+
+.accounts__assurance p,
+.accounts__credential-disclosure p {
+  margin: var(--ds-space-sm) 0 0;
+}
+
+.accounts__label {
+  display: block;
+  margin: var(--ds-space-md) 0 var(--ds-space-xs);
+}
+
+.accounts__input,
+.accounts__temporary-password {
+  display: block;
+  font: inherit;
+  max-width: 100%;
+}
+
+.accounts__temporary-password {
+  font-family: var(--ds-font-family-mono);
+  width: 24rem;
+}
+
+.accounts__create .accounts__action,
+.accounts__assurance .accounts__action {
+  margin: var(--ds-space-md) var(--ds-space-sm) 0 0;
+}
+
+.accounts__credential-status {
+  border-bottom: 1px solid var(--ds-color-border);
+  margin: 0 0 var(--ds-space-lg);
+  padding: 0 0 var(--ds-space-lg);
+}
+
 .accounts__table-wrap {
   margin-bottom: var(--ds-space-md);
   overflow-x: auto;
@@ -460,9 +508,11 @@ body {
 
 .accounts__row-action {
   text-align: right !important;
+  white-space: nowrap;
 }
 
 .accounts__view {
+  margin-left: var(--ds-space-xs);
   padding: var(--ds-space-xs) var(--ds-space-sm);
 }
 

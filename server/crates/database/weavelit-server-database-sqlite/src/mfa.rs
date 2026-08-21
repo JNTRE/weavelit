@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
-    COMPONENT_ENABLED_VALUE, ComponentKind, DatabaseError, MfaAcceptance,
+    AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck, COMPONENT_ENABLED_VALUE,
+    ComponentKind, CredentialIssuanceStepUpAcceptance, DatabaseError, MfaAcceptance,
     MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
     MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnrollment, MfaFactor,
     MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
@@ -175,6 +176,32 @@ impl MfaStore for SqliteDatabase {
             .commit()
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
         Ok(MfaAdministrationStepUpAcceptance::Accepted)
+    }
+
+    fn accept_credential_issuance_step_up(
+        &mut self,
+        recheck: &AccountCredentialIssuanceRecheck,
+    ) -> Result<CredentialIssuanceStepUpAcceptance, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        if !crate::account_writer::credential_issuance_step_up_matches(&transaction, recheck)? {
+            return Ok(CredentialIssuanceStepUpAcceptance::Rejected);
+        }
+        if let AccountCredentialIssuanceFactor::Totp {
+            factor,
+            verified_step,
+            ..
+        } = recheck.factor()
+            && !advance_watermark(&transaction, *factor, *verified_step)?
+        {
+            return Ok(CredentialIssuanceStepUpAcceptance::Replayed);
+        }
+        transaction
+            .commit()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        Ok(CredentialIssuanceStepUpAcceptance::Accepted)
     }
 
     fn issue_direct_session(
@@ -403,10 +430,10 @@ pub(super) fn factor_for_account(
         .transpose()
 }
 
-pub(super) fn watermark_accepts(
+pub(super) fn watermark_matches(
     transaction: &Transaction<'_>,
     factor: StateIdentifier,
-    candidate: MfaTimeStep,
+    expected: MfaTimeStep,
 ) -> Result<bool, DatabaseError> {
     let stored: Option<i64> = transaction
         .query_row(
@@ -416,10 +443,7 @@ pub(super) fn watermark_accepts(
         )
         .optional()
         .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-    Ok(stored
-        .map(step)
-        .transpose()?
-        .is_none_or(|stored| candidate > stored))
+    Ok(stored.map(step).transpose()? == Some(expected))
 }
 
 pub(super) fn advance_watermark(

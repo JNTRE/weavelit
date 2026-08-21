@@ -233,7 +233,7 @@ weaker rule.
 | `Account(Create(...))` or `Account(PasswordReset(...))` | Not required at this gate | Admits one account credential writer. The separate exact-session credential-issuance check applies before temporary-password disclosure. |
 | `Account(StatusChange { target: AccountPublicIdentifier, desired: Active | Disabled })` | Not required | Admits one account status writer. The gate performs no database read, credential reauthentication, or MFA step-up. |
 | `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
-| `GrantMutation` | Required, scoped to `GrantMutation` | Covers existing-Group membership and direct Client Module, Service Module, named Operation, and Server Administration Permission grant changes. |
+| `GrantMutation` | Required, scoped to `GrantMutation` | Covers existing-Group membership, direct Client Module, Service Module, named Operation, and Server Administration Permission grant changes, and deletion of an existing Group. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
 | `ComponentEnablementChange` | Not required | The exact kind and name must identify a compiled-in Client Module, Service Module, MFA Module, or Operation. The descriptor retains the requested enabled state without reading current enablement. |
 | `LogConfigurationChange` | Not required | Carries one existing primary Log Module configuration, optional enabled state and complete non-secret settings, and canonically ordered assignment changes. The gate performs no configuration read or mutation. |
@@ -318,7 +318,7 @@ factor, inactive actor, disabled Module, or different session mints no proof.
 The MFA-policy and Group-mutation contracts borrow the resulting proof through
 `AdministrationRequest`; ordinary account contracts do not request one.
 
-### Existing-Group Membership And Grant Mutations
+### Existing-Group Membership, Grant, And Deletion Mutations
 
 An authorized `GrantMutation` consumes the exact typed membership or direct
 grant intent by value. Membership targets use an existing Group and an
@@ -326,6 +326,14 @@ grant intent by value. Membership targets use an existing Group and an
 grant targets use an existing Group and one canonical current grant value. No
 route, Group public identifier, pagination, or client schema is implied by this
 internal writer.
+
+Deletion of an existing Group is also a `GrantMutation`. Any Group-deletion
+workflow MUST consume a current exact-session proof scoped to that family
+before it can begin. It MUST NOT classify deletion as an ordinary `Account`
+action, credential-issuance proof operation, or component change. The consuming
+workflow remains responsible for target validation, last-administrator
+protection, Audit sequencing, and the atomic deletion; this authorization
+classification does not itself add a route or mutation implementation.
 
 The current exact-session five-minute TOTP proof is the complete additional
 authorization for this action family. It requires neither password

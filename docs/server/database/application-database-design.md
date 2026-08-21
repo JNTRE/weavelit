@@ -324,6 +324,15 @@ typed Audit Reference in one backend snapshot. Each final mutation receives a
 non-clonable exact-session recheck, the prepared verifier and 24-hour metadata,
 and prevalidated opaque Audit terminal alternatives.
 
+The credential-issuance ticket, its digest, lifetime, and claim state never
+reach the backend. Server authentication claims the process-memory ticket and
+translates its bound proof into the non-clonable
+`AccountCredentialIssuanceRecheck` that the writer receives. Ticket issuance
+also uses the backend's atomic MFA acceptance operation before the ticket is
+published; that operation and the final credential writer remain separate
+transactions, with the final writer rechecking the exact bound state rather
+than trusting ticket publication as current authority.
+
 The final transaction rechecks exact session ownership, Client Module, and
 liveness; active ordinary actor credential state and revision; current factor
 identity and Module enablement; and the verified TOTP replay step when

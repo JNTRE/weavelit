@@ -35,6 +35,7 @@ pub mod administration;
 pub mod authentication;
 pub mod authorization;
 pub mod cookie;
+pub mod credential_issuance;
 pub mod init;
 pub mod mfa;
 pub mod password_change;
@@ -64,6 +65,15 @@ pub use authorization::{
 pub use cookie::{
     CSRF_COOKIE_NAME, CookieEffect, CookieLines, CookieValue, MAX_COOKIE_HEADER_BYTES,
     MAX_COOKIE_LINES, MAX_COOKIE_VALUE_BYTES, SESSION_COOKIE_NAME,
+};
+pub use credential_issuance::{
+    ACCOUNTS_CREATE_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, AccountCreateCommit,
+    AccountCreateSubmission, AccountCredentialIssued, AccountPasswordResetCommit,
+    AccountPasswordResetSubmission, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+    CredentialIssuanceCapability, CredentialIssuanceDeclaration, CredentialIssuanceRejection,
+    CredentialIssuanceStepUpCommit, CredentialIssuanceStepUpSubmission,
+    CredentialIssuanceTicketIssued, MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
+    MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES, validate_credential_issuance_request,
 };
 pub use init::{
     INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE, InitAdministratorSubmission, InitCapability,
@@ -273,6 +283,7 @@ impl PreoperationalSurface {
 #[derive(Default)]
 pub struct OperationalSurface {
     account_administration: Option<AccountAdministrationDeclaration>,
+    credential_issuance: Option<CredentialIssuanceDeclaration>,
     assets: Option<Router>,
 }
 
@@ -295,6 +306,19 @@ impl OperationalSurface {
         (self, declaration)
     }
 
+    /// Declares credential assurance, account creation, and password reset.
+    pub fn with_credential_issuance(mut self, capability: CredentialIssuanceCapability) -> Self {
+        self.credential_issuance = Some(CredentialIssuanceDeclaration::new(capability));
+        self
+    }
+
+    /// Separates credential issuance so each route retains its registration.
+    #[must_use]
+    pub fn split_credential_issuance(mut self) -> (Self, Option<CredentialIssuanceDeclaration>) {
+        let declaration = self.credential_issuance.take();
+        (self, declaration)
+    }
+
     /// Declares client-specific asset delivery, which owns its own exact paths.
     pub fn with_assets(mut self, assets: Router) -> Self {
         self.assets = Some(assets);
@@ -307,6 +331,19 @@ impl OperationalSurface {
             Some(administration) => router
                 .route(ACCOUNTS_LIST_ROUTE, administration.list_route())
                 .route(ACCOUNTS_VIEW_ROUTE, administration.view_route()),
+            None => router,
+        };
+        let router = match self.credential_issuance {
+            Some(credential_issuance) => router
+                .route(
+                    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+                    credential_issuance.step_up_route(),
+                )
+                .route(ACCOUNTS_CREATE_ROUTE, credential_issuance.create_route())
+                .route(
+                    ACCOUNTS_RESET_PASSWORD_ROUTE,
+                    credential_issuance.reset_password_route(),
+                ),
             None => router,
         };
         match self.assets {

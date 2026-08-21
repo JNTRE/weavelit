@@ -11,11 +11,14 @@ use crate::{
 };
 
 /// The MFA state observed while fresh issuer credentials were verified.
+#[derive(Clone)]
 pub enum AccountCredentialIssuanceFactor {
     /// No factor for the supported MFA Module existed in the verified snapshot.
     NoneObserved {
         /// The MFA Module checked for an enrollment race.
         target: MfaModuleTarget,
+        /// Exact Module enabled state confirmed with the factor absence.
+        module_enabled: bool,
     },
     /// One exact factor verified one exact TOTP time step.
     Totp {
@@ -180,7 +183,6 @@ impl AccountCreateMutation {
         password_verifier: AccountPasswordVerifier,
     ) -> Result<Self, AccountCredentialMutationError> {
         if !account.active
-            || account.display_name.is_none()
             || account.mfa_required
             || account.credential_revision != CredentialRevision::INITIAL
             || !account.must_change_password
@@ -443,6 +445,7 @@ mod tests {
                     module: Name::new("totp").unwrap(),
                     component: Name::new("totp").unwrap(),
                 },
+                module_enabled: true,
             },
         )
     }
@@ -455,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn create_requires_the_fixed_initial_temporary_credential_state() {
+    fn credential_issuance_create_requires_fixed_initial_temporary_state() {
         let (public_persistence, _) = persistence();
         let account = identifier(3);
         let public_identity =
@@ -494,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_target_and_mutation_require_exact_associations_and_revision_successor() {
+    fn credential_issuance_reset_requires_exact_associations_and_revision_successor() {
         let (public_persistence, audit_persistence) = persistence();
         let account = identifier(4);
         let public_identifier = AccountPublicIdentifier::generate().unwrap();
@@ -528,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn target_rejects_an_audit_reference_for_another_account_without_payload() {
+    fn credential_issuance_target_rejects_mismatched_audit_reference_without_payload() {
         let (public_persistence, audit_persistence) = persistence();
         let error = AccountPasswordResetTarget::from_persistence(
             &public_persistence,

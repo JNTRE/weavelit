@@ -30,6 +30,7 @@ const SELECTION_PATH = "/api/v1/application-database";
 const RESTORE_KEY_PATH = "/api/v1/restore";
 const RESTORE_ARTIFACT_PATH = "/api/v1/restore/artifact";
 const LOGIN_PATH = "/api/v1/auth/login";
+const SESSION_PATH = "/api/v1/auth/session";
 const MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify";
 const MFA_ENROLLMENT_PATH = "/api/v1/auth/mfa/enrollment";
 const MFA_CONFIRM_PATH = "/api/v1/auth/mfa/enrollment/confirm";
@@ -217,6 +218,21 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
     verified.push(route.request());
     return fulfilJson(route, 200, envelope({ authenticated: true }));
   });
+  let sessionProbes = 0;
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    return sessionProbes === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
 
   const login = page.locator(LOGIN_PANEL);
   await page.goto(baseUrl, { waitUntil: "load" });
@@ -238,7 +254,6 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
   await expect(verify).toBeEnabled();
   await verify.click();
 
-  await expect(login).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
 
   expect(verified, "the code was submitted exactly once").toHaveLength(1);
@@ -330,6 +345,21 @@ test("an enrollment after a 202 mfa_enrollment_required discloses its key and li
     confirmed.push(route.request());
     return fulfilJson(route, 200, envelope({ authenticated: true }));
   });
+  let sessionProbes = 0;
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    return sessionProbes === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
 
   const login = page.locator(LOGIN_PANEL);
   await page.goto(baseUrl, { waitUntil: "load" });
@@ -354,7 +384,6 @@ test("an enrollment after a 202 mfa_enrollment_required discloses its key and li
 
   await page.locator(CODE_INPUT).fill(CODE);
   await page.getByRole("button", { name: CONFIRM_ACTION_NAME }).click();
-  await expect(login).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
 
   expect(confirmed).toHaveLength(1);

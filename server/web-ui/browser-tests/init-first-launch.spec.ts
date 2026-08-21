@@ -96,9 +96,10 @@ function sorted(entries: readonly string[]): string[] {
 /**
  * Every response the one Server generation is expected to produce.
  *
- * The listener admits a burst of 12 requests per source, so asserting the exact
+ * The listener admits a burst of 14 requests per source, so asserting the exact
  * set also pins the request budget: 4 for the page load, 1 selection, 2 for the
- * two-request Init, 1 session probe, 1 sign-in, and 1 account-list read. The
+ * two-request Init, 1 initial session probe, 1 sign-in, 1 post-login posture
+ * probe, and 1 account-list read. The
  * two route-absence probes below are issued outside the page and add 2 more,
  * using the complete burst without relying on replenishment.
  */
@@ -112,6 +113,7 @@ const EXPECTED_RESPONSES = [
   `200 ${INIT_PATH}`,
   `401 ${SESSION_PATH}`,
   `200 ${LOGIN_PATH}`,
+  `200 ${SESSION_PATH}`,
   `200 ${ACCOUNTS_LIST_PATH}`,
 ] as const;
 

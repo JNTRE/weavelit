@@ -249,6 +249,112 @@ correlation identifier. No rejection carries a message, field path, lookup
 detail, dependency name, or supplied value. Neither route is mounted on a
 Pre-Operational Surface.
 
+### Account Credential Issuance
+
+The account credential-issuance surface contains exactly three routes:
+
+| Route | Method | Result |
+| --- | --- | --- |
+| `/api/v1/administration/step-up/credential-issuance` | `PUT` | One short-lived credential-issuance ticket after fresh assurance. |
+| `/api/v1/administration/accounts/create` | `PUT` | One committed local account and its temporary password. |
+| `/api/v1/administration/accounts/reset-password` | `PUT` | One committed password reset and its temporary password. |
+
+All three routes require an ordinary validated session, exact same-origin
+`Origin` and `Host`, the session's `X-Weavelit-CSRF` value, an unparameterized
+`Content-Type: application/json`, an acceptable JSON response media type, live
+Web UI Client Module access, and the effective Server Administration
+Permission. Each request uses strict JSON: unknown or duplicate members,
+missing required members, wrong types, trailing content, malformed bounded
+values, and oversized input are `bad_request`.
+
+The credential-assurance body is exactly:
+
+```json
+{"password":"current password","totp_code":"123456"}
+```
+
+`password` is required, nonempty, and at most 1,024 bytes. `totp_code` is
+optional in the wire schema and, when present, is exactly six decimal digits.
+The Server accepts it only when it matches the authenticated account's current
+enrollment requirements. Success returns:
+
+```json
+{"result":{"credential_issuance_ticket":"<43-character canonical Base64url>"},
+ "correlation_id":"<opaque-server-value>"}
+```
+
+The ticket represents 256 bits of Server-generated entropy. Its authentication
+binding, lifetime, single-claim behavior, and distinction from an MFA policy
+step-up are owned by the
+[Server Authentication Design](../authentication/authentication-design.md#credential-issuance-assurance).
+
+The account-create body is exactly:
+
+```json
+{"username":"new-user",
+ "display_name":"New User",
+ "credential_issuance_ticket":"<ticket>"}
+```
+
+`username` is required. `display_name` is optional and MUST be omitted rather
+than sent as `null` when absent. Each supplied name is nonempty, contains no
+control character, and is at most 256 bytes. The password-reset body is
+exactly:
+
+```json
+{"public_id":"<22-character Account Public Identifier>",
+ "credential_issuance_ticket":"<ticket>"}
+```
+
+The create and reset routes each claim the submitted ticket for exactly one
+attempt and bind it to the separately authorized action. A successful create or
+reset returns only:
+
+```json
+{"result":{"public_id":"<22-character Account Public Identifier>",
+           "temporary_password":"<24-character canonical Base64url>"},
+ "correlation_id":"<opaque-server-value>"}
+```
+
+The temporary password is disclosed only in the originating successful
+response. No route retrieves, reconstructs, or redisplays it. The response sets
+no cookie and creates no redirect or URL. The Server prepares the bounded
+secret-bearing typed result before mutation and transfers the plaintext into
+the response only after the final writer commits.
+
+The typed response profile currently has no arbitrary response-header channel,
+so these responses do not assert or emit `Cache-Control: no-store`. That
+constraint MUST NOT be bypassed with another response profile or an untyped
+header path. The Server persists neither ticket plaintext nor temporary-password
+plaintext, and clients MUST treat both responses as sensitive, use no-store
+request behavior, and keep their values out of URLs, cookies, browser storage,
+logs, and later view state.
+
+The stable rejection contract is:
+
+| Condition | Response |
+| --- | --- |
+| Malformed headers, body, schema, name, identifier, ticket, or code shape | `400 Bad Request`, `bad_request` |
+| Missing, malformed, unknown, expired, mismatched, or restricted session | `401 Unauthorized`, `session_invalid` |
+| Failed exact origin or host check | `403 Forbidden`, `request_origin_denied` |
+| Any live Administration Plane authorization denial | `403 Forbidden`, `authorization_denied` |
+| Password, enrollment evidence, factor state, ticket claim, binding, or final assurance recheck denied | `403 Forbidden`, `credential_issuance_denied` |
+| Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
+| Existing create username | `409 Conflict`, `conflict` |
+| Unknown valid reset target | `404 Not Found`, `not_found` |
+| Persistence, integrity, time, randomness, Audit readiness, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
+
+Every rejection uses the typed error envelope with only its stable code and a
+Server-generated correlation identifier. A client may distinguish a reported
+typed refusal from an indeterminate outcome, but MUST NOT render or infer a
+reason within either category. Transport loss, the listener's
+`504 gateway_timeout`, an unreadable response, or an invalid success envelope
+does not establish whether a ticket was issued or a consuming action committed.
+The client MUST NOT automatically repeat assurance, create, or reset after such
+an outcome, and it MUST NOT re-fetch or recover a temporary password. A new
+explicit reset is a new credential and may supersede a reset whose outcome was
+unknown.
+
 ### Client Module Identity
 
 Because Client Modules share routes, a request does not name its Client Module
@@ -447,24 +553,6 @@ The guarantee excludes copies held by TLS, the kernel or network transport,
 the allocator, URI parsing, or a consumer after it copies a value. It also does
 not extend to bodies and leaves the encrypted Restore-artifact exclusion in
 [Secret Request-Body Handling](#secret-request-body-handling) unchanged.
-
-#### Future Credential-Issuance Response
-
-Future account-create and password-reset contracts may return a typed
-credential-issuance response containing a bounded temporary-password field of
-24 unpadded Base64url characters and the existing bounded `correlation_id`.
-This is a future wire-boundary contract only; it does not create a route or
-imply that either contract is implemented. The response is constructed and
-accepted into its bounded, zeroizing response buffer before the account
-mutation commits, and plaintext is returned only after that pre-mutation
-construction succeeds and the mutation succeeds. It carries
-`Cache-Control: no-store` and must not create a redirect, URL, cookie, or
-browser-storage entry. The response has no later retrieval or view operation.
-
-Credential issuance is deliberately non-retryable under the generic
-[Idempotency](#idempotency) policy. A lost or indeterminate response receives
-no automatic retry or repeated plaintext; it requires a new reset. Stable
-payload-free errors remain dependency-neutral.
 
 #### Producer Obligations
 

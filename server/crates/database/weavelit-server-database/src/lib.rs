@@ -50,9 +50,10 @@ pub use log_configuration::{
     PreparedLogConfigurationMutation,
 };
 pub use mfa::{
-    MAX_MFA_TIME_STEP, MfaAcceptance, MfaAdministrationStepUpAcceptance,
-    MfaAdministrationStepUpRecheck, MfaDirectSession, MfaEnablementAuditTerminalWrites,
-    MfaEnablementOutcome, MfaEnrollment, MfaModuleTarget, MfaStore, MfaTimeStep,
+    CredentialIssuanceStepUpAcceptance, MAX_MFA_TIME_STEP, MfaAcceptance,
+    MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnrollment, MfaModuleTarget,
+    MfaStore, MfaTimeStep,
 };
 pub use password_change::{
     PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeMutationError,

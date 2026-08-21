@@ -28,7 +28,11 @@ mod verifier;
 pub use continuation::{
     CONTINUATION_ENTROPY_BYTES, CONTINUATION_TEXT_BYTES, Continuation, ContinuationDigest,
 };
-pub use credential_issuance::AccountCredentialIssuanceInput;
+pub use credential_issuance::{
+    AccountCredentialIssuanceInput, CREDENTIAL_ISSUANCE_TICKET_ENTROPY_BYTES,
+    CREDENTIAL_ISSUANCE_TICKET_TEXT_BYTES, CredentialIssuanceTicket,
+    CredentialIssuanceTicketDigest,
+};
 pub use engine::{Argon2Engine, RustCryptoArgon2};
 pub use error::AuthenticationError;
 pub use password::{PasswordAuthenticator, PasswordVerdict, ReplacementVerifier, StoredCredential};

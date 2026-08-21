@@ -144,9 +144,7 @@ impl<'de> Deserialize<'de> for PasswordChangeBody {
                     }
                 }
                 let password = password.ok_or_else(|| de::Error::missing_field("password"))?;
-                if password.is_empty()
-                    || password.as_bytes().len() > MAX_PASSWORD_CHANGE_PASSWORD_BYTES
-                {
+                if password.is_empty() || password.len() > MAX_PASSWORD_CHANGE_PASSWORD_BYTES {
                     return Err(de::Error::custom("password is outside the accepted bound"));
                 }
                 Ok(PasswordChangeBody { password })

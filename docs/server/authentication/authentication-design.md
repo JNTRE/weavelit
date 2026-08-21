@@ -193,11 +193,13 @@ two digests.
 
 ## Account Credential Issuance Writers
 
-The implemented transport-independent account creation and password reset
-writers own temporary credential issuance. No account-create or password-reset
-route exists in the current API. Ordinary Account authorization and a separate
-exact-session credential-issuance check are both required before a workflow
-returns a temporary-password disclosure.
+The implemented account creation and password reset routes drive the
+transport-independent writers that own temporary credential issuance. Ordinary
+Account authorization and a separate exact-session credential-issuance
+assurance are both required before a workflow returns a temporary-password
+disclosure. The
+[Server API Contract](../api/api-contract-design.md#account-credential-issuance)
+owns the route, body, result, and typed-error shapes.
 
 The authentication crate prepares each temporary credential from exactly 18
 bytes (144 bits) of operating-system randomness encoded as exactly 24 unpadded
@@ -213,10 +215,59 @@ state, or response transport.
 Account creation creates the account's first verifier and temporary
 credential metadata in the same atomic state mutation that makes the account
 available. It has no prior target sessions to revoke. The successful originating
-internal result owns the generated temporary-password disclosure. A future
-transport may consume that value once under the approved wire contract; a lost
+internal result owns the generated temporary-password disclosure. The transport
+consumes that value once under the approved wire contract; a lost
 result requires a new explicit administrative action and does not trigger
 automatic re-disclosure.
+
+### Credential Issuance Assurance
+
+Credential issuance has its own assurance profile. It accepts only an ordinary
+current Administration session that has already passed Account authorization.
+The authenticated Administrator re-presents their current password and, when a
+TOTP factor is enrolled, the current six-digit TOTP code. A restricted
+temporary-password session, an inactive actor, a temporary actor credential, a
+wrong password, a missing or unexpected factor code, a disabled TOTP Module,
+or stale actor credential state is denied without a ticket.
+
+Successful password and factor verification creates a private proof bound to
+the exact actor, current session digest, issuing Client Module, actor credential
+revision, and factor observation. For an enrolled factor, the observation
+contains the exact factor and verified TOTP time step. For an unenrolled actor,
+it records the observed absence and TOTP Module state. Before publishing a
+ticket, one Application Database transaction rechecks that exact session,
+actor, revision, factor enrollment, and Module state and, when enrolled,
+advances the replay watermark for the verified step. A stale or replayed result
+publishes no ticket.
+
+The returned ticket contains exactly 256 bits of operating-system randomness
+encoded as 43 canonical unpadded Base64url characters. The process retains only
+its domain-separated digest and proof in a bounded 64-entry memory store. The
+ticket expires exactly five minutes after issuance according to the process's
+monotonic clock; the exact expiry instant is invalid. It is not persisted, so a
+Server restart invalidates every outstanding ticket.
+
+Claim removes the entry before checking any later binding. A malformed,
+unknown, expired, replayed, actor-mismatched, session-mismatched, or
+Client-Module-mismatched ticket therefore authorizes no action, and a live
+ticket presented with the wrong binding is still spent. Only one separately
+authorized `Account(Create)` or `Account(PasswordReset)` action can consume the
+proof. The consumed proof becomes a non-clonable admission whose exact action,
+actor, session, Client Module, expected actor credential revision, and factor
+observation feed the final writer recheck.
+
+This proof is not `MfaStepUpProof`. It neither consumes nor extends that proof,
+and it cannot authorize `MfaPolicy` or `GrantMutation`. Conversely, a current
+five-minute `MfaStepUpProof` cannot substitute for the password reauthentication
+and factor evidence required to disclose a temporary password.
+
+Passwords, TOTP codes, ticket plaintext, and temporary passwords use clearing,
+non-rendering owners at Server-controlled boundaries and are absent from Audit
+and System Log content. Only the ticket's one response and a committed writer's
+originating success response may disclose their respective values. A reported
+denial and an indeterminate transport outcome carry no reason. Neither causes
+automatic assurance, action, or disclosure retry; an explicit later reset
+creates a new credential rather than recovering the earlier plaintext.
 
 ### Password Reset Writer
 
@@ -254,10 +305,10 @@ automatic re-disclosure.
 ### Temporary Credential Consumption
 
 The Server implements temporary-credential consumption as an internal,
-route-independent workflow. Account-create, password-reset, password-change,
-and forced-change routes, their request and response envelopes, cookie mapping,
-client presentation, and public identifier encoding remain outside this
-delivery.
+route-independent workflow. Account-create and password-reset transport is
+owned by the Server API contract above. Password-change and forced-change
+request and response envelopes, cookie mapping, client presentation, and public
+identifier encoding remain separate from this consumption workflow.
 
 1. **Temporary-password sign-in:** Before expiry, direct, TOTP, and required
    enrollment authentication paths may issue a session after all required MFA

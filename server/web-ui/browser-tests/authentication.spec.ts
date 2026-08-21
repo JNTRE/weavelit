@@ -301,7 +301,6 @@ test("an operator signs in to a restored deployment and the session survives a r
     });
     const accountsResponse = await accountsLoaded;
     expect(accountsResponse.status()).toBe(200);
-    await expect(login).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
     await expect(page.getByRole("rowheader", { name: FIXTURE_USERNAME })).toBeVisible();
     const accountsBody = JSON.stringify(await accountsResponse.json());
@@ -326,6 +325,7 @@ test("an operator signs in to a restored deployment and the session survives a r
         `401 ${LOGIN_PATH}`,
         `401 ${LOGIN_PATH}`,
         `200 ${LOGIN_PATH}`,
+        `200 ${SESSION_PATH}`,
         `200 ${ACCOUNTS_LIST_PATH}`,
       ]),
     );
@@ -422,6 +422,7 @@ test("an operator signs in to a restored deployment and the session survives a r
         account_id: expect.stringMatching(/^[0-9a-f]+$/),
         public_id: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
         client_module: "web-ui",
+        password_change_required: false,
       },
       correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     });

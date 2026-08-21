@@ -138,7 +138,7 @@ const MAX_REQUEST_BODY_BYTES: usize = 1024;
 const RATE_LIMIT_REQUESTS_PER_MINUTE: u32 = 20;
 /// Sized so one source can serve a full Web UI page load, which costs one
 /// document, two asset, and one status request, plus two immediate reloads.
-const RATE_LIMIT_BURST: u32 = 12;
+const RATE_LIMIT_BURST: u32 = 14;
 const MAX_JSON_BODY_BYTES: usize = 128;
 const MAX_HTML_BODY_BYTES: usize = 16 * 1024;
 const MAX_JAVASCRIPT_BODY_BYTES: usize = 256 * 1024;
@@ -3000,20 +3000,22 @@ pub(crate) mod tests {
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
     use weavelit_module_client::{
-        ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE,
-        AUTH_LOGOUT_ROUTE, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
+        ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE,
+        ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
+        AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
         AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
-        AUTH_SESSION_ROUTE, CSRF_COOKIE_NAME, CookieEffect, CookieValue,
-        DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE,
-        InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE,
-        RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
+        AUTH_SESSION_ROUTE, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CSRF_COOKIE_NAME, CookieEffect,
+        CookieValue, DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE,
+        INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, RESTORE_ARTIFACT_ROUTE,
+        RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
         RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME, STATUS_ROUTE,
     };
     use weavelit_server_authentication::PasswordVerifierFactory;
     use weavelit_server_database::{
-        Account, ApplicationStateInput, CompletionObligation, CorrelationIdentifier, LogAssignment,
-        LogClassification, LogDetail, LogModuleConfiguration, LogType, Name, ReconciliationDigest,
-        RecoveryPublicKey,
+        Account, AccountPasswordVerifier, ApplicationStateInput, CompletionObligation,
+        CorrelationIdentifier, CredentialRevision, Group, GroupGrant, GroupGrantRecord,
+        GroupMembership, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
+        LogType, Name, PasswordVerifier, ReconciliationDigest, RecoveryPublicKey,
     };
     use weavelit_server_lifecycle::{
         ApplicationState, BackendIdentifier, CheckpointMetadata, DatabaseInspection,
@@ -3174,8 +3176,8 @@ pub(crate) mod tests {
 
     /// The exact transport registrations a sealed deployment's surface carries.
     ///
-    /// This build serves lifecycle reconciliation, authentication, and
-    /// read-only account administration, each registered for `PUT` alone.
+    /// This build serves lifecycle reconciliation, authentication, and account
+    /// administration, each registered for `PUT` alone.
     fn operational_registrations() -> Vec<(Method, &'static str)> {
         vec![
             (Method::PUT, LIFECYCLE_RECONCILIATION_ROUTE),
@@ -3189,6 +3191,9 @@ pub(crate) mod tests {
             (Method::PUT, AUTH_PASSWORD_CHANGE_ROUTE),
             (Method::PUT, ACCOUNTS_LIST_ROUTE),
             (Method::PUT, ACCOUNTS_VIEW_ROUTE),
+            (Method::PUT, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE),
+            (Method::PUT, ACCOUNTS_CREATE_ROUTE),
+            (Method::PUT, ACCOUNTS_RESET_PASSWORD_ROUTE),
         ]
     }
 
@@ -3828,6 +3833,237 @@ pub(crate) mod tests {
                 "{target}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn credential_issuance_routes_are_wired_only_on_the_operational_surface() {
+        for target in [
+            CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+            ACCOUNTS_CREATE_ROUTE,
+            ACCOUNTS_RESET_PASSWORD_ROUTE,
+        ] {
+            let operational = operational_routes()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                operational.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{target}"
+            );
+            assert_eq!(
+                operational.headers().get("allow").unwrap(),
+                "PUT",
+                "{target}"
+            );
+
+            let preoperational = restricted_routes(StartupOutcome::UninitializedWithDatabase)
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(preoperational.status(), StatusCode::NOT_FOUND, "{target}");
+        }
+    }
+
+    fn credential_issuance_response_field(response: &BoundedResponse, field: &str) -> String {
+        let body = String::from_utf8(response.body.to_vec()).unwrap();
+        let marker = format!("\"{field}\":\"");
+        let value = body
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("credential issuance response must carry {field}"))
+            .1;
+        value
+            .split_once('"')
+            .unwrap_or_else(|| panic!("credential issuance response must terminate {field}"))
+            .0
+            .to_owned()
+    }
+
+    fn credential_issuance_cookie(response: &BoundedResponse, name: &str) -> String {
+        let prefix = format!("Set-Cookie: {name}=");
+        response
+            .cookies
+            .as_ref()
+            .and_then(|cookies| {
+                cookies
+                    .as_str()
+                    .lines()
+                    .find_map(|line| line.strip_prefix(&prefix))
+            })
+            .and_then(|value| value.split(';').next())
+            .unwrap_or_else(|| panic!("login response must carry {name}"))
+            .to_owned()
+    }
+
+    async fn credential_issuance_json_request(
+        surface: &MountedSurface,
+        target: &str,
+        body: String,
+        session: Option<(&str, &str)>,
+    ) -> BoundedResponse {
+        let session_headers = session.map_or_else(String::new, |(session, csrf)| {
+            format!("X-Weavelit-CSRF: {csrf}\r\nCookie: {SESSION_COOKIE_NAME}={session}\r\n")
+        });
+        let unauthenticated_csrf = session.is_none().then_some("X-Weavelit-CSRF: 1\r\n");
+        let head = format!(
+            "PUT {target} HTTP/1.1\r\n\
+             Host: {UNBOUND_LISTENER}\r\n\
+             Origin: https://{UNBOUND_LISTENER}\r\n\
+             {session_headers}{}\
+             Accept: application/json\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n",
+            unauthenticated_csrf.unwrap_or_default(),
+            body.len(),
+        );
+        process_over_duplex(
+            surface.clone(),
+            ConnectionTimeouts {
+                handshake: TLS_HANDSHAKE_TIMEOUT,
+                request_read: REQUEST_READ_TIMEOUT,
+                processing: REQUEST_PROCESSING_TIMEOUT,
+            },
+            move |stream| {
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    stream.write_all(head.as_bytes()).await.ok();
+                    stream.write_all(body.as_bytes()).await.ok();
+                    std::future::pending::<()>().await;
+                })
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn credential_issuance_public_routes_create_reset_and_consume_each_ticket_once() {
+        const ADMIN_PASSWORD: &str = "credential-issuance-administrator-password";
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let account = StateIdentifier::from_bytes([0xa1; 16]).unwrap();
+        let group = StateIdentifier::from_bytes([0xb1; 16]).unwrap();
+        let verifier = PasswordVerifierFactory::approved()
+            .create(ADMIN_PASSWORD.as_bytes())
+            .unwrap();
+        let state = sealed_application_state_from(SealedStateParts {
+            accounts: vec![Account {
+                identifier: account,
+                username: Name::new("administrator").unwrap(),
+                display_name: None,
+                active: true,
+                mfa_required: false,
+                credential_revision: CredentialRevision::INITIAL,
+                must_change_password: false,
+                temporary_credential_expiration: None,
+            }],
+            password_verifiers: vec![AccountPasswordVerifier {
+                account,
+                verifier: PasswordVerifier::new(verifier.into_string()).unwrap(),
+            }],
+            groups: vec![Group {
+                identifier: group,
+                name: Name::new("Administrators").unwrap(),
+                description: None,
+            }],
+            group_memberships: vec![GroupMembership { group, account }],
+            group_grants: vec![
+                GroupGrantRecord {
+                    group,
+                    grant: GroupGrant::ClientModule(Name::new("web-ui").unwrap()),
+                },
+                GroupGrantRecord {
+                    group,
+                    grant: GroupGrant::ServerAdministration,
+                },
+            ],
+            ..SealedStateParts::default()
+        });
+        seal_deployment_with(&state_root, &state);
+        let startup = classify_restricted_startup(&state_root).unwrap();
+        let mount = operational_mount(&startup);
+
+        let login = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_LOGIN_ROUTE,
+            format!(
+                "{{\"username\":\"administrator\",\"password\":\"{ADMIN_PASSWORD}\",\
+                 \"client_module\":\"web-ui\"}}"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(login.status, StatusCode::OK);
+        let session = credential_issuance_cookie(&login, SESSION_COOKIE_NAME);
+        let csrf = credential_issuance_cookie(&login, CSRF_COOKIE_NAME);
+
+        let step_up = credential_issuance_json_request(
+            mount.surface(),
+            CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+            format!("{{\"password\":\"{ADMIN_PASSWORD}\"}}"),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(step_up.status, StatusCode::OK);
+        assert!(step_up.cookies.is_none());
+        let create_ticket =
+            credential_issuance_response_field(&step_up, "credential_issuance_ticket");
+
+        let create_body = format!(
+            "{{\"username\":\"created-user\",\"display_name\":\"Created User\",\
+             \"credential_issuance_ticket\":\"{create_ticket}\"}}"
+        );
+        let created = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_CREATE_ROUTE,
+            create_body.clone(),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(created.status, StatusCode::OK);
+        assert!(created.cookies.is_none());
+        let public_id = credential_issuance_response_field(&created, "public_id");
+        let first_password = credential_issuance_response_field(&created, "temporary_password");
+
+        let replay = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_CREATE_ROUTE,
+            create_body,
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(replay.status, StatusCode::FORBIDDEN);
+        assert!(!String::from_utf8_lossy(&replay.body).contains(&create_ticket));
+        assert!(!String::from_utf8_lossy(&replay.body).contains(&first_password));
+
+        let step_up = credential_issuance_json_request(
+            mount.surface(),
+            CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+            format!("{{\"password\":\"{ADMIN_PASSWORD}\"}}"),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(step_up.status, StatusCode::OK);
+        let reset_ticket =
+            credential_issuance_response_field(&step_up, "credential_issuance_ticket");
+        let reset = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_RESET_PASSWORD_ROUTE,
+            format!(
+                "{{\"public_id\":\"{public_id}\",\
+                 \"credential_issuance_ticket\":\"{reset_ticket}\"}}"
+            ),
+            Some((&session, &csrf)),
+        )
+        .await;
+        assert_eq!(reset.status, StatusCode::OK);
+        assert_eq!(
+            credential_issuance_response_field(&reset, "public_id"),
+            public_id
+        );
+        let second_password = credential_issuance_response_field(&reset, "temporary_password");
+        assert_ne!(first_password, second_password);
+        assert!(reset.cookies.is_none());
     }
 
     #[tokio::test]

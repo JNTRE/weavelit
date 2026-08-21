@@ -18,8 +18,9 @@ use axum::{
     routing::any,
 };
 pub use weavelit_module_client::{
-    AccountAdministrationCapability, ExpectedOrigin, InitCapability, OperationalSurface,
-    PreoperationalSurface, ProjectionSource, RestoreCapability, SelectionCommit,
+    AccountAdministrationCapability, CredentialIssuanceCapability, ExpectedOrigin, InitCapability,
+    OperationalSurface, PreoperationalSurface, ProjectionSource, RestoreCapability,
+    SelectionCommit,
 };
 use weavelit_module_client::{has_request_body, json_response, json_response_with_allow};
 
@@ -85,10 +86,15 @@ pub fn finalization_surface(init: InitCapability) -> PreoperationalSurface {
 /// than mounted and denied.
 pub fn operational_surface(
     account_administration: Option<AccountAdministrationCapability>,
+    credential_issuance: Option<CredentialIssuanceCapability>,
 ) -> OperationalSurface {
     let surface = OperationalSurface::default().with_assets(embedded_asset_routes());
-    match account_administration {
+    let surface = match account_administration {
         Some(capability) => surface.with_account_administration(capability),
+        None => surface,
+    };
+    match credential_issuance {
+        Some(capability) => surface.with_credential_issuance(capability),
         None => surface,
     }
 }

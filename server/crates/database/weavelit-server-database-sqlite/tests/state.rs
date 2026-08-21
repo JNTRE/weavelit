@@ -2294,6 +2294,7 @@ fn created_and_reset_account_state_round_trips_through_normalized_restore() {
             SessionInstant::from_unix_milliseconds(1_001).unwrap(),
             AccountCredentialIssuanceFactor::NoneObserved {
                 target: target.clone(),
+                module_enabled: false,
             },
         )
     };

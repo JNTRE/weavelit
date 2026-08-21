@@ -1,13 +1,23 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CSRF_COOKIE_NAME } from "../api/weavelit-authentication";
 import { ACCOUNTS_LIST_PATH, ACCOUNTS_VIEW_PATH } from "../api/weavelit-administration-accounts";
+import {
+  ACCOUNTS_CREATE_PATH,
+  ACCOUNTS_RESET_PASSWORD_PATH,
+  CREDENTIAL_ISSUANCE_STEP_UP_PATH,
+} from "../api/weavelit-credential-issuance";
 import { AccountsWorkspace } from "./weavelit-accounts-workspace";
 
 const CSRF = "csrf-token";
 const ALICE_ID = "QUFBQUFBQUFBQUFBQUFBQQ";
 const BOB_ID = "QkJCQkJCQkJCQkJCQkJCQg";
+const PASSWORD = "current-administrator-password";
+const TOTP = "123456";
+const TICKET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const TEMPORARY_PASSWORD = "YWJjZGVmZ2hpamtsbW5vcHFy";
+const CORRELATION = "credential-issuance-correlation";
 
 function account(
   publicId: string,
@@ -32,10 +42,29 @@ function response(result: unknown, status = 200): Response {
   });
 }
 
-function withCsrfCookie(): void {
+function withCsrfCookie(onWrite: (value: string) => void = () => undefined): void {
   Object.defineProperty(globalThis.document, "cookie", {
     configurable: true,
     get: () => `${CSRF_COOKIE_NAME}=${CSRF}`,
+    set: onWrite,
+  });
+}
+
+function accountPage(items: readonly Record<string, unknown>[]): Response {
+  return response({ result: { items, next_cursor: null }, correlation_id: CORRELATION });
+}
+
+function ticketResponse(): Response {
+  return response({
+    result: { credential_issuance_ticket: TICKET },
+    correlation_id: CORRELATION,
+  });
+}
+
+function credentialResponse(publicId: string): Response {
+  return response({
+    result: { public_id: publicId, temporary_password: TEMPORARY_PASSWORD },
+    correlation_id: CORRELATION,
   });
 }
 
@@ -142,5 +171,241 @@ describe("AccountsWorkspace", () => {
       expect(document.body.textContent).not.toContain("secret-verifier");
       expect(document.body.textContent).not.toContain("internal-account");
     });
+  });
+
+  it("creates through one assurance ticket without persisting secrets and withdraws disclosure", async () => {
+    const cookieWrite = vi.fn();
+    withCsrfCookie(cookieWrite);
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const originalUrl = globalThis.location.href;
+    let listRequests = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        listRequests += 1;
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        expect(requestBody(init)).toEqual({ password: PASSWORD, totp_code: TOTP });
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_CREATE_PATH) {
+        expect(requestBody(init)).toEqual({
+          username: "charlie",
+          display_name: "Charlie",
+          credential_issuance_ticket: TICKET,
+        });
+        return Promise.resolve(credentialResponse(BOB_ID));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+    fireEvent.change(screen.getByLabelText("Display name (optional)"), {
+      target: { value: "Charlie" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.change(screen.getByLabelText("Authentication code (optional)"), {
+      target: { value: TOTP },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    const disclosure = await screen.findByRole("textbox", {
+      name: "Temporary password",
+    });
+    expect(disclosure).toHaveProperty("value", TEMPORARY_PASSWORD);
+    expect(screen.getAllByDisplayValue(TEMPORARY_PASSWORD)).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(TICKET);
+    expect(document.body.innerHTML).not.toContain(PASSWORD);
+    expect(globalThis.location.href).toBe(originalUrl);
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(cookieWrite).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(listRequests).toBe(2);
+    });
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH)).toHaveLength(
+      1,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
+  });
+
+  it("does not retry an assurance request whose outcome is unknown", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([]));
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.reject(new Error("connection closed after request"));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByText("0 loaded");
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    expect(await screen.findByText(/The credential issuance outcome is unknown\./)).toBeTruthy();
+    expect(screen.getByLabelText("Current password")).toHaveProperty("value", "");
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === CREDENTIAL_ISSUANCE_STEP_UP_PATH),
+    ).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH)).toHaveLength(
+      0,
+    );
+  });
+
+  it("does not retry an indeterminate consuming request or disclose its ticket", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([]));
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_CREATE_PATH) {
+        return Promise.reject(new Error("response was lost"));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByText("0 loaded");
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    expect(await screen.findByText(/The credential issuance outcome is unknown\./)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Credential assurance" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(TICKET);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH)).toHaveLength(
+      1,
+    );
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === CREDENTIAL_ISSUANCE_STEP_UP_PATH),
+    ).toHaveLength(1);
+  });
+
+  it("renders a reported refusal without its reason or response detail", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([]));
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_CREATE_PATH) {
+        return Promise.resolve(
+          response(
+            { error: "conflict", correlation_id: CORRELATION, detail: "private conflict cause" },
+            409,
+          ),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByText("0 loaded");
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "Credential issuance was not completed.",
+    );
+    expect(document.body.textContent).not.toContain("conflict");
+    expect(document.body.textContent).not.toContain("private conflict cause");
+  });
+
+  it("resets only the selected account public identifier", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(
+          accountPage([
+            account(ALICE_ID, "alice", "Alice", true, false),
+            account(BOB_ID, "bob", "Bob", true, false),
+          ]),
+        );
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_RESET_PASSWORD_PATH) {
+        expect(requestBody(init)).toEqual({
+          public_id: BOB_ID,
+          credential_issuance_ticket: TICKET,
+        });
+        return Promise.resolve(credentialResponse(BOB_ID));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "bob" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset password for bob" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    expect(
+      await screen.findByRole("textbox", {
+        name: "Temporary password",
+      }),
+    ).toHaveProperty("value", TEMPORARY_PASSWORD);
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_RESET_PASSWORD_PATH),
+    ).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH)).toHaveLength(
+      0,
+    );
+  });
+
+  it("does not consume a ticket returned after the workspace unmounts", async () => {
+    withCsrfCookie();
+    let resolveTicket!: (value: Response) => void;
+    const pendingTicket = new Promise<Response>((resolve) => {
+      resolveTicket = resolve;
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([]));
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return pendingTicket;
+      }
+      throw new Error("unexpected request");
+    });
+
+    const rendered = render(<AccountsWorkspace />);
+    await screen.findByText("0 loaded");
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+    rendered.unmount();
+
+    await act(async () => {
+      resolveTicket(ticketResponse());
+      await pendingTicket;
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH)).toHaveLength(
+      0,
+    );
+    expect(document.body.innerHTML).not.toContain(TICKET);
   });
 });

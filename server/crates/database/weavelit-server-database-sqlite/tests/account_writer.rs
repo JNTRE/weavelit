@@ -13,10 +13,11 @@ use weavelit_server_database::{
     AccountPublicIdentifierPersistence, AccountPublicIdentity, ApplicationDatabase,
     AuditReferenceIdentifier, AuditReferencePersistence, AuditTerminalRecoveryPersistence,
     AuditTerminalRecoveryStore, AuditTerminalReplayBatchSize, COMPONENT_ENABLED_VALUE,
-    CredentialRevision, DatabaseError, MfaModuleTarget, MfaTimeStep, Name, PasswordVerifier,
-    SESSION_ABSOLUTE_LIFETIME_MILLISECONDS, SESSION_DIGEST_LENGTH, SessionInstant,
-    SessionTokenHash, StateIdentifier, StoredAuditDestinationBinding,
-    TemporaryCredentialExpiration, ValidatedAuditTerminalObligationWrite,
+    CredentialIssuanceStepUpAcceptance, CredentialRevision, DatabaseError, MfaModuleTarget,
+    MfaStore, MfaTimeStep, Name, PasswordVerifier, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
+    SESSION_DIGEST_LENGTH, SessionInstant, SessionTokenHash, StateIdentifier,
+    StoredAuditDestinationBinding, TemporaryCredentialExpiration,
+    ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_database_sqlite::SqliteDatabase;
@@ -220,7 +221,10 @@ fn recheck_at(
         Name::new(client_module).unwrap(),
         revision,
         SessionInstant::from_unix_milliseconds(now).unwrap(),
-        AccountCredentialIssuanceFactor::NoneObserved { target: target() },
+        AccountCredentialIssuanceFactor::NoneObserved {
+            target: target(),
+            module_enabled: false,
+        },
     )
 }
 
@@ -237,6 +241,13 @@ fn totp_recheck(step: u64) -> AccountCredentialIssuanceRecheck {
             verified_step: MfaTimeStep::from_step(step).unwrap(),
         },
     )
+}
+
+fn accept_totp_assurance(surface: &mut Surface, step: u64) -> CredentialIssuanceStepUpAcceptance {
+    surface
+        .database
+        .accept_credential_issuance_step_up(&totp_recheck(step))
+        .unwrap()
 }
 
 fn create_mutation(
@@ -401,7 +412,7 @@ fn watermark(path: &PathBuf) -> Option<i64> {
 }
 
 #[test]
-fn create_commits_fixed_state_and_selected_terminal_across_restart() {
+fn credential_issuance_create_commits_state_and_terminal_across_restart() {
     let mut surface = surface(false);
     let mutation = create_mutation(&surface, 10, "created", recheck(ACTOR_SESSION));
     let terminals = terminals(&surface.recovery, 0x81);
@@ -464,7 +475,7 @@ fn create_commits_fixed_state_and_selected_terminal_across_restart() {
 }
 
 #[test]
-fn create_conflict_and_exact_session_denial_select_only_their_terminal() {
+fn credential_issuance_create_conflict_and_session_denial_select_their_terminal() {
     let mut duplicate = surface(false);
     let mutation = create_mutation(&duplicate, 10, "actor", recheck(ACTOR_SESSION));
     let duplicate_terminals = terminals(&duplicate.recovery, 0x84);
@@ -495,7 +506,7 @@ fn create_conflict_and_exact_session_denial_select_only_their_terminal() {
 }
 
 #[test]
-fn reset_preserves_target_state_replaces_credential_and_revokes_every_target_session() {
+fn credential_issuance_reset_replaces_credential_and_revokes_target_sessions() {
     let mut surface = surface(true);
     insert_session(&surface.path, 0x41, TARGET, "web-ui", 1_000);
     insert_session(&surface.path, 0x42, TARGET, "other-client", 1_000);
@@ -552,7 +563,7 @@ fn reset_preserves_target_state_replaces_credential_and_revokes_every_target_ses
 }
 
 #[test]
-fn self_reset_validates_then_revokes_its_own_issuer_session() {
+fn credential_issuance_self_reset_validates_then_revokes_issuer_session() {
     let mut surface = surface(false);
     let target = surface
         .database
@@ -590,7 +601,7 @@ fn self_reset_validates_then_revokes_its_own_issuer_session() {
 }
 
 #[test]
-fn stale_and_explicit_sequential_resets_have_distinct_outcomes() {
+fn credential_issuance_stale_and_sequential_resets_have_distinct_outcomes() {
     let mut stale = surface(true);
     insert_session(&stale.path, 0x41, TARGET, "web-ui", 1_000);
     let mutation = reset_mutation(
@@ -674,7 +685,7 @@ fn stale_and_explicit_sequential_resets_have_distinct_outcomes() {
 }
 
 #[test]
-fn final_session_revision_and_lifetime_mismatches_deny_without_business_state() {
+fn credential_issuance_final_session_revision_and_lifetime_mismatches_deny() {
     let cases = [
         (
             "wrong Client Module",
@@ -737,9 +748,13 @@ fn final_session_revision_and_lifetime_mismatches_deny_without_business_state() 
 }
 
 #[test]
-fn totp_replay_disabled_module_and_enrollment_race_deny_uniformly() {
+fn credential_issuance_totp_replay_disabled_module_and_enrollment_race_deny() {
     let mut replay = surface(false);
     insert_factor(&replay.path, true);
+    assert_eq!(
+        accept_totp_assurance(&mut replay, 10),
+        CredentialIssuanceStepUpAcceptance::Accepted
+    );
     let first = create_mutation(&replay, 13, "first-totp", totp_recheck(10));
     let first_terminals = terminals(&replay.recovery, 0xb1);
     assert_eq!(
@@ -750,15 +765,9 @@ fn totp_replay_disabled_module_and_enrollment_race_deny_uniformly() {
         ),
         Ok(AccountCreateOutcome::Created)
     );
-    let repeated = create_mutation(&replay, 14, "replayed-totp", totp_recheck(10));
-    let repeated_terminals = terminals(&replay.recovery, 0xb4);
     assert_eq!(
-        replay.database.create_account(
-            &replay.public_identifiers,
-            &repeated,
-            &repeated_terminals.writes(),
-        ),
-        Ok(AccountCreateOutcome::Denied)
+        accept_totp_assurance(&mut replay, 10),
+        CredentialIssuanceStepUpAcceptance::Replayed
     );
     assert!(!account_exists(&replay.path, 14));
 
@@ -799,9 +808,13 @@ fn totp_replay_disabled_module_and_enrollment_race_deny_uniformly() {
 }
 
 #[test]
-fn create_conflict_and_stale_reset_do_not_advance_the_totp_watermark() {
+fn credential_issuance_assurance_stays_consumed_after_conflict_or_stale_reset() {
     let mut conflict = surface(false);
     insert_factor(&conflict.path, true);
+    assert_eq!(
+        accept_totp_assurance(&mut conflict, 10),
+        CredentialIssuanceStepUpAcceptance::Accepted
+    );
     let mutation = create_mutation(&conflict, 17, "actor", totp_recheck(10));
     let conflict_terminals = terminals(&conflict.recovery, 0xbd);
     assert_eq!(
@@ -812,10 +825,14 @@ fn create_conflict_and_stale_reset_do_not_advance_the_totp_watermark() {
         ),
         Ok(AccountCreateOutcome::Conflict)
     );
-    assert_eq!(watermark(&conflict.path), None);
+    assert_eq!(watermark(&conflict.path), Some(10));
 
     let mut stale = surface(true);
     insert_factor(&stale.path, true);
+    assert_eq!(
+        accept_totp_assurance(&mut stale, 11),
+        CredentialIssuanceStepUpAcceptance::Accepted
+    );
     let mutation = reset_mutation(&mut stale, totp_recheck(11), "$not-written", EXPIRATION);
     Connection::open(&stale.path)
         .unwrap()
@@ -836,13 +853,17 @@ fn create_conflict_and_stale_reset_do_not_advance_the_totp_watermark() {
         ),
         Ok(AccountPasswordResetOutcome::Stale)
     );
-    assert_eq!(watermark(&stale.path), None);
+    assert_eq!(watermark(&stale.path), Some(11));
 }
 
 #[test]
-fn terminal_persistence_failure_rolls_back_business_state() {
+fn credential_issuance_terminal_failure_rolls_back_business_state() {
     let mut surface = surface(false);
     insert_factor(&surface.path, true);
+    assert_eq!(
+        accept_totp_assurance(&mut surface, 10),
+        CredentialIssuanceStepUpAcceptance::Accepted
+    );
     let first = create_mutation(&surface, 17, "first", totp_recheck(10));
     let first_terminals = Terminals {
         succeeded: terminal(&surface.recovery, 0xc1, 0x11),
@@ -859,6 +880,10 @@ fn terminal_persistence_failure_rolls_back_business_state() {
     );
     assert_eq!(watermark(&surface.path), Some(10));
 
+    assert_eq!(
+        accept_totp_assurance(&mut surface, 11),
+        CredentialIssuanceStepUpAcceptance::Accepted
+    );
     let second = create_mutation(&surface, 18, "second", totp_recheck(11));
     let colliding = Terminals {
         succeeded: terminal(&surface.recovery, 0xc1, 0x22),
@@ -872,12 +897,12 @@ fn terminal_persistence_failure_rolls_back_business_state() {
         Err(DatabaseError::InvalidState)
     );
     assert!(!account_exists(&surface.path, 18));
-    assert_eq!(watermark(&surface.path), Some(10));
+    assert_eq!(watermark(&surface.path), Some(11));
     assert_eq!(pending_identifiers(&mut surface), [[0xc1; 16]]);
 }
 
 #[test]
-fn competing_creates_and_resets_commit_one_success_each() {
+fn credential_issuance_competing_creates_and_resets_commit_one_success_each() {
     let creates = surface(false);
     let create_barrier = Arc::new(Barrier::new(2));
     let mut create_threads = Vec::new();
@@ -1008,7 +1033,7 @@ fn competing_creates_and_resets_commit_one_success_each() {
 }
 
 #[test]
-fn application_database_trait_exposes_the_writer_store() {
+fn credential_issuance_application_database_trait_exposes_writer_store() {
     let mut surface = surface(false);
     let database: &mut dyn ApplicationDatabase = &mut surface.database;
     assert!(database.account_credential_writers().is_some());

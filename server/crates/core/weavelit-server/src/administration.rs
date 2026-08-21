@@ -15,8 +15,8 @@ use weavelit_server_audit::{
     LogConfigurationAuditReferences, MfaModuleChange, MfaModuleReference, StateChangeOutcome,
 };
 use weavelit_server_authentication::{
-    AccountCredentialIssuanceInput, Argon2Engine, PasswordVerifierFactory,
-    PreparedTemporaryPassword, TEMPORARY_PASSWORD_LIFETIME, TemporaryPasswordDisclosure,
+    Argon2Engine, PasswordVerifierFactory, PreparedTemporaryPassword, TEMPORARY_PASSWORD_LIFETIME,
+    TemporaryPasswordDisclosure,
 };
 use weavelit_server_database::{
     Account, AccountAdministrationProjection, AccountAuditReference, AccountCreateMutation,
@@ -179,18 +179,18 @@ where
         }
     }
 
-    /// Consumes authorization and fresh credentials, then commits one audited outcome.
+    /// Consumes authorization and one assurance ticket, then commits one audited outcome.
     pub(crate) fn issue(
         &self,
         authorization: AuthorizedAdministrationAction,
-        input: AccountCredentialIssuanceInput,
+        credential_issuance_ticket: &str,
     ) -> Result<AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflowError> {
         let authorization = authorization
             .into_account()
             .map_err(|_| AccountCredentialIssuanceWorkflowError::ActionNotSupported)?;
         let admission = self
             .authentication
-            .admit_account_credential_issuance(authorization, input)
+            .claim_credential_issuance_ticket(authorization, credential_issuance_ticket)
             .map_err(issuance_admission_error)?;
         if self.audit.drain_before_consequential_operation().active()
             != AuditRecoverySequenceState::Ready
@@ -252,7 +252,7 @@ where
                     Account {
                         identifier: account,
                         username: change.username().clone(),
-                        display_name: Some(change.display_name().clone()),
+                        display_name: change.display_name().cloned(),
                         active: true,
                         mfa_required: false,
                         credential_revision: CredentialRevision::INITIAL,

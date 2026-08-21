@@ -25,26 +25,32 @@ use axum::http::{HeaderMap, Method, Uri};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::task;
 use weavelit_module_client::{
-    ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
-    AccountAdministrationCapability, AccountAdministrationDeclaration,
+    ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, ACCOUNTS_VIEW_ROUTE,
+    AUTH_PASSWORD_CHANGE_ROUTE, AccountAdministrationCapability, AccountAdministrationDeclaration,
     AccountAdministrationProjection as ClientAccountProjection, AccountAdministrationRejection,
     AccountAdministrationRequest, AccountAdministrationResult as ClientAccountResult,
-    AccountAdministrationSubmission, AccountsPage, AuthenticationRejection, ExpectedOrigin,
-    LIFECYCLE_RECONCILIATION_ROUTE, MAX_PASSWORD_CHANGE_BODY_BYTES,
-    MAX_PASSWORD_CHANGE_PASSWORD_BYTES, PasswordChangeCapability, PasswordChangeDeclaration,
-    PasswordChangeSubmission, ReconciliationCapability as ClientReconciliationCapability,
-    ReconciliationOutcome, ReconciliationRejection, validate_password_change_request,
-    validate_reconciliation_request,
+    AccountAdministrationSubmission, AccountCreateSubmission, AccountCredentialIssued,
+    AccountPasswordResetSubmission, AccountsPage, AuthenticationRejection,
+    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CredentialIssuanceCapability, CredentialIssuanceDeclaration,
+    CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
+    CredentialIssuanceTicketIssued, ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
+    MAX_CREDENTIAL_ISSUANCE_BODY_BYTES, MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES,
+    MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES, PasswordChangeCapability,
+    PasswordChangeDeclaration, PasswordChangeSubmission,
+    ReconciliationCapability as ClientReconciliationCapability, ReconciliationOutcome,
+    ReconciliationRejection, validate_credential_issuance_request,
+    validate_password_change_request, validate_reconciliation_request,
 };
 use weavelit_server_administration::{
-    AccountAdministrationAction, AccountAdministrationRead, AdministrationAction,
-    AdministrationClock, AdministrationPlane, AdministrationRequest,
+    AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
+    AdministrationAction, AdministrationClock, AdministrationPlane, AdministrationRequest,
     AuthorizedAdministrationAdmission, ComponentEnablementSource, MfaStepUpProof,
     StepUpActionFamily,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authentication::{
-    MAX_PASSWORD_REPLACEMENT_BYTES, PasswordReplacementInput, RustCryptoArgon2,
+    AccountCredentialIssuanceInput, MAX_PASSWORD_REPLACEMENT_BYTES, PasswordReplacementInput,
+    RustCryptoArgon2,
 };
 use weavelit_server_authorization::AuthorizationDenied;
 use weavelit_server_components::AvailableComponents;
@@ -74,15 +80,19 @@ use weavelit_server_restore::Name;
 use zeroize::Zeroizing;
 
 use crate::{
-    administration::{AccountAdministrationReadResult, AccountAdministrationReadWorkflow},
+    administration::{
+        AccountAdministrationReadResult, AccountAdministrationReadWorkflow,
+        AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflow,
+        AccountCredentialIssuanceWorkflowError,
+    },
     authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
     authorization::{AuthorizationRuntime, ServedComponents},
     fallback_router,
     operational_audit::{OperationalAuditRecovery, OperationalAuditRecoveryState},
     password_change::{PasswordChangeResult, PasswordChangeWorkflow, PasswordChangeWorkflowError},
     transport::{
-        MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection, TransportCapability,
-        TransportProfile, TransportRegistration,
+        BodyAdmission, MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection,
+        TransportCapability, TransportProfile, TransportRegistration,
     },
 };
 
@@ -92,6 +102,17 @@ const PASSWORD_CHANGE_PROFILE: TransportProfile = TransportProfile::admitted(
     MAX_PASSWORD_CHANGE_BODY_BYTES,
     crate::REQUEST_READ_TIMEOUT,
     crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+const CREDENTIAL_ISSUANCE_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+const _: () = assert!(
+    MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES
+        == weavelit_server_authentication::MAX_PASSWORD_REPLACEMENT_BYTES
 );
 
 /// The Server-wide values every operational composition is built against.
@@ -808,6 +829,31 @@ struct PasswordChangePreconditions {
     expected_origin: ExpectedOrigin,
 }
 
+/// Credential-issuance checks that run before any secret body allocation.
+struct CredentialIssuancePreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+impl PreBodyCheck for CredentialIssuancePreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_credential_issuance_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(CredentialIssuanceRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(CredentialIssuanceRejection::SessionInvalid) => {
+                Err(PreBodyRejection::SessionInvalid)
+            }
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
 impl PreBodyCheck for PasswordChangePreconditions {
     fn check(
         &self,
@@ -948,6 +994,28 @@ impl OperationalAdministration {
                 AdministrationRequest::new(AdministrationAction::Account(
                     AccountAdministrationAction::Read(read),
                 )),
+            )
+    }
+
+    /// Consumes one exact Administration Plane admission for a credential writer.
+    fn authorize_account_write(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        action: AccountAdministrationAction,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        if !matches!(
+            action,
+            AccountAdministrationAction::Create(_) | AccountAdministrationAction::PasswordReset(_)
+        ) {
+            return Err(AuthorizationDenied);
+        }
+        self.plane
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Account(action)),
             )
     }
 }
@@ -1111,6 +1179,79 @@ impl OperationalComposer {
         })
     }
 
+    fn credential_issuance_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<CredentialIssuanceCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+
+        let step_up_authentication = Arc::clone(&authentication);
+        let step_up_authorization = Arc::clone(&authorization);
+        let create_authentication = Arc::clone(&authentication);
+        let create_authorization = Arc::clone(&authorization);
+        let create_administration = Arc::clone(&administration);
+        let create_database = database.clone();
+        let create_audit = Arc::clone(&audit_recovery);
+        Some(CredentialIssuanceCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            step_up: Arc::new(move |submission| {
+                let authentication = Arc::clone(&step_up_authentication);
+                let authorization = Arc::clone(&step_up_authorization);
+                Box::pin(async move {
+                    execute_credential_issuance_step_up(authentication, authorization, submission)
+                        .await
+                })
+            }),
+            create: Arc::new(move |submission| {
+                let authentication = Arc::clone(&create_authentication);
+                let authorization = Arc::clone(&create_authorization);
+                let administration = Arc::clone(&create_administration);
+                let database = create_database.clone();
+                let audit_recovery = Arc::clone(&create_audit);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_account_create(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(CredentialIssuanceRejection::ServiceUnavailable))
+                })
+            }),
+            reset_password: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_account_password_reset(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(CredentialIssuanceRejection::ServiceUnavailable))
+                })
+            }),
+        })
+    }
+
     /// Returns the state observed by the activation drain.
     #[cfg(test)]
     pub(crate) const fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
@@ -1129,10 +1270,12 @@ impl OperationalComposer {
         let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
         let declared = weavelit_module_client_webui::operational_surface(
             self.account_administration_capability(expected_origin),
+            self.credential_issuance_capability(expected_origin),
         );
         let (declared, account_administration) = declared.split_account_administration();
+        let (declared, credential_issuance) = declared.split_credential_issuance();
         let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
-        for capability in self.capabilities(account_administration) {
+        for capability in self.capabilities(account_administration, credential_issuance) {
             surface = surface.with_capability(capability);
         }
         OperationalMount { surface }
@@ -1148,6 +1291,7 @@ impl OperationalComposer {
     fn capabilities(
         &self,
         account_administration: Option<AccountAdministrationDeclaration>,
+        credential_issuance: Option<CredentialIssuanceDeclaration>,
     ) -> Vec<TransportCapability> {
         let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
         let database = self.database.clone();
@@ -1229,6 +1373,54 @@ impl OperationalComposer {
                 move |router| router.route(ACCOUNTS_VIEW_ROUTE, view.view_route()),
             ));
         }
+        if let (Some(declaration), Some(authentication)) =
+            (credential_issuance, self.authentication.as_ref())
+        {
+            let declaration = Arc::new(declaration);
+            let create = Arc::clone(&declaration);
+            let reset = Arc::clone(&declaration);
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+                    CREDENTIAL_ISSUANCE_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(CredentialIssuancePreconditions {
+                    expected_origin,
+                }))
+                .with_admission(authentication.password_admission_lane()),
+                move |router| {
+                    router.route(
+                        CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+                        declaration.step_up_route(),
+                    )
+                },
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_CREATE_ROUTE,
+                    CREDENTIAL_ISSUANCE_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(CredentialIssuancePreconditions {
+                    expected_origin,
+                })),
+                move |router| router.route(ACCOUNTS_CREATE_ROUTE, create.create_route()),
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_RESET_PASSWORD_ROUTE,
+                    CREDENTIAL_ISSUANCE_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(CredentialIssuancePreconditions {
+                    expected_origin,
+                })),
+                move |router| {
+                    router.route(ACCOUNTS_RESET_PASSWORD_ROUTE, reset.reset_password_route())
+                },
+            ));
+        }
         capabilities
     }
 }
@@ -1268,6 +1460,214 @@ fn execute_password_change(
             PasswordChangeWorkflowError::Unavailable
             | PasswordChangeWorkflowError::AuditLogUnavailable,
         ) => Err(AuthenticationRejection::ServiceUnavailable),
+    }
+}
+
+async fn execute_credential_issuance_step_up(
+    authentication: Arc<AuthenticationRuntime<RustCryptoArgon2>>,
+    authorization: Arc<AuthorizationRuntime>,
+    submission: CredentialIssuanceStepUpSubmission,
+) -> Result<CredentialIssuanceTicketIssued, CredentialIssuanceRejection> {
+    let Some(admission) = submission.context.get::<BodyAdmission>().cloned() else {
+        return Err(CredentialIssuanceRejection::ServiceUnavailable);
+    };
+    let CredentialIssuanceStepUpSubmission {
+        session_token,
+        csrf_token,
+        password,
+        totp_code,
+        correlation_id,
+        context: _,
+    } = submission;
+    task::spawn_blocking(move || {
+        let _admission = admission;
+        let session = authentication
+            .validated_session(&session_token, &csrf_token)
+            .map_err(credential_authentication_rejection)?;
+        if !session.is_ordinary() {
+            return Err(CredentialIssuanceRejection::SessionInvalid);
+        }
+        let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+            .map_err(|_| CredentialIssuanceRejection::ServiceUnavailable)?;
+        let authorized = authorization
+            .authorize_administration(&session, &client_module, &correlation_id)
+            .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?
+            .into_credential_issuance();
+        let input = AccountCredentialIssuanceInput::new(
+            Zeroizing::new(password.as_bytes().to_vec()),
+            totp_code.map(|code| Zeroizing::new(code.as_bytes().to_vec())),
+        );
+        let ticket = authentication
+            .issue_credential_issuance_ticket(authorized, input)
+            .map_err(account_credential_authentication_error)?;
+        Ok(CredentialIssuanceTicketIssued {
+            credential_issuance_ticket: Zeroizing::new(ticket.as_str().to_owned()),
+        })
+    })
+    .await
+    .unwrap_or(Err(CredentialIssuanceRejection::ServiceUnavailable))
+}
+
+fn execute_account_create(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: AccountCreateSubmission,
+) -> Result<AccountCredentialIssued, CredentialIssuanceRejection> {
+    let AccountCreateSubmission {
+        session_token,
+        csrf_token,
+        username,
+        display_name,
+        credential_issuance_ticket,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(credential_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(CredentialIssuanceRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| CredentialIssuanceRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
+    let change = AccountCreate::new(username, display_name)
+        .map_err(|_| CredentialIssuanceRejection::BadRequest)?;
+    let action = administration
+        .authorize_account_write(admission, AccountAdministrationAction::Create(change))
+        .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
+    match AccountCredentialIssuanceWorkflow::new(database, authentication, audit_recovery)
+        .issue(action, &credential_issuance_ticket)
+        .map_err(account_credential_workflow_error)?
+    {
+        AccountCredentialIssuanceResult::Created {
+            account,
+            temporary_password,
+            ..
+        } => Ok(AccountCredentialIssued {
+            public_id: account.as_base64url(),
+            temporary_password: temporary_password.into_secret(),
+        }),
+        AccountCredentialIssuanceResult::Conflict { .. } => {
+            Err(CredentialIssuanceRejection::Conflict)
+        }
+        AccountCredentialIssuanceResult::Denied { .. }
+        | AccountCredentialIssuanceResult::Stale { .. } => {
+            Err(CredentialIssuanceRejection::CredentialDenied)
+        }
+        AccountCredentialIssuanceResult::PasswordReset { .. } => {
+            Err(CredentialIssuanceRejection::ServiceUnavailable)
+        }
+    }
+}
+
+fn execute_account_password_reset(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: AccountPasswordResetSubmission,
+) -> Result<AccountCredentialIssued, CredentialIssuanceRejection> {
+    let AccountPasswordResetSubmission {
+        session_token,
+        csrf_token,
+        public_id,
+        credential_issuance_ticket,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(credential_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(CredentialIssuanceRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| CredentialIssuanceRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
+    let target = database
+        .account_public_identifier(&public_id)
+        .map_err(|_| CredentialIssuanceRejection::BadRequest)?;
+    let action = administration
+        .authorize_account_write(
+            admission,
+            AccountAdministrationAction::PasswordReset(AccountPasswordReset::new(target)),
+        )
+        .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
+    match AccountCredentialIssuanceWorkflow::new(database, authentication, audit_recovery)
+        .issue(action, &credential_issuance_ticket)
+        .map_err(account_credential_workflow_error)?
+    {
+        AccountCredentialIssuanceResult::PasswordReset {
+            account,
+            temporary_password,
+            ..
+        } => Ok(AccountCredentialIssued {
+            public_id: account.as_base64url(),
+            temporary_password: temporary_password.into_secret(),
+        }),
+        AccountCredentialIssuanceResult::Denied { .. }
+        | AccountCredentialIssuanceResult::Stale { .. } => {
+            Err(CredentialIssuanceRejection::CredentialDenied)
+        }
+        AccountCredentialIssuanceResult::Created { .. }
+        | AccountCredentialIssuanceResult::Conflict { .. } => {
+            Err(CredentialIssuanceRejection::ServiceUnavailable)
+        }
+    }
+}
+
+fn credential_authentication_rejection(
+    rejection: AuthenticationRejection,
+) -> CredentialIssuanceRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => {
+            CredentialIssuanceRejection::ServiceUnavailable
+        }
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => CredentialIssuanceRejection::SessionInvalid,
+    }
+}
+
+fn account_credential_authentication_error(
+    error: crate::authentication::AccountCredentialIssuanceError,
+) -> CredentialIssuanceRejection {
+    match error {
+        crate::authentication::AccountCredentialIssuanceError::Denied => {
+            CredentialIssuanceRejection::CredentialDenied
+        }
+        crate::authentication::AccountCredentialIssuanceError::Unavailable => {
+            CredentialIssuanceRejection::ServiceUnavailable
+        }
+    }
+}
+
+fn account_credential_workflow_error(
+    error: AccountCredentialIssuanceWorkflowError,
+) -> CredentialIssuanceRejection {
+    match error {
+        AccountCredentialIssuanceWorkflowError::CredentialDenied => {
+            CredentialIssuanceRejection::CredentialDenied
+        }
+        AccountCredentialIssuanceWorkflowError::TargetNotFound => {
+            CredentialIssuanceRejection::NotFound
+        }
+        AccountCredentialIssuanceWorkflowError::ActionNotSupported
+        | AccountCredentialIssuanceWorkflowError::Unavailable
+        | AccountCredentialIssuanceWorkflowError::AuditLogUnavailable => {
+            CredentialIssuanceRejection::ServiceUnavailable
+        }
     }
 }
 
