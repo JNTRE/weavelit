@@ -404,6 +404,43 @@ watermark, Group membership, grant, public identifier, or Audit Reference.
 Status and revision remain ordinary restorable account state, while sessions
 remain live operational data that Restore clears.
 
+### Account MFA Policy Writers
+
+`MfaPolicyWriterStore` implements transport-independent MFA requirement and
+TOTP enrollment-reset mutations. A preparation read resolves one exact Account
+Public Identifier, internal account, typed Audit Reference, MFA-required state,
+and current factor for the named MFA Module in one backend snapshot. An
+unchanged requirement or reset without a current enrollment is an unchanged
+result before an Audit Attempt or writer call.
+
+The final mutation receives a non-clonable recheck containing the issuing
+Administrator, exact session digest, Client Module, TOTP Module target, exact
+factor that established step-up, and decision instant. It also receives the
+prepared target snapshot and prevalidated success and denied Audit terminal
+alternatives. It contains no TOTP code, ticket, proof timing, factor data,
+password, response value, or caller-supplied actor state.
+
+One immediate transaction rechecks the issuer session ownership, Client Module,
+lifetime, active actor, exact factor ownership, and canonical TOTP Module
+enablement. It then rechecks the target's public identity, requirement, and
+factor snapshot. A denied issuer or stale target persists only the denied
+terminal and changes no policy, factor, watermark, or session state.
+
+A requirement change updates only `mfa_required`. Becoming required revokes
+every target session in that transaction; becoming optional preserves target
+sessions. Enrollment reset deletes the exact factor, explicitly deletes its
+live replay watermark, preserves `mfa_required` and all password state, and
+revokes every target session. The selected success terminal and all business
+effects commit together or roll back together. No schema migration is needed:
+the writer composes the existing account, factor, watermark, session, public
+identity, Audit Reference, and terminal-obligation tables.
+
+The process-memory MFA policy ticket and private `MfaStepUpProof` never reach
+the backend. The Server action gate checks their exact session, family, and
+five-minute monotonic expiry before constructing this writer's recheck; the
+transaction independently establishes that the persisted session, factor, and
+Module state still match.
+
 ## Live Session Storage
 
 `SessionStore` is a separate backend-neutral contract from `ApplicationState`,

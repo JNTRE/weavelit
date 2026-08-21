@@ -34,6 +34,9 @@ const SESSION_PATH = "/api/v1/auth/session";
 const MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify";
 const MFA_ENROLLMENT_PATH = "/api/v1/auth/mfa/enrollment";
 const MFA_CONFIRM_PATH = "/api/v1/auth/mfa/enrollment/confirm";
+const ACCOUNTS_LIST_PATH = "/api/v1/administration/accounts/list";
+const MFA_POLICY_STEP_UP_PATH = "/api/v1/administration/step-up/totp";
+const MFA_REQUIREMENT_PATH = "/api/v1/administration/accounts/mfa-requirement";
 
 const ARTIFACT_INPUT = "#weavelit-restore-artifact";
 const RECOVERY_KEY_INPUT = "#weavelit-restore-recovery-key";
@@ -69,6 +72,8 @@ const PROVISIONING_URI =
   "&issuer=Weavelit&algorithm=SHA1&digits=6&period=30";
 const CODE = "123456";
 const CORRELATION = "0123456789abcdef0123456789abcdef";
+const ACCOUNT_PUBLIC_ID = "QUFBQUFBQUFBQUFBQUFBQQ";
+const MFA_POLICY_TICKET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 const fixturesDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -274,6 +279,118 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
   expect(rendered).not.toContain(CONTINUATION);
   expect(state.local, "nothing is persisted to local storage").toBe("{}");
   expect(state.session, "nothing is persisted to session storage").toBe("{}");
+});
+
+test("an MFA requirement confirms before code-only step-up and stores no proof", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const requests = observeRequests(page);
+  const stepUps: Request[] = [];
+  const requirements: Request[] = [];
+  let sessionProbes = 0;
+  let accountReads = 0;
+
+  await page.route(`${baseUrl}${LOGIN_PATH}`, (route) =>
+    fulfilJson(route, 200, envelope({ authenticated: true })),
+  );
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    return sessionProbes === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads += 1;
+    return fulfilJson(
+      route,
+      200,
+      envelope({
+        items: [
+          {
+            public_id: ACCOUNT_PUBLIC_ID,
+            username: FIXTURE_USERNAME,
+            display_name: "Administrator",
+            active: true,
+            mfa_required: accountReads > 1,
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+  });
+  await page.route(`${baseUrl}${MFA_POLICY_STEP_UP_PATH}`, (route) => {
+    stepUps.push(route.request());
+    return fulfilJson(route, 200, envelope({ totp_step_up_ticket: MFA_POLICY_TICKET }));
+  });
+  await page.route(`${baseUrl}${MFA_REQUIREMENT_PATH}`, (route) => {
+    requirements.push(route.request());
+    return fulfilJson(
+      route,
+      200,
+      envelope({
+        public_id: ACCOUNT_PUBLIC_ID,
+        username: FIXTURE_USERNAME,
+        display_name: "Administrator",
+        active: true,
+        mfa_required: true,
+      }),
+    );
+  });
+
+  await page.goto(baseUrl, { waitUntil: "load" });
+  await page.evaluate(() => {
+    document.cookie = "__Host-weavelit_csrf=browser-csrf; Path=/; Secure; SameSite=Strict";
+  });
+  await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
+  await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+
+  await page.getByRole("switch", { name: `Require MFA for ${FIXTURE_USERNAME}` }).click();
+  await expect(page.getByRole("heading", { name: "Require MFA" })).toBeVisible();
+  expect(stepUps, "confirmation itself sends no request").toHaveLength(0);
+  expect(requirements, "confirmation itself mutates nothing").toHaveLength(0);
+  await page.getByRole("button", { name: "Confirm policy action" }).click();
+  await expect(page.getByLabel("Authentication code")).toBeVisible();
+  await expect(page.getByLabel("Current password")).toHaveCount(0);
+  await page.getByLabel("Authentication code").fill(CODE);
+  await page.getByRole("button", { name: "Verify and apply" }).click();
+
+  await expect(
+    page.getByRole("switch", { name: `Require MFA for ${FIXTURE_USERNAME}` }),
+  ).toBeChecked();
+  expect(stepUps).toHaveLength(1);
+  expect(stepUps[0]?.postData()).toBe(JSON.stringify({ family: "mfa_policy", code: CODE }));
+  expect(requirements).toHaveLength(1);
+  expect(requirements[0]?.postData()).toBe(
+    JSON.stringify({
+      public_id: ACCOUNT_PUBLIC_ID,
+      required: true,
+      totp_step_up_ticket: MFA_POLICY_TICKET,
+    }),
+  );
+
+  const state = await browserState(page);
+  const rendered = await page.content();
+  expect(state.local).toBe("{}");
+  expect(state.session).toBe("{}");
+  expect(rendered).not.toContain(MFA_POLICY_TICKET);
+  expect(rendered).not.toContain(CODE);
+  for (const request of requests) {
+    expect(request.url()).not.toContain(MFA_POLICY_TICKET);
+    expect(request.url()).not.toContain(CODE);
+  }
 });
 
 test("a rejected code after a 202 mfa_required ends the attempt", async ({ page }) => {

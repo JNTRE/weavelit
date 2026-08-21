@@ -12,7 +12,8 @@ use weavelit_server_administration::{
 use weavelit_server_audit::{
     AccountStatus as AuditAccountStatus, ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail,
     ComponentState, GrantReference, GroupMutationOutcome as AuditGroupMutationOutcome,
-    LogConfigurationAuditReferences, MfaModuleChange, MfaModuleReference, StateChangeOutcome,
+    LogConfigurationAuditReferences, MfaModuleChange, MfaModuleReference, MfaRequirement,
+    MfaResetState, StateChangeOutcome,
 };
 use weavelit_server_authentication::{
     Argon2Engine, PasswordVerifierFactory, PreparedTemporaryPassword, TEMPORARY_PASSWORD_LIFETIME,
@@ -28,9 +29,11 @@ use weavelit_server_database::{
     GroupMutationAuditTerminalWrites, GroupMutationError, GroupMutationOutcome,
     GroupMutationRecheck, GroupMutationTarget, LogAssignment, LogConfigurationAuditTerminalWrites,
     LogConfigurationMutationOutcome, LogConfigurationMutationRequest, LogConfigurationPreparation,
-    LogType, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget, Name,
-    PasswordVerifier, PreparedGroupMutation, SessionInstant, StateIdentifier,
-    TemporaryCredentialExpiration, ValidatedAuditTerminalObligationWrite,
+    LogType, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaModuleTarget,
+    MfaPolicyAction, MfaPolicyAuditTerminalWrites, MfaPolicyMutation, MfaPolicyMutationError,
+    MfaPolicyMutationOutcome, MfaPolicyRecheck, Name, PasswordVerifier, PreparedGroupMutation,
+    SessionInstant, StateIdentifier, TemporaryCredentialExpiration,
+    ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_log::{
     AuditLogClassification, CorrelationId, EventTime, LogRecordPersistenceView, LogRecordType,
@@ -851,6 +854,270 @@ fn account_status_event_time() -> Result<EventTime, AccountStatusChangeError> {
     let milliseconds = system_clock()().ok_or(AccountStatusChangeError::AuditLogUnavailable)?;
     let milliseconds =
         u64::try_from(milliseconds).map_err(|_| AccountStatusChangeError::AuditLogUnavailable)?;
+    Ok(EventTime::from_unix_milliseconds(milliseconds))
+}
+
+/// Postcommit Audit terminal delivery state for one MFA policy writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MfaPolicyChangeDelivery {
+    Acknowledged,
+    Pending,
+}
+
+/// Complete internal result of one MFA requirement or enrollment-reset writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MfaPolicyChangeResult {
+    /// The requested requirement already held or no enrollment existed to reset.
+    Unchanged,
+    /// The requested policy state committed with its selected terminal.
+    Changed {
+        revoked_sessions: usize,
+        delivery: MfaPolicyChangeDelivery,
+    },
+    /// The prepared target state changed; only the denied terminal committed.
+    Stale { delivery: MfaPolicyChangeDelivery },
+    /// Final issuer state denied the mutation; only the denied terminal committed.
+    Denied { delivery: MfaPolicyChangeDelivery },
+}
+
+/// Payload-free refusal before or during an MFA policy writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MfaPolicyChangeError {
+    ActionNotSupported,
+    TargetNotFound,
+    Unavailable,
+    AuditLogUnavailable,
+}
+
+impl fmt::Display for MfaPolicyChangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ActionNotSupported => "administration action not supported",
+            Self::TargetNotFound => "MFA policy target not found",
+            Self::Unavailable => "MFA policy change unavailable",
+            Self::AuditLogUnavailable => "consequential operation Audit Log unavailable",
+        })
+    }
+}
+
+impl StdError for MfaPolicyChangeError {}
+
+/// Transport-independent Administrator MFA requirement and enrollment-reset workflow.
+pub(crate) struct MfaPolicyChangeWorkflow<'a> {
+    database: &'a OperationalDatabase,
+    audit: &'a OperationalAuditRecovery,
+}
+
+impl<'a> MfaPolicyChangeWorkflow<'a> {
+    pub(crate) const fn new(
+        database: &'a OperationalDatabase,
+        audit: &'a OperationalAuditRecovery,
+    ) -> Self {
+        Self { database, audit }
+    }
+
+    pub(crate) fn apply(
+        &self,
+        authorization: AuthorizedAdministrationAction,
+        target: AccountPublicIdentifier,
+        action: MfaPolicyAction,
+    ) -> Result<MfaPolicyChangeResult, MfaPolicyChangeError> {
+        let authorization = authorization
+            .into_mfa_policy()
+            .map_err(|_| MfaPolicyChangeError::ActionNotSupported)?;
+        let module = Name::new(TOTP_MODULE).map_err(|_| MfaPolicyChangeError::Unavailable)?;
+        let target = self
+            .database
+            .prepare_mfa_policy_target(target, &module)
+            .map_err(|_| MfaPolicyChangeError::Unavailable)?
+            .ok_or(MfaPolicyChangeError::TargetNotFound)?;
+        let is_unchanged = match action {
+            MfaPolicyAction::Requirement { required } => target.required() == required,
+            MfaPolicyAction::EnrollmentReset => target.factor().is_none(),
+        };
+        if is_unchanged {
+            return Ok(MfaPolicyChangeResult::Unchanged);
+        }
+        let now = system_clock()().ok_or(MfaPolicyChangeError::Unavailable)?;
+        let recheck = MfaPolicyRecheck::new(
+            authorization.actor(),
+            authorization.session(),
+            authorization.client_module().clone(),
+            MfaModuleTarget {
+                module: module.clone(),
+                component: module,
+            },
+            authorization.factor(),
+            SessionInstant::from_unix_milliseconds(now)
+                .map_err(|_| MfaPolicyChangeError::Unavailable)?,
+        );
+        let mutation =
+            MfaPolicyMutation::new(recheck, target, action).map_err(|error| match error {
+                MfaPolicyMutationError::Unchanged | MfaPolicyMutationError::InvalidTarget => {
+                    MfaPolicyChangeError::Unavailable
+                }
+            })?;
+        if self.audit.drain_before_consequential_operation().active()
+            != AuditRecoverySequenceState::Ready
+        {
+            return Err(MfaPolicyChangeError::AuditLogUnavailable);
+        }
+        let actor = self
+            .database
+            .load_account_audit_reference(authorization.actor())
+            .map_err(|_| MfaPolicyChangeError::Unavailable)?
+            .ok_or(MfaPolicyChangeError::Unavailable)?;
+        let event = mfa_policy_event(action, mutation.target().audit_reference());
+        self.audit
+            .with_current_destination(|destination| {
+                self.apply_with_destination(mutation, actor, event, destination)
+            })
+            .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?
+    }
+
+    fn apply_with_destination(
+        &self,
+        mutation: MfaPolicyMutation,
+        actor: AccountAuditReference,
+        event: AuditEvent,
+        destination: &OperationalAuditGenerationDestination,
+    ) -> Result<MfaPolicyChangeResult, MfaPolicyChangeError> {
+        destination
+            .destination()
+            .preflight(LogRecordType::Audit)
+            .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
+        let correlation =
+            CorrelationId::new(correlation_identifier().ok_or(MfaPolicyChangeError::Unavailable)?)
+                .map_err(|_| MfaPolicyChangeError::Unavailable)?;
+        let classification = mfa_policy_classification(mutation.action());
+        let attempt = self
+            .audit
+            .producer()
+            .prepare_attempt(
+                mfa_policy_event_time()?,
+                correlation,
+                AuditActor::Human(actor),
+                event,
+            )
+            .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
+        let LogRecordPersistenceView::Audit(attempt_record) = attempt.record().persistence_view()
+        else {
+            return Err(MfaPolicyChangeError::AuditLogUnavailable);
+        };
+        let attempt_identifier = *attempt_record.record_id().as_bytes();
+        let attempt_event_time = attempt_record.event_time().unix_milliseconds();
+        let attempt_correlation = attempt_record.correlation_id().as_str().to_owned();
+        let delivered_attempt = match attempt.deliver(destination.destination()) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                self.audit.reject_attempt_delivery(
+                    error,
+                    attempt_identifier,
+                    attempt_event_time,
+                    &attempt_correlation,
+                    destination.module(),
+                    classification,
+                );
+                return Err(MfaPolicyChangeError::AuditLogUnavailable);
+            }
+        };
+        let succeeded_terminal = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered_attempt,
+                mfa_policy_event_time()?,
+                mfa_policy_audit_detail(mutation.action(), true),
+            )
+            .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
+        let denied_terminal = self
+            .audit
+            .producer()
+            .prepare_completion(
+                &delivered_attempt,
+                mfa_policy_event_time()?,
+                mfa_policy_audit_detail(mutation.action(), false),
+            )
+            .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
+        let persistence = self.database.audit_terminal_recovery_persistence();
+        let succeeded_write = succeeded_terminal
+            .recovery_obligation(persistence, destination.binding())
+            .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
+        let denied_write = denied_terminal
+            .recovery_obligation(persistence, destination.binding())
+            .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
+        let outcome = self
+            .database
+            .change_mfa_policy(
+                &mutation,
+                &MfaPolicyAuditTerminalWrites::new(&succeeded_write, &denied_write),
+            )
+            .map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
+        let delivery = if self.audit.drain_after_consequential_operation().active()
+            == AuditRecoverySequenceState::Ready
+        {
+            MfaPolicyChangeDelivery::Acknowledged
+        } else {
+            MfaPolicyChangeDelivery::Pending
+        };
+        Ok(match outcome {
+            MfaPolicyMutationOutcome::Changed { revoked_sessions } => {
+                MfaPolicyChangeResult::Changed {
+                    revoked_sessions,
+                    delivery,
+                }
+            }
+            MfaPolicyMutationOutcome::Stale => MfaPolicyChangeResult::Stale { delivery },
+            MfaPolicyMutationOutcome::Denied => MfaPolicyChangeResult::Denied { delivery },
+        })
+    }
+}
+
+fn mfa_policy_event(action: MfaPolicyAction, account: AccountAuditReference) -> AuditEvent {
+    match action {
+        MfaPolicyAction::Requirement { .. } => {
+            AuditEvent::AuthenticationMfaRequirementChanged { account }
+        }
+        MfaPolicyAction::EnrollmentReset => AuditEvent::AuthenticationMfaReset { account },
+    }
+}
+
+fn mfa_policy_audit_detail(action: MfaPolicyAction, succeeded: bool) -> AuditOutcomeDetail {
+    match action {
+        MfaPolicyAction::Requirement { required } => {
+            AuditOutcomeDetail::AuthenticationMfaRequirementChanged(if succeeded {
+                StateChangeOutcome::Succeeded(if required {
+                    MfaRequirement::Required
+                } else {
+                    MfaRequirement::Optional
+                })
+            } else {
+                StateChangeOutcome::Denied
+            })
+        }
+        MfaPolicyAction::EnrollmentReset => {
+            AuditOutcomeDetail::AuthenticationMfaReset(if succeeded {
+                StateChangeOutcome::Succeeded(MfaResetState::ReenrollmentRequired)
+            } else {
+                StateChangeOutcome::Denied
+            })
+        }
+    }
+}
+
+const fn mfa_policy_classification(action: MfaPolicyAction) -> AuditLogClassification {
+    match action {
+        MfaPolicyAction::Requirement { .. } => {
+            AuditLogClassification::AuthenticationMfaRequirementChanged
+        }
+        MfaPolicyAction::EnrollmentReset => AuditLogClassification::AuthenticationMfaReset,
+    }
+}
+
+fn mfa_policy_event_time() -> Result<EventTime, MfaPolicyChangeError> {
+    let milliseconds = system_clock()().ok_or(MfaPolicyChangeError::AuditLogUnavailable)?;
+    let milliseconds =
+        u64::try_from(milliseconds).map_err(|_| MfaPolicyChangeError::AuditLogUnavailable)?;
     Ok(EventTime::from_unix_milliseconds(milliseconds))
 }
 

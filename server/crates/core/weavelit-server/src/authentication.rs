@@ -1649,6 +1649,7 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
                     &ServerAdministrationAuthority::new(),
                     session.account(),
                     session.session_token_hash(),
+                    factor.identifier,
                 ))
             }
             MfaAdministrationStepUpAcceptance::Rejected

@@ -3,7 +3,11 @@ use weavelit_server_administration::{
 };
 
 fn forge(admission: AuthorizedAdministrationAdmission, action: AdministrationAction) {
-    let _authorized = AuthorizedAdministrationAction { admission, action };
+    let _authorized = AuthorizedAdministrationAction {
+        admission,
+        action,
+        step_up_factor: None,
+    };
 }
 
 fn main() {}

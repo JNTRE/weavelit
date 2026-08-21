@@ -572,6 +572,7 @@ impl fmt::Debug for AuthorizedCredentialIssuance {
 pub struct CurrentAdministrationSession {
     actor: StateIdentifier,
     session: SessionTokenHash,
+    factor: StateIdentifier,
 }
 
 impl CurrentAdministrationSession {
@@ -581,8 +582,13 @@ impl CurrentAdministrationSession {
         _authority: &ServerAdministrationAuthority,
         actor: StateIdentifier,
         session: SessionTokenHash,
+        factor: StateIdentifier,
     ) -> Self {
-        Self { actor, session }
+        Self {
+            actor,
+            session,
+            factor,
+        }
     }
 
     /// Returns the authenticated account for future accountable workflows.
@@ -606,6 +612,7 @@ impl fmt::Debug for CurrentAdministrationSession {
 pub struct MfaStepUpProof {
     actor: StateIdentifier,
     session: SessionTokenHash,
+    factor: StateIdentifier,
     family: StepUpActionFamily,
     issued_at: Duration,
     expires_at: Duration,
@@ -665,6 +672,7 @@ impl<'proof> AdministrationRequest<'proof> {
 pub struct AuthorizedAdministrationAction {
     admission: AuthorizedAdministrationAdmission,
     action: AdministrationAction,
+    step_up_factor: Option<StateIdentifier>,
 }
 
 impl AuthorizedAdministrationAction {
@@ -693,7 +701,9 @@ impl AuthorizedAdministrationAction {
     pub fn into_account(
         self,
     ) -> Result<AuthorizedAccountAdministrationAction, AuthorizationDenied> {
-        let Self { admission, action } = self;
+        let Self {
+            admission, action, ..
+        } = self;
         let AdministrationAction::Account(action) = action else {
             return Err(AuthorizationDenied);
         };
@@ -710,7 +720,9 @@ impl AuthorizedAdministrationAction {
     /// A non-Group action is consumed and denied rather than returned for
     /// reuse against another workflow.
     pub fn into_group_mutation(self) -> Result<AuthorizedGroupMutation, AuthorizationDenied> {
-        let Self { admission, action } = self;
+        let Self {
+            admission, action, ..
+        } = self;
         let AdministrationAction::GrantMutation(mutation) = action else {
             return Err(AuthorizationDenied);
         };
@@ -721,11 +733,75 @@ impl AuthorizedAdministrationAction {
             mutation,
         })
     }
+
+    /// Consumes an authorized action into the exact MFA-policy proof.
+    ///
+    /// A non-policy action is consumed and denied rather than returned for
+    /// reuse against another workflow.
+    pub fn into_mfa_policy(self) -> Result<AuthorizedMfaPolicy, AuthorizationDenied> {
+        let Self {
+            admission,
+            action,
+            step_up_factor,
+        } = self;
+        let AdministrationAction::MfaPolicy = action else {
+            return Err(AuthorizationDenied);
+        };
+        Ok(AuthorizedMfaPolicy {
+            actor: admission.actor,
+            session: admission.session,
+            client_module: admission.authorization.client_module().clone(),
+            factor: step_up_factor.ok_or(AuthorizationDenied)?,
+        })
+    }
 }
 
 impl fmt::Debug for AuthorizedAdministrationAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthorizedAdministrationAction(REDACTED)")
+    }
+}
+
+/// One authorized MFA policy action bound to its exact step-up factor.
+///
+/// The value is not clonable and can be obtained only by consuming a matching
+/// [`AuthorizedAdministrationAction`].
+pub struct AuthorizedMfaPolicy {
+    actor: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+    factor: StateIdentifier,
+}
+
+impl AuthorizedMfaPolicy {
+    /// Returns the authenticated actor.
+    #[must_use]
+    pub const fn actor(&self) -> StateIdentifier {
+        self.actor
+    }
+
+    /// Returns the exact validated session digest.
+    #[must_use]
+    pub const fn session(&self) -> SessionTokenHash {
+        self.session
+    }
+
+    /// Returns the Client Module through which the policy action was authorized.
+    #[must_use]
+    pub const fn client_module(&self) -> &Name {
+        &self.client_module
+    }
+
+    /// Returns the exact factor that established current-session step-up.
+    #[must_use]
+    pub const fn factor(&self) -> StateIdentifier {
+        self.factor
+    }
+}
+
+impl fmt::Debug for AuthorizedMfaPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedMfaPolicy(REDACTED)")
     }
 }
 
@@ -869,6 +945,7 @@ where
         Ok(MfaStepUpProof {
             actor: session.actor,
             session: session.session,
+            factor: session.factor,
             family,
             issued_at,
             expires_at,
@@ -887,13 +964,16 @@ where
         admission: AuthorizedAdministrationAdmission,
         request: AdministrationRequest<'_>,
     ) -> Result<AuthorizedAdministrationAction, AuthorizationDenied> {
-        if let Some(family) = request.action.step_up_family()
-            && !request
-                .step_up
-                .is_some_and(|proof| proof.permits(&admission, family, self.clock.now()))
-        {
-            return Err(AuthorizationDenied);
-        }
+        let step_up_factor = match request.action.step_up_family() {
+            Some(family) => {
+                let proof = request.step_up.ok_or(AuthorizationDenied)?;
+                if !proof.permits(&admission, family, self.clock.now()) {
+                    return Err(AuthorizationDenied);
+                }
+                Some(proof.factor)
+            }
+            None => None,
+        };
 
         if let AdministrationAction::ComponentOperation(target) = &request.action {
             if !target.is_available(&self.components) {
@@ -920,6 +1000,7 @@ where
         Ok(AuthorizedAdministrationAction {
             admission,
             action: request.action,
+            step_up_factor,
         })
     }
 }
@@ -1026,6 +1107,7 @@ mod tests {
             authority,
             identifier(actor),
             session(session_byte),
+            identifier(actor.wrapping_add(20)),
         )
     }
 

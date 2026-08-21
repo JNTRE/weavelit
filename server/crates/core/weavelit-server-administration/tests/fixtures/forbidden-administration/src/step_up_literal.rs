@@ -11,6 +11,7 @@ fn main() {
     let _proof = MfaStepUpProof {
         actor,
         session,
+        factor: actor,
         family: StepUpActionFamily::MfaPolicy,
         issued_at: Duration::ZERO,
         expires_at: Duration::from_secs(300),

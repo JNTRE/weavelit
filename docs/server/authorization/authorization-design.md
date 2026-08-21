@@ -231,7 +231,7 @@ weaker rule.
 | --- | --- | --- |
 | `Account(List)` or `Account(View(AccountPublicIdentifier))` | Not required | Admits one bounded account administration read. The gate performs no database read. |
 | `Account(Create(...))` or `Account(PasswordReset(...))` | Not required at this gate | Admits one account credential writer. The separate exact-session credential-issuance check applies before temporary-password disclosure. |
-| `Account(StatusChange { target: AccountPublicIdentifier, desired: Active | Disabled })` | Not required | Admits one account status writer. The gate performs no database read, credential reauthentication, or MFA step-up. |
+| `Account(StatusChange { target: AccountPublicIdentifier, desired: Active \| Disabled })` | Not required | Admits one account status writer. The gate performs no database read, credential reauthentication, or MFA step-up. |
 | `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
 | `GrantMutation` | Required, scoped to `GrantMutation` | Covers existing-Group membership, direct Client Module, Service Module, named Operation, and Server Administration Permission grant changes, and deletion of an existing Group. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
@@ -290,9 +290,10 @@ mutation decision; this action family does not add a route or client contract.
 ### Current-Session Step-Up Proof
 
 `MfaStepUpProof` is a private-field, non-clonable capability containing the
-authenticated account, the stored digest of the current session bearer, exactly
-one of the two bounded step-up action families, its issuer-observed monotonic
-time, and an expiry derived exactly five minutes later. No public API accepts a
+authenticated account, the stored digest of the current session bearer, the
+exact TOTP factor that was accepted, exactly one of the two bounded step-up
+action families, its issuer-observed monotonic time, and an expiry derived
+exactly five minutes later. No public API accepts a
 boolean, actor, session, issuance time, or expiry from a caller when minting the
 proof. The proof is borrowed so matching actions may reuse it during that fixed
 window. The gate compares its actor and digest with the compound admission, not
@@ -317,6 +318,19 @@ watermark. It issues no session and changes no session value. A replay, stale
 factor, inactive actor, disabled Module, or different session mints no proof.
 The MFA-policy and Group-mutation contracts borrow the resulting proof through
 `AdministrationRequest`; ordinary account contracts do not request one.
+
+The public `/api/v1/administration/step-up/totp` route exposes only the
+`MfaPolicy` family. Because the private proof cannot cross the Client Module
+boundary, the Server retains it behind a separate domain-separated opaque
+process-memory ticket. Ticket lookup never bypasses this gate: each use supplies
+the retained proof to a newly authorized `MfaPolicy` request, and the gate again
+checks exact actor, session, family, monotonic time, and expiry. The authorized
+result retains the exact factor only until it is consumed into the final policy
+writer recheck. The ticket is reusable within the proof's fixed window and is
+neither the credential-issuance ticket nor a `GrantMutation` proof.
+
+`GrantMutation` remains an internal family with unchanged proof issuance and
+reuse behavior. No public family literal or route mints one in this delivery.
 
 ### Existing-Group Membership, Grant, And Deletion Mutations
 

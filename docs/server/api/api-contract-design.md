@@ -305,6 +305,110 @@ Every rejection uses the typed error envelope and reveals no target detail,
 mutation phase, session count, Audit state, or supplied value. The route is not
 mounted on a Pre-Operational Surface.
 
+### Account MFA Policy Administration
+
+The account MFA-policy surface contains exactly three routes:
+
+| Route | Method | Result |
+| --- | --- | --- |
+| `/api/v1/administration/step-up/totp` | `PUT` | One reusable short-lived ticket for the requested public step-up family. |
+| `/api/v1/administration/accounts/mfa-requirement` | `PUT` | The target account's safe projection after its MFA requirement is confirmed. |
+| `/api/v1/administration/accounts/mfa-reset` | `PUT` | The target account's safe projection after its TOTP enrollment is absent. |
+
+All three routes require an ordinary validated session, exact same-origin
+`Origin` and `Host`, the session's `X-Weavelit-CSRF` value, JSON media types,
+live Web UI Client Module access, and the effective Server Administration
+Permission. Each body uses strict JSON; an unknown or duplicate member,
+missing member, wrong type, trailing content, malformed identifier, ticket, or
+code, or oversized input is `bad_request`.
+
+The TOTP step-up body is exactly:
+
+```json
+{"family":"mfa_policy","code":"123456"}
+```
+
+`code` is exactly six decimal digits. `mfa_policy` is the only public family in
+this contract. A different family, including the internal `GrantMutation`
+family, is `bad_request` and exposes no family-specific route or denial detail.
+The Server verifies the code only for the exact authenticated session and its
+current enrolled TOTP factor. Verification atomically rechecks session
+liveness, actor activity, factor ownership, TOTP Module enablement, and replay
+state before advancing the watermark. It issues no cookie and creates or
+rotates no session. Success returns:
+
+```json
+{"result":{"totp_step_up_ticket":"<43-character canonical Base64url>"},
+ "correlation_id":"<opaque-server-value>"}
+```
+
+The ticket contains 256 bits of operating-system randomness. The process
+retains only its domain-separated digest and the private `MfaStepUpProof` in a
+bounded 64-entry memory store. The ticket is reusable for matching MFA-policy
+actions until the proof's exact five-minute monotonic expiry; the exact expiry
+instant is invalid. It is bound to the issuing actor, session, Client Module,
+factor, and `MfaPolicy` family. A restart invalidates it. It is neither the
+single-use credential-issuance ticket nor a public `GrantMutation` proof, and
+none can substitute for another.
+
+The requirement body is exactly:
+
+```json
+{"public_id":"<22-character Account Public Identifier>",
+ "required":true,
+ "totp_step_up_ticket":"<ticket>"}
+```
+
+The reset body is exactly:
+
+```json
+{"public_id":"<22-character Account Public Identifier>",
+ "totp_step_up_ticket":"<ticket>"}
+```
+
+Neither action accepts a confirmation boolean, password, TOTP code, actor,
+session, factor, requirement snapshot, or internal identifier. Each request
+performs new session validation and live Administration authorization, then
+checks the ticket through the private action gate. The final writer again
+checks the exact issuer session, actor activity, Client Module, TOTP factor,
+Module enablement, target public identity, target requirement, and target
+factor snapshot.
+
+A requirement no-op returns the safe projection and creates no Audit record.
+Changing to required revokes every target session so no password-only session
+survives the new requirement. Changing to optional preserves current target
+sessions. Enrollment reset with no current TOTP factor is likewise a no-op.
+A committed reset deletes the factor and its replay watermark, preserves the
+password and MFA requirement, and revokes every target session. A target that
+remains required must enroll before receiving another usable session.
+Requirement changes and resets use distinct Audit events. Business state and
+the selected terminal obligation commit atomically.
+
+Both actions return the same exact five-field safe account projection as the
+account-view route. A successful self-require or self-reset response is returned
+after commit even when the transaction revoked the requesting session; the next
+request is `session_invalid`. No response exposes a factor, watermark, affected
+session count, ticket, code, proof, or terminal-delivery state.
+
+The stable rejection contract is:
+
+| Condition | Response |
+| --- | --- |
+| Malformed headers, body, schema, family, identifier, ticket, or code shape | `400 Bad Request`, `bad_request` |
+| Missing, malformed, unknown, expired, mismatched, or restricted session | `401 Unauthorized`, `session_invalid` |
+| Failed exact origin or host check | `403 Forbidden`, `request_origin_denied` |
+| Any live Administration Plane authorization denial | `403 Forbidden`, `authorization_denied` |
+| TOTP, replay, factor, Module, ticket, proof binding, expiry, target staleness, or final policy recheck denied | `403 Forbidden`, `mfa_policy_denied` |
+| Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
+| Unknown valid target identifier | `404 Not Found`, `not_found` |
+| Persistence, integrity, time, randomness, Audit readiness, capacity, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
+
+Every rejection is payload-free beyond its stable code and correlation
+identifier. A client MUST NOT automatically repeat step-up, requirement, or
+reset after an unreported or malformed outcome. It must discard the code and
+ticket, report the outcome as unknown, and require a manual refresh before
+another MFA policy action.
+
 ### Account Credential Issuance
 
 The account credential-issuance surface contains exactly three routes:

@@ -759,7 +759,7 @@ fn validate_request_head(
     Ok(())
 }
 
-fn account_administration_success(
+pub(crate) fn account_administration_success(
     result: AccountAdministrationResult,
     correlation_id: String,
 ) -> Response {

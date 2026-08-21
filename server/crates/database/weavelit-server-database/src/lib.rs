@@ -9,6 +9,7 @@ mod audit_recovery;
 mod group_mutation;
 mod log_configuration;
 mod mfa;
+mod mfa_policy;
 mod password_change;
 mod reconciliation;
 mod session;
@@ -54,6 +55,10 @@ pub use mfa::{
     MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
     MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnrollment, MfaModuleTarget,
     MfaStore, MfaTimeStep,
+};
+pub use mfa_policy::{
+    MfaPolicyAction, MfaPolicyAuditTerminalWrites, MfaPolicyMutation, MfaPolicyMutationError,
+    MfaPolicyMutationOutcome, MfaPolicyRecheck, MfaPolicyTarget, MfaPolicyWriterStore,
 };
 pub use password_change::{
     PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeMutationError,
@@ -355,6 +360,11 @@ pub trait ApplicationDatabase: Send {
 
     /// Returns account status mutation storage, when available.
     fn account_status_writers(&mut self) -> Option<&mut dyn AccountStatusWriterStore> {
+        None
+    }
+
+    /// Returns account MFA requirement and enrollment-reset storage, when available.
+    fn mfa_policy_writers(&mut self) -> Option<&mut dyn MfaPolicyWriterStore> {
         None
     }
 

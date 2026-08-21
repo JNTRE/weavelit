@@ -25,28 +25,31 @@ use axum::http::{HeaderMap, Method, Uri};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::task;
 use weavelit_module_client::{
-    ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE,
-    ACCOUNTS_STATUS_ROUTE, ACCOUNTS_VIEW_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
-    AccountAdministrationCapability, AccountAdministrationDeclaration,
-    AccountAdministrationProjection as ClientAccountProjection, AccountAdministrationRejection,
-    AccountAdministrationRequest, AccountAdministrationResult as ClientAccountResult,
-    AccountAdministrationSubmission, AccountCreateSubmission, AccountCredentialIssued,
-    AccountPasswordResetSubmission, AccountsPage, AuthenticationRejection,
-    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CredentialIssuanceCapability, CredentialIssuanceDeclaration,
-    CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
+    ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+    ACCOUNTS_MFA_RESET_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, ACCOUNTS_STATUS_ROUTE,
+    ACCOUNTS_VIEW_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE, AccountAdministrationCapability,
+    AccountAdministrationDeclaration, AccountAdministrationProjection as ClientAccountProjection,
+    AccountAdministrationRejection, AccountAdministrationRequest,
+    AccountAdministrationResult as ClientAccountResult, AccountAdministrationSubmission,
+    AccountCreateSubmission, AccountCredentialIssued, AccountPasswordResetSubmission, AccountsPage,
+    AuthenticationRejection, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CredentialIssuanceCapability,
+    CredentialIssuanceDeclaration, CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
     CredentialIssuanceTicketIssued, ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
     MAX_CREDENTIAL_ISSUANCE_BODY_BYTES, MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES,
-    MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES, PasswordChangeCapability,
+    MAX_MFA_POLICY_BODY_BYTES, MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES,
+    MFA_POLICY_STEP_UP_ROUTE, MfaPolicyCapability, MfaPolicyDeclaration, MfaPolicyRejection,
+    MfaPolicyStepUpFamily, MfaPolicyStepUpSubmission, MfaPolicyTicketIssued,
+    MfaRequirementSubmission, MfaResetSubmission, PasswordChangeCapability,
     PasswordChangeDeclaration, PasswordChangeSubmission,
     ReconciliationCapability as ClientReconciliationCapability, ReconciliationOutcome,
-    ReconciliationRejection, validate_credential_issuance_request,
+    ReconciliationRejection, validate_credential_issuance_request, validate_mfa_policy_request,
     validate_password_change_request, validate_reconciliation_request,
 };
 use weavelit_server_administration::{
     AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
     AccountStatusChange, AdministrationAction, AdministrationClock, AdministrationPlane,
     AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementSource,
-    MfaStepUpProof, StepUpActionFamily,
+    MFA_STEP_UP_LIFETIME, MfaStepUpProof, StepUpActionFamily,
 };
 use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authentication::{
@@ -70,8 +73,10 @@ use weavelit_server_database::{
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
     LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
-    MfaStore, PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeOutcome,
-    PreparedGroupMutation, PreparedLogConfigurationMutation, StateIdentifier,
+    MfaPolicyAuditTerminalWrites, MfaPolicyMutation, MfaPolicyMutationOutcome, MfaPolicyTarget,
+    MfaPolicyWriterStore, MfaStore, PasswordChangeAuditTerminalWrites, PasswordChangeMutation,
+    PasswordChangeOutcome, PreparedGroupMutation, PreparedLogConfigurationMutation,
+    StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
@@ -86,11 +91,13 @@ use crate::{
         AccountAdministrationReadResult, AccountAdministrationReadWorkflow,
         AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflow,
         AccountCredentialIssuanceWorkflowError, AccountStatusChangeError,
-        AccountStatusChangeResult, AccountStatusChangeWorkflow,
+        AccountStatusChangeResult, AccountStatusChangeWorkflow, MfaPolicyChangeError,
+        MfaPolicyChangeResult, MfaPolicyChangeWorkflow,
     },
     authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
     authorization::{AuthorizationRuntime, ServedComponents},
     fallback_router,
+    mfa_policy_ticket::{MfaPolicyStepUpTicket, MfaPolicyStepUpTicketDigest},
     operational_audit::{OperationalAuditRecovery, OperationalAuditRecoveryState},
     password_change::{PasswordChangeResult, PasswordChangeWorkflow, PasswordChangeWorkflowError},
     transport::{
@@ -112,6 +119,15 @@ const CREDENTIAL_ISSUANCE_PROFILE: TransportProfile = TransportProfile::admitted
     crate::REQUEST_READ_TIMEOUT,
     crate::REQUEST_PROCESSING_TIMEOUT,
 );
+
+const MFA_POLICY_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_MFA_POLICY_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+/// Maximum reusable MFA-policy step-up proofs retained by one Server process.
+const MAX_OUTSTANDING_MFA_POLICY_TICKETS: usize = 64;
 
 const _: () = assert!(
     MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES
@@ -506,6 +522,50 @@ impl OperationalDatabase {
         })?
     }
 
+    /// Resolves one exact account MFA policy target through both selected decoders.
+    pub(crate) fn prepare_mfa_policy_target(
+        &self,
+        target: AccountPublicIdentifier,
+        module: &Name,
+    ) -> Result<Option<MfaPolicyTarget>, DatabaseError> {
+        self.with_mfa_policy_writers(|store| {
+            store.prepare_mfa_policy_target(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                module,
+                target,
+            )
+        })
+    }
+
+    /// Commits one MFA policy change and exactly one selected Audit terminal.
+    pub(crate) fn change_mfa_policy(
+        &self,
+        mutation: &MfaPolicyMutation,
+        audit_terminals: &MfaPolicyAuditTerminalWrites<'_>,
+    ) -> Result<MfaPolicyMutationOutcome, DatabaseError> {
+        self.with_mfa_policy_writers(|store| {
+            store.change_mfa_policy(
+                &self.account_public_identifier_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    fn with_mfa_policy_writers<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn MfaPolicyWriterStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                database
+                    .mfa_policy_writers()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
     /// Resolves one existing Group membership target through selected decoders.
     pub(crate) fn prepare_group_membership_target(
         &self,
@@ -847,6 +907,11 @@ struct CredentialIssuancePreconditions {
     expected_origin: ExpectedOrigin,
 }
 
+/// MFA-policy checks that run before any secret body allocation.
+struct MfaPolicyPreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
 impl PreBodyCheck for CredentialIssuancePreconditions {
     fn check(
         &self,
@@ -862,6 +927,24 @@ impl PreBodyCheck for CredentialIssuancePreconditions {
             Err(CredentialIssuanceRejection::SessionInvalid) => {
                 Err(PreBodyRejection::SessionInvalid)
             }
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
+impl PreBodyCheck for MfaPolicyPreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_mfa_policy_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(MfaPolicyRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(MfaPolicyRejection::SessionInvalid) => Err(PreBodyRejection::SessionInvalid),
             Err(_) => Err(PreBodyRejection::BadRequest),
         }
     }
@@ -906,6 +989,7 @@ pub struct OperationalComposer {
     administration: Option<Arc<OperationalAdministration>>,
 }
 
+#[derive(Clone, Copy)]
 struct OperationalAdministrationClock(Instant);
 
 impl AdministrationClock for OperationalAdministrationClock {
@@ -930,8 +1014,19 @@ impl ComponentEnablementSource for OperationalComponentEnablement {
 /// Internal transport-independent administration composition for current-session step-up.
 pub(crate) struct OperationalAdministration {
     authentication: Arc<AuthenticationRuntime<RustCryptoArgon2>>,
-    plane:
-        Mutex<AdministrationPlane<OperationalAdministrationClock, OperationalComponentEnablement>>,
+    state: Mutex<OperationalAdministrationState>,
+}
+
+struct OperationalAdministrationState {
+    clock: OperationalAdministrationClock,
+    plane: AdministrationPlane<OperationalAdministrationClock, OperationalComponentEnablement>,
+    pending_mfa_policy: Vec<PendingMfaPolicyStepUp>,
+}
+
+struct PendingMfaPolicyStepUp {
+    digest: MfaPolicyStepUpTicketDigest,
+    expires_after: Duration,
+    proof: MfaStepUpProof,
 }
 
 impl OperationalAdministration {
@@ -940,14 +1035,92 @@ impl OperationalAdministration {
         database: OperationalDatabase,
         components: AvailableComponents,
     ) -> Self {
+        let clock = OperationalAdministrationClock(Instant::now());
         Self {
             authentication,
-            plane: Mutex::new(AdministrationPlane::new(
-                OperationalAdministrationClock(Instant::now()),
-                OperationalComponentEnablement(database),
-                components,
-            )),
+            state: Mutex::new(OperationalAdministrationState {
+                clock,
+                plane: AdministrationPlane::new(
+                    clock,
+                    OperationalComponentEnablement(database),
+                    components,
+                ),
+                pending_mfa_policy: Vec::new(),
+            }),
         }
+    }
+
+    /// Verifies current-session TOTP and retains one reusable five-minute MFA-policy proof.
+    pub(crate) fn issue_mfa_policy_step_up(
+        &self,
+        session: &ValidatedSession,
+        code: &str,
+    ) -> Result<MfaPolicyStepUpTicket, AuthenticationRejection> {
+        let ticket =
+            MfaPolicyStepUpTicket::generate().ok_or(AuthenticationRejection::ServiceUnavailable)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+        let now = state.clock.now();
+        state
+            .pending_mfa_policy
+            .retain(|entry| entry.expires_after > now);
+        if state.pending_mfa_policy.len() >= MAX_OUTSTANDING_MFA_POLICY_TICKETS {
+            return Err(AuthenticationRejection::ServiceUnavailable);
+        }
+        let current = self
+            .authentication
+            .verify_administration_step_up(session, code)?;
+        let proof = state
+            .plane
+            .issue_step_up(
+                &ServerAdministrationAuthority::new(),
+                &current,
+                StepUpActionFamily::MfaPolicy,
+            )
+            .map_err(|_| AuthenticationRejection::AuthenticationFailed)?;
+        let expires_after = state
+            .clock
+            .now()
+            .checked_add(MFA_STEP_UP_LIFETIME)
+            .ok_or(AuthenticationRejection::ServiceUnavailable)?;
+        state.pending_mfa_policy.push(PendingMfaPolicyStepUp {
+            digest: ticket.digest(),
+            expires_after,
+            proof,
+        });
+        Ok(ticket)
+    }
+
+    /// Authorizes one MFA-policy action through a reusable opaque ticket.
+    pub(crate) fn authorize_mfa_policy(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        submitted: &str,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        let submitted =
+            MfaPolicyStepUpTicketDigest::of_canonical(submitted).ok_or(AuthorizationDenied)?;
+        let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
+        let now = state.clock.now();
+        state
+            .pending_mfa_policy
+            .retain(|entry| entry.expires_after > now);
+        let OperationalAdministrationState {
+            plane,
+            pending_mfa_policy,
+            ..
+        } = &mut *state;
+        let proof = pending_mfa_policy
+            .iter()
+            .find(|entry| entry.digest.matches(&submitted))
+            .map(|entry| &entry.proof)
+            .ok_or(AuthorizationDenied)?;
+        plane.authorize(
+            admission,
+            AdministrationRequest::new(AdministrationAction::MfaPolicy).with_step_up(proof),
+        )
     }
 
     /// Verifies and consumes current-session TOTP, then mints one five-minute grant proof.
@@ -960,9 +1133,10 @@ impl OperationalAdministration {
         let current = self
             .authentication
             .verify_administration_step_up(session, code)?;
-        self.plane
+        self.state
             .lock()
             .map_err(|_| AuthenticationRejection::ServiceUnavailable)?
+            .plane
             .issue_step_up(
                 &ServerAdministrationAuthority::new(),
                 &current,
@@ -980,9 +1154,10 @@ impl OperationalAdministration {
         proof: &MfaStepUpProof,
     ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
     {
-        self.plane
+        self.state
             .lock()
             .map_err(|_| AuthorizationDenied)?
+            .plane
             .authorize(
                 admission,
                 weavelit_server_administration::AdministrationRequest::new(
@@ -999,9 +1174,10 @@ impl OperationalAdministration {
         read: AccountAdministrationRead,
     ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
     {
-        self.plane
+        self.state
             .lock()
             .map_err(|_| AuthorizationDenied)?
+            .plane
             .authorize(
                 admission,
                 AdministrationRequest::new(AdministrationAction::Account(
@@ -1017,9 +1193,10 @@ impl OperationalAdministration {
         change: AccountStatusChange,
     ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
     {
-        self.plane
+        self.state
             .lock()
             .map_err(|_| AuthorizationDenied)?
+            .plane
             .authorize(
                 admission,
                 AdministrationRequest::new(AdministrationAction::Account(
@@ -1041,9 +1218,10 @@ impl OperationalAdministration {
         ) {
             return Err(AuthorizationDenied);
         }
-        self.plane
+        self.state
             .lock()
             .map_err(|_| AuthorizationDenied)?
+            .plane
             .authorize(
                 admission,
                 AdministrationRequest::new(AdministrationAction::Account(action)),
@@ -1286,6 +1464,89 @@ impl OperationalComposer {
         })
     }
 
+    fn mfa_policy_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<MfaPolicyCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+
+        let step_up_authentication = Arc::clone(&authentication);
+        let step_up_authorization = Arc::clone(&authorization);
+        let step_up_administration = Arc::clone(&administration);
+        let requirement_authentication = Arc::clone(&authentication);
+        let requirement_authorization = Arc::clone(&authorization);
+        let requirement_administration = Arc::clone(&administration);
+        let requirement_database = database.clone();
+        let requirement_audit = Arc::clone(&audit_recovery);
+        Some(MfaPolicyCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            step_up: Arc::new(move |submission| {
+                let authentication = Arc::clone(&step_up_authentication);
+                let authorization = Arc::clone(&step_up_authorization);
+                let administration = Arc::clone(&step_up_administration);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_mfa_policy_step_up(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(MfaPolicyRejection::ServiceUnavailable))
+                })
+            }),
+            requirement: Arc::new(move |submission| {
+                let authentication = Arc::clone(&requirement_authentication);
+                let authorization = Arc::clone(&requirement_authorization);
+                let administration = Arc::clone(&requirement_administration);
+                let database = requirement_database.clone();
+                let audit_recovery = Arc::clone(&requirement_audit);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_mfa_requirement(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(MfaPolicyRejection::ServiceUnavailable))
+                })
+            }),
+            reset: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_mfa_reset(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(MfaPolicyRejection::ServiceUnavailable))
+                })
+            }),
+        })
+    }
+
     /// Returns the state observed by the activation drain.
     #[cfg(test)]
     pub(crate) const fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
@@ -1305,11 +1566,14 @@ impl OperationalComposer {
         let declared = weavelit_module_client_webui::operational_surface(
             self.account_administration_capability(expected_origin),
             self.credential_issuance_capability(expected_origin),
+            self.mfa_policy_capability(expected_origin),
         );
         let (declared, account_administration) = declared.split_account_administration();
         let (declared, credential_issuance) = declared.split_credential_issuance();
+        let (declared, mfa_policy) = declared.split_mfa_policy();
         let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
-        for capability in self.capabilities(account_administration, credential_issuance) {
+        for capability in self.capabilities(account_administration, credential_issuance, mfa_policy)
+        {
             surface = surface.with_capability(capability);
         }
         OperationalMount { surface }
@@ -1326,6 +1590,7 @@ impl OperationalComposer {
         &self,
         account_administration: Option<AccountAdministrationDeclaration>,
         credential_issuance: Option<CredentialIssuanceDeclaration>,
+        mfa_policy: Option<MfaPolicyDeclaration>,
     ) -> Vec<TransportCapability> {
         let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
         let database = self.database.clone();
@@ -1464,6 +1729,43 @@ impl OperationalComposer {
                 },
             ));
         }
+        if let Some(declaration) = mfa_policy {
+            let declaration = Arc::new(declaration);
+            let requirement = Arc::clone(&declaration);
+            let reset = Arc::clone(&declaration);
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    MFA_POLICY_STEP_UP_ROUTE,
+                    MFA_POLICY_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(MfaPolicyPreconditions { expected_origin })),
+                move |router| router.route(MFA_POLICY_STEP_UP_ROUTE, declaration.step_up_route()),
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+                    MFA_POLICY_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(MfaPolicyPreconditions { expected_origin })),
+                move |router| {
+                    router.route(
+                        ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+                        requirement.requirement_route(),
+                    )
+                },
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_MFA_RESET_ROUTE,
+                    MFA_POLICY_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(MfaPolicyPreconditions { expected_origin })),
+                move |router| router.route(ACCOUNTS_MFA_RESET_ROUTE, reset.reset_route()),
+            ));
+        }
         capabilities
     }
 }
@@ -1549,6 +1851,157 @@ async fn execute_credential_issuance_step_up(
     })
     .await
     .unwrap_or(Err(CredentialIssuanceRejection::ServiceUnavailable))
+}
+
+fn execute_mfa_policy_step_up(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    submission: MfaPolicyStepUpSubmission,
+) -> Result<MfaPolicyTicketIssued, MfaPolicyRejection> {
+    let MfaPolicyStepUpSubmission {
+        family,
+        session_token,
+        csrf_token,
+        code,
+        correlation_id,
+        context: _,
+    } = submission;
+    match family {
+        MfaPolicyStepUpFamily::MfaPolicy => {}
+    }
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(mfa_policy_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(MfaPolicyRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| MfaPolicyRejection::ServiceUnavailable)?;
+    authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| MfaPolicyRejection::AuthorizationDenied)?;
+    let ticket = administration
+        .issue_mfa_policy_step_up(&session, &code)
+        .map_err(mfa_policy_step_up_rejection)?;
+    Ok(MfaPolicyTicketIssued {
+        totp_step_up_ticket: Zeroizing::new(ticket.as_str().to_owned()),
+    })
+}
+
+fn execute_mfa_requirement(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: MfaRequirementSubmission,
+) -> Result<ClientAccountProjection, MfaPolicyRejection> {
+    let MfaRequirementSubmission {
+        session_token,
+        csrf_token,
+        public_id,
+        required,
+        totp_step_up_ticket,
+        correlation_id,
+        context: _,
+    } = submission;
+    execute_mfa_policy_change(
+        authentication,
+        authorization,
+        administration,
+        database,
+        audit_recovery,
+        &session_token,
+        &csrf_token,
+        &public_id,
+        &totp_step_up_ticket,
+        &correlation_id,
+        weavelit_server_database::MfaPolicyAction::Requirement { required },
+    )
+}
+
+fn execute_mfa_reset(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: MfaResetSubmission,
+) -> Result<ClientAccountProjection, MfaPolicyRejection> {
+    let MfaResetSubmission {
+        session_token,
+        csrf_token,
+        public_id,
+        totp_step_up_ticket,
+        correlation_id,
+        context: _,
+    } = submission;
+    execute_mfa_policy_change(
+        authentication,
+        authorization,
+        administration,
+        database,
+        audit_recovery,
+        &session_token,
+        &csrf_token,
+        &public_id,
+        &totp_step_up_ticket,
+        &correlation_id,
+        weavelit_server_database::MfaPolicyAction::EnrollmentReset,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_mfa_policy_change(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    session_token: &str,
+    csrf_token: &str,
+    public_id: &str,
+    ticket: &str,
+    correlation_id: &str,
+    action: weavelit_server_database::MfaPolicyAction,
+) -> Result<ClientAccountProjection, MfaPolicyRejection> {
+    let session = authentication
+        .validated_session(session_token, csrf_token)
+        .map_err(mfa_policy_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(MfaPolicyRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| MfaPolicyRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, correlation_id)
+        .map_err(|_| MfaPolicyRejection::AuthorizationDenied)?;
+    let target = database
+        .account_public_identifier(public_id)
+        .map_err(|_| MfaPolicyRejection::BadRequest)?;
+    let authorized = administration
+        .authorize_mfa_policy(admission, ticket)
+        .map_err(|_| MfaPolicyRejection::MfaPolicyDenied)?;
+    match MfaPolicyChangeWorkflow::new(database, audit_recovery)
+        .apply(authorized, target, action)
+        .map_err(mfa_policy_workflow_error)?
+    {
+        MfaPolicyChangeResult::Unchanged | MfaPolicyChangeResult::Changed { .. } => {}
+        MfaPolicyChangeResult::Stale { .. } | MfaPolicyChangeResult::Denied { .. } => {
+            return Err(MfaPolicyRejection::MfaPolicyDenied);
+        }
+    }
+    let projection = database
+        .load_account_administration_projection(target)
+        .map_err(|_| MfaPolicyRejection::ServiceUnavailable)?
+        .ok_or(MfaPolicyRejection::ServiceUnavailable)?;
+    if let weavelit_server_database::MfaPolicyAction::Requirement { required } = action
+        && projection.mfa_required() != required
+    {
+        return Err(MfaPolicyRejection::ServiceUnavailable);
+    }
+    client_account_projection(projection).map_err(|_| MfaPolicyRejection::ServiceUnavailable)
 }
 
 fn execute_account_create(
@@ -1680,6 +2133,37 @@ fn credential_authentication_rejection(
         | AuthenticationRejection::SessionInvalid
         | AuthenticationRejection::RequestOriginDenied
         | AuthenticationRejection::MethodNotAllowed => CredentialIssuanceRejection::SessionInvalid,
+    }
+}
+
+fn mfa_policy_authentication_rejection(rejection: AuthenticationRejection) -> MfaPolicyRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => MfaPolicyRejection::ServiceUnavailable,
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => MfaPolicyRejection::SessionInvalid,
+    }
+}
+
+fn mfa_policy_step_up_rejection(rejection: AuthenticationRejection) -> MfaPolicyRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => MfaPolicyRejection::ServiceUnavailable,
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => MfaPolicyRejection::MfaPolicyDenied,
+    }
+}
+
+fn mfa_policy_workflow_error(error: MfaPolicyChangeError) -> MfaPolicyRejection {
+    match error {
+        MfaPolicyChangeError::TargetNotFound => MfaPolicyRejection::NotFound,
+        MfaPolicyChangeError::ActionNotSupported
+        | MfaPolicyChangeError::Unavailable
+        | MfaPolicyChangeError::AuditLogUnavailable => MfaPolicyRejection::ServiceUnavailable,
     }
 }
 

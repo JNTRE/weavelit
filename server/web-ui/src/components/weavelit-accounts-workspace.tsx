@@ -15,6 +15,12 @@ import {
   resetAccountPassword,
   type CredentialIssued,
 } from "../api/weavelit-credential-issuance";
+import {
+  MfaPolicyIndeterminateError,
+  changeMfaRequirement,
+  issueMfaPolicyStepUp,
+  resetMfaEnrollment,
+} from "../api/weavelit-mfa-policy";
 
 type CollectionState = "loading" | "ready" | "loading-more" | "failed";
 type SelectionState =
@@ -31,6 +37,15 @@ interface PendingStatusAction {
   readonly account: AccountProjection;
   readonly active: boolean;
 }
+type MfaPolicyState =
+  "idle" | "confirming" | "step-up" | "issuing" | "mutating" | "refused" | "indeterminate";
+type PendingMfaPolicyAction =
+  | {
+      readonly kind: "requirement";
+      readonly account: AccountProjection;
+      readonly required: boolean;
+    }
+  | { readonly kind: "reset"; readonly account: AccountProjection };
 
 const FAILURE_MESSAGE = "Accounts are unavailable.";
 const CREDENTIAL_REFUSED_MESSAGE = "Credential issuance was not completed.";
@@ -39,6 +54,9 @@ const CREDENTIAL_INDETERMINATE_MESSAGE =
 const STATUS_REFUSED_MESSAGE = "The account status was not changed.";
 const STATUS_INDETERMINATE_MESSAGE =
   "The account status outcome is unknown. Refresh before taking another status action.";
+const MFA_POLICY_REFUSED_MESSAGE = "MFA policy was not changed.";
+const MFA_POLICY_INDETERMINATE_MESSAGE =
+  "The MFA policy outcome is unknown. Refresh before taking another MFA action.";
 const TOTP_PATTERN = /^[0-9]{6}$/;
 
 export interface AccountsWorkspaceProps {
@@ -60,10 +78,16 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
   const [disclosure, setDisclosure] = useState<CredentialIssued | null>(null);
   const [statusState, setStatusState] = useState<StatusState>("idle");
   const [pendingStatusAction, setPendingStatusAction] = useState<PendingStatusAction | null>(null);
+  const [mfaPolicyState, setMfaPolicyState] = useState<MfaPolicyState>("idle");
+  const [pendingMfaPolicyAction, setPendingMfaPolicyAction] =
+    useState<PendingMfaPolicyAction | null>(null);
+  const [mfaPolicyCode, setMfaPolicyCode] = useState("");
   const mounted = useRef(true);
   const credentialAttemptActive = useRef(false);
   const statusAttemptActive = useRef(false);
+  const mfaPolicyAttemptActive = useRef(false);
   const credentialIssuanceTicket = useRef("");
+  const mfaPolicyTicket = useRef("");
   const workspaceIsMounted = (): boolean => mounted.current;
 
   const loadFirstPage = (preserveDisclosure = false): void => {
@@ -72,6 +96,9 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
     }
     setStatusState("idle");
     setPendingStatusAction(null);
+    setMfaPolicyState("idle");
+    setPendingMfaPolicyAction(null);
+    setMfaPolicyCode("");
     setCollectionState("loading");
     setSelection({ kind: "none" });
     void listAccounts().then(
@@ -112,7 +139,9 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
       mounted.current = false;
       credentialAttemptActive.current = false;
       statusAttemptActive.current = false;
+      mfaPolicyAttemptActive.current = false;
       credentialIssuanceTicket.current = "";
+      mfaPolicyTicket.current = "";
     };
   }, []);
 
@@ -160,7 +189,9 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
       statusAttemptActive.current ||
       pendingStatusAction !== null ||
       credentialAttemptActive.current ||
-      pendingCredentialAction !== null
+      pendingCredentialAction !== null ||
+      mfaPolicyAttemptActive.current ||
+      pendingMfaPolicyAction !== null
     ) {
       return;
     }
@@ -181,7 +212,8 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
     if (
       statusAttemptActive.current ||
       pendingStatusAction === null ||
-      credentialAttemptActive.current
+      credentialAttemptActive.current ||
+      mfaPolicyAttemptActive.current
     ) {
       return;
     }
@@ -225,7 +257,9 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
       credentialAttemptActive.current ||
       pendingCredentialAction !== null ||
       statusAttemptActive.current ||
-      pendingStatusAction !== null
+      pendingStatusAction !== null ||
+      mfaPolicyAttemptActive.current ||
+      pendingMfaPolicyAction !== null
     ) {
       return;
     }
@@ -328,10 +362,117 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
     })();
   };
 
+  const beginMfaPolicyAction = (action: PendingMfaPolicyAction): void => {
+    if (
+      mfaPolicyAttemptActive.current ||
+      pendingMfaPolicyAction !== null ||
+      credentialAttemptActive.current ||
+      pendingCredentialAction !== null ||
+      statusAttemptActive.current ||
+      pendingStatusAction !== null
+    ) {
+      return;
+    }
+    mfaPolicyTicket.current = "";
+    setDisclosure(null);
+    setMfaPolicyCode("");
+    setPendingMfaPolicyAction(action);
+    setMfaPolicyState("confirming");
+  };
+
+  const cancelMfaPolicyAction = (): void => {
+    if (mfaPolicyAttemptActive.current) {
+      return;
+    }
+    mfaPolicyTicket.current = "";
+    setMfaPolicyCode("");
+    setPendingMfaPolicyAction(null);
+    setMfaPolicyState("idle");
+  };
+
+  const confirmMfaPolicyAction = (): void => {
+    if (pendingMfaPolicyAction !== null && mfaPolicyState === "confirming") {
+      setMfaPolicyState("step-up");
+    }
+  };
+
+  const submitMfaPolicyAction = (event: SyntheticEvent<HTMLFormElement, SubmitEvent>): void => {
+    event.preventDefault();
+    if (
+      mfaPolicyAttemptActive.current ||
+      pendingMfaPolicyAction === null ||
+      mfaPolicyState !== "step-up" ||
+      !TOTP_PATTERN.test(mfaPolicyCode)
+    ) {
+      return;
+    }
+    mfaPolicyAttemptActive.current = true;
+    setMfaPolicyState("issuing");
+    const action = pendingMfaPolicyAction;
+    let code = mfaPolicyCode;
+    setMfaPolicyCode("");
+
+    void (async () => {
+      try {
+        const ticketRequest = issueMfaPolicyStepUp(code);
+        code = "";
+        let ticket = await ticketRequest;
+        if (!mounted.current) {
+          ticket = "";
+          return;
+        }
+        mfaPolicyTicket.current = ticket;
+        ticket = "";
+        setMfaPolicyState("mutating");
+        const mutation =
+          action.kind === "requirement"
+            ? changeMfaRequirement(
+                action.account.publicId,
+                action.required,
+                mfaPolicyTicket.current,
+              )
+            : resetMfaEnrollment(action.account.publicId, mfaPolicyTicket.current);
+        mfaPolicyTicket.current = "";
+        await mutation;
+        if (!workspaceIsMounted()) {
+          return;
+        }
+        const session = await probeSession();
+        if (!workspaceIsMounted()) {
+          return;
+        }
+        setPendingMfaPolicyAction(null);
+        if (session.kind === "unauthenticated") {
+          setMfaPolicyState("idle");
+          onSessionEnded?.();
+        } else if (session.kind === "authenticated") {
+          setMfaPolicyState("idle");
+          loadFirstPage();
+        } else {
+          setMfaPolicyState("indeterminate");
+        }
+      } catch (error: unknown) {
+        mfaPolicyTicket.current = "";
+        if (mounted.current) {
+          setPendingMfaPolicyAction(null);
+          setMfaPolicyState(
+            error instanceof MfaPolicyIndeterminateError ? "indeterminate" : "refused",
+          );
+        }
+      } finally {
+        mfaPolicyTicket.current = "";
+        mfaPolicyAttemptActive.current = false;
+      }
+    })();
+  };
+
   const credentialBusy = credentialState === "issuing" || credentialState === "consuming";
   const credentialActionLocked = pendingCredentialAction !== null || credentialBusy;
   const statusBusy = statusState === "submitting";
-  const actionLocked = credentialActionLocked || pendingStatusAction !== null || statusBusy;
+  const mfaPolicyBusy = mfaPolicyState === "issuing" || mfaPolicyState === "mutating";
+  const mfaPolicyActionLocked = pendingMfaPolicyAction !== null || mfaPolicyBusy;
+  const actionLocked =
+    credentialActionLocked || pendingStatusAction !== null || statusBusy || mfaPolicyActionLocked;
   const validAssuranceTotp = assuranceTotp === "" || TOTP_PATTERN.test(assuranceTotp);
 
   return (
@@ -339,6 +480,7 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
       className="accounts"
       data-accounts-state={collectionState}
       data-account-status-state={statusState}
+      data-mfa-policy-state={mfaPolicyState}
     >
       <header className="accounts__toolbar">
         <div>
@@ -553,6 +695,86 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
         </p>
       ) : null}
 
+      {pendingMfaPolicyAction !== null ? (
+        <section
+          className="accounts__mfa-confirmation"
+          aria-labelledby="mfa-policy-title"
+          role="dialog"
+          aria-modal="true"
+        >
+          <h3 id="mfa-policy-title">
+            {pendingMfaPolicyAction.kind === "reset"
+              ? "Reset MFA enrollment"
+              : pendingMfaPolicyAction.required
+                ? "Require MFA"
+                : "Make MFA optional"}
+          </h3>
+          {mfaPolicyState === "confirming" ? (
+            <>
+              <p>
+                {pendingMfaPolicyAction.kind === "reset"
+                  ? `Reset MFA for ${pendingMfaPolicyAction.account.username}? This removes the enrolled factor and ends every session for the account.`
+                  : pendingMfaPolicyAction.required
+                    ? `Require MFA for ${pendingMfaPolicyAction.account.username}? This ends every session for the account.`
+                    : `Make MFA optional for ${pendingMfaPolicyAction.account.username}?`}
+              </p>
+              <button type="button" className="accounts__action" onClick={confirmMfaPolicyAction}>
+                Confirm policy action
+              </button>
+              <button type="button" className="accounts__action" onClick={cancelMfaPolicyAction}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <form onSubmit={submitMfaPolicyAction}>
+              <label className="accounts__label" htmlFor="mfa-policy-code">
+                Authentication code
+              </label>
+              <input
+                id="mfa-policy-code"
+                className="accounts__input"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                spellCheck={false}
+                maxLength={6}
+                value={mfaPolicyCode}
+                onChange={(event) => {
+                  setMfaPolicyCode(event.target.value);
+                }}
+                disabled={mfaPolicyBusy}
+              />
+              <button
+                type="submit"
+                className="accounts__action"
+                disabled={mfaPolicyBusy || !TOTP_PATTERN.test(mfaPolicyCode)}
+              >
+                Verify and apply
+              </button>
+              <button
+                type="button"
+                className="accounts__action"
+                onClick={cancelMfaPolicyAction}
+                disabled={mfaPolicyBusy}
+              >
+                Cancel
+              </button>
+            </form>
+          )}
+        </section>
+      ) : null}
+
+      {mfaPolicyState === "refused" ? (
+        <p className="accounts__mfa-result" role="alert">
+          {MFA_POLICY_REFUSED_MESSAGE}
+        </p>
+      ) : null}
+      {mfaPolicyState === "indeterminate" ? (
+        <p className="accounts__mfa-result" role="status">
+          {MFA_POLICY_INDETERMINATE_MESSAGE}
+        </p>
+      ) : null}
+
       {collectionState === "ready" || collectionState === "loading-more" ? (
         <>
           <div className="accounts__table-wrap">
@@ -612,6 +834,34 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
                       >
                         {account.active ? "Disable" : "Re-enable"}
                       </button>
+                      <label className="accounts__mfa-switch">
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          aria-label={`Require MFA for ${account.username}`}
+                          checked={account.mfaRequired}
+                          onChange={() => {
+                            beginMfaPolicyAction({
+                              kind: "requirement",
+                              account,
+                              required: !account.mfaRequired,
+                            });
+                          }}
+                          disabled={actionLocked}
+                        />
+                        MFA required
+                      </label>
+                      <button
+                        type="button"
+                        className="accounts__view"
+                        aria-label={`Reset MFA for ${account.username}`}
+                        onClick={() => {
+                          beginMfaPolicyAction({ kind: "reset", account });
+                        }}
+                        disabled={actionLocked}
+                      >
+                        Reset MFA
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -664,6 +914,34 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
             disabled={actionLocked}
           >
             {selection.account.active ? "Disable" : "Re-enable"}
+          </button>
+          <label className="accounts__mfa-switch accounts__detail-action">
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label={`Require MFA for ${selection.account.username} from account detail`}
+              checked={selection.account.mfaRequired}
+              onChange={() => {
+                beginMfaPolicyAction({
+                  kind: "requirement",
+                  account: selection.account,
+                  required: !selection.account.mfaRequired,
+                });
+              }}
+              disabled={actionLocked}
+            />
+            MFA required
+          </label>
+          <button
+            type="button"
+            className="accounts__action accounts__detail-action"
+            aria-label={`Reset MFA for ${selection.account.username} from account detail`}
+            onClick={() => {
+              beginMfaPolicyAction({ kind: "reset", account: selection.account });
+            }}
+            disabled={actionLocked}
+          >
+            Reset MFA
           </button>
         </section>
       ) : null}

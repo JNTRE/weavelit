@@ -14,6 +14,7 @@ mod group_mutation;
 mod inspection;
 mod log_configuration;
 mod mfa;
+mod mfa_policy;
 mod migrations;
 mod password_change;
 mod reconciliation;
@@ -29,8 +30,8 @@ use weavelit_server_database::{
     AuditTerminalRecoveryStore, ComponentEnablement, DatabaseError, DatabaseInspection,
     DeploymentIdentifier, GroupAuditReference, GroupMutationStore, HumanAuthorizationSnapshot,
     InitializedState, LogConfigurationAuditReference, LogConfigurationGenerationStore,
-    LogConfigurationMutationStore, MfaStore, PasswordChangeWriterStore, ReconciliationDigest,
-    ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
+    LogConfigurationMutationStore, MfaPolicyWriterStore, MfaStore, PasswordChangeWriterStore,
+    ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
 };
 
 impl ApplicationDatabase for SqliteDatabase {
@@ -153,6 +154,10 @@ impl ApplicationDatabase for SqliteDatabase {
     }
 
     fn account_status_writers(&mut self) -> Option<&mut dyn AccountStatusWriterStore> {
+        Some(self)
+    }
+
+    fn mfa_policy_writers(&mut self) -> Option<&mut dyn MfaPolicyWriterStore> {
         Some(self)
     }
 

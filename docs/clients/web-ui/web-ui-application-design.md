@@ -678,9 +678,38 @@ credential action, viewing or paging accounts, an explicit refresh, navigation
 away from the workspace, or unmount withdraws the panel and releases the value.
 The surrounding create and assurance forms never receive the returned password.
 
+Each account row and safe detail view also provide an MFA-required switch and a
+Reset MFA action. Choosing either fixes one target and desired action in the
+mounted Accounts component and opens a client-only confirmation. Confirmation
+names only the already displayed account and explains session revocation when
+the action requires it. No confirmation boolean or confirmation text is sent to
+the Server.
+
+After confirmation, one step-up form asks for exactly one six-digit TOTP code
+and no password. It submits the code once for the `mfa_policy` family and clears
+the input as soon as that request starts. A valid response places the opaque
+ticket only in a private component ref, never in rendered state. The component
+starts the already selected requirement or reset request with that ticket,
+clears the ref immediately, and never writes the code or ticket to a URL,
+cookie, log, `localStorage`, or `sessionStorage`.
+
+The application automatically retries neither step-up nor mutation. A reported
+refusal renders only `MFA policy was not changed.` A transport failure, timeout,
+unreadable response, malformed success, or unknown outcome renders only `The
+MFA policy outcome is unknown. Refresh before taking another MFA action.` It
+does not refresh automatically in that state or infer success from an account
+read.
+
+After a valid policy result, the application probes the existing session. An
+authenticated result triggers one first-page Accounts refresh from the safe
+projection. An unauthenticated result, including a successful self-require or
+self-reset that revoked the current session, withdraws the workspace and
+returns to sign-in. An absent or unreadable probe is indeterminate and causes
+neither a mutation retry nor an automatic refresh.
+
 ## Same-Origin Requests
 
-The application issues exactly nineteen outbound request kinds, all same-origin,
+The application issues exactly twenty-two outbound request kinds, all same-origin,
 all with `cache: no-store` and `redirect: error`:
 
 - `GET /api/v1/status` with `Accept: application/json` and `credentials: omit`;
@@ -738,7 +767,17 @@ all with `cache: no-store` and `redirect: error`:
   and one ticket in the JSON body; and
 - `PUT /api/v1/administration/accounts/reset-password` with the session's CSRF
   value, `credentials: same-origin`, and only the target Account Public
-  Identifier and one ticket in the JSON body.
+  Identifier and one ticket in the JSON body;
+- `PUT /api/v1/administration/step-up/totp` with the session's CSRF value,
+  `credentials: same-origin`, and exactly the `mfa_policy` family and submitted
+  six-digit code in the JSON body;
+- `PUT /api/v1/administration/accounts/mfa-requirement` with the session's CSRF
+  value, `credentials: same-origin`, and exactly the target Account Public
+  Identifier, desired required state, and one TOTP step-up ticket in the JSON
+  body; and
+- `PUT /api/v1/administration/accounts/mfa-reset` with the session's CSRF value,
+  `credentials: same-origin`, and exactly the target Account Public Identifier
+  and one TOTP step-up ticket in the JSON body.
 
 The three second-factor requests carry the pre-session literal rather than a
 per-session token, because they carry no session either: the one-time value in
@@ -747,7 +786,7 @@ use `credentials: same-origin` so the cookies a completed step issues are
 stored. This application does not issue the session-bearing self-enrollment
 request the Server also serves.
 
-Only the last twelve request kinds use `credentials: same-origin`; the first
+Only the last fifteen request kinds use `credentials: same-origin`; the first
 seven use `credentials: omit` because no session exists yet to send or receive
 while the pre-operational or submission-bound reconciliation surface is in use.
 

@@ -66,6 +66,7 @@ pub(crate) mod administration;
 pub mod authentication;
 pub mod authorization;
 pub mod init;
+mod mfa_policy_ticket;
 pub mod operational;
 mod operational_audit;
 pub mod operational_logging;
@@ -2975,7 +2976,7 @@ pub(crate) mod tests {
             atomic::{AtomicUsize, Ordering},
         },
         task::{Context, Poll},
-        time::Duration,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use axum::{
@@ -3001,19 +3002,23 @@ pub(crate) mod tests {
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tower::ServiceExt;
     use weavelit_module_client::{
-        ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE,
-        ACCOUNTS_STATUS_ROUTE, ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE,
-        AUTH_LOGOUT_ROUTE, AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
+        ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+        ACCOUNTS_MFA_RESET_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, ACCOUNTS_STATUS_ROUTE,
+        ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE,
+        AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE, AUTH_MFA_ENROLLMENT_ROUTE,
         AUTH_MFA_SELF_ENROLLMENT_ROUTE, AUTH_MFA_VERIFY_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
         AUTH_SESSION_ROUTE, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, CSRF_COOKIE_NAME, CookieEffect,
         CookieValue, DatabaseSelectionRejection, ExpectedOrigin, INIT_RECOVERY_KEY_ROUTE,
-        INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, RESTORE_ARTIFACT_ROUTE,
-        RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome, ReconciliationRejection,
-        RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME, STATUS_ROUTE,
+        INIT_ROUTE, InitRejection, LIFECYCLE_RECONCILIATION_ROUTE, MFA_POLICY_STEP_UP_ROUTE,
+        RESTORE_ARTIFACT_ROUTE, RESTORE_ROUTE, RESTORE_TICKET_HEADER_NAME, ReconciliationOutcome,
+        ReconciliationRejection, RestoreDeclaration, RestoreRejection, SESSION_COOKIE_NAME,
+        STATUS_ROUTE,
     };
+    use weavelit_module_mfa_totp::{SECRET_LENGTH, TotpSecret};
     use weavelit_server_authentication::PasswordVerifierFactory;
     use weavelit_server_database::{
         Account, AccountPasswordVerifier, ApplicationStateInput, CompletionObligation,
+        ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
         CorrelationIdentifier, CredentialRevision, Group, GroupGrant, GroupGrantRecord,
         GroupMembership, LogAssignment, LogClassification, LogDetail, LogModuleConfiguration,
         LogType, Name, PasswordVerifier, ReconciliationDigest, RecoveryPublicKey,
@@ -3196,6 +3201,9 @@ pub(crate) mod tests {
             (Method::PUT, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE),
             (Method::PUT, ACCOUNTS_CREATE_ROUTE),
             (Method::PUT, ACCOUNTS_RESET_PASSWORD_ROUTE),
+            (Method::PUT, MFA_POLICY_STEP_UP_ROUTE),
+            (Method::PUT, ACCOUNTS_MFA_REQUIREMENT_ROUTE),
+            (Method::PUT, ACCOUNTS_MFA_RESET_ROUTE),
         ]
     }
 
@@ -3867,6 +3875,36 @@ pub(crate) mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn mfa_policy_routes_are_wired_only_on_the_operational_surface() {
+        for target in [
+            MFA_POLICY_STEP_UP_ROUTE,
+            ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+            ACCOUNTS_MFA_RESET_ROUTE,
+        ] {
+            let operational = operational_routes()
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                operational.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{target}"
+            );
+            assert_eq!(
+                operational.headers().get("allow").unwrap(),
+                "PUT",
+                "{target}"
+            );
+
+            let preoperational = restricted_routes(StartupOutcome::UninitializedWithDatabase)
+                .oneshot(Request::get(target).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(preoperational.status(), StatusCode::NOT_FOUND, "{target}");
+        }
+    }
+
     fn credential_issuance_response_field(response: &BoundedResponse, field: &str) -> String {
         let body = String::from_utf8(response.body.to_vec()).unwrap();
         let marker = format!("\"{field}\":\"");
@@ -3879,6 +3917,43 @@ pub(crate) mod tests {
             .unwrap_or_else(|| panic!("credential issuance response must terminate {field}"))
             .0
             .to_owned()
+    }
+
+    fn disclosed_totp_secret(base32: &str) -> TotpSecret {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+        assert_eq!(base32.len(), SECRET_LENGTH * 8 / 5);
+        let mut bytes = [0_u8; SECRET_LENGTH];
+        let mut accumulator = 0_u16;
+        let mut bits = 0_u8;
+        let mut written = 0_usize;
+        for symbol in base32.bytes() {
+            let value = ALPHABET
+                .iter()
+                .position(|candidate| *candidate == symbol)
+                .expect("a disclosed secret carries only Base32 symbols");
+            accumulator = (accumulator << 5) | u16::try_from(value).unwrap();
+            bits += 5;
+            if bits >= 8 {
+                bits -= 8;
+                bytes[written] = u8::try_from((accumulator >> bits) & 0xff).unwrap();
+                written += 1;
+            }
+        }
+        let secret = TotpSecret::from_bytes(bytes);
+        assert_eq!(secret.base32().expose(), base32);
+        secret
+    }
+
+    fn current_totp_code(secret: &TotpSecret, step_offset: u64) -> String {
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + (step_offset * 30);
+        let code = secret.code_at(seconds);
+        assert!(secret.verify(&code, seconds).is_some());
+        code
     }
 
     fn credential_issuance_cookie(response: &BoundedResponse, name: &str) -> String {
@@ -4066,6 +4141,347 @@ pub(crate) mod tests {
         let second_password = credential_issuance_response_field(&reset, "temporary_password");
         assert_ne!(first_password, second_password);
         assert!(reset.cookies.is_none());
+    }
+
+    #[tokio::test]
+    async fn mfa_policy_public_routes_bind_reuse_and_apply_totp_step_up_without_secret_leakage() {
+        const ADMIN_PASSWORD: &str = "mfa-policy-administrator-password";
+        const TARGET_PASSWORD: &str = "mfa-policy-target-password";
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state_root = root.path().canonicalize().unwrap();
+        let administrator = StateIdentifier::from_bytes([0xc1; 16]).unwrap();
+        let target = StateIdentifier::from_bytes([0xc2; 16]).unwrap();
+        let administrators = StateIdentifier::from_bytes([0xd1; 16]).unwrap();
+        let web_users = StateIdentifier::from_bytes([0xd2; 16]).unwrap();
+        let state = sealed_application_state_from(SealedStateParts {
+            configuration: vec![ConfigurationEntry {
+                component: Name::new("totp").unwrap(),
+                key: ConfigurationKey::new(ComponentKind::MfaModule.enablement_key()).unwrap(),
+                value: ConfigurationValue::new("true").unwrap(),
+            }],
+            accounts: vec![
+                Account {
+                    identifier: administrator,
+                    username: Name::new("administrator").unwrap(),
+                    display_name: Some(Name::new("Administrator").unwrap()),
+                    active: true,
+                    mfa_required: false,
+                    credential_revision: CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
+                },
+                Account {
+                    identifier: target,
+                    username: Name::new("target-user").unwrap(),
+                    display_name: None,
+                    active: true,
+                    mfa_required: false,
+                    credential_revision: CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
+                },
+            ],
+            password_verifiers: vec![
+                AccountPasswordVerifier {
+                    account: administrator,
+                    verifier: PasswordVerifier::new(
+                        PasswordVerifierFactory::approved()
+                            .create(ADMIN_PASSWORD.as_bytes())
+                            .unwrap()
+                            .into_string(),
+                    )
+                    .unwrap(),
+                },
+                AccountPasswordVerifier {
+                    account: target,
+                    verifier: PasswordVerifier::new(
+                        PasswordVerifierFactory::approved()
+                            .create(TARGET_PASSWORD.as_bytes())
+                            .unwrap()
+                            .into_string(),
+                    )
+                    .unwrap(),
+                },
+            ],
+            groups: vec![
+                Group {
+                    identifier: administrators,
+                    name: Name::new("Administrators").unwrap(),
+                    description: None,
+                },
+                Group {
+                    identifier: web_users,
+                    name: Name::new("Web Users").unwrap(),
+                    description: None,
+                },
+            ],
+            group_memberships: vec![
+                GroupMembership {
+                    group: administrators,
+                    account: administrator,
+                },
+                GroupMembership {
+                    group: web_users,
+                    account: target,
+                },
+            ],
+            group_grants: vec![
+                GroupGrantRecord {
+                    group: administrators,
+                    grant: GroupGrant::ClientModule(Name::new("web-ui").unwrap()),
+                },
+                GroupGrantRecord {
+                    group: administrators,
+                    grant: GroupGrant::ServerAdministration,
+                },
+                GroupGrantRecord {
+                    group: web_users,
+                    grant: GroupGrant::ClientModule(Name::new("web-ui").unwrap()),
+                },
+            ],
+            ..SealedStateParts::default()
+        });
+        seal_deployment_with(&state_root, &state);
+        let startup = classify_restricted_startup(&state_root).unwrap();
+        let mount = operational_mount(&startup);
+        let router = mount.surface().router().clone();
+
+        let login = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_LOGIN_ROUTE,
+            format!(
+                "{{\"username\":\"administrator\",\"password\":\"{ADMIN_PASSWORD}\",\
+                 \"client_module\":\"web-ui\"}}"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(login.status, StatusCode::OK);
+        let first_session = credential_issuance_cookie(&login, SESSION_COOKIE_NAME);
+        let first_csrf = credential_issuance_cookie(&login, CSRF_COOKIE_NAME);
+
+        let opened = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_MFA_SELF_ENROLLMENT_ROUTE,
+            format!("{{\"password\":\"{ADMIN_PASSWORD}\"}}"),
+            Some((&first_session, &first_csrf)),
+        )
+        .await;
+        assert_eq!(opened.status, StatusCode::OK);
+        let secret_text = credential_issuance_response_field(&opened, "secret");
+        let enrollment = credential_issuance_response_field(&opened, "enrollment");
+        let secret = disclosed_totp_secret(&secret_text);
+        let confirming_code = current_totp_code(&secret, 0);
+
+        let confirmed = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_MFA_ENROLLMENT_CONFIRM_ROUTE,
+            format!("{{\"enrollment\":\"{enrollment}\",\"code\":\"{confirming_code}\"}}"),
+            None,
+        )
+        .await;
+        assert_eq!(confirmed.status, StatusCode::OK);
+        let second_session = credential_issuance_cookie(&confirmed, SESSION_COOKIE_NAME);
+        let second_csrf = credential_issuance_cookie(&confirmed, CSRF_COOKIE_NAME);
+
+        let replay = credential_issuance_json_request(
+            mount.surface(),
+            MFA_POLICY_STEP_UP_ROUTE,
+            format!("{{\"family\":\"mfa_policy\",\"code\":\"{confirming_code}\"}}"),
+            Some((&first_session, &first_csrf)),
+        )
+        .await;
+        assert_eq!(replay.status, StatusCode::FORBIDDEN);
+        assert!(String::from_utf8_lossy(&replay.body).contains("mfa_policy_denied"));
+
+        let step_up_code = current_totp_code(&secret, 1);
+        let step_up = credential_issuance_json_request(
+            mount.surface(),
+            MFA_POLICY_STEP_UP_ROUTE,
+            format!("{{\"family\":\"mfa_policy\",\"code\":\"{step_up_code}\"}}"),
+            Some((&first_session, &first_csrf)),
+        )
+        .await;
+        assert_eq!(step_up.status, StatusCode::OK);
+        assert!(step_up.cookies.is_none());
+        let ticket = credential_issuance_response_field(&step_up, "totp_step_up_ticket");
+
+        let application =
+            rusqlite::Connection::open(state_root.join(APPLICATION_DATABASE_FILE)).unwrap();
+        let public_id = |username: &str| -> String {
+            URL_SAFE_NO_PAD.encode(
+                application
+                    .query_row(
+                        "SELECT identity.public_identifier FROM weavelit_account AS account \
+                         JOIN weavelit_account_public_identity AS identity \
+                           ON identity.account_id = account.account_id \
+                         WHERE account.username = ?1",
+                        [username],
+                        |row| row.get::<_, Vec<u8>>(0),
+                    )
+                    .unwrap(),
+            )
+        };
+        let administrator_public_id = public_id("administrator");
+        let target_public_id = public_id("target-user");
+
+        let target_login = credential_issuance_json_request(
+            mount.surface(),
+            AUTH_LOGIN_ROUTE,
+            format!(
+                "{{\"username\":\"target-user\",\"password\":\"{TARGET_PASSWORD}\",\
+                 \"client_module\":\"web-ui\"}}"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(target_login.status, StatusCode::OK);
+        let target_session = credential_issuance_cookie(&target_login, SESSION_COOKIE_NAME);
+        let target_csrf = credential_issuance_cookie(&target_login, CSRF_COOKIE_NAME);
+
+        let log = rusqlite::Connection::open(state_root.join("log.sqlite3")).unwrap();
+        let audit_count = || {
+            log.query_row(
+                "SELECT count(*) FROM weavelit_log_audit_records",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        let before_policy = audit_count();
+
+        let wrong_session = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+            format!(
+                "{{\"public_id\":\"{target_public_id}\",\"required\":true,\
+                 \"totp_step_up_ticket\":\"{ticket}\"}}"
+            ),
+            Some((&second_session, &second_csrf)),
+        )
+        .await;
+        assert_eq!(wrong_session.status, StatusCode::FORBIDDEN);
+        assert!(String::from_utf8_lossy(&wrong_session.body).contains("mfa_policy_denied"));
+        assert_eq!(audit_count(), before_policy);
+
+        let required = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+            format!(
+                "{{\"public_id\":\"{target_public_id}\",\"required\":true,\
+                 \"totp_step_up_ticket\":\"{ticket}\"}}"
+            ),
+            Some((&first_session, &first_csrf)),
+        )
+        .await;
+        assert_eq!(required.status, StatusCode::OK);
+        let required_body = String::from_utf8_lossy(&required.body);
+        assert!(required_body.contains("\"mfa_required\":true"));
+        assert!(!required_body.contains(&ticket));
+        assert!(!required_body.contains(&step_up_code));
+        assert_eq!(audit_count(), before_policy + 2);
+
+        let target_revoked = router
+            .clone()
+            .oneshot(operational_session_request(
+                AUTH_SESSION_ROUTE,
+                &target_session,
+                &target_csrf,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(target_revoked.status(), StatusCode::UNAUTHORIZED);
+
+        let unchanged = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+            format!(
+                "{{\"public_id\":\"{target_public_id}\",\"required\":true,\
+                 \"totp_step_up_ticket\":\"{ticket}\"}}"
+            ),
+            Some((&first_session, &first_csrf)),
+        )
+        .await;
+        assert_eq!(unchanged.status, StatusCode::OK);
+        assert_eq!(audit_count(), before_policy + 2);
+
+        let reset = credential_issuance_json_request(
+            mount.surface(),
+            ACCOUNTS_MFA_RESET_ROUTE,
+            format!(
+                "{{\"public_id\":\"{administrator_public_id}\",\
+                 \"totp_step_up_ticket\":\"{ticket}\"}}"
+            ),
+            Some((&first_session, &first_csrf)),
+        )
+        .await;
+        assert_eq!(reset.status, StatusCode::OK);
+        let reset_body = String::from_utf8_lossy(&reset.body);
+        assert!(reset_body.contains("\"mfa_required\":false"));
+        assert!(!reset_body.contains(&ticket));
+        assert!(!reset_body.contains(&secret_text));
+        assert_eq!(audit_count(), before_policy + 4);
+
+        for (session, csrf) in [
+            (&first_session, &first_csrf),
+            (&second_session, &second_csrf),
+        ] {
+            let revoked = router
+                .clone()
+                .oneshot(operational_session_request(
+                    AUTH_SESSION_ROUTE,
+                    session,
+                    csrf,
+                    Body::empty(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(
+            application
+                .query_row(
+                    "SELECT count(*) FROM weavelit_mfa_factor WHERE account_id = ?1",
+                    [administrator.as_bytes().as_slice()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            application
+                .query_row(
+                    "SELECT count(*) FROM weavelit_mfa_replay_watermark",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        let audit_text = log
+            .prepare(
+                "SELECT phase, correlation_id, classification, principal, action, target, detail \
+                 FROM weavelit_log_audit_records",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((0..7)
+                    .map(|index| row.get::<_, String>(index))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(" "))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        for secret in [&confirming_code, &step_up_code, &ticket, &secret_text] {
+            assert!(
+                !audit_text.contains(secret),
+                "Audit output exposed a secret"
+            );
+        }
     }
 
     #[tokio::test]

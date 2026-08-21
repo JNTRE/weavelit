@@ -13,6 +13,11 @@ import {
   ACCOUNTS_RESET_PASSWORD_PATH,
   CREDENTIAL_ISSUANCE_STEP_UP_PATH,
 } from "../api/weavelit-credential-issuance";
+import {
+  ACCOUNTS_MFA_REQUIREMENT_PATH,
+  ACCOUNTS_MFA_RESET_PATH,
+  MFA_POLICY_STEP_UP_PATH,
+} from "../api/weavelit-mfa-policy";
 import { AccountsWorkspace } from "./weavelit-accounts-workspace";
 
 const CSRF = "csrf-token";
@@ -62,6 +67,13 @@ function accountPage(items: readonly Record<string, unknown>[]): Response {
 function ticketResponse(): Response {
   return response({
     result: { credential_issuance_ticket: TICKET },
+    correlation_id: CORRELATION,
+  });
+}
+
+function mfaPolicyTicketResponse(): Response {
+  return response({
+    result: { totp_step_up_ticket: TICKET },
     correlation_id: CORRELATION,
   });
 }
@@ -540,6 +552,198 @@ describe("AccountsWorkspace", () => {
 
     expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH)).toHaveLength(
       0,
+    );
+    expect(document.body.innerHTML).not.toContain(TICKET);
+  });
+
+  it("confirms and applies one MFA requirement with a code-only step-up and private ticket", async () => {
+    const cookieWrite = vi.fn();
+    withCsrfCookie(cookieWrite);
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    let listRequests = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        listRequests += 1;
+        return Promise.resolve(
+          accountPage([account(ALICE_ID, "alice", "Alice", true, listRequests > 1)]),
+        );
+      }
+      if (target === MFA_POLICY_STEP_UP_PATH) {
+        expect(requestBody(init)).toEqual({ family: "mfa_policy", code: TOTP });
+        return Promise.resolve(mfaPolicyTicketResponse());
+      }
+      if (target === ACCOUNTS_MFA_REQUIREMENT_PATH) {
+        expect(requestBody(init)).toEqual({
+          public_id: ALICE_ID,
+          required: true,
+          totp_step_up_ticket: TICKET,
+        });
+        expect(requestBody(init)).not.toHaveProperty("confirmed");
+        return Promise.resolve(
+          response({
+            result: account(ALICE_ID, "alice", "Alice", true, true),
+            correlation_id: CORRELATION,
+          }),
+        );
+      }
+      if (target === AUTH_SESSION_PATH) {
+        return Promise.resolve(
+          response({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: BOB_ID,
+              client_module: "web-ui",
+              password_change_required: false,
+            },
+          }),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("switch", { name: "Require MFA for alice" }));
+    expect(screen.getByRole("heading", { name: "Require MFA" })).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === MFA_POLICY_STEP_UP_PATH),
+    ).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
+    expect(screen.queryByLabelText("Current password")).toBeNull();
+    const code = screen.getByLabelText("Authentication code");
+    fireEvent.change(code, { target: { value: TOTP } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
+
+    await waitFor(() => {
+      expect(listRequests).toBe(2);
+    });
+    expect(screen.getByRole("switch", { name: "Require MFA for alice" })).toHaveProperty(
+      "checked",
+      true,
+    );
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === MFA_POLICY_STEP_UP_PATH),
+    ).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
+    ).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(TICKET);
+    expect(document.body.innerHTML).not.toContain(TOTP);
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(cookieWrite).not.toHaveBeenCalled();
+  });
+
+  it("resets MFA for the exact account and returns to sign-in after self-session revocation", async () => {
+    withCsrfCookie();
+    const onSessionEnded = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, true)]));
+      }
+      if (target === MFA_POLICY_STEP_UP_PATH) {
+        return Promise.resolve(mfaPolicyTicketResponse());
+      }
+      if (target === ACCOUNTS_MFA_RESET_PATH) {
+        expect(requestBody(init)).toEqual({
+          public_id: ALICE_ID,
+          totp_step_up_ticket: TICKET,
+        });
+        return Promise.resolve(
+          response({
+            result: account(ALICE_ID, "alice", "Alice", true, true),
+            correlation_id: CORRELATION,
+          }),
+        );
+      }
+      if (target === AUTH_SESSION_PATH) {
+        return Promise.resolve(
+          response({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset MFA for alice" }));
+    expect(
+      screen.getByText(/This removes the enrolled factor and ends every session/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
+    fireEvent.change(screen.getByLabelText("Authentication code"), { target: { value: TOTP } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
+
+    await waitFor(() => {
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_RESET_PATH),
+    ).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
+    );
+    expect(document.body.innerHTML).not.toContain(TICKET);
+  });
+
+  it("does not retry or mutate after an indeterminate MFA step-up", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === MFA_POLICY_STEP_UP_PATH) {
+        return Promise.reject(new Error("response lost after code submission"));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("switch", { name: "Require MFA for alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
+    fireEvent.change(screen.getByLabelText("Authentication code"), { target: { value: TOTP } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
+
+    expect(await screen.findByText(/The MFA policy outcome is unknown\./)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("response lost");
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === MFA_POLICY_STEP_UP_PATH),
+    ).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
+    ).toHaveLength(0);
+  });
+
+  it("does not retry or refresh after an indeterminate MFA mutation", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === MFA_POLICY_STEP_UP_PATH) {
+        return Promise.resolve(mfaPolicyTicketResponse());
+      }
+      if (target === ACCOUNTS_MFA_REQUIREMENT_PATH) {
+        return Promise.reject(new Error("mutation response lost"));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("switch", { name: "Require MFA for alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
+    fireEvent.change(screen.getByLabelText("Authentication code"), { target: { value: TOTP } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
+
+    expect(await screen.findByText(/The MFA policy outcome is unknown\./)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("mutation response lost");
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
+    ).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
     );
     expect(document.body.innerHTML).not.toContain(TICKET);
   });

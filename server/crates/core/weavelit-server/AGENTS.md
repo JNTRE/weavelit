@@ -36,7 +36,8 @@ Apply instructions in this order:
   serving-mode switch, the listener-owned response-write acknowledgement, and
   stable error presentation.
 - `src/administration.rs`: Transport-independent bounded account reads, audited
-  account creation, password-reset, disable, and re-enable writers,
+  account creation, password-reset, disable, re-enable, MFA-requirement, and
+  MFA-enrollment-reset writers,
   Administrator-controlled TOTP MFA Module enablement, and internal Log Module
   configuration-change workflows, including synchronous Audit sequencing and
   post-commit recovery status.
@@ -68,7 +69,8 @@ Apply instructions in this order:
 - `src/operational.rs`: The single operational composition seam: the shared
   Application Database handle a sealed workflow hands over, the operational
   composer that mounts the Web UI operational surface, authentication routes,
-  and authorized account-read and account-status routes together with their transport registrations, activates bounded Audit
+  and authorized account-read, account-status, and account MFA-policy routes
+  together with their transport registrations, activates bounded Audit
   terminal recovery, exposes the internal pre-consequential drain gate, and
   builds the mounted surface value the serving-mode switch accepts.
 - `src/operational_audit.rs`: Trusted exact-generation Audit destination
@@ -89,6 +91,8 @@ Apply instructions in this order:
   validation, and permit acquisition ahead of any body allocation.
 - `src/main.rs`: Thin executable entry point that reads state-root configuration
   and calls the library composition function.
+- `src/mfa_policy_ticket.rs`: Opaque process-memory MFA-policy step-up ticket
+  generation and domain-separated digest validation.
 - `tests/audit_generation_resolver_authority.rs`: Compile-fail boundary proving the active Audit configuration-generation resolver is not a public construction surface.
 - `tests/startup.rs`: Composition and process-level tests for restricted startup
   covering fresh start, restart persistence, selection, pending states, and

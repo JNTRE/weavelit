@@ -269,6 +269,38 @@ denial and an indeterminate transport outcome carry no reason. Neither causes
 automatic assurance, action, or disclosure retry; an explicit later reset
 creates a new credential rather than recovering the earlier plaintext.
 
+### MFA Policy Step-Up Ticket
+
+MFA requirement and enrollment-reset actions use the Administration action
+gate's `MfaPolicy` family, not credential-issuance assurance. The public TOTP
+step-up route accepts an ordinary Administrator session and exactly one
+six-digit code. Server authentication opens that actor's current TOTP factor,
+verifies the code, and asks the Application Database to atomically recheck the
+exact session, active actor, factor ownership, Module enablement, and replay
+watermark. Acceptance advances only the watermark and creates no session.
+
+The resulting private `MfaStepUpProof` carries the exact actor, session digest,
+factor, `MfaPolicy` family, monotonic issuance time, and exact five-minute
+expiry. The browser cannot hold that capability directly, so the Server returns
+a separate opaque ticket with 256 bits of randomness and retains only its
+domain-separated digest and proof in a bounded 64-entry process-memory store.
+A restart invalidates all entries. Ticket lookup does not spend a live proof:
+the same exact-session ticket may authorize more than one matching policy
+action during the fixed window, and every use re-enters the action gate for
+actor, session, family, clock-rollback, and expiry checks.
+
+The policy ticket is not persisted and never enters a cookie, URL, log, Audit
+record, account projection, or credential-issuance workflow. It is distinct
+from credential issuance's single-use password-plus-conditional-TOTP ticket.
+It also cannot authorize the separate internal `GrantMutation` family, whose
+proof behavior is unchanged and has no public route.
+
+The final MFA policy writer receives the consumed authorized policy action and
+rechecks the exact issuer session, Client Module, active actor, verified factor,
+and TOTP Module enablement in its business transaction. Resetting the issuer's
+factor or disabling its Module invalidates or revokes that session, so a stale
+ticket cannot outlive the state that justified it.
+
 ### Password Reset Writer
 
 1. **Issuance authorization:** An authenticated **[Administrator](../../glossary.md#identities-and-access)** with

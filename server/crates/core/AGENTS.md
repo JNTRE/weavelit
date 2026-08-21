@@ -22,8 +22,8 @@ Apply instructions in this order:
 
 ## Asset Inventory
 
-- `weavelit-server/`: Weavelit Server executable crate.
-- `weavelit-server-administration/`: Typed, transport-independent Administration Plane action gate, bounded account read/create/reset/status actions, exact-session-bound authorized account proof, current-session MFA step-up policy, and live component-enablement decision.
+- `weavelit-server/`: Weavelit Server executable crate, including operational account MFA-policy step-up, requirement, and enrollment-reset composition.
+- `weavelit-server-administration/`: Typed, transport-independent Administration Plane action gate, bounded account read/create/reset/status actions, exact-session-bound authorized account proof, exact-factor current-session MFA step-up policy, and live component-enablement decision.
 - `weavelit-server-administration-authority/`: Server-owned capability key for binding validated administration sessions and minting verified step-up proofs.
 - `weavelit-server-audit/`: Server-owned construction, pre-redaction, and synchronous delivery of Audit Log records.
 - `weavelit-server-authentication/`: Local password authentication core, the closed Argon2 profile allowlist, and session and CSRF secret material.

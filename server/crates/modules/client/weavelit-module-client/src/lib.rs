@@ -38,6 +38,7 @@ pub mod cookie;
 pub mod credential_issuance;
 pub mod init;
 pub mod mfa;
+pub mod mfa_policy;
 pub mod password_change;
 pub mod reconciliation;
 pub mod restore;
@@ -90,6 +91,12 @@ pub use mfa::{
     MFA_REQUIRED_CODE, MfaCapability, MfaCodeCommit, MfaCodeSubmission, MfaDeclaration,
     MfaEnrollmentCommit, MfaEnrollmentConfirmCommit, MfaEnrollmentOpened, MfaEnrollmentSubmission,
     MfaSelfEnrollmentCommit, MfaSelfEnrollmentSubmission,
+};
+pub use mfa_policy::{
+    ACCOUNTS_MFA_REQUIREMENT_ROUTE, ACCOUNTS_MFA_RESET_ROUTE, MAX_MFA_POLICY_BODY_BYTES,
+    MFA_POLICY_STEP_UP_ROUTE, MfaPolicyCapability, MfaPolicyDeclaration, MfaPolicyRejection,
+    MfaPolicyStepUpFamily, MfaPolicyStepUpSubmission, MfaPolicyTicketIssued,
+    MfaRequirementSubmission, MfaResetSubmission, validate_mfa_policy_request,
 };
 pub use password_change::{
     AUTH_PASSWORD_CHANGE_ROUTE, MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES,
@@ -285,6 +292,7 @@ impl PreoperationalSurface {
 pub struct OperationalSurface {
     account_administration: Option<AccountAdministrationDeclaration>,
     credential_issuance: Option<CredentialIssuanceDeclaration>,
+    mfa_policy: Option<MfaPolicyDeclaration>,
     assets: Option<Router>,
 }
 
@@ -320,6 +328,19 @@ impl OperationalSurface {
         (self, declaration)
     }
 
+    /// Declares TOTP step-up, MFA requirement changes, and enrollment reset.
+    pub fn with_mfa_policy(mut self, capability: MfaPolicyCapability) -> Self {
+        self.mfa_policy = Some(MfaPolicyDeclaration::new(capability));
+        self
+    }
+
+    /// Separates MFA policy routes so each retains its transport registration.
+    #[must_use]
+    pub fn split_mfa_policy(mut self) -> (Self, Option<MfaPolicyDeclaration>) {
+        let declaration = self.mfa_policy.take();
+        (self, declaration)
+    }
+
     /// Declares client-specific asset delivery, which owns its own exact paths.
     pub fn with_assets(mut self, assets: Router) -> Self {
         self.assets = Some(assets);
@@ -346,6 +367,16 @@ impl OperationalSurface {
                     ACCOUNTS_RESET_PASSWORD_ROUTE,
                     credential_issuance.reset_password_route(),
                 ),
+            None => router,
+        };
+        let router = match self.mfa_policy {
+            Some(mfa_policy) => router
+                .route(MFA_POLICY_STEP_UP_ROUTE, mfa_policy.step_up_route())
+                .route(
+                    ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+                    mfa_policy.requirement_route(),
+                )
+                .route(ACCOUNTS_MFA_RESET_ROUTE, mfa_policy.reset_route()),
             None => router,
         };
         match self.assets {
