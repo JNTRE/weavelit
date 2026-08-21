@@ -1383,6 +1383,7 @@ name = "weavelit-module-client"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.0",
  "serde",
  "serde_json",
  "tokio",
@@ -1448,10 +1449,12 @@ dependencies = [
  "weavelit-module-mfa-totp",
  "weavelit-server-administration",
  "weavelit-server-administration-authority",
+ "weavelit-server-audit",
  "weavelit-server-authentication",
  "weavelit-server-authorization",
  "weavelit-server-components",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
  "weavelit-server-database-sqlite",
  "weavelit-server-init",
  "weavelit-server-lifecycle",
@@ -1524,11 +1527,11 @@ dependencies = [
 name = "weavelit-server-database"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.0",
  "getrandom 0.4.3",
  "serde_json",
  "subtle",
  "weavelit-server-database-authority",
- "weavelit-server-log",
 ]
 
 [[package]]

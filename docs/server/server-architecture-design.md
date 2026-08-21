@@ -127,9 +127,10 @@ profile, the allowlist policy, and the session representation it implements.
 
 `weavelit-server-administration` owns the transport-independent action gate
 after an Administration Plane decision: its closed action families, bounded
-component target, exact-session-bound compound admission, current-session MFA
-step-up proof and policy, live component enablement source, and authorized-action
-result. Trusted Server composition consumes the existing neutral
+component and Log Module configuration-change targets, exact-session-bound
+compound admission, current-session MFA step-up proof and policy, live
+component enablement source, and authorized-action result. Trusted Server
+composition consumes the existing neutral
 `AuthorizedAdministration` proof and binds it atomically to the same validated
 session's actor and exact digest; the action gate accepts only that compound
 admission. The crate reuses the neutral `AvailableComponents` inventory for
@@ -163,10 +164,11 @@ rather than constructing one.
 
 `weavelit-server-audit` is the only producer of complete, pre-redacted
 **[Audit Logs](../glossary.md#applications-and-interfaces)**. It accepts
-database-owned account and Group Audit projections, other closed typed facts,
-and a Server-supplied workflow correlation identifier. It depends on the shared
-Application Database contract only for those projection types and never reads a
-backend, lifecycle binding, entity name, or state identifier. It constructs
+database-owned account, Group, and Log Module configuration Audit projections,
+other closed typed facts, and a Server-supplied workflow correlation
+identifier. It depends on the shared Application Database contract only for
+those projection types and never reads a backend, lifecycle binding, entity
+name, or state identifier. It constructs
 bounded attempt, completion, and correction records with each terminal record
 directly linked to its precise Attempt. Exhaustive event-specific terminal
 details derive the result and carry committed state only through closed typed
@@ -183,15 +185,22 @@ recover a terminal record.
 It owns no authorization, mutation sequencing, decision to create a correction,
 client-error mapping, System Log construction, retry scheduling, database
 storage implementation, or runtime drain execution. It does own trusted export
-and import of the exact immutable terminal recovery projection, the closed
-`dependency.audit-terminal.superseded` event, and construction of a fixed
-supersession disposition bound to an imported obligation. Authority-gated
-reauthentication and confirmation proofs plus a preflighted replacement are
-inputs to that construction; Audit does not verify credentials, present a user
-interface, or change assignments. The future owning Server workflow must supply
-those other boundaries, retain old binding handles, durably sequence
-normal-operation recovery through the Application Database contract, and
-ensure that each terminal record reflects an authoritative mutation outcome.
+and import of the exact immutable Log-owned terminal recovery projection, the
+closed `dependency.audit-terminal.superseded` event, and construction of a fixed
+Log-owned supersession disposition bound to an imported obligation. It is the
+only semantic adapter into the Application Database recovery contract: it
+converts validated projections, bindings, dispositions, and destination
+acknowledgements into private-field opaque database wrappers and validates
+opaque stored rows before destination access. The database contract has no Log
+or logging-authority dependency and cannot parse fields or mint those facts.
+The executable's internal ordinary Log configuration workflow supplies
+authorization, resultant-destination preflight, exact current Audit generation
+resolution, mutation sequencing, and bounded post-commit recovery. Audit does
+not present a user interface, change assignments, or inspect configuration
+state. Authority-gated reauthentication and confirmation proofs plus a
+preflighted replacement remain inputs to future supersession work, whose owning
+Server workflow must retain old binding handles and satisfy the separately
+approved supersession boundary.
 
 `weavelit-server-log-authority` carries the capability that separates
 Server-owned logging authority from an ordinary Log Module. Rust has no
@@ -209,13 +218,29 @@ capability itself.
 Server-owned selected-database decoding authority from an ordinary Application
 Database implementor. The dependency-free crate's privately represented
 `ServerDatabaseAuthority` is not reexported by the database contract or
-lifecycle crate. The database contract requires it at the sole
-`AuditReferencePersistence` issuer, lifecycle declares the direct production
-dependency that constructs a selected binding only after selection or reopening
-succeeds, and direct SQLite or Restore tests declare only dev dependencies. A
-JSON-diagnostic external fixture proves that a crate which can implement
-`ApplicationDatabase` still cannot import the authority, construct
-`SelectedDatabase`, issue the decoder, or decode persisted text without one.
+lifecycle crate. The database contract requires it at the
+`AuditReferencePersistence`, `AuditTerminalRecoveryPersistence`, and
+`LogConfigurationMutationPersistence` issuers;
+the latter gates opaque persisted-row decoding and validated write,
+supersession, and acknowledgement-proof construction without importing any Log
+type. Lifecycle declares the direct production dependency that constructs a
+selected binding only after selection or reopening succeeds, and direct SQLite,
+Audit, or Restore tests declare only reviewable dev dependencies. JSON-diagnostic
+external fixtures prove that an ordinary crate cannot import the authority,
+construct `SelectedDatabase`, issue either persistence capability, forge an
+opaque recovery obligation or validated write, or forge database
+acknowledgement proof.
+
+The executable's operational composition retains the selected database's
+opaque terminal recovery decoder in the same shared operational handle while
+serializing backend access through the database lane. Listing and
+acknowledgement hold that lane briefly; Server Audit import, assignment
+resolution, and Log Module delivery occur after it is released. A separate
+process-local permit serializes each complete bounded activation or
+pre-consequential drain, including active then late-delivery sequencing. This
+keeps database backends field-blind, permits destination delivery to reenter an
+unrelated database read, and prevents concurrent gates from delivering one
+listed obligation twice before either can acknowledge it.
 
 `weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
 shared by **[Init](../glossary.md#states-and-requests)** and
@@ -1169,7 +1194,7 @@ above rather than depending on the `age` crate.
   weavelit-server --test startup` passes all 23 tests; the locked feature graph
   contains only the selected Rustls provider capabilities.
 
-#### HTTPS Runtime Composition
+#### Direct-TLS Runtime Dependencies
 
 The following crates.io packages are direct dependencies of `weavelit-server`
 for the Milestone 1 single direct-TLS listener. The Rust standard library and

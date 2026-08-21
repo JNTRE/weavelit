@@ -10,9 +10,11 @@ catalog implementation, and destination storage remain defined by the
 This document does not define Audit Log retrieval, query, export, client
 presentation, destination-specific storage, or destination redaction.
 
-`weavelit-server-audit` implements this producer boundary. The
+`weavelit-server-audit` implements this producer boundary. Its first consuming
 **[Administration Plane](../../glossary.md#applications-and-interfaces)**
-workflows that consume it remain future work.
+workflows are the Server-owned, transport-independent TOTP MFA Module
+enablement change and internal Log Module configuration change. Other
+administration mutations remain future work.
 
 ## Ownership And Invariants
 
@@ -66,15 +68,17 @@ partial or replacement record, or pass rejected input to a destination.
 The record's debug and error representations are payload-free. A record
 identifier is not a replacement for valid body content and must not be reused
 with different content. Related records reuse the owning workflow's correlation
-identifier while retaining distinct record identifiers. Audit construction does
-not accept a standalone Application Database `StateIdentifier`, name, or raw
-account or Group string. Account and Group fields consume the database
-contract's typed persisted Audit projections and render only their
-`audit_reference()` value as `account:ar-...` or `group:ar-...`; they never read
-or serialize the projection's state identifier. The producer renders every
-other safe target from its closed typed input. The shared envelope remains the
-schema authority for the typed phase, terminal result, and Attempt link
-invariant.
+identifier while retaining distinct record identifiers. Audit construction
+does not accept a standalone Application Database `StateIdentifier`, name, or
+raw account, Group, or Log Module configuration string. Account, Group, and Log
+Module configuration fields consume the database contract's typed persisted
+Audit projections. Account and Group targets render only their
+`audit_reference()` value as `account:ar-...` or `group:ar-...`; the
+configuration-change target renders the canonically ordered affected values as
+`log-configuration:ar-...`. None reads or serializes the projection's state
+identifier. The producer renders every other safe target from its closed typed
+input. The shared envelope remains the schema authority for the typed phase,
+terminal result, and Attempt link invariant.
 
 `AttemptRecordId` is an opaque typed capability. Only a complete Audit Attempt
 can mint it; callers cannot convert or clone an arbitrary `RecordId` into an
@@ -107,10 +111,10 @@ following values must never appear in an Audit Log, including inside a summary:
 
 The implemented producer accepts a typed `AuditActor`, one closed `AuditEvent`,
 an existing bounded workflow `CorrelationId`, and a Server-generated
-`EventTime`. Human principals, Responsible Owners, and all account and Group
-event fields directly consume `AccountAuditReference` or `GroupAuditReference`
-from the Application Database contract. Automation, backup, component, grant,
-configuration, module, policy, Operation, and Service Connection references
+`EventTime`. Human principals, Responsible Owners, and all account, Group, and
+Log Module configuration event fields directly consume their typed Audit
+Reference projections from the Application Database contract. Automation,
+backup, component, grant, policy, Operation, and Service Connection references
 accept only a bounded lowercase identifier grammar and reject raw 32-hex and
 UUID-shaped database identifiers. These inputs accept neither credential-bearing
 source types nor raw request values.
@@ -145,22 +149,31 @@ synchronous delivery per call; the producer never loops, schedules, queues,
 replaces, or independently retries the record. Before the owning mutation
 transaction commits, `PreparedAuditTerminal::recovery_obligation` captures the
 same complete terminal record and the exact Audit destination binding as one
-bounded, versioned opaque projection. The projection includes the original
-record identifier, event time, phase, result, Attempt link, correlation
-identifier, complete pre-redacted body, and destination configuration identity
-and binding version. It contains no delivery failure, setting, path, or
-credential. Only Server logging authority can create a binding, and only Server
-Audit exports or imports the database obligation, so ordinary callers cannot
-choose record fields or invent a destination identity.
+bounded, versioned Log-owned projection. Server Audit semantically validates
+that projection, converts it and the binding's separate identity and version
+into the Application Database contract's private-field opaque validated-write
+wrapper, and passes no Log-owned type across the database boundary. The
+projection includes the original record identifier, event time, phase, result,
+Attempt link, correlation identifier, complete pre-redacted body, and
+destination configuration identity and binding version. It contains no
+delivery failure, setting, path, or credential. Only Server logging authority
+can create a binding, and only Server Audit can perform this semantic export,
+so ordinary callers cannot choose record fields or invent a destination
+identity.
 
 The producer stores no destination, catalog, queue, or retry schedule. The
 Application Database recovery contract defines the opaque obligation as live
 operational data outside `ApplicationState` and every backup; backend storage
-and runtime draining remain future work. On import, Server Audit revalidates
-every field through the shared complete-record constructors and requires the
-obligation identity to equal the embedded record identifier. A malformed,
-oversized, unsupported, mismatched, or arbitrary secret-bearing document cannot
-become a replayable record merely because it was persisted.
+does not depend on the Log contract or logging authority and does not parse or
+materialize an Audit field. On import, Server Audit obtains the opaque bytes
+through database persistence authority, revalidates every field through the
+shared complete-record constructors, requires the separately stored obligation
+identity to equal the embedded record identifier, and requires the separately
+stored binding identity and version to equal the validated embedded binding. A
+malformed, oversized, unsupported, identity-mismatched, binding-mismatched, or
+arbitrary secret-bearing document cannot become a replayable record merely
+because it was persisted. Runtime orchestration maps such an import failure to
+its recovery-required state before destination access.
 
 Server Audit also binds a constrained supersession disposition to that exact
 imported obligation. The resulting trusted transaction value retains the exact
@@ -170,17 +183,20 @@ proofs for fresh exact-session password reauthentication with TOTP when
 enrolled and for explicit confirmation of the exact original and replacement.
 It additionally requires a replacement binding-and-destination pair that has
 passed Audit preflight. No proof accepts a boolean credential, confirmation, or
-preflight flag. The producer then exports only the fixed bounded disposition
-and opaque original already accepted through the bounded recovery contract; it
-does not expose record fields, verify credentials, present confirmation, retain
-a destination, or execute the configuration change.
+preflight flag. The producer validates the fixed Log-owned disposition, then
+converts its opaque bytes, exact original and replacement bindings, validated
+original, and replacement terminal into the Application Database contract's
+private-field supersession wrapper. The database receives no Log-owned
+disposition and cannot mint one. Server Audit does not expose record fields,
+verify credentials, present confirmation, retain a destination, or execute the
+configuration change.
 
-The future account-create and password-reset workflows may disclose a generated
+The account-create and password-reset workflows may disclose a generated
 temporary password only in their originating successful response. Audit records
 record issuance or reset acceptance and safe outcomes only; they must never
 contain the password, verifier, response or delivery content, or whether a
 human viewed or handled the response. The [Security Model](../../security-model.md#administrator-initiated-password-reset)
-and [Authentication Design](../authentication/authentication-design.md#future-account-credential-issuance)
+and [Authentication Design](../authentication/authentication-design.md#account-credential-issuance-writers)
 own the disclosure and credential lifecycle policy.
 
 Password reset and MFA reset are independent actions. Their behavior and
@@ -188,8 +204,7 @@ protected-data requirements are authoritative in the [Authentication Design](../
 and [Security Model](../../security-model.md#multifactor-authentication-security-profile);
 this document does not restate their session or enrollment semantics.
 
-The future owning
-**[Administration Plane](../../glossary.md#applications-and-interfaces)**
+The owning **[Administration Plane](../../glossary.md#applications-and-interfaces)**
 workflow must sequence construction and delivery as follows. The producer does
 not authorize, mutate state, map client errors, construct System Logs, or own
 post-commit obligations:
@@ -210,25 +225,32 @@ post-commit obligations:
   workflow does not retry, enqueue, or create a substitute record. The normal
   Server process remains alive. The owning workflow records the corresponding
   System Log classification and timing under the [Log Module taxonomy](../../log-modules/log-module-design.md#event-classification-taxonomy).
-6. Begin the serialized application-state transaction and apply the mutation
-  decision. Once its outcome is authoritative inside that transaction, ask the
-  producer to construct a correlated `completion`. Its `result` derives from
-  the matching typed detail, whose safe fact represents the state that this
-  transaction will commit or whose payload-free denied or failed variant
-  represents the authoritative non-commit outcome. Its `attempt_record_id`
-  directly identifies the acknowledged Attempt. Final state and affected count
-  may appear only in a matching typed completion detail or a later matching
-  correction detail.
-7. Capture that exact terminal record with the current Audit destination
-  binding. Atomically persist the immutable obligation with the mutation and
-  commit both, or commit neither. Then synchronously deliver the exact retained
-  terminal record.
+6. Prepare every bounded terminal the transaction may select. The TOTP
+  enablement workflow prepares one success terminal containing only desired
+  state and the previewed affected-Human-User count, plus one payload-free
+  denied terminal for a stale preview. The Log Module configuration workflow
+  prepares one success terminal and one payload-free stale terminal after all
+  resultant destinations pass preflight. The account status workflow prepares
+  one success terminal containing only the resulting active or disabled status
+  and one payload-free denied terminal for either a stale target or final
+  issuer denial. Each directly identifies the
+  acknowledged Attempt. No final state or affected count appears in the
+  Attempt or denied terminal.
+7. Begin the serialized application-state transaction, establish the
+  authoritative outcome, and select exactly one prevalidated terminal. Capture
+  each candidate with the retained current Audit destination binding before the
+  transaction; atomically persist only the selected immutable obligation with
+  the applied mutation or conflict result and commit both, or commit neither.
+  Then invoke the bounded active-then-late drain for the exact retained record.
 8. Exact destination acknowledgement authorizes acknowledgement of the oldest
-  database obligation. If delivery or database acknowledgement cannot finish,
-  leave the obligation pending. This is a post-commit failure and must not map
-  to the pre-commit `Audit Log unavailable; operation rejected.` result or
-  claim that the mutation was rejected. The future runtime recovery path must
-  replay obligations oldest first and refuse a changed current destination
+  database obligation. Server Audit converts that successful Log-owned
+  acknowledgement into the Application Database contract's opaque proof
+  containing only the exact identity and binding; the database never receives
+  destination authority. If delivery or database acknowledgement cannot
+  finish, leave the obligation pending. This is a post-commit failure and must
+  not map to the pre-commit `Audit Log unavailable; operation rejected.` result
+  or claim that the mutation was rejected. The runtime recovery path
+  must replay obligations oldest first and refuse a changed current destination
   identity or binding version before delivery. It must resolve the binding and
   destination together through the trusted structural pair; binding equality
   alone does not prove an unrelated handle's identity. The contract is separate
@@ -265,6 +287,76 @@ The Audit catalog separately names
 `authorization.group-grant.removal-denied`; neither catalog entry causes the
 producer to emit a System Log or orchestrate a mutation.
 
+Public Group, member, direct-grant, and compiled-catalog reads produce no Audit
+record. An exact membership or direct-grant no-op is rejected before Attempt
+construction and likewise produces no Audit record. Public member and grant
+changes delegate to the existing Group mutation producer without introducing a
+transport-specific event: a changed membership uses
+`authorization.group-membership.changed`, a changed direct grant uses
+`authorization.group-grant.changed`, and an effective-last-Administrator
+refusal uses `authorization.group-grant.removal-denied`. The public Group and
+Account identifiers, TOTP code, opaque ticket, response projection, cursor,
+and catalog payload never enter these records; the producer continues to use
+only stable internal Audit references and canonical grant references.
+
+## Operational Terminal Recovery
+
+The `weavelit-server` operational composer owns one process-local recovery
+coordinator for the selected **[Application Database](../../glossary.md#applications-and-interfaces)**.
+It invokes a bounded drain once during activation and exposes the same internal
+drain immediately before each consequential mutation. It runs no
+background loop, timer, client route, configuration action, or independent
+retry schedule. Activation recovery does not prevent the Server from exposing
+read and authentication functions; a consequential writer must inspect
+the active-sequence result before mutation.
+
+Every drain obtains one process-local permit and loads the exact current Audit
+configuration generation from the Application Database generation store. It
+requires enabled state, Audit Log membership, a compiled-in module with the
+Audit capability, and settings accepted by that module before recovery listing
+or module factory access. Missing, disabled, malformed, non-Audit,
+unknown-module, unsupported-capability, or undeclared-setting state fails with
+one payload-free recovery-required result. Audit destination resolution does
+not load or fall back to mutable `ApplicationState`.
+
+For each retained active or late-delivery obligation, the runtime derives the
+exact generation key from that obligation's separately stored binding identity
+and version. It uses the loaded current generation only when that key matches
+exactly; otherwise it performs one exact historical generation read. A missing,
+corrupt, or mismatched required generation fails before the Log Module factory
+or destination is accessed. Trusted Server code derives the binding and
+configured destination together from that same snapshot and constructs one
+`ResolvedAuditDestination`; it does not try another generation, the mutable
+current assignment, or an independently supplied destination. The initial
+committed generation uses version `1`, and later current versions do not change
+the retained version named by an older obligation.
+
+The coordinator drains active obligations first and late-delivery obligations
+second. Each sequence is independently listed oldest first with at most the
+Application Database contract's fixed batch maximum. A full batch returns
+`Pending` so another activation or pre-consequential invocation may continue;
+it does not loop through an unbounded backlog. Failure in one sequence does not
+prevent the bounded attempt for the other sequence.
+
+The database operation lane is held only while listing opaque rows or applying
+one acknowledgement proof. After listing, Server Audit imports and validates
+the opaque projection outside that lane, verifies its separately stored record
+identity and binding, and delivers through the trusted resolved pair. Only an
+exact durable destination acknowledgement becomes the database proof used to
+acknowledge the oldest eligible obligation. Import, binding, delivery, or
+acknowledgement failure leaves the obligation pending. Concurrent drains are
+serialized across resolution, both sequences, delivery, and acknowledgement,
+so two gates cannot deliver one listed obligation concurrently.
+
+Each list, import, assignment-resolution, delivery, or acknowledgement failure
+attempts one safe `dependency.audit-log-unavailable` System record through the
+independently opened System Log destination. Reporting contains only the
+validated destination module and the fixed `internal.log-policy.changed`
+classification; raw database, projection, destination, setting, record, or
+request content is never rendered. Reporting failure is absorbed. A healthy
+empty activation emits no unavailable event, and terminal recovery has no
+client error mapping.
+
 ## Administrative Event Taxonomy
 
 **[Audit Logs](../../glossary.md#applications-and-interfaces)** use lowercase
@@ -284,9 +376,11 @@ context.
 | `authentication.mfa-module-enablement.changed` | MFA Module enablement or disablement, including dependent-session termination | change-mfa-module; module identifier; enabled state and affected-count summary | Factor data, session identifiers, or arbitrary account data |
 | `authentication.session.revoked` | Explicit session revocation when independently auditable | revoke-session; stable account or session reference; safe reason | Session or CSRF credentials |
 | `authorization.group.created` | Group creation | create-group; stable group reference; result | Arbitrary request fields or secrets |
+| `authorization.group.updated` | Group name or description update | update-group; stable group reference; result | Names, descriptions, public or state identifiers |
+| `authorization.group.deleted` | Empty Group deletion | delete-group; stable group reference; result | Names, public or state identifiers, memberships, grants, counts, TOTP evidence or tickets |
 | `authorization.group-membership.changed` | Group membership changes | change-membership; stable group and account references; result | Unbounded submitted member data |
 | `authorization.group-grant.changed` | Client, Service, Operation, or Server Administration Permission grant changes | change-grant; stable group and grant references; result | Credentials or unbounded policy payloads |
-| `authorization.group-grant.removal-denied` | Rejected attempt to remove the last Server Administration Permission | remove-grant; stable group/account references; last-grant rejection | Internal authorization detail beyond the safe reason |
+| `authorization.group-grant.removal-denied` | Rejected membership or direct-grant removal that would remove the last effective Server Administration Permission | remove-membership or remove-grant; stable group and account or canonical grant references; last-administrator rejection | Internal authorization detail beyond the safe reason |
 | `authorization.automation-scope.changed` | Automation Identity Operation-scope changes | change-automation-scope; stable identity and Operation references; result | Automation credentials or secret configuration |
 | `dependency.audit-terminal.superseded` | Constrained supersession of one permanently undeliverable terminal obligation | supersede-terminal-delivery; bounded terminal reference; degraded completeness | Destination errors, settings, credentials, reauthentication or TOTP evidence, confirmation content, raw identifiers |
 | `dependency.log-module-configuration.changed` | Log Module configuration changes | change-log-module-configuration; stable configuration/module reference; result | Destination credentials, paths, raw settings, or payloads |
@@ -329,7 +423,9 @@ durability, backup, recovery, and compatibility remain owned by the Log Module
 design and its destination; this document does not promise indefinite survival
 or add a Server-wide retention mechanism.
 
-Focused validation for the producer and future administration contracts
+Focused validation for the producer, the account credential writers, the TOTP
+enablement workflow, the Log Module configuration workflow, and future
+administration contracts
 must prove:
 
 - every field rejects empty or over-bound UTF-8 input, including the 8 KiB
@@ -342,9 +438,9 @@ must prove:
   reset and MFA reset remain separate;
 - forbidden values cannot enter action, target, or detail through fixed,
   allowlisted, or structured summaries;
-- account and Group principal or target values contain only the persisted typed
-  `ar-...` projection even when the source entity has a broad Unicode name or a
-  distinct internal state identifier;
+- account, Group, and Log Module configuration principal or target values
+  contain only the persisted typed `ar-...` projection even when the source
+  entity has a broad Unicode name or a distinct internal state identifier;
 - every event accepts only its matching exhaustive outcome-detail variant,
   successful state details require their typed committed fact, denied and
   failed details carry none, and completion and correction summaries derive the

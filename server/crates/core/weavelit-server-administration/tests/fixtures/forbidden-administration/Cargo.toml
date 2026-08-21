@@ -28,6 +28,14 @@ name = "invoke-without-authorization"
 path = "src/invoke_without_authorization.rs"
 
 [[bin]]
+name = "projection-literal"
+path = "src/projection_literal.rs"
+
+[[bin]]
+name = "projection-sensitive-field"
+path = "src/projection_sensitive_field.rs"
+
+[[bin]]
 name = "session-literal"
 path = "src/session_literal.rs"
 

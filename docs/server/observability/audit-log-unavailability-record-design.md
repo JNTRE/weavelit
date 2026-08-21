@@ -52,6 +52,23 @@ whether a nonconsequential operation may absorb an Audit failure, and it does
 not imply that such an operation was audited; each future route must make that
 choice under the Technical Specification.
 
+## Terminal Recovery Reporting
+
+The operational Audit terminal recovery coordinator uses the same safe System
+record producer for list, opaque import, assignment resolution, exact delivery,
+and Application Database acknowledgement failures. Recovery generates fresh
+record identity and event time internally, uses the fixed correlation
+identifier `audit-terminal-recovery`, and supplies
+`internal.log-policy.changed` as the affected typed Audit classification. It
+supplies the validated assigned Log Module identifier when resolution reached
+one and the fixed safe identifier `unresolved` otherwise.
+
+Recovery reporting has no client-error mapping. Each observed failure attempts
+one System Log delivery and then returns the recovery sequence state. Failure
+in record construction or System delivery is absorbed, the Server process
+continues, and read and authentication paths remain available. An empty,
+healthy activation produces no unavailable record.
+
 ## Related Documents
 
 - [Technical Specification](../../spec.md)

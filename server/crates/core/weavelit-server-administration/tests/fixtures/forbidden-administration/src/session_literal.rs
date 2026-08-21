@@ -6,5 +6,9 @@ use weavelit_server_database::{
 fn main() {
     let actor = StateIdentifier::from_bytes([1; STATE_IDENTIFIER_LENGTH]).unwrap();
     let session = SessionTokenHash::from_bytes([2; SESSION_DIGEST_LENGTH]).unwrap();
-    let _current = CurrentAdministrationSession { actor, session };
+    let _current = CurrentAdministrationSession {
+        actor,
+        session,
+        factor: actor,
+    };
 }

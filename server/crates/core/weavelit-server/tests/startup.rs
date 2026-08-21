@@ -128,9 +128,11 @@ fn sealed_application_state() -> ApplicationState {
         configuration: vec![],
         protected_secrets: vec![],
         accounts: vec![],
+        account_public_identities: vec![],
         account_audit_references: vec![],
         password_verifiers: vec![],
         groups: vec![],
+        group_public_identities: vec![],
         group_audit_references: vec![],
         group_memberships: vec![],
         group_grants: vec![],
@@ -144,6 +146,12 @@ fn sealed_application_state() -> ApplicationState {
             enabled: true,
             settings: vec![],
         }],
+        log_configuration_audit_references: vec![
+            weavelit_server_database::LogConfigurationAuditReference::new(
+                configuration_identifier,
+                weavelit_server_database::AuditReferenceIdentifier::generate().unwrap(),
+            ),
+        ],
         log_assignments: LogType::ALL
             .into_iter()
             .map(|log_type| LogAssignment {

@@ -7,7 +7,7 @@ mod model;
 pub use model::{
     AccountStatus, ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail,
     AuditTerminalObligationReference, AutomationReference, BackupReference, ComponentReference,
-    ComponentState, GrantReference, LogConfigurationReference, LogModuleReference,
+    ComponentState, GrantReference, GroupMutationOutcome, LogConfigurationAuditReferences,
     LogPolicyReference, MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState,
     OperationReference, ServiceConnectionReference, StateChangeOutcome,
 };
@@ -15,8 +15,9 @@ pub use model::{
 use core::fmt;
 
 use weavelit_server_database::{
-    AuditTerminalObligation, AuditTerminalObligationIdentifier, AuditTerminalRecoveryPersistence,
+    AuditTerminalAcknowledgementProof, AuditTerminalObligation, AuditTerminalRecoveryPersistence,
     AuditTerminalRecoveryStore, AuditTerminalSupersession, DatabaseError,
+    StoredAuditDestinationBinding, ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_log::{
     AuditDestinationBinding, AuditDestinationBindingTransition, AuditTerminalRecoveryProjection,
@@ -119,20 +120,24 @@ impl ServerAudit {
     /// Imports and revalidates one opaque live terminal recovery obligation.
     pub fn restore_terminal_recovery(
         &self,
+        persistence: &AuditTerminalRecoveryPersistence,
         obligation: &AuditTerminalObligation,
     ) -> Result<PendingAuditTerminalRecovery, AuditTerminalObligationError> {
-        let projection =
-            AuditTerminalRecoveryProjection::from_persisted(obligation.projection().to_vec())
-                .map_err(|_| AuditTerminalObligationError::InvalidObligation)?;
+        let projection = AuditTerminalRecoveryProjection::from_persisted(
+            persistence.projection_bytes(obligation).to_vec(),
+        )
+        .map_err(|_| AuditTerminalObligationError::InvalidObligation)?;
         let terminal = projection
             .restore(&self.record_issuer)
             .map_err(|_| AuditTerminalObligationError::InvalidObligation)?;
-        if terminal.record().record_id().as_bytes() != obligation.identifier().as_bytes() {
+        if terminal.record().record_id().as_bytes() != obligation.identifier().as_bytes()
+            || terminal.binding().identifier() != obligation.binding().identifier()
+            || terminal.binding().version() != obligation.binding().version()
+        {
             return Err(AuditTerminalObligationError::InvalidObligation);
         }
         Ok(PendingAuditTerminalRecovery {
             obligation: obligation.clone(),
-            identifier: obligation.identifier(),
             terminal,
         })
     }
@@ -151,7 +156,7 @@ impl ServerAudit {
         };
         let body = attempt
             .event
-            .body(&attempt.actor, detail, model::EventPhase::Terminal)?;
+            .body(&attempt.actor, detail, outcome.event_phase())?;
         let attempt_record_id = attempt
             .record
             .attempt_record_id()
@@ -294,18 +299,20 @@ impl PreparedAuditTerminal {
         &self,
         persistence: &AuditTerminalRecoveryPersistence,
         binding: &AuditDestinationBinding,
-    ) -> Result<AuditTerminalObligation, AuditTerminalObligationError> {
+    ) -> Result<ValidatedAuditTerminalObligationWrite, AuditTerminalObligationError> {
         let projection = AuditTerminalRecoveryProjection::capture(&self.record, binding)
             .map_err(|_| AuditTerminalObligationError::InvalidObligation)?;
-        let identifier = AuditTerminalObligationIdentifier::from_persisted(
+        let binding = StoredAuditDestinationBinding::from_persisted(
             persistence,
-            *self.record.record_id().as_bytes(),
+            *binding.identifier(),
+            binding.version(),
         )
         .map_err(|_| AuditTerminalObligationError::InvalidObligation)?;
-        AuditTerminalObligation::from_persisted(
+        ValidatedAuditTerminalObligationWrite::from_server_audit(
             persistence,
-            *identifier.as_bytes(),
+            *self.record.record_id().as_bytes(),
             projection.as_bytes().to_vec(),
+            binding,
         )
         .map_err(|_| AuditTerminalObligationError::InvalidObligation)
     }
@@ -320,7 +327,6 @@ impl fmt::Debug for PreparedAuditTerminal {
 /// Revalidated pending terminal obligation retained after its mutation committed.
 pub struct PendingAuditTerminalRecovery {
     obligation: AuditTerminalObligation,
-    identifier: AuditTerminalObligationIdentifier,
     terminal: RecoveredLogAuditTerminal,
 }
 
@@ -357,11 +363,12 @@ impl PendingAuditTerminalRecovery {
     /// Prepares the append-only database request after all exact evidence matches.
     pub fn prepare_supersession(
         &self,
+        persistence: &AuditTerminalRecoveryPersistence,
         transition: &AuditDestinationBindingTransition,
         authorization: &AuditTerminalSupersessionAuthorization,
         confirmation: &AuditTerminalSupersessionConfirmation,
         replacement: &PreflightedAuditDestination<'_>,
-        replacement_obligation: AuditTerminalObligation,
+        replacement_obligation: ValidatedAuditTerminalObligationWrite,
     ) -> Result<AuditTerminalSupersession, AuditTerminalObligationError> {
         let disposition = AuditTerminalSupersessionDisposition::capture(
             &self.terminal,
@@ -371,8 +378,27 @@ impl PendingAuditTerminalRecovery {
             replacement,
         )
         .map_err(|_| AuditTerminalObligationError::InvalidObligation)?;
-        AuditTerminalSupersession::new(&self.obligation, disposition, replacement_obligation)
-            .map_err(|_| AuditTerminalObligationError::InvalidObligation)
+        let original_binding = StoredAuditDestinationBinding::from_persisted(
+            persistence,
+            *transition.retained().identifier(),
+            transition.retained().version(),
+        )
+        .map_err(|_| AuditTerminalObligationError::InvalidObligation)?;
+        let replacement_binding = StoredAuditDestinationBinding::from_persisted(
+            persistence,
+            *transition.replacement().identifier(),
+            transition.replacement().version(),
+        )
+        .map_err(|_| AuditTerminalObligationError::InvalidObligation)?;
+        AuditTerminalSupersession::from_server_audit(
+            persistence,
+            &self.obligation,
+            disposition.as_bytes().to_vec(),
+            original_binding,
+            replacement_binding,
+            replacement_obligation,
+        )
+        .map_err(|_| AuditTerminalObligationError::InvalidObligation)
     }
 
     /// Performs one exact replay attempt and yields acknowledgement authority on success.
@@ -381,15 +407,27 @@ impl PendingAuditTerminalRecovery {
     /// successful destination acknowledgement produces a fresh database proof.
     pub fn deliver(
         &self,
+        persistence: &AuditTerminalRecoveryPersistence,
         destination: &ResolvedAuditDestination<'_>,
     ) -> Result<AcknowledgedAuditTerminalRecovery, AuditTerminalReplayError> {
         let acknowledgement = self.terminal.deliver(destination)?;
-        if !acknowledgement.matches(self.identifier.as_bytes(), self.terminal.binding()) {
+        if !acknowledgement.matches(
+            self.obligation.identifier().as_bytes(),
+            self.terminal.binding(),
+        ) {
             return Err(AuditTerminalReplayError::DeliveryPending(
                 LogDeliveryError::IntegrityFailure,
             ));
         }
-        Ok(AcknowledgedAuditTerminalRecovery { acknowledgement })
+        let proof = AuditTerminalAcknowledgementProof::from_server_audit(
+            persistence,
+            *acknowledgement.record_id(),
+            self.obligation.binding().clone(),
+        )
+        .map_err(|_| {
+            AuditTerminalReplayError::DeliveryPending(LogDeliveryError::IntegrityFailure)
+        })?;
+        Ok(AcknowledgedAuditTerminalRecovery { proof })
     }
 }
 
@@ -401,7 +439,7 @@ impl fmt::Debug for PendingAuditTerminalRecovery {
 
 /// Capability proving exact bound destination acknowledgement for one pending obligation.
 pub struct AcknowledgedAuditTerminalRecovery {
-    acknowledgement: weavelit_server_log::AuditTerminalDeliveryAcknowledgement,
+    proof: AuditTerminalAcknowledgementProof,
 }
 
 impl AcknowledgedAuditTerminalRecovery {
@@ -410,7 +448,7 @@ impl AcknowledgedAuditTerminalRecovery {
         self,
         store: &mut dyn AuditTerminalRecoveryStore,
     ) -> Result<(), DatabaseError> {
-        store.acknowledge_audit_terminal_obligation(self.acknowledgement)
+        store.acknowledge_audit_terminal_obligation(self.proof)
     }
 }
 

@@ -122,7 +122,7 @@ would fail if the fixture named a component the binary does not compile in; the
 `weavelit-server` suite proves the same pairing first, so that failure is caught
 before the browser layer.
 
-The sign-in scenario runs three Server generations against one restored
+The sign-in scenario runs four Server generations against one restored
 deployment: the first restores the committed `valid-web-ui-sqlite.wlitbackup`
 fixture, the deployment is sealed, the pre-operational status route becomes
 absent, and the shell falls through to the sign-in control. The second
@@ -133,9 +133,15 @@ message, and neither sets a cookie; it then submits the documented fixture
 password and asserts a session is established with exactly the two approved
 cookies at their documented attributes. The third generation restarts the
 Server and reloads the page with no credential re-entered, asserting the
-persisted session, not remembered client state, is what authenticates. The
-scenario also asserts that a pinned set of real, non-empty observed secret
-values, namely both passwords and the issued session and CSRF tokens, is
+persisted session, not remembered client state, is what authenticates. It loads
+the Groups chunk only after selection and exercises its safe access-detail
+reads. The fourth generation again adopts the persisted session, proves neither
+lazy chunk loads with Accounts, loads only the fixed Configuration chunk after
+selection, exercises real Log configuration list and view projections, and
+receives a real TOTP enablement preview without applying it. The scenario also
+asserts that a pinned set of real, non-empty observed secret values, namely both
+passwords, the issued session and CSRF tokens, and the single-claim TOTP
+enablement preview, is
 absent from every request URL, browser storage, rendered page, and captured
 Server stdout and stderr; pinning each secret to a value the run actually
 produced keeps that absence check from passing vacuously against an unobserved

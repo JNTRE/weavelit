@@ -8,10 +8,10 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+base64 = { version = "=0.23.0", default-features = false, features = ["alloc"] }
 getrandom = { version = "=0.4.3", default-features = false }
 subtle.workspace = true
 weavelit-server-database-authority = { path = "../weavelit-server-database-authority" }
-weavelit-server-log = { path = "../../core/weavelit-server-log" }
 
 [dev-dependencies]
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }

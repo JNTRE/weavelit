@@ -31,15 +31,31 @@ use serde::Deserialize;
 use weavelit_server_lifecycle::{LifecycleProjection, SelectionFailureKind};
 use zeroize::Zeroize;
 
+pub mod administration;
 pub mod authentication;
 pub mod authorization;
+pub mod configuration;
 pub mod cookie;
+pub mod credential_issuance;
+pub mod groups;
 pub mod init;
 pub mod mfa;
+pub mod mfa_policy;
+pub mod password_change;
 pub mod reconciliation;
 pub mod restore;
 pub mod typed_json;
 
+pub use administration::{
+    ACCOUNTS_LIST_ROUTE, ACCOUNTS_STATUS_ROUTE, ACCOUNTS_VIEW_ROUTE,
+    AccountAdministrationCapability, AccountAdministrationDeclaration,
+    AccountAdministrationEnvelope, AccountAdministrationInputRejected,
+    AccountAdministrationProjection, AccountAdministrationRejection, AccountAdministrationRequest,
+    AccountAdministrationResult, AccountAdministrationSubmission, AccountsListRequest,
+    AccountsPage, AccountsStatusRequest, AccountsViewRequest, DEFAULT_ACCOUNTS_PAGE_LIMIT,
+    MAX_ACCOUNT_ADMINISTRATION_BODY_BYTES, MAX_ACCOUNT_ADMINISTRATION_RESPONSE_BYTES,
+    MAX_ACCOUNTS_PAGE_LIMIT,
+};
 pub use authentication::{
     AUTH_LOGIN_ROUTE, AUTH_LOGOUT_ROUTE, AUTH_SESSION_ROUTE, AuthenticationCapability,
     AuthenticationDeclaration, AuthenticationRejection, CorrelationSource, LoginCommit,
@@ -50,9 +66,47 @@ pub use authentication::{
 pub use authorization::{
     AUTHORIZATION_DENIED_CODE, AUTHORIZATION_DENIED_STATUS, AuthorizationRejection,
 };
+pub use configuration::{
+    ConfigurationAdministrationCapability, ConfigurationAdministrationDeclaration,
+    ConfigurationAdministrationEnvelope, ConfigurationAdministrationInputRejected,
+    ConfigurationAdministrationRejection, ConfigurationAdministrationRequest,
+    ConfigurationAdministrationResult, ConfigurationAdministrationSubmission,
+    DEFAULT_LOG_CONFIGURATIONS_PAGE_LIMIT, LOG_CONFIGURATIONS_CHANGE_ROUTE,
+    LOG_CONFIGURATIONS_LIST_ROUTE, LOG_CONFIGURATIONS_VIEW_ROUTE, LogAssignmentRequest,
+    LogConfigurationChangeRequest, LogConfigurationProjection, LogConfigurationViewRequest,
+    LogConfigurationsListRequest, LogConfigurationsPage, LogSettingProjection, LogTypeProjection,
+    MAX_CONFIGURATION_ADMINISTRATION_BODY_BYTES, MAX_CONFIGURATION_ADMINISTRATION_RESPONSE_BYTES,
+    MAX_LOG_CONFIGURATIONS_PAGE_LIMIT, TOTP_ENABLEMENT_APPLY_ROUTE, TOTP_ENABLEMENT_PREVIEW_ROUTE,
+    TotpEnablementApplied, TotpEnablementApplyRequest, TotpEnablementPreviewProjection,
+    TotpEnablementPreviewRequest, validate_configuration_administration_request,
+};
 pub use cookie::{
     CSRF_COOKIE_NAME, CookieEffect, CookieLines, CookieValue, MAX_COOKIE_HEADER_BYTES,
     MAX_COOKIE_LINES, MAX_COOKIE_VALUE_BYTES, SESSION_COOKIE_NAME,
+};
+pub use credential_issuance::{
+    ACCOUNTS_CREATE_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, AccountCreateCommit,
+    AccountCreateSubmission, AccountCredentialIssued, AccountPasswordResetCommit,
+    AccountPasswordResetSubmission, CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+    CredentialIssuanceCapability, CredentialIssuanceDeclaration, CredentialIssuanceRejection,
+    CredentialIssuanceStepUpCommit, CredentialIssuanceStepUpSubmission,
+    CredentialIssuanceTicketIssued, MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
+    MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES, validate_credential_issuance_request,
+};
+pub use groups::{
+    ADMINISTRATION_CATALOG_ROUTE, AdministrationCatalog, AdministrationCatalogRequest,
+    DEFAULT_GROUPS_PAGE_LIMIT, GROUP_GRANTS_CHANGE_ROUTE, GROUP_GRANTS_LIST_ROUTE,
+    GROUP_MEMBERS_CHANGE_ROUTE, GROUP_MEMBERS_LIST_ROUTE, GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE,
+    GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE, GROUPS_VIEW_ROUTE, GroupAdministrationCapability,
+    GroupAdministrationDeclaration, GroupAdministrationEnvelope, GroupAdministrationInputRejected,
+    GroupAdministrationProjection, GroupAdministrationRejection, GroupAdministrationRequest,
+    GroupAdministrationResult, GroupAdministrationSubmission, GroupDeleted,
+    GroupGrantChangeRequest, GroupGrantChanged, GroupGrantProjection, GroupGrantsListRequest,
+    GroupGrantsPage, GroupMemberChangeRequest, GroupMemberChanged, GroupMembersListRequest,
+    GroupMembersPage, GroupsCreateRequest, GroupsDeleteRequest, GroupsListRequest, GroupsPage,
+    GroupsUpdateRequest, GroupsViewRequest, MAX_ADMINISTRATION_CATALOG_ENTRIES,
+    MAX_GROUP_ADMINISTRATION_BODY_BYTES, MAX_GROUP_ADMINISTRATION_RESPONSE_BYTES,
+    MAX_GROUPS_PAGE_LIMIT,
 };
 pub use init::{
     INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE, InitAdministratorSubmission, InitCapability,
@@ -68,6 +122,17 @@ pub use mfa::{
     MFA_REQUIRED_CODE, MfaCapability, MfaCodeCommit, MfaCodeSubmission, MfaDeclaration,
     MfaEnrollmentCommit, MfaEnrollmentConfirmCommit, MfaEnrollmentOpened, MfaEnrollmentSubmission,
     MfaSelfEnrollmentCommit, MfaSelfEnrollmentSubmission,
+};
+pub use mfa_policy::{
+    ACCOUNTS_MFA_REQUIREMENT_ROUTE, ACCOUNTS_MFA_RESET_ROUTE, MAX_MFA_POLICY_BODY_BYTES,
+    MFA_POLICY_STEP_UP_ROUTE, MfaPolicyCapability, MfaPolicyDeclaration, MfaPolicyRejection,
+    MfaPolicyStepUpFamily, MfaPolicyStepUpSubmission, MfaPolicyTicketIssued,
+    MfaRequirementSubmission, MfaResetSubmission, validate_mfa_policy_request,
+};
+pub use password_change::{
+    AUTH_PASSWORD_CHANGE_ROUTE, MAX_PASSWORD_CHANGE_BODY_BYTES, MAX_PASSWORD_CHANGE_PASSWORD_BYTES,
+    PasswordChangeCapability, PasswordChangeCommit, PasswordChangeDeclaration,
+    PasswordChangeSubmission, validate_password_change_request,
 };
 pub use reconciliation::{
     LIFECYCLE_RECONCILIATION_ROUTE, MAX_RECONCILIATION_BODY_BYTES, ReconciliationCapability,
@@ -256,10 +321,91 @@ impl PreoperationalSurface {
 /// deployment cannot mount them at all rather than mounting and denying them.
 #[derive(Default)]
 pub struct OperationalSurface {
+    account_administration: Option<AccountAdministrationDeclaration>,
+    group_administration: Option<GroupAdministrationDeclaration>,
+    configuration_administration: Option<ConfigurationAdministrationDeclaration>,
+    credential_issuance: Option<CredentialIssuanceDeclaration>,
+    mfa_policy: Option<MfaPolicyDeclaration>,
     assets: Option<Router>,
 }
 
 impl OperationalSurface {
+    /// Declares authenticated account reads and status changes.
+    pub fn with_account_administration(
+        mut self,
+        capability: AccountAdministrationCapability,
+    ) -> Self {
+        self.account_administration = Some(AccountAdministrationDeclaration::new(capability));
+        self
+    }
+
+    /// Separates account routes so the Server can mount each with its transport registration.
+    #[must_use]
+    pub fn split_account_administration(
+        mut self,
+    ) -> (Self, Option<AccountAdministrationDeclaration>) {
+        let declaration = self.account_administration.take();
+        (self, declaration)
+    }
+
+    /// Declares Group reads, creation, update, and empty deletion.
+    pub fn with_group_administration(mut self, capability: GroupAdministrationCapability) -> Self {
+        self.group_administration = Some(GroupAdministrationDeclaration::new(capability));
+        self
+    }
+
+    /// Separates Group routes so each can retain its transport registration.
+    #[must_use]
+    pub fn split_group_administration(mut self) -> (Self, Option<GroupAdministrationDeclaration>) {
+        let declaration = self.group_administration.take();
+        (self, declaration)
+    }
+
+    /// Declares TOTP enablement and existing Log configuration administration.
+    pub fn with_configuration_administration(
+        mut self,
+        capability: ConfigurationAdministrationCapability,
+    ) -> Self {
+        self.configuration_administration =
+            Some(ConfigurationAdministrationDeclaration::new(capability));
+        self
+    }
+
+    /// Separates Configuration routes so each retains its transport registration.
+    #[must_use]
+    pub fn split_configuration_administration(
+        mut self,
+    ) -> (Self, Option<ConfigurationAdministrationDeclaration>) {
+        let declaration = self.configuration_administration.take();
+        (self, declaration)
+    }
+
+    /// Declares credential assurance, account creation, and password reset.
+    pub fn with_credential_issuance(mut self, capability: CredentialIssuanceCapability) -> Self {
+        self.credential_issuance = Some(CredentialIssuanceDeclaration::new(capability));
+        self
+    }
+
+    /// Separates credential issuance so each route retains its registration.
+    #[must_use]
+    pub fn split_credential_issuance(mut self) -> (Self, Option<CredentialIssuanceDeclaration>) {
+        let declaration = self.credential_issuance.take();
+        (self, declaration)
+    }
+
+    /// Declares TOTP step-up, MFA requirement changes, and enrollment reset.
+    pub fn with_mfa_policy(mut self, capability: MfaPolicyCapability) -> Self {
+        self.mfa_policy = Some(MfaPolicyDeclaration::new(capability));
+        self
+    }
+
+    /// Separates MFA policy routes so each retains its transport registration.
+    #[must_use]
+    pub fn split_mfa_policy(mut self) -> (Self, Option<MfaPolicyDeclaration>) {
+        let declaration = self.mfa_policy.take();
+        (self, declaration)
+    }
+
     /// Declares client-specific asset delivery, which owns its own exact paths.
     pub fn with_assets(mut self, assets: Router) -> Self {
         self.assets = Some(assets);
@@ -268,6 +414,74 @@ impl OperationalSurface {
 
     /// Mounts every declared capability at its canonical path.
     pub fn mount(self, router: Router) -> Router {
+        let router = match self.account_administration {
+            Some(administration) => router
+                .route(ACCOUNTS_LIST_ROUTE, administration.list_route())
+                .route(ACCOUNTS_VIEW_ROUTE, administration.view_route())
+                .route(ACCOUNTS_STATUS_ROUTE, administration.status_route()),
+            None => router,
+        };
+        let router = match self.group_administration {
+            Some(groups) => router
+                .route(GROUPS_LIST_ROUTE, groups.list_route())
+                .route(GROUPS_VIEW_ROUTE, groups.view_route())
+                .route(GROUPS_CREATE_ROUTE, groups.create_route())
+                .route(GROUPS_UPDATE_ROUTE, groups.update_route())
+                .route(GROUPS_DELETE_ROUTE, groups.delete_route())
+                .route(GROUP_MEMBERS_LIST_ROUTE, groups.members_list_route())
+                .route(GROUP_MEMBERS_CHANGE_ROUTE, groups.member_change_route())
+                .route(GROUP_GRANTS_LIST_ROUTE, groups.grants_list_route())
+                .route(GROUP_GRANTS_CHANGE_ROUTE, groups.grant_change_route())
+                .route(ADMINISTRATION_CATALOG_ROUTE, groups.catalog_route()),
+            None => router,
+        };
+        let router = match self.configuration_administration {
+            Some(configuration) => router
+                .route(
+                    TOTP_ENABLEMENT_PREVIEW_ROUTE,
+                    configuration.totp_preview_route(),
+                )
+                .route(
+                    TOTP_ENABLEMENT_APPLY_ROUTE,
+                    configuration.totp_apply_route(),
+                )
+                .route(
+                    LOG_CONFIGURATIONS_LIST_ROUTE,
+                    configuration.log_list_route(),
+                )
+                .route(
+                    LOG_CONFIGURATIONS_VIEW_ROUTE,
+                    configuration.log_view_route(),
+                )
+                .route(
+                    LOG_CONFIGURATIONS_CHANGE_ROUTE,
+                    configuration.log_change_route(),
+                ),
+            None => router,
+        };
+        let router = match self.credential_issuance {
+            Some(credential_issuance) => router
+                .route(
+                    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+                    credential_issuance.step_up_route(),
+                )
+                .route(ACCOUNTS_CREATE_ROUTE, credential_issuance.create_route())
+                .route(
+                    ACCOUNTS_RESET_PASSWORD_ROUTE,
+                    credential_issuance.reset_password_route(),
+                ),
+            None => router,
+        };
+        let router = match self.mfa_policy {
+            Some(mfa_policy) => router
+                .route(MFA_POLICY_STEP_UP_ROUTE, mfa_policy.step_up_route())
+                .route(
+                    ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+                    mfa_policy.requirement_route(),
+                )
+                .route(ACCOUNTS_MFA_RESET_ROUTE, mfa_policy.reset_route()),
+            None => router,
+        };
         match self.assets {
             Some(assets) => router.merge(assets),
             None => router,

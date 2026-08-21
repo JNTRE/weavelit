@@ -1,6 +1,6 @@
 # Web UI Application Design
 
-This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the first-launch **[Init](../../glossary.md#states-and-requests)** and **[Restore](../../glossary.md#states-and-requests)** choice, the Application Database selection control, the Init workflow, the Restore submission control, and the sign-in control. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md) owns the two-request Init submission protocol, its recovery-key delivery, its browser-side proof-of-possession derivation, and its rejection contract the Init workflow drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser, and the [Server Authentication Design](../../server/authentication/authentication-design.md) and [Server API Contract](../../server/api/api-contract-design.md) own the shared session and sign-in route contract the sign-in control drives. This document does not restate any of those contracts.
+This document owns the **[Web UI](../../glossary.md#applications-and-interfaces)** browser application: its pinned build toolchain, the deterministic generated production outputs, the application shell, the pre-operational status presentation states, the first-launch **[Init](../../glossary.md#states-and-requests)** and **[Restore](../../glossary.md#states-and-requests)** choice, the Application Database selection control, the Init workflow, the Restore submission control, the sign-in control, and the authenticated Accounts read, status, and credential-issuance controls. The [Web UI Pre-Operational Status Surface](../../client-modules/web-ui/pre-operational-status-design.md) owns the `GET /api/v1/status` transport contract this application consumes, the [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md) owns the `PUT /api/v1/application-database` route, request schema, headers, and rejection contract the selection control drives, the [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md) owns the two-request Init submission protocol, its recovery-key delivery, its browser-side proof-of-possession derivation, and its rejection contract the Init workflow drives, the [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md) owns the two-request Restore submission protocol, its ticket, and its rejection contract the Restore control drives, the [Embedded Asset Delivery Design](../../client-modules/web-ui/embedded-asset-delivery-design.md) owns how the Server delivers this application's generated output to the browser, and the [Server Authentication Design](../../server/authentication/authentication-design.md) and [Server API Contract](../../server/api/api-contract-design.md) own the shared session, sign-in, account-administration, and credential-issuance route contracts the application drives. This document does not restate any of those contracts.
 
 ## Build Toolchain
 
@@ -26,9 +26,14 @@ range.
 
 ## Generated Production Output
 
-A clean production build emits exactly three unhashed files: `dist/index.html`,
-`dist/assets/weavelit-application.js`, and `dist/assets/weavelit-application.css`. The build
-produces no source maps, no code-split chunks, and no other emitted file.
+A clean production build emits exactly five unhashed files: `dist/index.html`,
+`dist/assets/weavelit-application.js`, `dist/assets/weavelit-groups-workspace.js`,
+`dist/assets/weavelit-configuration-workspace.js`,
+and `dist/assets/weavelit-application.css`. The build produces no source maps
+and no other emitted file. Groups and Configuration are independent code-split
+chunks. Their fixed names preserve the compile-time asset allowlist while
+keeping both workspaces and their API clients out of the initial JavaScript
+response.
 
 Content hashing is deliberately disabled in the build configuration because the
 Web UI **[Client Module](../../glossary.md#applications-and-interfaces)** embeds
@@ -87,9 +92,12 @@ The application has a single root component, `ApplicationShell`, mounted into
 `#weavelit-root` by `main.tsx`. It deliberately has no router, no
 state-management library, and no CSS framework: its only production
 dependencies are `react` and `react-dom`, and `weavelit-application.css` is
-hand-authored. This reflects the current absence of any client-side route and
-the single control the pre-operational experience offers; a later
-normal-operation experience revisits this shell.
+hand-authored. The shell switches between the restricted pre-operational
+experience, sign-in, and the authenticated Accounts workspace from Server
+responses rather than from client-side routes. Navigation remains a usability
+control and never substitutes for Server authorization. Every page load and
+authenticated session starts in Accounts; the selected administration
+workspace is not written to a URL, cookie, `localStorage`, or `sessionStorage`.
 
 ## Status Presentation States
 
@@ -489,7 +497,7 @@ absent authentication surface both render nothing; the remaining states are:
 | Enrollment submitting | An enrollment confirmation is in flight. | The inputs and the action are disabled. |
 | Indeterminate | A session-establishing submission reported no outcome and no session probe has yet authenticated this browser. | A fixed checking message while automatic probes run; afterwards, a fixed unresolved message and one `Check again` action. The submission controls and all attempt secrets are absent. |
 | Attempt ended | A one-time value was spent by a reported refusal. | The credential inputs return and the one fixed attempt-ended message is presented in an assertive live region. |
-| Authenticated | The session probe, or a completed sign-in, reports an established session. | The inputs and action are replaced by a fixed confirmation message in a polite live region. |
+| Authenticated | The session probe, or a completed sign-in, reports an established session. | The sign-in control is withdrawn and the Accounts workspace is mounted. |
 
 The failure message is fixed and redacted: `Sign-in failed.` The login route
 deliberately reports no cause for a denial and returns the identical response
@@ -590,9 +598,217 @@ capture them otherwise, and they are removed from the rendered output as soon
 as the enrollment they belong to settles or reconciliation begins. Nothing that
 outlives that enrollment retains them.
 
+## Accounts Workspace
+
+The authenticated shell opens the Accounts workspace only for an ordinary
+session. A session that requires password change mounts only the restricted
+password-change control and never mounts this workspace. Account reads use the
+two routes in the
+[Server API Contract](../../server/api/api-contract-design.md#account-administration-reads).
+The workspace loads the first account page on entry, presents the safe
+projection in a table, offers `Load more` only when the response carries a
+cursor, and appends the next page without replacing rows already displayed.
+`Refresh` discards the current collection and reloads from the first page.
+
+Each row presents username, optional display name, active state, and MFA-required
+state. Its `View` action requests that row's Account Public Identifier and
+presents the returned safe projection, including the public identifier. The
+application never requests or presents password verifiers, credential or
+temporary-password state, MFA factors, session values, internal state
+identifiers, or Audit Reference Identifiers.
+
+Collection, paging, view, transport, authorization, session, and malformed
+response failures all render the same fixed `Accounts are unavailable.` text.
+The workspace renders no Server code, status number, response detail, field
+path, or transport diagnostic. It stores no account result or cursor in a URL,
+cookie, `localStorage`, or `sessionStorage`.
+
+### Groups Workspace
+
+The authenticated Administration shell provides semantic local navigation
+between Accounts and Groups. The shell does not request the Groups workspace
+chunk or mount any of its API clients until an authenticated person selects
+Groups. While that fixed same-origin chunk is loading, the workspace region
+presents a fixed polite loading message. A delivery or module-load failure
+presents one fixed detail-free alert and an explicit retry; it never renders a
+browser, transport, or module-loader diagnostic. A successful retry mounts the
+same workspace without changing the page URL or persisting navigation state.
+
+Once mounted, Groups loads the first cursor page, appends `Load more` results,
+refreshes from the first page, and views only Group public
+identifier, name, and nullable description. It provides create and complete
+name/description update controls. The selected Group detail also loads its safe
+member projections, canonical direct grants, the safe Account collection for a
+member picker, and the compiled-in administration catalog. Member choices use
+only Account Public Identifiers. Direct-grant controls offer only Server
+Administration Permission or catalog-backed Client Module, Service Module, and
+Operation selectors; they provide no free-form grant input or component
+enablement control. The member, grant, and Account-picker collections offer
+bounded `Load more` controls when a cursor exists. Both association collections
+refresh from their first page after a successful change.
+
+Adding a member or direct grant proceeds directly to one six-digit TOTP form.
+Removing either first opens a client-only confirmation that sends no
+confirmation field, then uses the same form. The form requests the
+`grant_mutation` family once, clears the code as step-up starts, holds the
+returned ticket only in a private component ref, clears it before the single
+change request, and retries neither request automatically. A successful change
+reloads both safe association views. The fixed last-Administrator refusal is
+rendered as `Cannot remove the last Server Administration Permission grant.`
+without account, Group, grant, membership, or policy detail. Other reported
+refusals and indeterminate outcomes use fixed reason-free text.
+
+Delete first opens a client-only confirmation and sends no confirmation field
+or text. After confirmation, one form accepts exactly one six-digit TOTP code
+for the `grant_mutation` family. The code is cleared when step-up starts; the
+returned ticket exists only in a private component ref, is cleared before the
+single delete request starts, and is never rendered, logged, placed in a URL,
+cookie, `localStorage`, or `sessionStorage`. The application retries neither
+request automatically. Reported refusal renders `The Group was not deleted.`;
+an unreadable or unknown outcome requires manual refresh before another Group
+action.
+
+Each account row and the safe detail view offer `Disable` for an active account
+or `Re-enable` for a disabled account. Choosing either command opens an in-page
+confirmation that names only the already displayed account. The disable
+confirmation states that every target session ends and that disabling the
+current account also ends the current session. Confirmation is client-only;
+the request contains exactly the target Account Public Identifier and desired
+`active` value and carries no confirmation member.
+
+The application starts the status request only from the confirmation action and
+never retries it automatically. An exact reported refusal renders only `The
+account status was not changed.` An unreported transport outcome, malformed
+success, or failure to determine the current session after a successful result
+renders only `The account status outcome is unknown. Refresh before taking
+another status action.` Neither state renders a Server code, target detail,
+status number, response content, or transport diagnostic.
+
+After a valid status result, the application probes the existing session. An
+authenticated result causes one first-page Accounts refresh. An unauthenticated
+result, including successful self-disable, withdraws the Accounts workspace and
+returns the shell to its sign-in state without issuing another mutation. An
+absent or unreadable session result is indeterminate and causes neither an
+automatic account refresh nor a repeated status request.
+
+The workspace also drives the
+[account credential-issuance contract](../../server/api/api-contract-design.md#account-credential-issuance).
+The create control collects a username and optional display name. Each account
+row offers a reset action whose request target is only that row's Account
+Public Identifier; it never substitutes the username, display name, internal
+state identifier, or displayed row position.
+
+Choosing create or reset first fixes exactly one pending action and opens one
+credential-assurance form. The form collects the current password and an
+optional six-digit TOTP code. Both controls are cleared as soon as their one
+submission begins, and neither value is rendered afterwards, retained for a
+retry, or written to a URL, cookie, `localStorage`, or `sessionStorage`. The
+form never submits automatically.
+
+A valid assurance response places its ticket only in the mounted Accounts
+component's private memory. The component never renders, logs, navigates with,
+or persists it. It passes that ticket exactly once to the already chosen create
+or reset request, clears it immediately after starting that consuming request,
+and also clears it on every denial, cancellation, or unmount. An assurance
+response delivered after unmount triggers no consuming request.
+
+A reported refusal renders only `Credential issuance was not completed.` A
+transport failure, gateway timeout, unreadable response, malformed success, or
+otherwise unreported outcome renders only a fixed statement that the outcome
+is unknown. Neither state renders a Server code, status, response detail, or
+transport diagnostic. The application automatically retries neither assurance
+nor the consuming action. After an indeterminate consuming response it does not
+reissue a ticket, repeat the action, re-fetch the account to infer success, or
+attempt to recover the temporary password.
+
+On a valid create or reset success, the application captures the returned
+temporary password locally before requesting exactly one first-page account
+refresh. It does not use that refresh to retrieve or confirm the password. The
+temporary password appears only in one current disclosure panel as a plain
+read-only selectable field, with no copy-to-clipboard control. Starting another
+credential action, viewing or paging accounts, an explicit refresh, navigation
+away from the workspace, or unmount withdraws the panel and releases the value.
+The surrounding create and assurance forms never receive the returned password.
+
+Each account row and safe detail view also provide an MFA-required switch and a
+Reset MFA action. Choosing either fixes one target and desired action in the
+mounted Accounts component and opens a client-only confirmation. Confirmation
+names only the already displayed account and explains session revocation when
+the action requires it. No confirmation boolean or confirmation text is sent to
+the Server.
+
+After confirmation, one step-up form asks for exactly one six-digit TOTP code
+and no password. It submits the code once for the `mfa_policy` family and clears
+the input as soon as that request starts. A valid response places the opaque
+ticket only in a private component ref, never in rendered state. The component
+starts the already selected requirement or reset request with that ticket,
+clears the ref immediately, and never writes the code or ticket to a URL,
+cookie, log, `localStorage`, or `sessionStorage`.
+
+The application automatically retries neither step-up nor mutation. A reported
+refusal renders only `MFA policy was not changed.` A transport failure, timeout,
+unreadable response, malformed success, or unknown outcome renders only `The
+MFA policy outcome is unknown. Refresh before taking another MFA action.` It
+does not refresh automatically in that state or infer success from an account
+read.
+
+After a valid policy result, the application probes the existing session. An
+authenticated result triggers one first-page Accounts refresh from the safe
+projection. An unauthenticated result, including a successful self-require or
+self-reset that revoked the current session, withdraws the workspace and
+returns to sign-in. An absent or unreadable probe is indeterminate and causes
+neither a mutation retry nor an automatic refresh.
+
+### Configuration Workspace
+
+The authenticated Administration shell provides Configuration beside Accounts
+and Groups. Accounts remains the default. The shell does not request the fixed
+Configuration chunk or mount its API client until an authenticated person
+selects Configuration. Loading is announced through a polite status. A chunk
+failure renders one fixed detail-free alert and explicit retry; it never
+renders module-loader or transport diagnostics and does not change or persist
+the page URL. Groups remains independently lazy and selecting either workspace
+does not fetch the other.
+
+The workspace contains only specialized TOTP enablement and existing Log
+configuration controls. It has no generic component or Operation control,
+configuration create or delete, Log Module replacement, destination credential
+or path input, Log record browsing, retention or purge control, or Audit
+terminal supersession control.
+
+TOTP enablement is preview then apply. Choosing enablement or disablement sends
+one preview request and displays only current and desired state and the affected
+enrolled-account count. The returned `totp_enablement_preview` exists only in a
+private component ref: it is never rendered, logged, copied into component
+state, placed in a URL or cookie, or written to `localStorage` or
+`sessionStorage`. Cancel, unmount, a second preview, denial, or starting apply
+clears it. Apply receives the preview exactly once and the application retries
+neither request automatically.
+
+Disablement review states that sessions for enrolled accounts end. A reported
+stale-preview conflict requires a new preview. A reported refusal uses fixed
+reason-free text. An unreported, malformed, pending-delivery, or otherwise
+indeterminate apply outcome is rendered as unknown and requires manual refresh
+before another change. After a valid apply success the workspace probes the
+existing session. An authenticated result returns to idle; an unauthenticated
+result, including self-disable session revocation, withdraws the administration
+workspace and returns to sign-in without another mutation; an absent or
+unreadable probe remains indeterminate.
+
+Log configurations load through the existing cursor pattern, append `Load
+more` pages, refresh from the first page, and view only unique configuration
+name, module, enabled state, ordered module-declared non-secret non-path
+settings, and assigned Log Types. The edit form changes enabled state, the
+complete settings collection, and complete System and Audit assignments by
+configuration name. It never receives an internal identifier or generation.
+Save sends one request and never retries automatically. A reported conflict
+requires refresh; a reported refusal and an indeterminate outcome use distinct
+fixed text without Server code, status, response detail, field path, Audit
+state, or dependency diagnostic.
+
 ## Same-Origin Requests
 
-The application issues exactly eleven outbound request kinds, all same-origin,
+The application issues exactly twenty-seven outbound request kinds, all same-origin,
 all with `cache: no-store` and `redirect: error`:
 
 - `GET /api/v1/status` with `Accept: application/json` and `credentials: omit`;
@@ -613,6 +829,9 @@ all with `cache: no-store` and `redirect: error`:
   unparameterized `Content-Type: application/octet-stream`, the required
   `X-Weavelit-CSRF` header, `credentials: omit`, the issued ticket in
   `X-Weavelit-Restore-Ticket`, and the selected file as the request body;
+- `PUT /api/v1/lifecycle/reconciliation` with the JSON headers, the fixed
+  pre-session `X-Weavelit-CSRF` literal, `credentials: omit`, and the opaque
+  reconciliation capability in the body;
 - `PUT /api/v1/auth/login` with `Accept: application/json`, an unparameterized
   `Content-Type: application/json`, the fixed pre-session `X-Weavelit-CSRF`
   literal the route requires, `credentials: same-origin` so the Server's
@@ -629,7 +848,45 @@ all with `cache: no-store` and `redirect: error`:
   and a body carrying the continuation alone; and
 - `PUT /api/v1/auth/mfa/enrollment/confirm` with the same headers and
   credentials mode and a body carrying the enrollment value and the submitted
-  code.
+  code;
+- `PUT /api/v1/auth/password/change` with the session's CSRF value,
+  `credentials: same-origin`, and the replacement password in the JSON body;
+- `PUT /api/v1/administration/accounts/list` and
+  `PUT /api/v1/administration/accounts/view` with the session's CSRF value,
+  `credentials: same-origin`, and only their documented pagination or Account
+  Public Identifier fields in the JSON body;
+- `PUT /api/v1/administration/accounts/status` with the session's CSRF value,
+  `credentials: same-origin`, and exactly the target Account Public Identifier
+  and desired active state in the JSON body;
+- `PUT /api/v1/administration/step-up/credential-issuance` with the session's
+  CSRF value, `credentials: same-origin`, and the current password and optional
+  TOTP code in the JSON body;
+- `PUT /api/v1/administration/accounts/create` with the session's CSRF value,
+  `credentials: same-origin`, and the chosen username, optional display name,
+  and one ticket in the JSON body; and
+- `PUT /api/v1/administration/accounts/reset-password` with the session's CSRF
+  value, `credentials: same-origin`, and only the target Account Public
+  Identifier and one ticket in the JSON body;
+- `PUT /api/v1/administration/step-up/totp` with the session's CSRF value,
+  `credentials: same-origin`, and exactly the `mfa_policy` family and submitted
+  six-digit code in the JSON body;
+- `PUT /api/v1/administration/accounts/mfa-requirement` with the session's CSRF
+  value, `credentials: same-origin`, and exactly the target Account Public
+  Identifier, desired required state, and one TOTP step-up ticket in the JSON
+  body; and
+- `PUT /api/v1/administration/accounts/mfa-reset` with the session's CSRF value,
+  `credentials: same-origin`, and exactly the target Account Public Identifier
+  and one TOTP step-up ticket in the JSON body;
+- `PUT /api/v1/administration/mfa-modules/totp/enablement/preview` and
+  `/apply` with the session's CSRF value, `credentials: same-origin`, the
+  desired enabled state, and, for apply only, the single-claim preview in the
+  JSON body;
+- `PUT /api/v1/administration/log-configurations/list` and `/view` with the
+  session's CSRF value, `credentials: same-origin`, and only their documented
+  cursor or unique configuration-name fields; and
+- `PUT /api/v1/administration/log-configurations/change` with the session's
+  CSRF value, `credentials: same-origin`, the primary configuration name, and
+  at least one complete enabled, settings, or assignments member.
 
 The three second-factor requests carry the pre-session literal rather than a
 per-session token, because they carry no session either: the one-time value in
@@ -638,9 +895,9 @@ use `credentials: same-origin` so the cookies a completed step issues are
 stored. This application does not issue the session-bearing self-enrollment
 request the Server also serves.
 
-Only the last five requests use `credentials: same-origin`; the preceding six
-use `credentials: omit` because no session exists yet to send or receive while
-the pre-operational surface is in use.
+Only the last twenty request kinds use `credentials: same-origin`; the first
+seven use `credentials: omit` because no session exists yet to send or receive
+while the pre-operational or submission-bound reconciliation surface is in use.
 
 The application never sets `Host` or `Origin`. Both are forbidden header names
 that the browser populates itself on a same-origin request, and a same-origin

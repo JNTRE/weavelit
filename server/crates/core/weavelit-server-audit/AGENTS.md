@@ -27,7 +27,7 @@ Apply instructions in this order:
 
 - `Cargo.toml`: Package metadata, narrowly scoped dependencies, and the JSON
   dev-dependency used to read Cargo's compiler diagnostics.
-- `src/lib.rs`: Producer, phase preparation, Attempt retention, and delivery.
+- `src/lib.rs`: Producer, phase preparation, Attempt retention, delivery, and semantic adaptation between Log-owned recovery values and opaque Application Database storage.
 - `src/model.rs`: Closed Audit event, principal, outcome, and safe-reference model.
 - `tests/producer.rs`: Public producer behavior tests.
 - `tests/sqlite.rs`: Real SQLite destination behavior tests.

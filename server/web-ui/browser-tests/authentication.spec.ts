@@ -22,7 +22,6 @@ const RESTORE_CHOICE_NAME = "Restore from a backup";
 const RESTORE_ACTION_NAME = "Restore backup";
 const LOGIN_ACTION_NAME = "Sign in";
 const LOGIN_FAILED_MESSAGE = "Sign-in failed.";
-const AUTHENTICATED_MESSAGE = "You are signed in.";
 
 const STATUS_PATH = "/api/v1/status";
 const SELECTION_PATH = "/api/v1/application-database";
@@ -30,6 +29,17 @@ const RESTORE_KEY_PATH = "/api/v1/restore";
 const RESTORE_ARTIFACT_PATH = "/api/v1/restore/artifact";
 const LOGIN_PATH = "/api/v1/auth/login";
 const SESSION_PATH = "/api/v1/auth/session";
+const ACCOUNTS_LIST_PATH = "/api/v1/administration/accounts/list";
+const GROUPS_LIST_PATH = "/api/v1/administration/groups/list";
+const GROUPS_WORKSPACE_ASSET_PATH = "/assets/weavelit-groups-workspace.js";
+const CONFIGURATION_WORKSPACE_ASSET_PATH = "/assets/weavelit-configuration-workspace.js";
+const LOG_CONFIGURATIONS_LIST_PATH = "/api/v1/administration/log-configurations/list";
+const LOG_CONFIGURATIONS_VIEW_PATH = "/api/v1/administration/log-configurations/view";
+const TOTP_ENABLEMENT_PREVIEW_PATH = "/api/v1/administration/mfa-modules/totp/enablement/preview";
+const GROUPS_VIEW_PATH = "/api/v1/administration/groups/view";
+const GROUP_MEMBERS_LIST_PATH = "/api/v1/administration/groups/members/list";
+const GROUP_GRANTS_LIST_PATH = "/api/v1/administration/groups/grants/list";
+const ADMINISTRATION_CATALOG_PATH = "/api/v1/administration/catalog";
 
 const ARTIFACT_INPUT = "#weavelit-restore-artifact";
 const RECOVERY_KEY_INPUT = "#weavelit-restore-recovery-key";
@@ -79,7 +89,7 @@ function capturedOutput(path: string): string {
 /**
  * Every response a page load against the pre-operational surface produces.
  *
- * The listener admits a burst of 12 requests per source and each Server
+ * The listener admits a burst of 14 requests per source and each Server
  * generation is counted by its own limiter, so asserting the exact set per
  * generation also pins the request budget and keeps a drifting `429` visible.
  */
@@ -156,6 +166,7 @@ test("an operator signs in to a restored deployment and the session survives a r
     const baseUrl = `https://${configuration.listenerAddress}`;
     const observed = observeResponses(page);
     const requests = observeRequests(page);
+    let observedTotpPreview = "";
 
     // ---- Generation 1: restore a deployment that carries an account. --------
 
@@ -285,21 +296,36 @@ test("an operator signs in to a restored deployment and the session survives a r
     const accepted = page.waitForResponse(
       (response) => new URL(response.url()).pathname === LOGIN_PATH,
     );
+    const accountsLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === ACCOUNTS_LIST_PATH,
+    );
     await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
     await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
     await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
     const acceptedResponse = await accepted;
     expect(acceptedResponse.request().method()).toBe("PUT");
-    expect(acceptedResponse.status(), `rendered sign-in state: ${await login.innerText()}`).toBe(
-      200,
-    );
+    expect(acceptedResponse.status()).toBe(200);
     // The Server returns no token in the body: the session travels in cookies.
     expect(await acceptedResponse.json()).toEqual({
       result: { authenticated: true },
       correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
-    await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-    await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+    const accountsResponse = await accountsLoaded;
+    expect(accountsResponse.status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+    await expect(page.getByRole("rowheader", { name: FIXTURE_USERNAME })).toBeVisible();
+    const accountsBody = JSON.stringify(await accountsResponse.json());
+    for (const forbidden of [
+      "password",
+      "verifier",
+      "session",
+      "temporary",
+      "account_id",
+      "audit_reference",
+      "state_id",
+    ]) {
+      expect(accountsBody, `the account projection omits ${forbidden}`).not.toContain(forbidden);
+    }
 
     expect(
       sorted(observed.slice(secondGeneration)),
@@ -310,6 +336,8 @@ test("an operator signs in to a restored deployment and the session survives a r
         `401 ${LOGIN_PATH}`,
         `401 ${LOGIN_PATH}`,
         `200 ${LOGIN_PATH}`,
+        `200 ${SESSION_PATH}`,
+        `200 ${ACCOUNTS_LIST_PATH}`,
       ]),
     );
 
@@ -382,13 +410,80 @@ test("an operator signs in to a restored deployment and the session survives a r
     expect(restored?.status()).toBe(200);
     // No credential is re-entered: the new process recognises the cookies the
     // previous process issued, which is only possible from a persisted session.
-    await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-    await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+    await expect(login).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+    await expect(page.getByRole("rowheader", { name: FIXTURE_USERNAME })).toBeVisible();
+    expect(observed.slice(thirdGeneration)).not.toContain(`200 ${GROUPS_WORKSPACE_ASSET_PATH}`);
+
+    const groupsWorkspaceLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUPS_WORKSPACE_ASSET_PATH,
+    );
+    const groupsLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUPS_LIST_PATH,
+    );
+    await page.getByRole("button", { name: "Groups" }).click();
+    expect((await groupsWorkspaceLoaded).status()).toBe(200);
+    expect((await groupsLoaded).status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Groups" })).toBeVisible();
+
+    const groupView = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUPS_VIEW_PATH,
+    );
+    const members = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUP_MEMBERS_LIST_PATH,
+    );
+    const grants = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === GROUP_GRANTS_LIST_PATH,
+    );
+    const pickerAccounts = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === ACCOUNTS_LIST_PATH &&
+        requests.filter((request) => new URL(request.url()).pathname === ACCOUNTS_LIST_PATH)
+          .length >= 2,
+    );
+    const catalog = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === ADMINISTRATION_CATALOG_PATH,
+    );
+    await page.getByRole("button", { name: "View", exact: true }).click();
+    for (const response of await Promise.all([
+      groupView,
+      members,
+      grants,
+      pickerAccounts,
+      catalog,
+    ])) {
+      expect(response.status()).toBe(200);
+      const body = JSON.stringify(await response.json());
+      for (const forbidden of ["account_id", "group_id", "audit_reference", "state_id"]) {
+        expect(body, `the Group detail omits ${forbidden}`).not.toContain(forbidden);
+      }
+    }
+    await expect(page.getByRole("heading", { name: "Administrators" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Access" })).toBeVisible();
+    await expect(
+      page
+        .locator(".groups__association-list span")
+        .filter({ hasText: /^Server Administration Permission$/ }),
+    ).toBeVisible();
+    await expect(page.getByLabel("Add member")).toBeVisible();
+    await expect(page.getByLabel("Grant type")).toBeVisible();
 
     expect(
       sorted(observed.slice(thirdGeneration)),
       "requests against the third generation",
-    ).toEqual(sorted(operationalLoad(200)));
+    ).toEqual(
+      sorted([
+        ...operationalLoad(200),
+        `200 ${ACCOUNTS_LIST_PATH}`,
+        `200 ${GROUPS_WORKSPACE_ASSET_PATH}`,
+        `200 ${GROUPS_LIST_PATH}`,
+        `200 ${GROUPS_VIEW_PATH}`,
+        `200 ${GROUP_MEMBERS_LIST_PATH}`,
+        `200 ${GROUP_GRANTS_LIST_PATH}`,
+        `200 ${ACCOUNTS_LIST_PATH}`,
+        `200 ${ADMINISTRATION_CATALOG_PATH}`,
+      ]),
+    );
 
     // The presented session resolves to the account the fixture restored, and
     // the probe echoed the CSRF value the browser is actually holding.
@@ -400,13 +495,110 @@ test("an operator signs in to a restored deployment and the session survives a r
     expect(probeHeaders[CSRF_HEADER], "the client echoed the issued CSRF value").toBe(csrfValue);
     const probeResponse = await (probe as Request).response();
     expect(await probeResponse?.json()).toEqual({
-      result: { account_id: expect.stringMatching(/^[0-9a-f]+$/), client_module: "web-ui" },
+      result: {
+        account_id: expect.stringMatching(/^[0-9a-f]+$/),
+        public_id: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+        client_module: "web-ui",
+        password_change_required: false,
+      },
       correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
+    const accountRequest = requests
+      .slice(requestsBeforeRestart)
+      .find((request) => new URL(request.url()).pathname === ACCOUNTS_LIST_PATH);
+    expect(accountRequest, "the authenticated workspace loaded through its API").toBeDefined();
+    expect((await (accountRequest as Request).allHeaders())[CSRF_HEADER]).toBe(csrfValue);
+
+    // ---- Generation 4: Configuration is independently lazy and safe. -------
+
+    exit = await terminateServer(server);
+    server = null;
+    expect(exit.signal, "the Server was not killed").toBeNull();
+    expect(exit.code).toBe(0);
+
+    server = spawnServer(configuration);
+    await waitForServerReady(server, configuration);
+
+    const fourthGeneration = observed.length;
+    const configurationReload = await page.reload({ waitUntil: "load" });
+    expect(configurationReload?.status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+    expect(observed.slice(fourthGeneration)).not.toContain(
+      `200 ${CONFIGURATION_WORKSPACE_ASSET_PATH}`,
+    );
+    expect(observed.slice(fourthGeneration)).not.toContain(`200 ${GROUPS_WORKSPACE_ASSET_PATH}`);
+
+    const configurationChunk = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === CONFIGURATION_WORKSPACE_ASSET_PATH,
+    );
+    const configurationsLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === LOG_CONFIGURATIONS_LIST_PATH,
+    );
+    await page.getByRole("button", { name: "Configuration" }).click();
+    expect((await configurationChunk).status()).toBe(200);
+    const configurationsResponse = await configurationsLoaded;
+    expect(configurationsResponse.status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Configuration" })).toBeVisible();
+    const configurationsBody = JSON.stringify(await configurationsResponse.json());
+    for (const forbidden of [
+      "configuration_id",
+      "generation",
+      "path",
+      "credential",
+      "terminal",
+      "record_id",
+    ]) {
+      expect(configurationsBody, `the Log configuration list omits ${forbidden}`).not.toContain(
+        forbidden,
+      );
+    }
+
+    const configurationView = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === LOG_CONFIGURATIONS_VIEW_PATH,
+    );
+    await page.getByRole("button", { name: "View", exact: true }).click();
+    const configurationViewResponse = await configurationView;
+    expect(configurationViewResponse.status()).toBe(200);
+    await expect(page.getByRole("button", { name: "Save configuration" })).toBeVisible();
+
+    const preview = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === TOTP_ENABLEMENT_PREVIEW_PATH,
+    );
+    await page.getByRole("button", { name: "Review enablement" }).click();
+    const previewResponse = await preview;
+    expect(previewResponse.status()).toBe(200);
+    const previewBody = (await previewResponse.json()) as {
+      result: { totp_enablement_preview: string };
+    };
+    observedTotpPreview = previewBody.result.totp_enablement_preview;
+    expect(observedTotpPreview).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await expect(page.getByRole("button", { name: "Apply enablement" })).toBeVisible();
+    expect(await page.content()).not.toContain(observedTotpPreview);
+    expect(page.url()).not.toContain(observedTotpPreview);
+
+    expect(
+      sorted(observed.slice(fourthGeneration)),
+      "requests against the fourth generation",
+    ).toEqual(
+      sorted([
+        ...operationalLoad(200),
+        `200 ${ACCOUNTS_LIST_PATH}`,
+        `200 ${CONFIGURATION_WORKSPACE_ASSET_PATH}`,
+        `200 ${LOG_CONFIGURATIONS_LIST_PATH}`,
+        `200 ${LOG_CONFIGURATIONS_VIEW_PATH}`,
+        `200 ${TOTP_ENABLEMENT_PREVIEW_PATH}`,
+      ]),
+    );
 
     // ---- Nothing sensitive escaped its one permitted channel. ---------------
 
-    const confidential = [FIXTURE_PASSWORD, WRONG_PASSWORD, sessionValue, csrfValue];
+    const confidential = [
+      FIXTURE_PASSWORD,
+      WRONG_PASSWORD,
+      sessionValue,
+      csrfValue,
+      observedTotpPreview,
+    ];
     const requestedUrls = [page.url(), ...requests.map((request) => request.url())];
     for (const url of requestedUrls) {
       for (const secret of confidential) {

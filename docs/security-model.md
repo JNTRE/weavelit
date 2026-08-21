@@ -398,6 +398,24 @@ request bodies, passwords, password verifiers, TOTP codes, confirmation
 content, or arbitrary reason text. Their validation and debug failures remain
 payload-free.
 
+The Application Database stores this recovery state only as a nonzero opaque
+identity, 1 to 50,176 projection bytes, separate nonzero binding identity and
+version columns, and, for supersession, 1 to 1,024 disposition bytes with
+separate original and replacement bindings. Its contract and backends must not
+depend on Log or logging-authority types, parse or materialize Audit fields,
+derive a field from projection bytes, or mint a recovery write, disposition, or
+acknowledgement proof. Server Audit alone validates and imports Log semantics,
+requires embedded identity and binding to equal the separate stored columns,
+and converts successful destination acknowledgement into database proof.
+
+The backend compares opaque bytes and separate columns exactly. An exact write
+or supersession repeat is idempotent; an identity reused with different bytes or
+bindings fails without mutation. Recovery rows are live operational data, not
+`ApplicationState`; they remain absent from backups and normalized Restore
+input. A bounded opaque row that fails Server Audit import causes the owning
+runtime recovery-required state before destination access and is never repaired
+by backend parsing.
+
 The supersession authority boundary must bind fresh password reauthentication
 to the exact current session, require fresh TOTP verification when that account
 is enrolled, bind explicit confirmation to the exact original and replacement,

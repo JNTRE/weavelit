@@ -44,7 +44,7 @@ flow.
 The authorized Administrator becomes the temporary credential's custodian and
 is responsible for delivering it through an external channel. The [Security
 Model](../../security-model.md#administrator-initiated-password-reset) and
-[Authentication Design](authentication-design.md#future-account-credential-issuance)
+[Authentication Design](authentication-design.md#account-credential-issuance-writers)
 define the concrete safeguards, expiry, session, revision, and reauthentication
 requirements.
 

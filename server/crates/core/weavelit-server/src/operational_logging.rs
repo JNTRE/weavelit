@@ -14,6 +14,12 @@ use weavelit_server_log::{
 };
 use weavelit_server_observability::ServerObservability;
 
+use crate::authentication::{random_bytes, system_clock};
+
+const AUDIT_TERMINAL_RECOVERY_CORRELATION_ID: &str = "audit-terminal-recovery";
+const AUDIT_TERMINAL_RECOVERY_CLASSIFICATION: AuditLogClassification =
+    AuditLogClassification::InternalLogPolicyChanged;
+
 /// Stable client-facing code for an unavailable required Audit Log.
 pub const AUDIT_LOG_UNAVAILABLE_CODE: &str = "audit_log_unavailable";
 
@@ -86,6 +92,46 @@ impl OperationalLogSupport {
         operation: AuditLogClassification,
     ) -> ConsequentialOperationError {
         let _ = delivery_error;
+        self.report_audit_failure(
+            record_identifier,
+            event_time_milliseconds,
+            correlation_identifier,
+            destination_module,
+            operation,
+        );
+
+        ConsequentialOperationError::AuditLogUnavailable
+    }
+
+    /// Reports one terminal-recovery failure without creating a client mapping.
+    pub(crate) fn report_audit_terminal_recovery_failure(
+        &self,
+        destination_module: &LogModuleIdentifier,
+    ) {
+        let clock = system_clock();
+        let (Some(entropy), Some(event_time_milliseconds)) = (random_bytes::<16>(), clock()) else {
+            return;
+        };
+        let Ok(record_identifier) = StateIdentifier::from_bytes(entropy) else {
+            return;
+        };
+        self.report_audit_failure(
+            record_identifier,
+            event_time_milliseconds,
+            AUDIT_TERMINAL_RECOVERY_CORRELATION_ID,
+            destination_module,
+            AUDIT_TERMINAL_RECOVERY_CLASSIFICATION,
+        );
+    }
+
+    fn report_audit_failure(
+        &self,
+        record_identifier: StateIdentifier,
+        event_time_milliseconds: i64,
+        correlation_identifier: &str,
+        destination_module: &LogModuleIdentifier,
+        operation: AuditLogClassification,
+    ) {
         if let Some(destination) = self.system_log.as_ref()
             && let Ok(record) = self.observability.prepare_audit_log_unavailable(
                 record_identifier,
@@ -97,8 +143,6 @@ impl OperationalLogSupport {
         {
             let _ = destination.deliver(&record);
         }
-
-        ConsequentialOperationError::AuditLogUnavailable
     }
 }
 

@@ -1,5 +1,6 @@
 use weavelit_server_database::{
-    AccountAuditReference, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
+    AccountAuditReference, AccountPublicIdentifier, AccountPublicIdentifierPersistence,
+    AccountPublicIdentity, ApplicationDatabase, ApplicationState, AuditReferencePersistence,
     ComponentEnablement, DatabaseError, DatabaseInspection, DeploymentIdentifier,
     GroupAuditReference, HumanAuthorizationSnapshot, InitializedState, MfaStore,
     ReconciliationDigest, ReconciliationStore, SessionStore, StateIdentifier, WorkflowCheckpoint,
@@ -21,6 +22,7 @@ impl ApplicationDatabase for ExternalDatabase {
 
     fn complete_checkpoint(
         &mut self,
+        _public_identity_persistence: &AccountPublicIdentifierPersistence,
         _checkpoint: &WorkflowCheckpoint,
         _state: &ApplicationState,
         _reconciliation: &ReconciliationDigest,
@@ -30,10 +32,19 @@ impl ApplicationDatabase for ExternalDatabase {
 
     fn load_initialized_state(
         &mut self,
-        _persistence: &AuditReferencePersistence,
+        _public_identity_persistence: &AccountPublicIdentifierPersistence,
+        _audit_reference_persistence: &AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
         Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_account_public_identity(
+        &mut self,
+        _persistence: &AccountPublicIdentifierPersistence,
+        _public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountPublicIdentity>, DatabaseError> {
+        Ok(None)
     }
 
     fn acknowledge_completion(
@@ -64,6 +75,15 @@ impl ApplicationDatabase for ExternalDatabase {
         _persistence: &AuditReferencePersistence,
         _group: StateIdentifier,
     ) -> Result<Option<GroupAuditReference>, DatabaseError> {
+        Ok(None)
+    }
+
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        _persistence: &AuditReferencePersistence,
+        _configuration: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+    {
         Ok(None)
     }
 

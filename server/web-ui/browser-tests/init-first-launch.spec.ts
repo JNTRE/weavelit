@@ -33,7 +33,6 @@ const INITIALIZED_MESSAGE = "This deployment is initialized and now runs in norm
 const KEY_ONCE_WARNING =
   "This is the only time this recovery key is ever shown. Weavelit cannot display it again, cannot recover it, and cannot issue a replacement. Save it outside Weavelit now, before you continue.";
 const COPIED_MESSAGE = "The recovery key was copied to the clipboard.";
-const AUTHENTICATED_MESSAGE = "You are signed in.";
 const INDETERMINATE_HEADING = "Setup did not report an outcome";
 const INDETERMINATE_MESSAGE =
   "This attempt reported no outcome, so whether this deployment was initialized is not yet known. Keep the recovery key you saved: it is still the only key this deployment can be restored with, and none will be issued again. Check again to see whether setup completed, or try again with the same key.";
@@ -44,6 +43,7 @@ const RECOVERY_KEY_PATH = "/api/v1/init/recovery-key";
 const INIT_PATH = "/api/v1/init";
 const SESSION_PATH = "/api/v1/auth/session";
 const LOGIN_PATH = "/api/v1/auth/login";
+const ACCOUNTS_LIST_PATH = "/api/v1/administration/accounts/list";
 
 const SYSTEM_LOG_SELECT = "#weavelit-init-system-log";
 const AUDIT_LOG_SELECT = "#weavelit-init-audit-log";
@@ -96,11 +96,12 @@ function sorted(entries: readonly string[]): string[] {
 /**
  * Every response the one Server generation is expected to produce.
  *
- * The listener admits a burst of 12 requests per source, so asserting the exact
+ * The listener admits a burst of 14 requests per source, so asserting the exact
  * set also pins the request budget: 4 for the page load, 1 selection, 2 for the
- * two-request Init, 1 session probe, and 1 sign-in. The two route-absence
- * probes below are issued outside the page and add 2 more, leaving the run
- * inside the burst without relying on replenishment.
+ * two-request Init, 1 initial session probe, 1 sign-in, 1 post-login posture
+ * probe, and 1 account-list read. The
+ * two route-absence probes below are issued outside the page and add 2 more,
+ * using the complete burst without relying on replenishment.
  */
 const EXPECTED_RESPONSES = [
   "200 /",
@@ -112,6 +113,8 @@ const EXPECTED_RESPONSES = [
   `200 ${INIT_PATH}`,
   `401 ${SESSION_PATH}`,
   `200 ${LOGIN_PATH}`,
+  `200 ${SESSION_PATH}`,
+  `200 ${ACCOUNTS_LIST_PATH}`,
 ] as const;
 
 test("a first launch initializes the deployment and signs the new Administrator in", async ({
@@ -280,19 +283,22 @@ test("a first launch initializes the deployment and signs the new Administrator 
     const accepted = page.waitForResponse(
       (response) => new URL(response.url()).pathname === LOGIN_PATH,
     );
+    const accountsLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === ACCOUNTS_LIST_PATH,
+    );
     await page.locator(LOGIN_USERNAME_INPUT).fill(ADMINISTRATOR_USERNAME);
     await page.locator(LOGIN_PASSWORD_INPUT).fill(ADMINISTRATOR_PASSWORD);
     await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
     const acceptedResponse = await accepted;
-    expect(acceptedResponse.status(), `rendered sign-in state: ${await login.innerText()}`).toBe(
-      200,
-    );
+    expect(acceptedResponse.status()).toBe(200);
     expect(await acceptedResponse.json()).toEqual({
       result: { authenticated: true },
       correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
-    await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-    await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+    expect((await accountsLoaded).status()).toBe(200);
+    await expect(login).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+    await expect(page.getByRole("rowheader", { name: ADMINISTRATOR_USERNAME })).toBeVisible();
 
     expect(sorted(observed), "requests the browser issued").toEqual(sorted(EXPECTED_RESPONSES));
 

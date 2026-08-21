@@ -349,6 +349,8 @@ audit_log_classifications! {
     AuthenticationMfaModuleEnablementChanged => "authentication.mfa-module-enablement.changed",
     AuthenticationSessionRevoked => "authentication.session.revoked",
     AuthorizationGroupCreated => "authorization.group.created",
+    AuthorizationGroupUpdated => "authorization.group.updated",
+    AuthorizationGroupDeleted => "authorization.group.deleted",
     AuthorizationGroupMembershipChanged => "authorization.group-membership.changed",
     AuthorizationGroupGrantChanged => "authorization.group-grant.changed",
     AuthorizationGroupGrantRemovalDenied => "authorization.group-grant.removal-denied",
@@ -2045,7 +2047,17 @@ impl fmt::Debug for DurableAcknowledgement {
 
 /// Destination contract for capability validation and durable record handling only.
 pub trait LogDestination: Send + Sync {
-    /// Durably commits the record and returns its exact acknowledgement capability.
+    /// Durably commits the record or confirms an exact prior commit.
+    ///
+    /// Every destination must treat the record identifier as an idempotency key
+    /// inside the same atomic delivery operation that commits a new record. An
+    /// existing identifier is acknowledged only when its record type and every
+    /// immutable field equal the supplied complete record. An exact match must
+    /// not create a second record. A proven type or field mismatch returns
+    /// [`LogDestinationError::IntegrityFailure`]; lock, query, decode, or other
+    /// failures that prevent an exact comparison return
+    /// [`LogDestinationError::Unavailable`] without acknowledgement. This is a
+    /// required destination invariant, not an optional capability.
     fn deliver(
         &self,
         record: &CompleteLogRecord,
@@ -2275,15 +2287,22 @@ impl ConfiguredLogDestination {
     }
 
     /// Synchronously delivers one complete record and requires durable acknowledgement.
+    ///
+    /// A destination-reported immutable-record conflict is normalized to
+    /// [`LogDeliveryError::IntegrityFailure`]. Other destination failures retain
+    /// their payload-free [`LogDeliveryError::Destination`] classification.
     pub fn deliver(&self, record: &CompleteLogRecord) -> Result<(), LogDeliveryError> {
         if !self.capabilities.supports(record.record_type()) {
             return Err(LogDeliveryError::CapabilityUnavailable);
         }
         let acknowledgement = DurableAcknowledgement::for_record(record);
-        let acknowledgement = self
-            .destination
-            .deliver(record, acknowledgement)
-            .map_err(LogDeliveryError::Destination)?;
+        let acknowledgement =
+            self.destination
+                .deliver(record, acknowledgement)
+                .map_err(|error| match error {
+                    LogDestinationError::IntegrityFailure => LogDeliveryError::IntegrityFailure,
+                    error => LogDeliveryError::Destination(error),
+                })?;
         if !acknowledgement.matches(record) {
             return Err(LogDeliveryError::IntegrityFailure);
         }
@@ -2362,9 +2381,9 @@ impl StdError for LogCatalogError {}
 pub enum LogDestinationError {
     /// Destination configuration is invalid.
     ConfigurationInvalid,
-    /// The destination cannot currently accept delivery.
+    /// The destination cannot accept delivery or prove an exact replay match.
     Unavailable,
-    /// The destination detected a conflicting record identifier or immutable content.
+    /// The destination proved that a record identifier has conflicting type or content.
     IntegrityFailure,
 }
 
@@ -2411,7 +2430,7 @@ impl StdError for LogConfigurationError {}
 pub enum LogDeliveryError {
     /// The configured destination cannot accept the record type.
     CapabilityUnavailable,
-    /// The destination did not produce a valid acknowledgement for the record.
+    /// The destination proved a replay conflict or returned an invalid acknowledgement.
     IntegrityFailure,
     /// The destination could not complete synchronous durable delivery.
     Destination(LogDestinationError),
@@ -3460,9 +3479,7 @@ mod tests {
         assert_eq!(destination.deliver(&original), Ok(()));
         assert_eq!(
             destination.deliver(&changed),
-            Err(LogDeliveryError::Destination(
-                LogDestinationError::IntegrityFailure
-            ))
+            Err(LogDeliveryError::IntegrityFailure)
         );
     }
 
@@ -3525,9 +3542,7 @@ mod tests {
         assert_eq!(destination.deliver(&original), Ok(()));
         assert_eq!(
             destination.deliver(&changed),
-            Err(LogDeliveryError::Destination(
-                LogDestinationError::IntegrityFailure
-            ))
+            Err(LogDeliveryError::IntegrityFailure)
         );
     }
 
@@ -3592,9 +3607,7 @@ mod tests {
         assert_eq!(destination.deliver(&original), Ok(()));
         assert_eq!(
             destination.deliver(&changed),
-            Err(LogDeliveryError::Destination(
-                LogDestinationError::IntegrityFailure
-            ))
+            Err(LogDeliveryError::IntegrityFailure)
         );
     }
 
@@ -3620,9 +3633,7 @@ mod tests {
         assert_eq!(destination.deliver(&system_record), Ok(()));
         assert_eq!(
             destination.deliver(&audit_record),
-            Err(LogDeliveryError::Destination(
-                LogDestinationError::IntegrityFailure
-            ))
+            Err(LogDeliveryError::IntegrityFailure)
         );
     }
 
@@ -3654,7 +3665,7 @@ mod tests {
 
     #[test]
     fn errors_do_not_disclose_record_or_destination_payloads() {
-        let error = LogDeliveryError::Destination(LogDestinationError::IntegrityFailure);
+        let error = LogDeliveryError::IntegrityFailure;
         let record = system_record(
             TrustedRecordIssuer::new()
                 .issue([6; RECORD_ID_LENGTH])

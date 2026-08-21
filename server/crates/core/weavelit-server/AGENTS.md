@@ -35,6 +35,12 @@ Apply instructions in this order:
   state-root configuration reading, `classify_restricted_startup`, the listener's
   serving-mode switch, the listener-owned response-write acknowledgement, and
   stable error presentation.
+- `src/administration.rs`: Transport-independent bounded account reads, audited
+  account creation, password-reset, disable, re-enable, MFA-requirement, and
+  MFA-enrollment-reset writers,
+  Administrator-controlled TOTP MFA Module enablement, and internal Log Module
+  configuration-change workflows, including synchronous Audit sequencing and
+  post-commit recovery status.
 - `src/authentication.rs`: The local login, session-validation, and logout route
   decisions: account and password-verifier resolution, the equal-work denial
   path, the single-permit login admission lane, session issuance and
@@ -43,8 +49,7 @@ Apply instructions in this order:
   decisions: the eight-row login admission truth table, the single-use
   continuation ticket, second-factor code verification, enrollment opening from
   both a login continuation and a live session, enrollment confirmation, and
-  the enrolled-account preview and session-revoking Module enablement
-  primitives.
+  canonical TOTP Module enablement decisions.
 - `src/authorization.rs`: `AuthorizationRuntime`, the live composition point for
   both authorization decisions: the compiled-in served-component inventory, the
   catalog built from one live component-enablement read, the `ValidatedSession`
@@ -63,12 +68,22 @@ Apply instructions in this order:
   actionable-versus-fail-closed failure handling.
 - `src/operational.rs`: The single operational composition seam: the shared
   Application Database handle a sealed workflow hands over, the operational
-  composer that mounts the Web UI operational surface and the authentication
-  routes together with their transport registrations, and the mounted surface
-  value the serving-mode switch accepts.
+  composer that mounts the Web UI operational surface, authentication routes,
+  and authorized account, Group CRUD, Group membership/direct-grant, compiled
+  administration catalog, account MFA-policy, specialized TOTP enablement, and
+  existing Log configuration routes
+  together with their transport registrations, activates bounded Audit
+  terminal recovery, exposes the internal pre-consequential drain gate, and
+  builds the mounted surface value the serving-mode switch accepts.
+- `src/operational_audit.rs`: Trusted exact-generation Audit destination
+  resolution and the process-serialized, bounded active-then-late terminal
+  recovery drains that run at activation and before consequential mutations.
 - `src/operational_logging.rs`: Normal-operation support that best-effort
-  records typed Audit Log destination failures in the System Log and maps them
-  to the stable payload-free consequential-operation rejection.
+  records typed Audit Log destination and terminal-recovery failures in the
+  System Log and maps only pre-mutation delivery failures to the stable
+  payload-free consequential-operation rejection.
+- `src/password_change.rs`: Internal restricted-session password replacement,
+  Audit sequencing, atomic writer orchestration, and fresh ordinary-session result.
 - `src/restore.rs`: Server-owned Restore orchestration that joins backup
   validation to the lifecycle typestate chain, the one-time ticket store and
   admission registrations behind the two-step submission protocol, the System
@@ -78,6 +93,10 @@ Apply instructions in this order:
   validation, and permit acquisition ahead of any body allocation.
 - `src/main.rs`: Thin executable entry point that reads state-root configuration
   and calls the library composition function.
+- `src/mfa_policy_ticket.rs`: Opaque process-memory MFA-policy step-up ticket
+  generation and domain-separated digest validation.
+- `src/totp_enablement_preview.rs`: Opaque single-claim TOTP enablement preview credential generation and domain-separated digest validation.
+- `tests/audit_generation_resolver_authority.rs`: Compile-fail boundary proving the active Audit configuration-generation resolver is not a public construction surface.
 - `tests/startup.rs`: Composition and process-level tests for restricted startup
   covering fresh start, restart persistence, selection, pending states, and
   fail-closed failure categories.

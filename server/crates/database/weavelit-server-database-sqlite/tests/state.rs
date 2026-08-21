@@ -6,17 +6,25 @@ use std::{
 use rusqlite::Connection;
 use tempfile::TempDir;
 use weavelit_server_database::{
-    Account, AccountAuditReference, AccountPasswordVerifier, ApplicationDatabase, ApplicationState,
-    ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
-    COMPONENT_ENABLED_VALUE, CheckpointMetadata, CompletionObligation, ComponentEnablement,
-    ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
-    DatabaseError, DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference,
-    GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment, LogClassification, LogDetail,
+    Account, AccountAdministrationStore, AccountAuditReference, AccountCreateMutation,
+    AccountCreateOutcome, AccountCredentialAuditTerminalWrites, AccountCredentialIssuanceFactor,
+    AccountCredentialIssuanceRecheck, AccountCredentialWriterStore, AccountPasswordResetMutation,
+    AccountPasswordResetOutcome, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentifierPersistence, AccountPublicIdentity, ApplicationDatabase,
+    ApplicationState, ApplicationStateInput, AuditReferenceIdentifier, AuditReferencePersistence,
+    AuditTerminalRecoveryPersistence, COMPONENT_ENABLED_VALUE, CheckpointMetadata,
+    CompletionObligation, ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey,
+    ConfigurationValue, CorrelationIdentifier, CredentialRevision, DatabaseError,
+    DatabaseInspection, DeploymentIdentifier, Group, GroupAuditReference, GroupGrant,
+    GroupGrantRecord, GroupMembership, GroupPublicIdentifier, GroupPublicIdentifierPersistence,
+    GroupPublicIdentity, LogAssignment, LogClassification, LogConfigurationAuditReference,
+    LogConfigurationGenerationPersistence, LogConfigurationVersion, LogDetail,
     LogModuleConfiguration, LogModuleSetting, LogType, MfaFactor, MfaModuleTarget, MfaStore,
     MfaTimeStep, Name, NewSession, PasswordVerifier, ProtectedSecret, ProtectedValue,
     ReconciliationDigest, ReconciliationStore, RecoveryPublicKey, SESSION_DIGEST_LENGTH,
     ServiceConnection, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
-    StateIdentifier, WorkflowCheckpoint, WorkflowKind,
+    StateIdentifier, StoredAuditDestinationBinding, TemporaryCredentialExpiration,
+    ValidatedAuditTerminalObligationWrite, WorkflowCheckpoint, WorkflowKind,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 use weavelit_server_database_sqlite::SqliteDatabase;
@@ -31,18 +39,27 @@ const CHECKPOINT_METADATA: &[u8] = b"restore-checkpoint-metadata";
 const RECORD_IDENTIFIER_BYTE: u8 = 0xF0;
 const SESSION_CLIENT_MODULE: &str = "session-marker-module";
 
-const EXPECTED_TABLES: [&str; 21] = [
+const EXPECTED_TABLES: [&str; 30] = [
     "weavelit_account",
     "weavelit_account_audit_reference",
+    "weavelit_account_public_identity",
+    "weavelit_audit_terminal_obligation",
+    "weavelit_audit_terminal_supersession",
     "weavelit_completion_obligation",
     "weavelit_configuration",
     "weavelit_group",
     "weavelit_group_audit_reference",
     "weavelit_group_grant",
     "weavelit_group_membership",
+    "weavelit_group_public_identity",
     "weavelit_lifecycle_state",
     "weavelit_lifecycle_reconciliation",
+    "weavelit_log_configuration_current_generation",
+    "weavelit_log_configuration_generation",
+    "weavelit_log_configuration_generation_log_type",
+    "weavelit_log_configuration_generation_setting",
     "weavelit_log_assignment",
+    "weavelit_log_configuration_audit_reference",
     "weavelit_log_module_configuration",
     "weavelit_log_module_setting",
     "weavelit_migration_ledger",
@@ -83,6 +100,34 @@ fn identifier(byte: u8) -> StateIdentifier {
     StateIdentifier::from_bytes([byte; 16]).unwrap()
 }
 
+fn account_public_identifier(byte: u8) -> AccountPublicIdentifier {
+    account_public_identifier_persistence()
+        .decode([byte; 16])
+        .unwrap()
+}
+
+fn account_public_identifier_persistence() -> AccountPublicIdentifierPersistence {
+    static PERSISTENCE: OnceLock<AccountPublicIdentifierPersistence> = OnceLock::new();
+
+    *PERSISTENCE.get_or_init(|| {
+        AccountPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+    })
+}
+
+fn group_public_identifier(byte: u8) -> GroupPublicIdentifier {
+    group_public_identifier_persistence()
+        .decode([byte; 16])
+        .unwrap()
+}
+
+fn group_public_identifier_persistence() -> GroupPublicIdentifierPersistence {
+    static PERSISTENCE: OnceLock<GroupPublicIdentifierPersistence> = OnceLock::new();
+
+    *PERSISTENCE.get_or_init(|| {
+        GroupPublicIdentifierPersistence::from_server_authority(&ServerDatabaseAuthority::new())
+    })
+}
+
 fn audit_reference(byte: u8) -> AuditReferenceIdentifier {
     audit_reference_persistence()
         .decode(&format!("ar-{}", format!("{byte:02x}").repeat(16)))
@@ -94,6 +139,14 @@ fn audit_reference_persistence() -> AuditReferencePersistence {
 
     *PERSISTENCE.get_or_init(|| {
         AuditReferencePersistence::from_server_authority(&ServerDatabaseAuthority::new())
+    })
+}
+
+fn log_configuration_generation_persistence() -> &'static LogConfigurationGenerationPersistence {
+    static PERSISTENCE: OnceLock<LogConfigurationGenerationPersistence> = OnceLock::new();
+
+    PERSISTENCE.get_or_init(|| {
+        LogConfigurationGenerationPersistence::from_server_authority(&ServerDatabaseAuthority::new())
     })
 }
 
@@ -110,6 +163,7 @@ fn session(token_byte: u8, csrf_byte: u8) -> NewSession {
         SessionTokenHash::from_bytes([token_byte; SESSION_DIGEST_LENGTH]).unwrap(),
         SessionCsrfHash::from_bytes([csrf_byte; SESSION_DIGEST_LENGTH]).unwrap(),
         identifier(1),
+        CredentialRevision::from_value(u64::MAX).unwrap(),
         name(SESSION_CLIENT_MODULE),
         SessionInstant::from_unix_milliseconds(1_000).unwrap(),
     )
@@ -133,6 +187,31 @@ fn watermark_count(path: &Path) -> i64 {
             |row| row.get(0),
         )
         .unwrap()
+}
+
+fn insert_session_issuance_account(path: &Path) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "INSERT INTO weavelit_account \
+             (account_id, username, display_name, active, mfa_required, credential_revision) \
+             VALUES (?1, 'session-owner', NULL, 1, 0, ?2)",
+            rusqlite::params![
+                identifier(1).as_bytes().as_slice(),
+                u64::MAX.to_be_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
+}
+
+fn remove_session_issuance_account(path: &Path) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "DELETE FROM weavelit_account WHERE account_id = ?1",
+            [identifier(1).as_bytes().as_slice()],
+        )
+        .unwrap();
 }
 
 fn restore_checkpoint(deployment_identifier: DeploymentIdentifier) -> WorkflowCheckpoint {
@@ -159,8 +238,8 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
     ApplicationState::new(ApplicationStateInput {
         configuration: vec![
             ConfigurationEntry {
-                component: name("mfa.totp"),
-                key: ConfigurationKey::new("enabled").unwrap(),
+                component: name("totp"),
+                key: ConfigurationKey::new("mfa-module.enabled").unwrap(),
                 value: ConfigurationValue::new("false").unwrap(),
             },
             ConfigurationEntry {
@@ -181,6 +260,12 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 display_name: Some(name("First Admin")),
                 active: true,
                 mfa_required: true,
+                credential_revision: CredentialRevision::from_value(u64::MAX).unwrap(),
+                must_change_password: true,
+                temporary_credential_expiration: Some(
+                    TemporaryCredentialExpiration::from_unix_milliseconds(1_700_000_000_000)
+                        .unwrap(),
+                ),
             },
             Account {
                 identifier: identifier(2),
@@ -188,7 +273,14 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 display_name: Some(name("運用担当")),
                 active: false,
                 mfa_required: false,
+                credential_revision: CredentialRevision::INITIAL,
+                must_change_password: false,
+                temporary_credential_expiration: None,
             },
+        ],
+        account_public_identities: vec![
+            AccountPublicIdentity::new(identifier(1), account_public_identifier(0x91)),
+            AccountPublicIdentity::new(identifier(2), account_public_identifier(0x92)),
         ],
         account_audit_references: vec![
             AccountAuditReference::new(identifier(1), audit_reference(0xA1)),
@@ -211,6 +303,10 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 name: name("運用-équipe"),
                 description: None,
             },
+        ],
+        group_public_identities: vec![
+            GroupPublicIdentity::new(identifier(3), group_public_identifier(0x93)),
+            GroupPublicIdentity::new(identifier(7), group_public_identifier(0x97)),
         ],
         group_audit_references: vec![
             GroupAuditReference::new(identifier(3), audit_reference(0xB3)),
@@ -285,6 +381,10 @@ fn application_state(workflow: WorkflowKind) -> ApplicationState {
                 value: ConfigurationValue::new("unsupported").unwrap(),
             }],
         }],
+        log_configuration_audit_references: vec![LogConfigurationAuditReference::new(
+            identifier(6),
+            audit_reference(0xC6),
+        )],
         log_assignments: vec![
             LogAssignment {
                 log_type: LogType::System,
@@ -306,6 +406,7 @@ fn restored_database(path: &Path, deployment_identifier: DeploymentIdentifier) -
     database.create_checkpoint(&checkpoint).unwrap();
     database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &checkpoint,
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -406,12 +507,12 @@ fn assert_redacted(error: DatabaseError) {
 }
 
 /// Proves the same intent the previous exact-column-name test carried: that
-/// sessions, log records, and Log Module credentials are not part of restorable
-/// state and cannot ride in a backup. It no longer conflates that intent with
-/// "no session table exists", because the specification requires the Server to
-/// store live sessions in the Application Database.
+/// sessions, queryable Log destination records, Log Module credentials,
+/// generation history, and opaque terminal recovery rows are not part of
+/// restorable state and cannot ride in a backup. It no longer conflates that
+/// intent with absence of live operational tables.
 #[test]
-fn only_the_live_session_table_may_name_session_data_and_no_table_stores_log_records() {
+fn live_operational_tables_remain_outside_restorable_state_and_log_destination_storage() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     drop(SqliteDatabase::open(&path).unwrap());
@@ -437,13 +538,19 @@ fn only_the_live_session_table_may_name_session_data_and_no_table_stores_log_rec
         if lower_column.starts_with("weavelit_session.") {
             continue;
         }
-        assert!(!lower_column.contains("session"));
-        assert!(!lower_column.contains("token"));
-        assert!(!lower_column.contains("csrf"));
+        let (_, column_name) = lower_column
+            .split_once('.')
+            .expect("the inventory must qualify every column with its table");
+        assert!(!column_name.contains("session"));
+        assert!(!column_name.contains("token"));
+        assert!(!column_name.contains("csrf"));
     }
     let log_module_columns = column_names(&path)
         .into_iter()
-        .filter(|column| column.starts_with("weavelit_log_module_"))
+        .filter(|column| {
+            column.starts_with("weavelit_log_module_")
+                || column.starts_with("weavelit_log_configuration_")
+        })
         .collect::<Vec<_>>();
     for column in &log_module_columns {
         let lower_column = column.to_ascii_lowercase();
@@ -549,11 +656,11 @@ fn every_component_is_enabled_until_an_entry_disables_it() {
     let path = database_path(&temporary_directory);
     let mut database = restored_database(&path, deployment(23));
 
-    // The seeded state carries component configuration but no enablement
-    // entry, so nothing is disabled.
+    // Restored state explicitly leaves TOTP disabled until an Administrator
+    // enables it.
     assert_eq!(
         database.load_component_enablement().unwrap(),
-        ComponentEnablement::default()
+        ComponentEnablement::new([(ComponentKind::MfaModule, name("totp"))])
     );
 
     disable_component(&path, ComponentKind::ClientModule, "web-ui", "false");
@@ -600,13 +707,14 @@ fn the_enablement_projection_reads_no_other_component_setting() {
         .map(|(kind, name)| (kind, name.as_str().to_owned()))
         .collect();
 
-    // The seeded state carries a display name, an MFA Module setting, an
-    // account, its verifier, and a recovery key. None of them is a component
-    // enablement entry, so exactly one entry is projected and nothing else is
-    // reachable through this read at all.
+    // The seeded state carries the canonical TOTP disablement and the test
+    // adds one Client Module disablement. No other setting is projected.
     assert_eq!(
         disabled,
-        vec![(ComponentKind::ClientModule, String::from("web-ui"))]
+        vec![
+            (ComponentKind::ClientModule, String::from("web-ui")),
+            (ComponentKind::MfaModule, String::from("totp")),
+        ]
     );
 }
 
@@ -627,7 +735,7 @@ fn disable_component(path: &Path, kind: ComponentKind, component: &str, value: &
 fn totp_target() -> MfaModuleTarget {
     MfaModuleTarget {
         module: name("totp"),
-        component: name("mfa.totp"),
+        component: name("totp"),
     }
 }
 
@@ -637,7 +745,8 @@ fn enable_totp_module(path: &Path) {
         .unwrap()
         .execute(
             "INSERT OR REPLACE INTO weavelit_configuration \
-             (component, setting_key, setting_value) VALUES ('mfa.totp', 'enabled', ?1)",
+             (component, setting_key, setting_value) \
+             VALUES ('totp', 'mfa-module.enabled', ?1)",
             [COMPONENT_ENABLED_VALUE],
         )
         .unwrap();
@@ -649,12 +758,15 @@ fn a_restore_clears_every_live_session_inside_the_state_replacement() {
     let path = database_path(&temporary_directory);
     let deployment_identifier = deployment(12);
     let mut database = pending_database(&path, deployment_identifier);
+    insert_session_issuance_account(&path);
     database.create(&session(0x21, 0x22)).unwrap();
     database.create(&session(0x23, 0x24)).unwrap();
     assert_eq!(session_count(&path), 2);
+    remove_session_issuance_account(&path);
 
     database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -664,7 +776,11 @@ fn a_restore_clears_every_live_session_inside_the_state_replacement() {
     assert_eq!(session_count(&path), 0);
     assert_eq!(
         database
-            .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+            .load_initialized_state(
+                &account_public_identifier_persistence(),
+                &audit_reference_persistence(),
+                deployment_identifier,
+            )
             .unwrap()
             .state(),
         &application_state(WorkflowKind::Restore)
@@ -681,6 +797,7 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
     let path = database_path(&temporary_directory);
     let deployment_identifier = deployment(13);
     let mut database = pending_database(&path, deployment_identifier);
+    insert_session_issuance_account(&path);
     // Accepting a step is one decision with the Module's enabled state and the
     // session it issues, so the Module is enabled here and each acceptance
     // carries its own session.
@@ -693,6 +810,7 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
         .accept_step(&totp_target(), identifier(7), step, &session(0x33, 0x34))
         .unwrap();
     assert_eq!(watermark_count(&path), 2);
+    remove_session_issuance_account(&path);
 
     // The replacement writes the restored state's own configuration into a
     // table it expects to be empty, so the entry that enabled the Module for
@@ -700,12 +818,14 @@ fn a_restore_clears_every_replay_watermark_inside_the_state_replacement() {
     Connection::open(&path)
         .unwrap()
         .execute(
-            "DELETE FROM weavelit_configuration WHERE component = 'mfa.totp'",
+            "DELETE FROM weavelit_configuration WHERE component = 'totp' \
+             AND setting_key = 'mfa-module.enabled'",
             [],
         )
         .unwrap();
     database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -732,10 +852,13 @@ fn a_rejected_state_replacement_leaves_live_sessions_untouched() {
     let path = database_path(&temporary_directory);
     let deployment_identifier = deployment(13);
     let mut database = pending_database(&path, deployment_identifier);
+    insert_session_issuance_account(&path);
     database.create(&session(0x25, 0x26)).unwrap();
+    remove_session_issuance_account(&path);
 
     let error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &WorkflowCheckpoint::new(
                 deployment_identifier,
                 WorkflowKind::Restore,
@@ -764,7 +887,11 @@ fn normalized_state_and_backup_content_carry_no_session_data() {
     database.create(&session(0x29, 0x2A)).unwrap();
 
     let loaded = database
-        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        )
         .unwrap();
     let rendered = format!("{:?}", loaded.state());
 
@@ -784,6 +911,349 @@ fn normalized_state_and_backup_content_carry_no_session_data() {
 }
 
 #[test]
+fn fresh_init_seeds_version_one_and_reads_history_across_restart() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(30);
+    let checkpoint = WorkflowCheckpoint::new(
+        deployment_identifier,
+        WorkflowKind::Init,
+        CheckpointMetadata::from_bytes(b"init-generation-checkpoint".as_slice()).unwrap(),
+    );
+    let mut database = SqliteDatabase::open(&path).unwrap();
+    database.create_checkpoint(&checkpoint).unwrap();
+    database
+        .complete_checkpoint(
+            &account_public_identifier_persistence(),
+            &checkpoint,
+            &application_state(WorkflowKind::Init),
+            &reconciliation_digest(0x30),
+        )
+        .unwrap();
+
+    let persistence = log_configuration_generation_persistence();
+    let initial_key = persistence.key(identifier(6), LogConfigurationVersion::INITIAL);
+    let current = database
+        .log_configuration_generations()
+        .unwrap()
+        .load_current_audit_log_configuration_generation(persistence)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.key(), initial_key);
+    assert_eq!(current.module().as_str(), "log-sqlite");
+    assert_eq!(current.name().as_str(), "local");
+    assert!(current.enabled());
+    assert_eq!(current.settings().len(), 1);
+    assert_eq!(current.settings()[0].key.as_str(), "retention");
+    assert_eq!(current.settings()[0].value.as_str(), "unsupported");
+    assert_eq!(current.log_types(), [LogType::System, LogType::Audit]);
+    assert_eq!(
+        database
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(persistence, initial_key)
+            .unwrap(),
+        Some(current.clone())
+    );
+    drop(database);
+
+    let historical_version = LogConfigurationVersion::new(u64::MAX).unwrap();
+    let historical_bytes = historical_version.get().to_be_bytes();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation \
+             (configuration_id, generation_version, module, name, enabled) \
+             VALUES (?1, ?2, 'log-sqlite', 'historical-local', 0)",
+            rusqlite::params![
+                identifier(6).as_bytes().as_slice(),
+                historical_bytes.as_slice()
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation_setting \
+             (configuration_id, generation_version, setting_key, setting_value) \
+             VALUES (?1, ?2, 'retention', 'historical')",
+            rusqlite::params![
+                identifier(6).as_bytes().as_slice(),
+                historical_bytes.as_slice()
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation_log_type \
+             (configuration_id, generation_version, log_type) VALUES (?1, ?2, 'audit')",
+            rusqlite::params![
+                identifier(6).as_bytes().as_slice(),
+                historical_bytes.as_slice()
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    for _ in 0..2 {
+        let mut reopened = SqliteDatabase::open(&path).unwrap();
+        let historical_key = persistence.key(identifier(6), historical_version);
+        let historical = reopened
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(persistence, historical_key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(historical.key(), historical_key);
+        assert_eq!(historical.name().as_str(), "historical-local");
+        assert!(!historical.enabled());
+        assert_eq!(historical.log_types(), [LogType::Audit]);
+        assert_eq!(
+            reopened
+                .log_configuration_generations()
+                .unwrap()
+                .load_current_audit_log_configuration_generation(persistence)
+                .unwrap()
+                .unwrap()
+                .key(),
+            initial_key
+        );
+        assert_eq!(
+            reopened
+                .log_configuration_generations()
+                .unwrap()
+                .load_log_configuration_generation(
+                    persistence,
+                    persistence.key(identifier(6), LogConfigurationVersion::new(2).unwrap(),),
+                )
+                .unwrap(),
+            None
+        );
+        drop(reopened);
+    }
+}
+
+#[test]
+fn generation_seed_failure_rolls_back_the_complete_checkpoint() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(31);
+    let mut database = pending_database(&path, deployment_identifier);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER test_reject_generation_seed \
+             BEFORE INSERT ON weavelit_log_configuration_generation \
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+    assert_eq!(
+        database.complete_checkpoint(
+            &account_public_identifier_persistence(),
+            &restore_checkpoint(deployment_identifier),
+            &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0x31),
+        ),
+        Err(DatabaseError::IntegrityFailure)
+    );
+    drop(database);
+
+    assert_no_state_rows(&path);
+    assert!(matches!(
+        SqliteDatabase::open(&path),
+        Err(DatabaseError::IntegrityFailure)
+    ));
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("DROP TRIGGER test_reject_generation_seed;")
+        .unwrap();
+    let reopened = SqliteDatabase::open(&path).unwrap();
+    assert_eq!(
+        reopened.inspect(deployment_identifier).unwrap(),
+        DatabaseInspection::Pending(restore_checkpoint(deployment_identifier))
+    );
+}
+
+#[test]
+fn current_generation_reads_fail_closed_for_inconsistent_persistence() {
+    let mutations = [
+        (
+            "malformed version",
+            "PRAGMA foreign_keys = OFF; PRAGMA ignore_check_constraints = ON; \
+             UPDATE weavelit_log_configuration_current_generation \
+             SET generation_version = zeroblob(8)",
+        ),
+        (
+            "missing current pointer",
+            "DELETE FROM weavelit_log_configuration_current_generation",
+        ),
+        (
+            "configuration identity",
+            "PRAGMA foreign_keys = OFF; \
+             DROP TRIGGER weavelit_log_configuration_generation_reject_update; \
+             UPDATE weavelit_log_configuration_generation \
+             SET configuration_id = x'07070707070707070707070707070707'",
+        ),
+        (
+            "module mismatch",
+            "UPDATE weavelit_log_module_configuration SET module = 'other-module'",
+        ),
+        (
+            "enabled mismatch",
+            "UPDATE weavelit_log_module_configuration SET enabled = 0",
+        ),
+        (
+            "settings mismatch",
+            "UPDATE weavelit_log_module_setting SET setting_value = 'changed'",
+        ),
+        (
+            "missing Audit membership",
+            "DROP TRIGGER weavelit_log_configuration_generation_log_type_reject_delete; \
+             DELETE FROM weavelit_log_configuration_generation_log_type \
+             WHERE log_type = 'audit'",
+        ),
+    ];
+
+    for (case, mutation) in mutations {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = restored_database(&path, deployment(32));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(mutation)
+            .unwrap();
+
+        assert_eq!(
+            database
+                .log_configuration_generations()
+                .unwrap()
+                .load_current_audit_log_configuration_generation(
+                    log_configuration_generation_persistence(),
+                ),
+            Err(DatabaseError::IntegrityFailure),
+            "for {case}"
+        );
+    }
+}
+
+#[test]
+fn exact_generation_read_rejects_malformed_settings() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = restored_database(&path, deployment(33));
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP TRIGGER weavelit_log_configuration_generation_setting_reject_update; \
+             PRAGMA ignore_check_constraints = ON; \
+             UPDATE weavelit_log_configuration_generation_setting SET setting_key = ''",
+        )
+        .unwrap();
+    let persistence = log_configuration_generation_persistence();
+
+    assert_eq!(
+        database
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(
+                persistence,
+                persistence.key(identifier(6), LogConfigurationVersion::INITIAL),
+            ),
+        Err(DatabaseError::IntegrityFailure)
+    );
+}
+
+#[test]
+fn normalized_restore_state_excludes_generation_history() {
+    let source_directory = tempfile::tempdir().unwrap();
+    let source_path = database_path(&source_directory);
+    let source_deployment = deployment(34);
+    let mut source = restored_database(&source_path, source_deployment);
+    let persistence = log_configuration_generation_persistence();
+    let historical_version = LogConfigurationVersion::new(2).unwrap();
+    let historical_bytes = historical_version.get().to_be_bytes();
+    Connection::open(&source_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO weavelit_log_configuration_generation \
+             (configuration_id, generation_version, module, name, enabled) \
+             VALUES (?1, ?2, 'log-sqlite', 'source-history', 1)",
+            rusqlite::params![
+                identifier(6).as_bytes().as_slice(),
+                historical_bytes.as_slice()
+            ],
+        )
+        .unwrap();
+    let loaded = source
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            source_deployment,
+        )
+        .unwrap();
+    assert!(
+        source
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(
+                persistence,
+                persistence.key(identifier(6), historical_version),
+            )
+            .unwrap()
+            .is_some()
+    );
+
+    let replacement_directory = tempfile::tempdir().unwrap();
+    let replacement_path = database_path(&replacement_directory);
+    let replacement_deployment = deployment(35);
+    let mut replacement = SqliteDatabase::open(&replacement_path).unwrap();
+    let checkpoint = restore_checkpoint(replacement_deployment);
+    replacement.create_checkpoint(&checkpoint).unwrap();
+    replacement
+        .complete_checkpoint(
+            &account_public_identifier_persistence(),
+            &checkpoint,
+            loaded.state(),
+            &reconciliation_digest(0x35),
+        )
+        .unwrap();
+
+    assert_eq!(
+        replacement
+            .load_initialized_state(
+                &account_public_identifier_persistence(),
+                &audit_reference_persistence(),
+                replacement_deployment,
+            )
+            .unwrap()
+            .state(),
+        loaded.state()
+    );
+    assert_eq!(
+        replacement
+            .log_configuration_generations()
+            .unwrap()
+            .load_log_configuration_generation(
+                persistence,
+                persistence.key(identifier(6), historical_version),
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        Connection::open(&replacement_path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_configuration_generation",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
@@ -793,7 +1263,11 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
 
     let mut database = SqliteDatabase::open(&path).unwrap();
     let loaded = database
-        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        )
         .unwrap();
 
     assert_eq!(loaded.deployment_identifier(), deployment_identifier);
@@ -801,12 +1275,35 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
     assert_eq!(loaded.state(), &expected);
     assert_eq!(loaded.state().accounts().len(), 2);
     assert_eq!(
+        loaded.state().accounts()[0].credential_revision,
+        CredentialRevision::from_value(u64::MAX).unwrap()
+    );
+    assert!(loaded.state().accounts()[0].must_change_password);
+    assert_eq!(
+        loaded.state().accounts()[0]
+            .temporary_credential_expiration
+            .unwrap()
+            .as_unix_milliseconds(),
+        1_700_000_000_000
+    );
+    assert_eq!(
+        loaded.state().account_public_identities(),
+        expected.account_public_identities()
+    );
+    assert_eq!(
         loaded.state().accounts()[1].username.as_str(),
         "管理者-équipe"
     );
     assert_eq!(loaded.state().groups()[1].name.as_str(), "運用-équipe");
     assert_eq!(loaded.state().account_audit_references().len(), 2);
     assert_eq!(loaded.state().group_audit_references().len(), 2);
+    assert_eq!(
+        loaded.state().log_configuration_audit_references(),
+        [LogConfigurationAuditReference::new(
+            identifier(6),
+            audit_reference(0xC6)
+        )]
+    );
     assert_eq!(loaded.state().group_grants().len(), 8);
     assert_eq!(
         loaded.state().password_verifiers()[0].verifier.as_str(),
@@ -836,6 +1333,144 @@ fn completion_persists_every_state_type_and_reloads_it_across_reopen() {
             deployment_identifier
         }
     );
+}
+
+#[test]
+fn account_public_identity_is_persistent_unique_and_exactly_lookupable() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    drop(restored_database(&path, deployment(24)));
+    let mut database = SqliteDatabase::open(&path).unwrap();
+
+    let public_identifier = account_public_identifier(0x91);
+    let identity = database
+        .load_account_public_identity(&account_public_identifier_persistence(), public_identifier)
+        .unwrap()
+        .expect("the exact public identifier resolves to its account");
+
+    assert_eq!(identity.account(), identifier(1));
+    assert_eq!(identity.public_identifier(), public_identifier);
+    assert_eq!(
+        database.load_account_public_identity(
+            &account_public_identifier_persistence(),
+            account_public_identifier(0x99),
+        ),
+        Ok(None)
+    );
+
+    let connection = Connection::open(&path).unwrap();
+    let index_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema \
+             WHERE type = 'index' AND name = 'weavelit_account_public_identity_value'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert!(index_sql.contains("public_identifier"));
+}
+
+#[test]
+fn account_administration_reads_are_ordered_exact_and_persistent() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    drop(restored_database(&path, deployment(27)));
+    let mut database = SqliteDatabase::open(&path).unwrap();
+    let persistence = account_public_identifier_persistence();
+
+    let accounts = database
+        .list_account_administration_projections(&persistence)
+        .unwrap();
+    assert_eq!(accounts.len(), 2);
+    assert_eq!(accounts[0].username().as_str(), USERNAME);
+    assert_eq!(
+        accounts[0].display_name().map(Name::as_str),
+        Some("First Admin")
+    );
+    assert!(accounts[0].active());
+    assert!(accounts[0].mfa_required());
+    assert_eq!(
+        accounts[0].public_identifier(),
+        account_public_identifier(0x91)
+    );
+    assert_eq!(accounts[1].username().as_str(), "管理者-équipe");
+    assert_eq!(
+        accounts[1].display_name().map(Name::as_str),
+        Some("運用担当")
+    );
+    assert!(!accounts[1].active());
+    assert!(!accounts[1].mfa_required());
+
+    let exact = database
+        .load_account_administration_projection(&persistence, account_public_identifier(0x92))
+        .unwrap()
+        .expect("the persisted public identifier must resolve after reopen");
+    assert_eq!(exact, accounts[1]);
+    assert_eq!(
+        database
+            .load_account_administration_projection(&persistence, account_public_identifier(0x99),),
+        Ok(None)
+    );
+
+    let rendered = format!("{accounts:?}{exact:?}");
+    for excluded in [
+        VERIFIER,
+        "ar-a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "protected-component-secret",
+        "protected-factor-data",
+        "protected-provider-credential",
+        "session-marker-module",
+    ] {
+        assert!(
+            !rendered.contains(excluded),
+            "projection exposed {excluded}"
+        );
+    }
+}
+
+#[test]
+fn account_administration_reads_fail_before_output_for_invalid_public_identity_state() {
+    let corruptions = [
+        "DROP TRIGGER weavelit_account_public_identity_reject_delete; \
+         DELETE FROM weavelit_account_public_identity WHERE account_id = \
+         x'01010101010101010101010101010101'",
+        "PRAGMA ignore_check_constraints = ON; \
+         DROP TRIGGER weavelit_account_public_identity_reject_update; \
+         UPDATE weavelit_account_public_identity SET public_identifier = zeroblob(16) \
+         WHERE account_id = x'01010101010101010101010101010101'",
+        "DROP INDEX weavelit_account_public_identity_value; \
+         DROP TRIGGER weavelit_account_public_identity_reject_update; \
+         UPDATE weavelit_account_public_identity SET public_identifier = \
+         x'92929292929292929292929292929292' \
+         WHERE account_id = x'01010101010101010101010101010101'",
+    ];
+
+    for corruption in corruptions {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = restored_database(&path, deployment(28));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(corruption)
+            .unwrap();
+        let persistence = account_public_identifier_persistence();
+
+        let list_error = database
+            .list_account_administration_projections(&persistence)
+            .unwrap_err();
+        let lookup_error = database
+            .load_account_administration_projection(&persistence, account_public_identifier(0x92))
+            .unwrap_err();
+
+        assert_eq!(list_error, DatabaseError::IntegrityFailure, "{corruption}");
+        assert_eq!(
+            lookup_error,
+            DatabaseError::IntegrityFailure,
+            "{corruption}"
+        );
+        assert_redacted(list_error);
+        assert_redacted(lookup_error);
+    }
 }
 
 #[test]
@@ -1062,6 +1697,7 @@ fn completion_is_accepted_exactly_once() {
 
     let error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -1115,6 +1751,7 @@ fn mismatched_checkpoint_is_rejected_without_writing_state() {
     ] {
         let error = database
             .complete_checkpoint(
+                &account_public_identifier_persistence(),
                 &checkpoint,
                 &application_state(workflow),
                 &reconciliation_digest(0xA0),
@@ -1141,13 +1778,18 @@ fn deployment_mismatch_is_rejected_for_completion_load_and_acknowledgement() {
 
     let completion_error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(other),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
         )
         .unwrap_err();
     let load_error = database
-        .load_initialized_state(&audit_reference_persistence(), other)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            other,
+        )
         .unwrap_err();
     let acknowledgement_error = database
         .acknowledge_completion(other, identifier(RECORD_IDENTIFIER_BYTE))
@@ -1169,6 +1811,7 @@ fn completion_requires_a_pending_checkpoint_and_matching_obligation_workflow() {
 
     let uninitialized_error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -1179,6 +1822,7 @@ fn completion_requires_a_pending_checkpoint_and_matching_obligation_workflow() {
         .unwrap();
     let obligation_error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Init),
             &reconciliation_digest(0xA0),
@@ -1208,6 +1852,7 @@ fn transaction_failure_rolls_back_every_persisted_state_row() {
 
     let error = database
         .complete_checkpoint(
+            &account_public_identifier_persistence(),
             &restore_checkpoint(deployment_identifier),
             &application_state(WorkflowKind::Restore),
             &reconciliation_digest(0xA0),
@@ -1228,7 +1873,11 @@ fn transaction_failure_rolls_back_every_persisted_state_row() {
         DatabaseInspection::Pending(restore_checkpoint(deployment_identifier))
     );
     assert_eq!(
-        reopened.load_initialized_state(&audit_reference_persistence(), deployment_identifier),
+        reopened.load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        ),
         Err(DatabaseError::NotInitialized)
     );
 }
@@ -1240,13 +1889,19 @@ fn loading_uninitialized_or_pending_state_is_rejected() {
     let deployment_identifier = deployment(8);
     let mut database = SqliteDatabase::open(&path).unwrap();
 
-    let uninitialized =
-        database.load_initialized_state(&audit_reference_persistence(), deployment_identifier);
+    let uninitialized = database.load_initialized_state(
+        &account_public_identifier_persistence(),
+        &audit_reference_persistence(),
+        deployment_identifier,
+    );
     database
         .create_checkpoint(&restore_checkpoint(deployment_identifier))
         .unwrap();
-    let pending =
-        database.load_initialized_state(&audit_reference_persistence(), deployment_identifier);
+    let pending = database.load_initialized_state(
+        &account_public_identifier_persistence(),
+        &audit_reference_persistence(),
+        deployment_identifier,
+    );
 
     assert_eq!(uninitialized, Err(DatabaseError::NotInitialized));
     assert_eq!(pending, Err(DatabaseError::NotInitialized));
@@ -1255,6 +1910,12 @@ fn loading_uninitialized_or_pending_state_is_rejected() {
 #[test]
 fn malformed_persisted_state_fails_integrity_validation() {
     let mutations = [
+        "DROP TRIGGER weavelit_account_public_identity_reject_delete; \
+         DELETE FROM weavelit_account_public_identity WHERE account_id = \
+         x'01010101010101010101010101010101'",
+        "INSERT INTO weavelit_account_public_identity (account_id, public_identifier) \
+         VALUES (x'99999999999999999999999999999999', \
+                 x'89898989898989898989898989898989')",
         "DELETE FROM weavelit_account_audit_reference",
         "INSERT INTO weavelit_account_audit_reference (account_id, audit_reference) \
          VALUES (x'99999999999999999999999999999999', \
@@ -1282,10 +1943,16 @@ fn malformed_persisted_state_fails_integrity_validation() {
         connection.execute_batch(mutation).unwrap();
         drop(connection);
 
-        let error = SqliteDatabase::open(&path)
-            .unwrap()
-            .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
-            .unwrap_err();
+        let error = match SqliteDatabase::open(&path) {
+            Ok(mut database) => database
+                .load_initialized_state(
+                    &account_public_identifier_persistence(),
+                    &audit_reference_persistence(),
+                    deployment_identifier,
+                )
+                .unwrap_err(),
+            Err(error) => error,
+        };
 
         assert_eq!(error, DatabaseError::IntegrityFailure, "for {mutation}");
         assert_redacted(error);
@@ -1304,7 +1971,11 @@ fn completion_obligation_is_acknowledged_exactly_once() {
     let first = database.acknowledge_completion(deployment_identifier, record_identifier);
     let second = database.acknowledge_completion(deployment_identifier, record_identifier);
     let loaded = database
-        .load_initialized_state(&audit_reference_persistence(), deployment_identifier)
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        )
         .unwrap();
 
     assert_eq!(unknown_record, Err(DatabaseError::InvalidState));
@@ -1334,4 +2005,485 @@ fn acknowledgement_requires_initialized_state() {
 
     assert_eq!(uninitialized, Err(DatabaseError::NotInitialized));
     assert_eq!(pending, Err(DatabaseError::NotInitialized));
+}
+
+/// Proves that live audit terminal obligations and supersessions (recovery
+/// outbox rows) neither enter normalized restorable state nor are cleared by
+/// checkpoint replacement. Obligations remain queryable after Restore and are
+/// never imported from backup because they are live operational records, not
+/// restorable application state.
+#[test]
+fn recovery_obligations_and_supersessions_are_live_operational_data_excluded_from_state() {
+    type SupersessionRow = (
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    );
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let deployment_identifier = deployment(26);
+    let mut database = pending_database(&path, deployment_identifier);
+
+    // Seed the live operational recovery tables before checkpoint completion.
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+
+    let obligation_record_id: [u8; 16] = [0x0A; 16];
+    let obligation_binding_id: [u8; 16] = [0x0B; 16];
+    let obligation_binding_version: [u8; 8] = [0x0C; 8];
+    let supersession_replacement_record_id: [u8; 16] = [0x0D; 16];
+    let supersession_replacement_binding_id: [u8; 16] = [0x0E; 16];
+    let supersession_replacement_binding_version: [u8; 8] = [0x0F; 8];
+
+    // Insert a replacement obligation first to satisfy the foreign key constraint.
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_obligation \
+             (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            rusqlite::params![
+                supersession_replacement_record_id.as_slice(),
+                b"replacement-obligation-projection",
+                supersession_replacement_binding_id.as_slice(),
+                supersession_replacement_binding_version.as_slice(),
+            ],
+        )
+        .unwrap();
+
+    // Insert the original obligation: live operational recovery data that WILL NOT be
+    // imported from backup and MUST NOT be cleared by state replacement.
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_obligation \
+             (record_identifier, projection, binding_identifier, binding_version, acknowledged) \
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            rusqlite::params![
+                obligation_record_id.as_slice(),
+                b"obligation-projection-data",
+                obligation_binding_id.as_slice(),
+                obligation_binding_version.as_slice(),
+            ],
+        )
+        .unwrap();
+
+    // Insert a supersession: immutable disposition record linking original to
+    // replacement obligation. Also live operational data excluded from state.
+    connection
+        .execute(
+            "INSERT INTO weavelit_audit_terminal_supersession \
+             (original_record_identifier, disposition, \
+              original_binding_identifier, original_binding_version, \
+              replacement_record_identifier, \
+              replacement_binding_identifier, replacement_binding_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                obligation_record_id.as_slice(),
+                b"supersession-disposition",
+                obligation_binding_id.as_slice(),
+                obligation_binding_version.as_slice(),
+                supersession_replacement_record_id.as_slice(),
+                supersession_replacement_binding_id.as_slice(),
+                supersession_replacement_binding_version.as_slice(),
+            ],
+        )
+        .unwrap();
+
+    // Verify obligations and supersessions exist before state replacement.
+    let obligation_count_before: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM weavelit_audit_terminal_obligation",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let supersession_count_before: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM weavelit_audit_terminal_supersession",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    assert_eq!(obligation_count_before, 2);
+    assert_eq!(supersession_count_before, 1);
+
+    // Complete the checkpoint: state replacement that atomically restores
+    // application state from backup and seals the deployment. This MUST NOT
+    // clear obligations/supersessions; they remain live operational data.
+    database
+        .complete_checkpoint(
+            &account_public_identifier_persistence(),
+            &restore_checkpoint(deployment_identifier),
+            &application_state(WorkflowKind::Restore),
+            &reconciliation_digest(0xA0),
+        )
+        .unwrap();
+
+    // Verify obligations and supersessions are STILL present after restoration.
+    let connection = Connection::open(&path).unwrap();
+    let obligation_count_after: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM weavelit_audit_terminal_obligation",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let supersession_count_after: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM weavelit_audit_terminal_supersession",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    assert_eq!(
+        obligation_count_after, 2,
+        "restoration must not clear recovery obligations"
+    );
+    assert_eq!(
+        supersession_count_after, 1,
+        "restoration must not clear recovery supersessions"
+    );
+
+    // Load current application state: excludes audit terminal obligations and
+    // supersessions because they are live operational data. The existing guard
+    // `normalized_state_and_backup_paths_do_not_reference_recovery_tables` proves
+    // that backup excludes recovery tables; this test verifies live persistence.
+    let loaded = database
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            deployment_identifier,
+        )
+        .unwrap();
+
+    // Verify the normalized state matches expected application state.
+    assert_eq!(
+        loaded.state(),
+        &application_state(WorkflowKind::Restore),
+        "normalized restorable state must match restored aggregate"
+    );
+
+    // Directly verify obligation records persist with exact identifiers and binding.
+    let connection = Connection::open(&path).unwrap();
+    let obligations = {
+        let mut stmt = connection
+            .prepare(
+                "SELECT record_identifier, binding_identifier, binding_version, acknowledged \
+                 FROM weavelit_audit_terminal_obligation \
+                 ORDER BY record_identifier",
+            )
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i32>(3)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect::<Vec<_>>()
+    };
+
+    assert_eq!(obligations.len(), 2);
+    // Verify original obligation unchanged.
+    assert_eq!(obligations[0].0, obligation_record_id.to_vec());
+    assert_eq!(obligations[0].1, obligation_binding_id.to_vec());
+    assert_eq!(obligations[0].2, obligation_binding_version.to_vec());
+    assert_eq!(obligations[0].3, 0, "acknowledged must remain 0");
+    // Verify replacement obligation unchanged.
+    assert_eq!(
+        obligations[1].0,
+        supersession_replacement_record_id.to_vec()
+    );
+    assert_eq!(
+        obligations[1].1,
+        supersession_replacement_binding_id.to_vec()
+    );
+    assert_eq!(
+        obligations[1].2,
+        supersession_replacement_binding_version.to_vec()
+    );
+    assert_eq!(obligations[1].3, 0, "acknowledged must remain 0");
+
+    // Directly verify supersession disposition record unchanged.
+    let supersession: SupersessionRow = connection
+        .query_row(
+            "SELECT original_record_identifier, disposition, \
+             original_binding_identifier, original_binding_version, \
+             replacement_record_identifier, \
+             replacement_binding_identifier, replacement_binding_version \
+             FROM weavelit_audit_terminal_supersession",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(supersession.0, obligation_record_id.to_vec());
+    assert_eq!(supersession.1, b"supersession-disposition");
+    assert_eq!(supersession.2, obligation_binding_id.to_vec());
+    assert_eq!(supersession.3, obligation_binding_version.to_vec());
+    assert_eq!(supersession.4, supersession_replacement_record_id.to_vec());
+    assert_eq!(supersession.5, supersession_replacement_binding_id.to_vec());
+    assert_eq!(
+        supersession.6,
+        supersession_replacement_binding_version.to_vec()
+    );
+    drop(connection);
+}
+
+#[test]
+fn created_and_reset_account_state_round_trips_through_normalized_restore() {
+    let source_directory = tempfile::tempdir().unwrap();
+    let source_path = database_path(&source_directory);
+    let source_deployment = deployment(60);
+    let mut source = restored_database(&source_path, source_deployment);
+    let connection = Connection::open(&source_path).unwrap();
+    connection
+        .execute(
+            "UPDATE weavelit_account SET active = 1 WHERE account_id = ?1",
+            [identifier(2).as_bytes().as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_password_verifier \
+             (account_id, encoded_verifier) VALUES (?1, '$issuer-verifier')",
+            [identifier(2).as_bytes().as_slice()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO weavelit_session \
+             (token_hash, csrf_hash, account_id, client_module, issued_at_milliseconds, \
+              last_seen_at_milliseconds, absolute_expires_at_milliseconds) \
+             VALUES (?1, ?2, ?3, 'web-ui', 1000, 1000, 43201000)",
+            rusqlite::params![
+                [0x31_u8; SESSION_DIGEST_LENGTH].as_slice(),
+                [0x32_u8; SESSION_DIGEST_LENGTH].as_slice(),
+                identifier(2).as_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let authority = ServerDatabaseAuthority::new();
+    let terminal_persistence = AuditTerminalRecoveryPersistence::from_server_authority(&authority);
+    let binding =
+        StoredAuditDestinationBinding::from_persisted(&terminal_persistence, [0x71; 16], 1)
+            .unwrap();
+    let terminal = |identifier: u8| {
+        ValidatedAuditTerminalObligationWrite::from_server_audit(
+            &terminal_persistence,
+            [identifier; 16],
+            vec![identifier; 32],
+            binding.clone(),
+        )
+        .unwrap()
+    };
+    let target = MfaModuleTarget {
+        module: name("totp"),
+        component: name("totp"),
+    };
+    let recheck = || {
+        AccountCredentialIssuanceRecheck::new(
+            identifier(2),
+            SessionTokenHash::from_bytes([0x31; SESSION_DIGEST_LENGTH]).unwrap(),
+            name("web-ui"),
+            CredentialRevision::INITIAL,
+            SessionInstant::from_unix_milliseconds(1_001).unwrap(),
+            AccountCredentialIssuanceFactor::NoneObserved {
+                target: target.clone(),
+                module_enabled: false,
+            },
+        )
+    };
+    let created_account = identifier(8);
+    let created_public_identifier = account_public_identifier(0x98);
+    let created = AccountCreateMutation::new(
+        recheck(),
+        Account {
+            identifier: created_account,
+            username: name("restorable-created"),
+            display_name: Some(name("Restorable Created")),
+            active: true,
+            mfa_required: false,
+            credential_revision: CredentialRevision::INITIAL,
+            must_change_password: true,
+            temporary_credential_expiration: Some(
+                TemporaryCredentialExpiration::from_unix_milliseconds(86_401_001).unwrap(),
+            ),
+        },
+        AccountPublicIdentity::new(created_account, created_public_identifier),
+        AccountAuditReference::new(created_account, audit_reference(0xD8)),
+        AccountPasswordVerifier {
+            account: created_account,
+            verifier: PasswordVerifier::new("$created-verifier").unwrap(),
+        },
+    )
+    .unwrap();
+    let create_succeeded = terminal(0x81);
+    let create_conflict = terminal(0x82);
+    let create_denied = terminal(0x83);
+    assert_eq!(
+        source.create_account(
+            &account_public_identifier_persistence(),
+            &created,
+            &AccountCredentialAuditTerminalWrites::new(
+                &create_succeeded,
+                &create_conflict,
+                &create_denied,
+            ),
+        ),
+        Ok(AccountCreateOutcome::Created)
+    );
+
+    let reset_target = source
+        .prepare_password_reset_target(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            created_public_identifier,
+        )
+        .unwrap()
+        .unwrap();
+    let reset = AccountPasswordResetMutation::new(
+        recheck(),
+        reset_target,
+        TemporaryCredentialExpiration::from_unix_milliseconds(86_402_001).unwrap(),
+        AccountPasswordVerifier {
+            account: created_account,
+            verifier: PasswordVerifier::new("$reset-verifier").unwrap(),
+        },
+    )
+    .unwrap();
+    let reset_succeeded = terminal(0x84);
+    let reset_conflict = terminal(0x85);
+    let reset_denied = terminal(0x86);
+    assert!(matches!(
+        source.reset_account_password(
+            &account_public_identifier_persistence(),
+            &reset,
+            &AccountCredentialAuditTerminalWrites::new(
+                &reset_succeeded,
+                &reset_conflict,
+                &reset_denied,
+            ),
+        ),
+        Ok(AccountPasswordResetOutcome::Reset { .. })
+    ));
+
+    let normalized = source
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            source_deployment,
+        )
+        .unwrap();
+    let created_state = normalized
+        .state()
+        .accounts()
+        .iter()
+        .find(|account| account.identifier == created_account)
+        .unwrap();
+    assert_eq!(
+        created_state.credential_revision,
+        CredentialRevision::from_value(2).unwrap()
+    );
+    assert!(created_state.must_change_password);
+    assert_eq!(
+        created_state
+            .temporary_credential_expiration
+            .unwrap()
+            .as_unix_milliseconds(),
+        86_402_001
+    );
+    assert_eq!(
+        normalized
+            .state()
+            .password_verifiers()
+            .iter()
+            .find(|verifier| verifier.account == created_account)
+            .unwrap()
+            .verifier
+            .as_str(),
+        "$reset-verifier"
+    );
+
+    let destination_directory = tempfile::tempdir().unwrap();
+    let destination_path = database_path(&destination_directory);
+    let destination_deployment = deployment(61);
+    let mut destination = SqliteDatabase::open(&destination_path).unwrap();
+    let checkpoint = restore_checkpoint(destination_deployment);
+    destination.create_checkpoint(&checkpoint).unwrap();
+    destination
+        .complete_checkpoint(
+            &account_public_identifier_persistence(),
+            &checkpoint,
+            normalized.state(),
+            &reconciliation_digest(0xE1),
+        )
+        .unwrap();
+    let restored = destination
+        .load_initialized_state(
+            &account_public_identifier_persistence(),
+            &audit_reference_persistence(),
+            destination_deployment,
+        )
+        .unwrap();
+    assert_eq!(restored.state(), normalized.state());
+
+    let source_connection = Connection::open(&source_path).unwrap();
+    assert_eq!(
+        source_connection
+            .query_row("SELECT count(*) FROM weavelit_session", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        source_connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_audit_terminal_obligation",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        2
+    );
+    let destination_connection = Connection::open(&destination_path).unwrap();
+    for table in [
+        "weavelit_session",
+        "weavelit_mfa_replay_watermark",
+        "weavelit_audit_terminal_obligation",
+    ] {
+        assert_eq!(
+            destination_connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0,
+            "{table} must not transfer through normalized Restore state"
+        );
+    }
 }

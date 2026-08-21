@@ -5,11 +5,13 @@ import {
   AUTH_MFA_ENROLLMENT_CONFIRM_PATH,
   AUTH_MFA_ENROLLMENT_PATH,
   AUTH_MFA_VERIFY_PATH,
+  AUTH_PASSWORD_CHANGE_PATH,
   AUTH_SESSION_PATH,
   CSRF_COOKIE_NAME,
   CSRF_HEADER_NAME,
   IndeterminateAuthenticationError,
   LoginFailedError,
+  PasswordChangeFailedError,
   confirmEnrollment,
   isSessionEstablished,
   isSessionIdentity,
@@ -18,7 +20,9 @@ import {
   readCsrfToken,
   readEnrollmentOpened,
   readLoginContinuation,
+  sessionPasswordChangeRequired,
   submitLogin,
+  submitPasswordChange,
   submitSecondFactor,
 } from "./weavelit-authentication";
 
@@ -48,7 +52,14 @@ function establishedResponse(): Response {
 
 function identityResponse(): Response {
   return jsonResponse(
-    { result: { account_id: ACCOUNT, client_module: "web-ui" }, correlation_id: CORRELATION },
+    {
+      result: {
+        account_id: ACCOUNT,
+        client_module: "web-ui",
+        password_change_required: false,
+      },
+      correlation_id: CORRELATION,
+    },
     200,
   );
 }
@@ -155,6 +166,42 @@ describe("isSessionIdentity", () => {
     ["a non-string account", { result: { account_id: 1, client_module: "web-ui" } }],
   ])("rejects %s", (_label, payload) => {
     expect(isSessionIdentity(payload)).toBe(false);
+  });
+});
+
+describe("sessionPasswordChangeRequired", () => {
+  it.each([
+    ["an ordinary session", false],
+    ["a restricted session", true],
+  ])("reads %s", (_label, passwordChangeRequired) => {
+    expect(
+      sessionPasswordChangeRequired({
+        result: {
+          account_id: ACCOUNT,
+          client_module: "web-ui",
+          password_change_required: passwordChangeRequired,
+        },
+        correlation_id: CORRELATION,
+      }),
+    ).toBe(passwordChangeRequired);
+  });
+
+  it("keeps an older identity response ordinary", () => {
+    expect(
+      sessionPasswordChangeRequired({
+        result: { account_id: ACCOUNT, client_module: "web-ui" },
+        correlation_id: CORRELATION,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a malformed restricted-session posture", () => {
+    expect(
+      sessionPasswordChangeRequired({
+        result: { account_id: ACCOUNT, client_module: "web-ui", password_change_required: "true" },
+        correlation_id: CORRELATION,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -543,12 +590,40 @@ describe("confirmEnrollment", () => {
   });
 });
 
+describe("submitPasswordChange", () => {
+  it("submits only the replacement password in a same-origin session request", async () => {
+    withCookies(`${CSRF_COOKIE_NAME}=${CSRF_TOKEN}`);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(establishedResponse());
+
+    await submitPasswordChange(PASSWORD);
+
+    const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(target).toBe(AUTH_PASSWORD_CHANGE_PATH);
+    expect(init.method).toBe("PUT");
+    expect(init.body).toBe(JSON.stringify({ password: PASSWORD }));
+    expect((init.headers as Record<string, string>)[CSRF_HEADER_NAME]).toBe(CSRF_TOKEN);
+    expect(init.credentials).toBe("same-origin");
+    expect(init.cache).toBe("no-store");
+    expect(target).not.toContain(PASSWORD);
+  });
+
+  it("reports every known refusal without its cause", async () => {
+    withCookies(`${CSRF_COOKIE_NAME}=${CSRF_TOKEN}`);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(rejectionResponse("session_invalid", 401));
+
+    const failure = await submitPasswordChange(PASSWORD).catch((reason: unknown) => reason);
+
+    expect(failure).toBeInstanceOf(PasswordChangeFailedError);
+    expect(JSON.stringify(failure)).toBe('{"name":"PasswordChangeFailedError"}');
+  });
+});
+
 describe("probeSession", () => {
   it("echoes the readable CSRF cookie in the request header", async () => {
     withCookies(`${CSRF_COOKIE_NAME}=${CSRF_TOKEN}`);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(identityResponse());
 
-    expect(await probeSession()).toEqual({ kind: "authenticated" });
+    expect(await probeSession()).toEqual({ kind: "authenticated", passwordChangeRequired: false });
 
     const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(target).toBe(AUTH_SESSION_PATH);

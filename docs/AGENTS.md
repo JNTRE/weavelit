@@ -36,8 +36,8 @@ Apply instructions in this order:
 ## Working Rules
 
 - Before editing, read the nearest `AGENTS.md`, then each parent guide upward to this file.
-- Follow [Contribution Guidelines](CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
-- For changes under `docs/`, application documentation MUST comply with the [Documentation Standards](docs/documentation-standards.md), which govern document creation, document edits, file naming, and document organization.
+- Follow [Contribution Guidelines](../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under `docs/`, application documentation MUST comply with the [Documentation Standards](documentation-standards.md), which govern document creation, document edits, file naming, and document organization.
 - Use the exact canonical names in `docs/glossary.md` when a term is used and format terms as bold links on first substantive use in the text.
 - Update this inventory when repository-level assets, primary folders, or compatibility shims are added, removed, renamed, or moved.
 - Record settled product, security, or technical commitments in `spec.md`, remove resolved items from `open-questions.md`, and place each decision in its appropriate canonical or design document.

@@ -314,7 +314,7 @@ Module destination remains unusable until an authorized Administrator re-enters
 its credentials through an
 **[Administration Plane](../../../glossary.md#applications-and-interfaces)**.
 
-Version-1 account and Group entries may carry an
+Version-1 account, Group, and Log Module configuration entries may carry an
 **[Audit Reference Identifier](../../../glossary.md#applications-and-interfaces)**
 in its exact canonical `ar-` plus 32-lowercase-hexadecimal representation.
 Lifecycle carries the selected Application Database's private-field persistence
@@ -324,12 +324,33 @@ The field may be omitted for compatibility with version-1 backups written
 before Audit References existed, but an explicitly present JSON `null` is
 malformed and is not treated as an omission. Normalization assigns every omitted
 value a fresh independent random nonzero 128-bit identifier before it returns
-usable state; generation never uses the entity name or `StateIdentifier`. The
+usable state; generation never uses the entity name or `StateIdentifier`. All
+three entity kinds share one uniqueness domain. The
 wire bound is derived from the canonical prefix and twice the identifier byte
 length and asserted to remain 35 bytes. This additive reader compatibility does
 not change either backup format version. Unavailable operating-system
 randomness stops normalization as the existing payload-free `restore_failed`
 internal outcome rather than misclassifying valid legacy content as invalid.
+
+Each version-1 Group entry may also carry `public_id` as exactly 22 canonical
+unpadded Base64url characters encoding a nonzero 16-byte Group Public
+Identifier. Lifecycle carries the selected Application Database's distinct
+Group persistence decoder into Restore. A supplied value is preserved exactly;
+malformed, zero, duplicate, or explicit-null values are invalid backup content.
+Omission remains compatible with legacy version-1 backups and generates a fresh
+independent random value for each Group during normalization.
+
+Version-1 account entries may also carry a nonzero credential revision, a
+`must_change_password` flag, and a nonnegative absolute temporary-credential
+expiry in Unix milliseconds. Omission remains compatible with backups written
+before those fields existed and supplies revision `1`, a false flag, and no
+expiry. A supplied flag and expiry must be present together, and temporary
+metadata requires a supplied verifier for that account. Zero or malformed
+revisions, negative or malformed expiries, inconsistent combinations, and a
+temporary account without a verifier are all the existing payload-free
+`backup_invalid` outcome. Valid supplied metadata survives normalization
+exactly, and this additive compatibility does not change the backup format
+version.
 
 Restore binds all normalized state to the replacement deployment identifier.
 It creates no active session, accepts no session from the artifact, and ensures
@@ -618,7 +639,9 @@ Its content tests also prove exact preservation of supplied account and Group
 Audit Reference Identifiers through the injected selected-database persistence
 decoder, fresh independent generation from operating-system randomness,
 canonical and duplicate rejection, explicit-null rejection, and independent
-generation for committed legacy fixtures.
+generation for committed legacy fixtures. They also prove credential revision
+and temporary-metadata preservation, legacy defaults, paired-field validation,
+the verifier requirement, and uniform invalid-backup rejection.
 Fixture-based tests use immutable raw `.wlitbackup` files, their canonical
 private-key line, the expected decrypted plaintext, and a canonical JSON
 manifest recording each fixture's exact byte lengths and SHA-256 digests. Every

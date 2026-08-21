@@ -2,43 +2,101 @@
 
 //! Backend-neutral persistence contract for the Weavelit Application Database.
 
+mod account_administration;
+mod account_status;
+mod account_writer;
 mod audit_recovery;
+mod group_administration;
+mod group_mutation;
+mod log_configuration;
 mod mfa;
+mod mfa_policy;
+mod password_change;
 mod reconciliation;
 mod session;
 mod state;
 
+pub use account_administration::{AccountAdministrationProjection, AccountAdministrationStore};
+pub use account_status::{
+    AccountStatus, AccountStatusAuditTerminalWrites, AccountStatusMutation,
+    AccountStatusMutationError, AccountStatusMutationOutcome, AccountStatusRecheck,
+    AccountStatusTarget, AccountStatusWriterStore,
+};
+pub use account_writer::{
+    AccountCreateMutation, AccountCreateOutcome, AccountCredentialAuditTerminalWrites,
+    AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck,
+    AccountCredentialMutationError, AccountCredentialWriterStore, AccountPasswordResetMutation,
+    AccountPasswordResetOutcome, AccountPasswordResetTarget,
+};
 pub use audit_recovery::{
-    AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH, AuditTerminalObligation,
-    AuditTerminalObligationIdentifier, AuditTerminalRecoveryContractError,
+    AUDIT_TERMINAL_OBLIGATION_IDENTIFIER_LENGTH, AuditTerminalAcknowledgementProof,
+    AuditTerminalObligation, AuditTerminalObligationIdentifier, AuditTerminalRecoveryContractError,
     AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore, AuditTerminalRecoveryTransaction,
     AuditTerminalReplayBatchSize, AuditTerminalSupersession, MAX_AUDIT_TERMINAL_OBLIGATION_BYTES,
     MAX_AUDIT_TERMINAL_REPLAY_BATCH_SIZE, MAX_AUDIT_TERMINAL_SUPERSESSION_DISPOSITION_BYTES,
+    OpaqueAuditTerminalDisposition, OpaqueAuditTerminalProjection, StoredAuditDestinationBinding,
+    ValidatedAuditTerminalObligationWrite,
+};
+pub use group_administration::{
+    GroupAdministrationAuditTerminalWrites, GroupAdministrationMutationError,
+    GroupAdministrationProjection, GroupAdministrationStore, GroupAdministrationTarget,
+    GroupCreateMutation, GroupCreateOutcome, GroupDeleteMutation, GroupDeleteOutcome,
+    GroupUpdateMutation, GroupUpdateOutcome,
+};
+pub use group_mutation::{
+    GroupGrantMutationTarget, GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites,
+    GroupMutationError, GroupMutationOutcome, GroupMutationRecheck, GroupMutationStore,
+    GroupMutationTarget, PreparedGroupMutation,
+};
+pub use log_configuration::{
+    LogConfigurationAuditTerminalWrites, LogConfigurationGeneration,
+    LogConfigurationGenerationError, LogConfigurationGenerationKey,
+    LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
+    LogConfigurationMutationError, LogConfigurationMutationOutcome,
+    LogConfigurationMutationPersistence, LogConfigurationMutationRequest,
+    LogConfigurationMutationStore, LogConfigurationPreparation, LogConfigurationVersion,
+    PreparedLogConfigurationMutation,
 };
 pub use mfa::{
-    MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome, MfaEnrollment,
-    MfaModuleTarget, MfaStore, MfaTimeStep,
+    CredentialIssuanceStepUpAcceptance, MAX_MFA_TIME_STEP, MfaAcceptance,
+    MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnablementPreviewState,
+    MfaEnrollment, MfaModuleTarget, MfaStore, MfaTimeStep,
+};
+pub use mfa_policy::{
+    MfaPolicyAction, MfaPolicyAuditTerminalWrites, MfaPolicyMutation, MfaPolicyMutationError,
+    MfaPolicyMutationOutcome, MfaPolicyRecheck, MfaPolicyTarget, MfaPolicyWriterStore,
+};
+pub use password_change::{
+    PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeMutationError,
+    PasswordChangeOutcome, PasswordChangeRecheck, PasswordChangeWriterStore,
 };
 pub use reconciliation::{RECONCILIATION_DIGEST_LENGTH, ReconciliationDigest, ReconciliationStore};
 pub use session::{
     MAX_SESSION_INSTANT_MILLISECONDS, NewSession, SESSION_ABSOLUTE_LIFETIME_MILLISECONDS,
     SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
-    SessionCsrfHash, SessionInstant, SessionRejection, SessionStore, SessionTokenHash,
-    SessionValidation, StoredSession,
+    SessionCsrfHash, SessionInstant, SessionIssuance, SessionPosture, SessionRejection,
+    SessionStore, SessionTokenHash, SessionValidation, StoredSession,
 };
 pub use state::{
-    AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX, Account, AccountAuditReference,
-    AccountPasswordVerifier, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
+    ACCOUNT_PUBLIC_IDENTIFIER_LENGTH, AUDIT_REFERENCE_IDENTIFIER_LENGTH, AUDIT_REFERENCE_PREFIX,
+    Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentifierError, AccountPublicIdentifierPersistence, AccountPublicIdentity,
+    ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
     AuditReferenceIdentifierError, AuditReferencePersistence, BoundedText, COMPONENT_ENABLED_VALUE,
-    CompletionObligation, ComponentEnablement, ComponentKind, ConfigurationEntry, ConfigurationKey,
-    ConfigurationValue, CorrelationIdentifier, Description, Group, GroupAuditReference, GroupGrant,
-    GroupGrantRecord, GroupMembership, HumanAuthorizationSnapshot, InitializedState, LogAssignment,
-    LogClassification, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
+    CREDENTIAL_REVISION_LENGTH, CompletionObligation, ComponentEnablement, ComponentKind,
+    ConfigurationEntry, ConfigurationKey, ConfigurationValue, CorrelationIdentifier,
+    CredentialRevision, Description, GROUP_PUBLIC_IDENTIFIER_LENGTH, Group, GroupAuditReference,
+    GroupGrant, GroupGrantRecord, GroupMembership, GroupPublicIdentifier,
+    GroupPublicIdentifierError, GroupPublicIdentifierPersistence, GroupPublicIdentity,
+    HumanAuthorizationSnapshot, InitializedState, LogAssignment, LogClassification,
+    LogConfigurationAuditReference, LogDetail, LogModuleConfiguration, LogModuleSetting, LogType,
     MAX_CONFIGURATION_KEY_LENGTH, MAX_CONFIGURATION_VALUE_LENGTH, MAX_DESCRIPTION_LENGTH,
     MAX_LOG_CLASSIFICATION_LENGTH, MAX_LOG_CORRELATION_IDENTIFIER_LENGTH, MAX_LOG_DETAIL_LENGTH,
     MAX_NAME_LENGTH, MAX_PASSWORD_VERIFIER_LENGTH, MAX_PROTECTED_VALUE_LENGTH,
     MAX_RECOVERY_PUBLIC_KEY_LENGTH, MfaFactor, Name, PasswordVerifier, ProtectedSecret,
     ProtectedValue, RecoveryPublicKey, STATE_IDENTIFIER_LENGTH, ServiceConnection, StateIdentifier,
+    TemporaryCredentialExpiration,
 };
 
 use std::{error::Error as StdError, fmt};
@@ -190,6 +248,7 @@ pub trait ApplicationDatabase: Send {
     /// Atomically replaces the exact pending checkpoint with complete state once.
     fn complete_checkpoint(
         &mut self,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
         checkpoint: &WorkflowCheckpoint,
         state: &ApplicationState,
         reconciliation: &ReconciliationDigest,
@@ -198,9 +257,17 @@ pub trait ApplicationDatabase: Send {
     /// Loads complete initialized state bound to the expected deployment.
     fn load_initialized_state(
         &mut self,
-        persistence: &AuditReferencePersistence,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
+        audit_reference_persistence: &AuditReferencePersistence,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError>;
+
+    /// Loads the account projection for one exact typed public identifier.
+    fn load_account_public_identity(
+        &mut self,
+        persistence: &AccountPublicIdentifierPersistence,
+        public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountPublicIdentity>, DatabaseError>;
 
     /// Marks the persisted completion obligation acknowledged exactly once.
     fn acknowledge_completion(
@@ -235,6 +302,13 @@ pub trait ApplicationDatabase: Send {
         persistence: &AuditReferencePersistence,
         group: StateIdentifier,
     ) -> Result<Option<GroupAuditReference>, DatabaseError>;
+
+    /// Loads the typed Audit Reference projection for one Log Module configuration.
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        persistence: &AuditReferencePersistence,
+        configuration: StateIdentifier,
+    ) -> Result<Option<LogConfigurationAuditReference>, DatabaseError>;
 
     /// Loads only which components an administrator has disabled.
     ///
@@ -278,6 +352,57 @@ pub trait ApplicationDatabase: Send {
     /// defaulted so every backend deliberately declares its support.
     fn audit_terminal_recovery(&mut self) -> Option<&mut dyn AuditTerminalRecoveryStore>;
 
+    /// Returns bounded account administration reads, when available.
+    fn account_administration(&mut self) -> Option<&mut dyn AccountAdministrationStore> {
+        None
+    }
+
+    /// Returns bounded Group administration reads and writers, when available.
+    fn group_administration(&mut self) -> Option<&mut dyn GroupAdministrationStore> {
+        None
+    }
+
+    /// Returns account credential mutation storage, when available.
+    fn account_credential_writers(&mut self) -> Option<&mut dyn AccountCredentialWriterStore> {
+        None
+    }
+
+    /// Returns restricted-session password replacement storage, when available.
+    fn password_change_writers(&mut self) -> Option<&mut dyn PasswordChangeWriterStore> {
+        None
+    }
+
+    /// Returns account status mutation storage, when available.
+    fn account_status_writers(&mut self) -> Option<&mut dyn AccountStatusWriterStore> {
+        None
+    }
+
+    /// Returns account MFA requirement and enrollment-reset storage, when available.
+    fn mfa_policy_writers(&mut self) -> Option<&mut dyn MfaPolicyWriterStore> {
+        None
+    }
+
+    /// Returns existing-Group membership and direct-grant mutation storage, when available.
+    fn group_mutations(&mut self) -> Option<&mut dyn GroupMutationStore> {
+        None
+    }
+
+    /// Returns immutable Log Module configuration generation reads, when available.
+    ///
+    /// Generation persistence is introduced independently of a concrete backend
+    /// migration. The default makes absence explicit to callers while allowing
+    /// existing backends to remain compatible until they implement the store.
+    fn log_configuration_generations(
+        &mut self,
+    ) -> Option<&mut dyn LogConfigurationGenerationStore> {
+        None
+    }
+
+    /// Returns Log Module configuration mutation storage, when available.
+    fn log_configuration_mutations(&mut self) -> Option<&mut dyn LogConfigurationMutationStore> {
+        None
+    }
+
     /// Closes the database and releases its storage cleanly.
     ///
     /// Taking the box consumes the only handle to the backend, so an operation
@@ -316,6 +441,12 @@ pub enum ContractInputError {
     InvalidSessionDigest,
     /// The session instant is negative or outside the accepted range.
     InvalidSessionInstant,
+    /// The account credential revision is the reserved zero value.
+    InvalidCredentialRevision,
+    /// The temporary credential expiration is before the Unix epoch.
+    InvalidTemporaryCredentialExpiration,
+    /// Temporary credential metadata is incomplete or lacks a verifier.
+    InvalidTemporaryCredentialState,
     /// The MFA time step is outside the representable range.
     InvalidMfaTimeStep,
     /// The completion-record event time is negative.
@@ -345,6 +476,11 @@ impl fmt::Display for ContractInputError {
             Self::InvalidRecoveryPublicKey => "recovery public key is invalid",
             Self::InvalidSessionDigest => "session digest is invalid",
             Self::InvalidSessionInstant => "session instant is invalid",
+            Self::InvalidCredentialRevision => "credential revision is invalid",
+            Self::InvalidTemporaryCredentialExpiration => {
+                "temporary credential expiration is invalid"
+            }
+            Self::InvalidTemporaryCredentialState => "temporary credential state is invalid",
             Self::InvalidMfaTimeStep => "mfa time step is invalid",
             Self::InvalidEventTime => "completion event time is invalid",
             Self::DuplicateEntry => "application state contains a duplicate entry",

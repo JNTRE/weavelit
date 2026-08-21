@@ -4,8 +4,9 @@ use std::{
 };
 
 use weavelit_server_database::{
-    ApplicationDatabase, ApplicationState, AuditReferencePersistence, CheckpointMetadata,
-    DatabaseError, DatabaseInspection, DeploymentIdentifier, InitializedState, ProtectedValue,
+    AccountPublicIdentifierPersistence, ApplicationDatabase, ApplicationState,
+    AuditReferencePersistence, CheckpointMetadata, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, GroupPublicIdentifierPersistence, InitializedState, ProtectedValue,
     ReconciliationDigest, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 use zeroize::Zeroizing;
@@ -341,6 +342,16 @@ impl<'arbiter> WorkflowPermit<'arbiter> {
         self.database.audit_reference_persistence()
     }
 
+    /// Returns the selected Application Database's Account Public Identifier persistence.
+    pub fn account_public_identifier_persistence(&self) -> AccountPublicIdentifierPersistence {
+        self.database.account_public_identifier_persistence()
+    }
+
+    /// Returns the selected Application Database's Group Public Identifier persistence.
+    pub fn group_public_identifier_persistence(&self) -> GroupPublicIdentifierPersistence {
+        self.database.group_public_identifier_persistence()
+    }
+
     /// Returns the capability that protects application secrets at rest.
     pub fn sealer(&self) -> &dyn ProtectedValueSealer {
         &*self.store
@@ -486,7 +497,7 @@ impl<'arbiter> PendingWorkflow<'arbiter> {
         reconciliation: &ReconciliationDigest,
     ) -> Result<CommittedWorkflow<'arbiter>, WorkflowError> {
         self.database
-            .with(|database| database.complete_checkpoint(&self.checkpoint, state, reconciliation))
+            .complete_checkpoint(&self.checkpoint, state, reconciliation)
             .map_err(map_database_completion_error)?;
 
         Ok(CommittedWorkflow {

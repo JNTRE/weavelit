@@ -21,7 +21,7 @@ Apply instructions in this order:
 
 ## Asset Inventory
 
-- `weavelit-module-client/`: Shared Client Module contract crate boundary.
+- `weavelit-module-client/`: Shared Client Module contract crate boundary, including strict account and Group Administration routes.
 - `weavelit-module-client-cli/`: Weavelit CLI Client Module crate boundary.
 - `weavelit-module-client-webui/`: Web UI Client Module crate boundary.
 

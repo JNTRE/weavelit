@@ -1,17 +1,21 @@
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
-    BoundedText, DatabaseError, MAX_NAME_LENGTH, NewSession, SESSION_DIGEST_LENGTH,
-    SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT, STATE_IDENTIFIER_LENGTH,
-    SessionCsrfHash, SessionInstant, SessionRejection, SessionStore, SessionTokenHash,
-    SessionValidation, StateIdentifier, StoredSession,
+    BoundedText, CredentialRevision, DatabaseError, MAX_NAME_LENGTH, NewSession,
+    SESSION_DIGEST_LENGTH, SESSION_IDLE_TIMEOUT_MILLISECONDS, SESSION_PURGE_BATCH_LIMIT,
+    STATE_IDENTIFIER_LENGTH, SessionCsrfHash, SessionInstant, SessionIssuance, SessionPosture,
+    SessionRejection, SessionStore, SessionTokenHash, SessionValidation, StateIdentifier,
+    StoredSession,
 };
 
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 
-const SELECT_SESSION: &str = "SELECT token_hash, csrf_hash, account_id, client_module, \
-     issued_at_milliseconds, last_seen_at_milliseconds, absolute_expires_at_milliseconds \
-     FROM weavelit_session WHERE token_hash = ?1";
+const SELECT_SESSION: &str = "SELECT session.token_hash, session.csrf_hash, session.account_id, \
+    session.client_module, session.issued_at_milliseconds, session.last_seen_at_milliseconds, \
+    session.absolute_expires_at_milliseconds, account.must_change_password \
+    FROM weavelit_session AS session \
+    JOIN weavelit_account AS account ON account.account_id = session.account_id \
+    WHERE session.token_hash = ?1";
 const INSERT_SESSION: &str = "INSERT INTO weavelit_session \
      (token_hash, csrf_hash, account_id, client_module, issued_at_milliseconds, \
       last_seen_at_milliseconds, absolute_expires_at_milliseconds) \
@@ -32,8 +36,11 @@ const DELETE_EXPIRED_SESSIONS: &str = "DELETE FROM weavelit_session WHERE token_
       OR ?1 >= last_seen_at_milliseconds + ?2 \
       LIMIT ?3)";
 const DELETE_EVERY_SESSION: &str = "DELETE FROM weavelit_session";
+const SELECT_ACCOUNT_ISSUANCE_STATE: &str = "SELECT active, credential_revision, \
+    temporary_credential_expires_at_milliseconds \
+    FROM weavelit_account WHERE account_id = ?1";
 
-type SessionRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, i64, i64, i64);
+type SessionRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, i64, i64, i64, i64);
 
 /// Removes every live session.
 ///
@@ -48,11 +55,15 @@ pub(super) fn clear(connection: &Connection) -> Result<(), DatabaseError> {
 }
 
 impl SessionStore for SqliteDatabase {
-    fn create(&mut self, session: &NewSession) -> Result<(), DatabaseError> {
+    fn create(&mut self, session: &NewSession) -> Result<SessionIssuance, DatabaseError> {
         let transaction = immediate(&mut self.connection)?;
+        if !account_allows_issuance(&transaction, session)? {
+            return Ok(SessionIssuance::Rejected);
+        }
         insert(&transaction, session)?;
 
-        commit(transaction)
+        commit(transaction)?;
+        Ok(SessionIssuance::Issued)
     }
 
     fn validate_and_touch(
@@ -161,6 +172,34 @@ pub(super) fn insert(
     )
 }
 
+/// Checks the account state a verified credential is allowed to issue against.
+///
+/// Callers run this before any decision-specific write in the same immediate
+/// transaction. Absence and every ineligible state are one reason-free false
+/// result; malformed persisted state remains an integrity failure.
+pub(super) fn account_allows_issuance(
+    transaction: &Transaction<'_>,
+    session: &NewSession,
+) -> Result<bool, DatabaseError> {
+    let state: Option<(i64, Vec<u8>, Option<i64>)> = transaction
+        .query_row(
+            SELECT_ACCOUNT_ISSUANCE_STATE,
+            params![session.account().as_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Session))?;
+    let Some((active, revision, expiration)) = state else {
+        return Ok(false);
+    };
+    let active = stored_boolean(active)?;
+    let revision = credential_revision(&revision)?;
+    let unexpired =
+        expiration.is_none_or(|value| value > session.issued_at().as_unix_milliseconds());
+
+    Ok(active && revision == session.expected_credential_revision() && unexpired)
+}
+
 /// Clears up to [`SESSION_PURGE_BATCH_LIMIT`] sessions expired at `now`.
 ///
 /// A failure is deliberately absorbed instead of returned. The purge shares the
@@ -226,7 +265,7 @@ fn resolve(
 /// The indexed equality match locates a candidate row. The decision to treat
 /// that row as this session's is the constant-time comparison below, so no
 /// accept path depends on the storage engine's own byte comparison.
-fn load(
+pub(super) fn load(
     transaction: &Transaction<'_>,
     token_hash: &SessionTokenHash,
 ) -> Result<Option<StoredSession>, DatabaseError> {
@@ -243,15 +282,15 @@ fn load(
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )
         .optional()
         .map_err(|error| map_sqlite_error(error, ErrorContext::Session))?;
 
-    let Some((stored_token, csrf, account, client_module, issued, last_seen, absolute)): Option<
-        SessionRow,
-    > = row
+    let Some((stored_token, csrf, account, client_module, issued, last_seen, absolute, posture)):
+        Option<SessionRow> = row
     else {
         return Ok(None);
     };
@@ -266,6 +305,11 @@ fn load(
         identifier(&account)?,
         BoundedText::<MAX_NAME_LENGTH>::new(client_module)
             .map_err(|_| DatabaseError::IntegrityFailure)?,
+        if stored_boolean(posture)? {
+            SessionPosture::PasswordChangeRequired
+        } else {
+            SessionPosture::Ordinary
+        },
         instant(issued)?,
         instant(last_seen)?,
         instant(absolute)?,
@@ -282,6 +326,7 @@ fn advanced(
         *csrf_hash,
         session.account(),
         session.client_module().clone(),
+        session.posture(),
         session.issued_at(),
         now,
         session.absolute_expires_at(),
@@ -335,6 +380,21 @@ fn identifier(bytes: &[u8]) -> Result<StateIdentifier, DatabaseError> {
         .try_into()
         .map_err(|_| DatabaseError::IntegrityFailure)?;
     StateIdentifier::from_bytes(bytes).map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+fn credential_revision(bytes: &[u8]) -> Result<CredentialRevision, DatabaseError> {
+    let bytes = bytes
+        .try_into()
+        .map_err(|_| DatabaseError::IntegrityFailure)?;
+    CredentialRevision::from_stored_bytes(bytes).map_err(|_| DatabaseError::IntegrityFailure)
+}
+
+fn stored_boolean(value: i64) -> Result<bool, DatabaseError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DatabaseError::IntegrityFailure),
+    }
 }
 
 fn instant(value: i64) -> Result<SessionInstant, DatabaseError> {

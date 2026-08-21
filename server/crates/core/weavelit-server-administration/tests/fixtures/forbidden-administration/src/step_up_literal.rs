@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use weavelit_server_administration::{MfaStepUpProof, StepUpActionFamily};
 use weavelit_server_database::{
-    SESSION_DIGEST_LENGTH, STATE_IDENTIFIER_LENGTH, SessionTokenHash, StateIdentifier,
+    SessionTokenHash, StateIdentifier, SESSION_DIGEST_LENGTH, STATE_IDENTIFIER_LENGTH,
 };
 
 fn main() {
@@ -11,6 +11,7 @@ fn main() {
     let _proof = MfaStepUpProof {
         actor,
         session,
+        factor: actor,
         family: StepUpActionFamily::MfaPolicy,
         issued_at: Duration::ZERO,
         expires_at: Duration::from_secs(300),

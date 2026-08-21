@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentType } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApplicationShell } from "./weavelit-init-shell";
@@ -609,6 +610,33 @@ describe("ApplicationShell sign-in panel gating", () => {
     return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
   }
 
+  function mockAuthenticatedAdministrationFetch() {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    return vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+            },
+          }),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        return Promise.resolve(jsonResponse({ result: { items: [], next_cursor: null } }));
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+  }
+
   it.each([
     ["no database is selected", () => unselectedStatus()],
     [
@@ -658,5 +686,287 @@ describe("ApplicationShell sign-in panel gating", () => {
     await waitFor(() => {
       expect(loginSection()).toBeNull();
     });
+  });
+
+  it("opens the Accounts workspace when the Server session probe authenticates", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+            },
+          }),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              items: [
+                {
+                  public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+                  username: "administrator",
+                  display_name: "First Administrator",
+                  active: true,
+                  mfa_required: false,
+                },
+              ],
+              next_cursor: null,
+            },
+          }),
+        );
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+
+    render(<ApplicationShell />);
+
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(await screen.findByRole("rowheader", { name: "administrator" })).toBeTruthy();
+    expect(screen.getByText("Administration")).toBeTruthy();
+    expect(loginSection()).toBeNull();
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("loads the Groups workspace only after authenticated navigation selects it", async () => {
+    const fetchMock = mockAuthenticatedAdministrationFetch();
+    let completeLoad: (module: { GroupsWorkspace: ComponentType }) => void = () => {};
+    const loadGroupsWorkspace = vi.fn(
+      () =>
+        new Promise<{ GroupsWorkspace: ComponentType }>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+
+    render(<ApplicationShell loadGroupsWorkspace={loadGroupsWorkspace} />);
+
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(loadGroupsWorkspace).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/administration/groups/list"),
+    ).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Groups" }));
+
+    expect(loadGroupsWorkspace).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toBe("Loading Groups.");
+    completeLoad({ GroupsWorkspace: () => <h2>Groups</h2> });
+    expect(await screen.findByRole("heading", { name: "Groups" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Groups" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("offers a redacted retry when the Groups workspace loader fails", async () => {
+    mockAuthenticatedAdministrationFetch();
+    const loadGroupsWorkspace = vi
+      .fn<() => Promise<{ GroupsWorkspace: ComponentType }>>()
+      .mockRejectedValueOnce(new Error("private chunk delivery detail"))
+      .mockResolvedValueOnce({ GroupsWorkspace: () => <h2>Groups</h2> });
+
+    render(<ApplicationShell loadGroupsWorkspace={loadGroupsWorkspace} />);
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Groups" }));
+
+    const failure = await screen.findByRole("alert");
+    expect(failure.textContent).toBe("Groups could not be loaded.");
+    expect(document.body.textContent).not.toContain("private chunk delivery detail");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("heading", { name: "Groups" })).toBeTruthy();
+    expect(loadGroupsWorkspace).toHaveBeenCalledTimes(2);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("loads Configuration only after authenticated navigation selects it", async () => {
+    mockAuthenticatedAdministrationFetch();
+    let completeLoad: (module: {
+      ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+    }) => void = () => {};
+    const loadConfigurationWorkspace = vi.fn(
+      () =>
+        new Promise<{
+          ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+        }>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+
+    render(<ApplicationShell loadConfigurationWorkspace={loadConfigurationWorkspace} />);
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(loadConfigurationWorkspace).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
+    expect(loadConfigurationWorkspace).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toBe("Loading Configuration.");
+    completeLoad({ ConfigurationWorkspace: () => <h2>Configuration</h2> });
+    expect(await screen.findByRole("heading", { name: "Configuration" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Configuration" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("offers a redacted retry when the Configuration chunk fails", async () => {
+    mockAuthenticatedAdministrationFetch();
+    const loadConfigurationWorkspace = vi
+      .fn<
+        () => Promise<{
+          ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+        }>
+      >()
+      .mockRejectedValueOnce(new Error("private Configuration chunk detail"))
+      .mockResolvedValueOnce({ ConfigurationWorkspace: () => <h2>Configuration</h2> });
+
+    render(<ApplicationShell loadConfigurationWorkspace={loadConfigurationWorkspace} />);
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
+
+    const failure = await screen.findByRole("alert");
+    expect(failure.textContent).toBe("Configuration could not be loaded.");
+    expect(document.body.textContent).not.toContain("private Configuration chunk detail");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("heading", { name: "Configuration" })).toBeTruthy();
+    expect(loadConfigurationWorkspace).toHaveBeenCalledTimes(2);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("returns to sign-in after self-disable succeeds without retrying the mutation", async () => {
+    const publicId = "QUFBQUFBQUFBQUFBQUFBQQ";
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    let listRequests = 0;
+    let statusRequests = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((target: unknown, init?: RequestInit) => {
+        if (target === "/api/v1/status") {
+          return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+        }
+        if (target === "/api/v1/auth/session") {
+          sessionProbes += 1;
+          if (sessionProbes === 1) {
+            return Promise.resolve(
+              jsonResponse({
+                result: {
+                  account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  public_id: publicId,
+                  client_module: "web-ui",
+                  password_change_required: false,
+                },
+              }),
+            );
+          }
+          return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+        }
+        if (target === "/api/v1/administration/accounts/list") {
+          listRequests += 1;
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                items: [
+                  {
+                    public_id: publicId,
+                    username: "administrator",
+                    display_name: "First Administrator",
+                    active: true,
+                    mfa_required: false,
+                  },
+                ],
+                next_cursor: null,
+              },
+            }),
+          );
+        }
+        if (target === "/api/v1/administration/accounts/status") {
+          statusRequests += 1;
+          if (typeof init?.body !== "string") {
+            throw new Error("the status request body must be a JSON string");
+          }
+          expect(JSON.parse(init.body)).toEqual({ public_id: publicId, active: false });
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                public_id: publicId,
+                username: "administrator",
+                display_name: "First Administrator",
+                active: false,
+                mfa_required: false,
+              },
+              correlation_id: "account-status-correlation",
+            }),
+          );
+        }
+        return Promise.reject(new Error("unexpected request"));
+      });
+
+    render(<ApplicationShell />);
+    await screen.findByRole("rowheader", { name: "administrator" });
+    fireEvent.click(screen.getByRole("button", { name: "Disable administrator" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(statusRequests).toBe(1);
+    expect(listRequests).toBe(1);
+    expect(sessionProbes).toBe(3);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([target]) => target === "/api/v1/administration/accounts/status",
+      ),
+    ).toHaveLength(1);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("withholds the Accounts workspace for a restricted password-change session", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+              password_change_required: true,
+            },
+          }),
+        );
+      }
+      return Promise.reject(new Error("the restricted session must not read administration data"));
+    });
+
+    render(<ApplicationShell />);
+
+    expect(await screen.findByRole("heading", { name: "Choose a new password" })).toBeTruthy();
+    expect(screen.getByLabelText("New password")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/administration/accounts/list"),
+    ).toHaveLength(0);
+    Reflect.deleteProperty(globalThis.document, "cookie");
   });
 });

@@ -23,13 +23,13 @@ Apply instructions in this order:
 
 ## Asset Inventory
 
-- `browser-tests/`: Playwright browser tests, covering the pre-operational status smoke test, the Application Database selection restart-persistence test, the two-request Restore submission test, the first-launch Init workflow test, the sign-in and restart-persisted-session test, the second-factor and enrollment sign-in tests, and the shared fixture that runs them against the release Server binary.
+- `browser-tests/`: Playwright browser tests, covering the pre-operational status smoke test, the Application Database selection restart-persistence test, the two-request Restore submission test, the first-launch Init workflow test, sign-in, authenticated Accounts, safe lazy Group access-detail and Configuration workspaces, TOTP preview non-disclosure, and restart-persisted-session behavior, the second-factor, enrollment, and account MFA-policy workflows, and the shared fixture that runs them against the release Server binary.
 - `index.html`: Vite entry document for the single-page application.
 - `package.json`: Web UI manifest, exact dependency pins, and build, test, and validation scripts.
 - `package-lock.json`: Fully resolved npm dependency lock for reproducible installs.
 - `playwright.config.ts`: Playwright runner configuration for the browser tests.
 - `scripts/`: Build-output validation and build content manifest scripts run by the Server quality gate, and their Node test-runner tests.
-- `src/`: TypeScript and React application source and its unit tests, organized into `api/` (status, Application Database selection, Init setup and recovery-key proof-of-possession, Restore submission, and authentication transport clients), `components/` (application shell, Init workflow, Restore submission form, and sign-in form), `hooks/` (deployment status hook), and `styles/` (application stylesheet), following the `weavelit-<phase>-<component>` file-naming convention.
+- `src/`: TypeScript and React application source and its unit tests, organized into `api/` (status, Application Database selection, Init setup and recovery-key proof-of-possession, Restore submission, authentication, account, Group, TOTP enablement and Log configuration administration, credential-issuance, and MFA-policy transport clients), `components/` (application shell, Init workflow, Restore submission form, sign-in form, authenticated Accounts and lazy Groups and Configuration workspaces, and Group membership/direct-grant administration), `hooks/` (deployment status hook), and `styles/` (application stylesheet), following the `weavelit-<phase>-<component>` file-naming convention.
 - `tsconfig.json`: TypeScript compiler configuration for the application and its tests.
 - `vite.config.ts`: Vite build, deterministic output-naming, and Vitest configuration.
 

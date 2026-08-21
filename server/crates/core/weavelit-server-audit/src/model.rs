@@ -2,6 +2,7 @@ use core::fmt::{self, Write as _};
 
 use weavelit_server_database::{
     AccountAuditReference, AuditTerminalObligationIdentifier, GroupAuditReference,
+    LogConfigurationAuditReference,
 };
 use weavelit_server_log::{
     AuditLogBody, AuditLogClassification, AuditPrincipal, AuditTerminalCompleteness, LogResult,
@@ -45,8 +46,6 @@ safe_reference!(AutomationReference, "automation");
 safe_reference!(BackupReference, "backup");
 safe_reference!(ComponentReference, "component");
 safe_reference!(GrantReference, "grant");
-safe_reference!(LogConfigurationReference, "log-configuration");
-safe_reference!(LogModuleReference, "log-module");
 safe_reference!(LogPolicyReference, "log-policy");
 safe_reference!(MfaModuleReference, "mfa-module");
 safe_reference!(OperationReference, "operation");
@@ -75,6 +74,40 @@ impl AuditTerminalObligationReference {
 impl fmt::Debug for AuditTerminalObligationReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuditTerminalObligationReference(REDACTED)")
+    }
+}
+
+/// Non-empty canonical Audit-safe targets for affected Log Module configurations.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LogConfigurationAuditReferences(Box<[LogConfigurationAuditReference]>);
+
+impl LogConfigurationAuditReferences {
+    /// Validates and orders affected configuration references without accepting names or IDs.
+    pub fn new(mut references: Vec<LogConfigurationAuditReference>) -> Result<Self, AuditError> {
+        references.sort_by_key(LogConfigurationAuditReference::audit_reference);
+        if references.is_empty()
+            || references.windows(2).any(|pair| {
+                pair[0].configuration() == pair[1].configuration()
+                    || pair[0].audit_reference() == pair[1].audit_reference()
+            })
+        {
+            return Err(AuditError::InvalidReference);
+        }
+        Ok(Self(references.into_boxed_slice()))
+    }
+
+    fn render(&self) -> String {
+        self.0
+            .iter()
+            .map(|reference| format!("log-configuration:{}", reference.audit_reference()))
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+}
+
+impl fmt::Debug for LogConfigurationAuditReferences {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LogConfigurationAuditReferences(REDACTED)")
     }
 }
 
@@ -146,6 +179,12 @@ pub enum AuditEvent {
     AuthorizationGroupCreated {
         group: GroupAuditReference,
     },
+    AuthorizationGroupUpdated {
+        group: GroupAuditReference,
+    },
+    AuthorizationGroupDeleted {
+        group: GroupAuditReference,
+    },
     AuthorizationGroupMembershipChanged {
         group: GroupAuditReference,
         account: AccountAuditReference,
@@ -153,10 +192,6 @@ pub enum AuditEvent {
     AuthorizationGroupGrantChanged {
         group: GroupAuditReference,
         grant: GrantReference,
-    },
-    AuthorizationGroupGrantRemovalDenied {
-        group: GroupAuditReference,
-        account: AccountAuditReference,
     },
     AuthorizationAutomationScopeChanged {
         automation: AutomationReference,
@@ -166,8 +201,7 @@ pub enum AuditEvent {
         obligation: AuditTerminalObligationReference,
     },
     DependencyLogModuleConfigurationChanged {
-        module: LogModuleReference,
-        configuration: LogConfigurationReference,
+        configurations: LogConfigurationAuditReferences,
     },
     DependencyServiceConnectionChanged {
         connection: ServiceConnectionReference,
@@ -209,6 +243,9 @@ impl AuditEvent {
     }
 
     pub(crate) const fn classification(&self, phase: EventPhase) -> AuditLogClassification {
+        if matches!(phase, EventPhase::LastAdministratorDenied) {
+            return AuditLogClassification::AuthorizationGroupGrantRemovalDenied;
+        }
         match self {
             Self::LifecycleBackupCreated { .. } => AuditLogClassification::LifecycleBackupCreated,
             Self::AuthenticationUserCreated { .. } => {
@@ -239,14 +276,17 @@ impl AuditEvent {
             Self::AuthorizationGroupCreated { .. } => {
                 AuditLogClassification::AuthorizationGroupCreated
             }
+            Self::AuthorizationGroupUpdated { .. } => {
+                AuditLogClassification::AuthorizationGroupUpdated
+            }
+            Self::AuthorizationGroupDeleted { .. } => {
+                AuditLogClassification::AuthorizationGroupDeleted
+            }
             Self::AuthorizationGroupMembershipChanged { .. } => {
                 AuditLogClassification::AuthorizationGroupMembershipChanged
             }
             Self::AuthorizationGroupGrantChanged { .. } => {
                 AuditLogClassification::AuthorizationGroupGrantChanged
-            }
-            Self::AuthorizationGroupGrantRemovalDenied { .. } => {
-                AuditLogClassification::AuthorizationGroupGrantRemovalDenied
             }
             Self::AuthorizationAutomationScopeChanged { .. } => {
                 AuditLogClassification::AuthorizationAutomationScopeChanged
@@ -262,7 +302,9 @@ impl AuditEvent {
             }
             Self::ProviderOperation { .. } => match phase {
                 EventPhase::Attempt => AuditLogClassification::ProviderOperationStarted,
-                EventPhase::Terminal => AuditLogClassification::ProviderOperationCompleted,
+                EventPhase::Terminal | EventPhase::LastAdministratorDenied => {
+                    AuditLogClassification::ProviderOperationCompleted
+                }
             },
             Self::InternalServerConfigurationChanged { .. } => {
                 AuditLogClassification::InternalServerConfigurationChanged
@@ -277,6 +319,9 @@ impl AuditEvent {
     }
 
     pub(crate) const fn action(&self, phase: EventPhase) -> &'static str {
+        if matches!(phase, EventPhase::LastAdministratorDenied) {
+            return "remove-grant";
+        }
         match self {
             Self::LifecycleBackupCreated { .. } => "create-backup",
             Self::AuthenticationUserCreated { .. } => "create",
@@ -289,9 +334,10 @@ impl AuditEvent {
             Self::AuthenticationMfaModuleEnablementChanged { .. } => "change-mfa-module",
             Self::AuthenticationSessionRevoked { .. } => "revoke-session",
             Self::AuthorizationGroupCreated { .. } => "create-group",
+            Self::AuthorizationGroupUpdated { .. } => "update-group",
+            Self::AuthorizationGroupDeleted { .. } => "delete-group",
             Self::AuthorizationGroupMembershipChanged { .. } => "change-membership",
             Self::AuthorizationGroupGrantChanged { .. } => "change-grant",
-            Self::AuthorizationGroupGrantRemovalDenied { .. } => "remove-grant",
             Self::AuthorizationAutomationScopeChanged { .. } => "change-automation-scope",
             Self::DependencyAuditTerminalSuperseded { .. } => "supersede-terminal-delivery",
             Self::DependencyLogModuleConfigurationChanged { .. } => {
@@ -300,7 +346,7 @@ impl AuditEvent {
             Self::DependencyServiceConnectionChanged { .. } => "change-service-connection",
             Self::ProviderOperation { .. } => match phase {
                 EventPhase::Attempt => "operation-start",
-                EventPhase::Terminal => "operation-complete",
+                EventPhase::Terminal | EventPhase::LastAdministratorDenied => "operation-complete",
             },
             Self::InternalServerConfigurationChanged { .. } => "change-server-configuration",
             Self::InternalUserStatusChanged { .. } => "change-user-status",
@@ -321,9 +367,10 @@ impl AuditEvent {
             | Self::AuthenticationSessionRevoked { account }
             | Self::InternalUserStatusChanged { account } => render_account(account),
             Self::AuthenticationMfaModuleEnablementChanged { module } => module.render(),
-            Self::AuthorizationGroupCreated { group } => render_group(group),
-            Self::AuthorizationGroupMembershipChanged { group, account }
-            | Self::AuthorizationGroupGrantRemovalDenied { group, account } => {
+            Self::AuthorizationGroupCreated { group }
+            | Self::AuthorizationGroupUpdated { group }
+            | Self::AuthorizationGroupDeleted { group } => render_group(group),
+            Self::AuthorizationGroupMembershipChanged { group, account } => {
                 join_targets(render_group(group), render_account(account))
             }
             Self::AuthorizationGroupGrantChanged { group, grant } => {
@@ -334,10 +381,9 @@ impl AuditEvent {
                 operation,
             } => join_targets(automation.render(), operation.render()),
             Self::DependencyAuditTerminalSuperseded { obligation } => obligation.render(),
-            Self::DependencyLogModuleConfigurationChanged {
-                module,
-                configuration,
-            } => join_targets(module.render(), configuration.render()),
+            Self::DependencyLogModuleConfigurationChanged { configurations } => {
+                configurations.render()
+            }
             Self::DependencyServiceConnectionChanged { connection } => connection.render(),
             Self::ProviderOperation {
                 operation,
@@ -367,14 +413,13 @@ impl AuditEvent {
             }
             Self::AuthenticationSessionRevoked { .. } => DetailKind::AuthenticationSessionRevoked,
             Self::AuthorizationGroupCreated { .. } => DetailKind::AuthorizationGroupCreated,
+            Self::AuthorizationGroupUpdated { .. } => DetailKind::AuthorizationGroupUpdated,
+            Self::AuthorizationGroupDeleted { .. } => DetailKind::AuthorizationGroupDeleted,
             Self::AuthorizationGroupMembershipChanged { .. } => {
                 DetailKind::AuthorizationGroupMembershipChanged
             }
             Self::AuthorizationGroupGrantChanged { .. } => {
                 DetailKind::AuthorizationGroupGrantChanged
-            }
-            Self::AuthorizationGroupGrantRemovalDenied { .. } => {
-                DetailKind::AuthorizationGroupGrantRemovalDenied
             }
             Self::AuthorizationAutomationScopeChanged { .. } => {
                 DetailKind::AuthorizationAutomationScopeChanged
@@ -415,13 +460,17 @@ impl AuditEvent {
             | Detail::AuthenticationMfaEnrolled(outcome)
             | Detail::AuthenticationSessionRevoked(outcome)
             | Detail::AuthorizationGroupCreated(outcome)
-            | Detail::AuthorizationGroupMembershipChanged(outcome)
-            | Detail::AuthorizationGroupGrantChanged(outcome)
+            | Detail::AuthorizationGroupUpdated(outcome)
+            | Detail::AuthorizationGroupDeleted(outcome)
             | Detail::AuthorizationAutomationScopeChanged(outcome)
             | Detail::DependencyLogModuleConfigurationChanged(outcome)
             | Detail::DependencyServiceConnectionChanged(outcome)
             | Detail::ProviderOperation(outcome)
             | Detail::InternalLogPolicyChanged(outcome) => Ok(TerminalOutcome::action(outcome)),
+            Detail::AuthorizationGroupMembershipChanged(outcome)
+            | Detail::AuthorizationGroupGrantChanged(outcome) => {
+                Ok(TerminalOutcome::group_mutation(outcome))
+            }
             Detail::DependencyAuditTerminalSuperseded(outcome) => {
                 Ok(TerminalOutcome::state_change(outcome))
             }
@@ -437,9 +486,6 @@ impl AuditEvent {
             }
             Detail::AuthenticationMfaModuleEnablementChanged(outcome) => {
                 Ok(TerminalOutcome::state_change(outcome))
-            }
-            Detail::AuthorizationGroupGrantRemovalDenied => {
-                Ok(TerminalOutcome::action(ActionOutcome::Denied))
             }
             Detail::InternalServerConfigurationChanged(outcome) => {
                 Ok(TerminalOutcome::state_change(outcome))
@@ -473,6 +519,19 @@ pub enum StateChangeOutcome<T> {
     Failed,
 }
 
+/// Closed terminal outcomes for one Group membership or direct grant mutation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GroupMutationOutcome {
+    /// The requested association change committed.
+    Succeeded,
+    /// Current issuer or target state denied the prepared mutation.
+    Denied,
+    /// The mutation failed after its Attempt for a reason other than policy denial.
+    Failed,
+    /// Removal would leave no active effective Administrator.
+    LastAdministratorDenied,
+}
+
 /// Safe resulting account state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountStatus {
@@ -500,7 +559,7 @@ pub enum MfaResetState {
     ReenrollmentRequired,
 }
 
-/// Committed MFA Module state and the number of affected sessions.
+/// Committed MFA Module state and the number of affected Human Users.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MfaModuleChange {
     state: ComponentState,
@@ -542,9 +601,10 @@ pub enum AuditOutcomeDetail {
     AuthenticationMfaModuleEnablementChanged(StateChangeOutcome<MfaModuleChange>),
     AuthenticationSessionRevoked(ActionOutcome),
     AuthorizationGroupCreated(ActionOutcome),
-    AuthorizationGroupMembershipChanged(ActionOutcome),
-    AuthorizationGroupGrantChanged(ActionOutcome),
-    AuthorizationGroupGrantRemovalDenied,
+    AuthorizationGroupUpdated(ActionOutcome),
+    AuthorizationGroupDeleted(ActionOutcome),
+    AuthorizationGroupMembershipChanged(GroupMutationOutcome),
+    AuthorizationGroupGrantChanged(GroupMutationOutcome),
     AuthorizationAutomationScopeChanged(ActionOutcome),
     DependencyAuditTerminalSuperseded(StateChangeOutcome<AuditTerminalCompleteness>),
     DependencyLogModuleConfigurationChanged(ActionOutcome),
@@ -575,13 +635,12 @@ impl AuditOutcomeDetail {
             }
             Self::AuthenticationSessionRevoked(_) => DetailKind::AuthenticationSessionRevoked,
             Self::AuthorizationGroupCreated(_) => DetailKind::AuthorizationGroupCreated,
+            Self::AuthorizationGroupUpdated(_) => DetailKind::AuthorizationGroupUpdated,
+            Self::AuthorizationGroupDeleted(_) => DetailKind::AuthorizationGroupDeleted,
             Self::AuthorizationGroupMembershipChanged(_) => {
                 DetailKind::AuthorizationGroupMembershipChanged
             }
             Self::AuthorizationGroupGrantChanged(_) => DetailKind::AuthorizationGroupGrantChanged,
-            Self::AuthorizationGroupGrantRemovalDenied => {
-                DetailKind::AuthorizationGroupGrantRemovalDenied
-            }
             Self::AuthorizationAutomationScopeChanged(_) => {
                 DetailKind::AuthorizationAutomationScopeChanged
             }
@@ -617,9 +676,10 @@ enum DetailKind {
     AuthenticationMfaModuleEnablementChanged,
     AuthenticationSessionRevoked,
     AuthorizationGroupCreated,
+    AuthorizationGroupUpdated,
+    AuthorizationGroupDeleted,
     AuthorizationGroupMembershipChanged,
     AuthorizationGroupGrantChanged,
-    AuthorizationGroupGrantRemovalDenied,
     AuthorizationAutomationScopeChanged,
     DependencyAuditTerminalSuperseded,
     DependencyLogModuleConfigurationChanged,
@@ -634,6 +694,7 @@ enum DetailKind {
 pub(crate) enum EventPhase {
     Attempt,
     Terminal,
+    LastAdministratorDenied,
 }
 
 #[derive(Clone, Copy)]
@@ -641,6 +702,7 @@ enum OutcomeKind {
     Succeeded,
     Denied,
     Failed,
+    LastAdministratorDenied,
 }
 
 pub(crate) struct TerminalOutcome {
@@ -675,10 +737,31 @@ impl TerminalOutcome {
         }
     }
 
+    fn group_mutation(outcome: GroupMutationOutcome) -> Self {
+        let kind = match outcome {
+            GroupMutationOutcome::Succeeded => OutcomeKind::Succeeded,
+            GroupMutationOutcome::Denied => OutcomeKind::Denied,
+            GroupMutationOutcome::Failed => OutcomeKind::Failed,
+            GroupMutationOutcome::LastAdministratorDenied => OutcomeKind::LastAdministratorDenied,
+        };
+        Self { kind, fact: None }
+    }
+
+    pub(crate) const fn event_phase(&self) -> EventPhase {
+        match self.kind {
+            OutcomeKind::LastAdministratorDenied => EventPhase::LastAdministratorDenied,
+            OutcomeKind::Succeeded | OutcomeKind::Denied | OutcomeKind::Failed => {
+                EventPhase::Terminal
+            }
+        }
+    }
+
     pub(crate) const fn result(&self) -> LogResult {
         match self.kind {
             OutcomeKind::Succeeded => LogResult::Success,
-            OutcomeKind::Denied | OutcomeKind::Failed => LogResult::Failure,
+            OutcomeKind::Denied | OutcomeKind::Failed | OutcomeKind::LastAdministratorDenied => {
+                LogResult::Failure
+            }
         }
     }
 
@@ -687,6 +770,9 @@ impl TerminalOutcome {
             OutcomeKind::Succeeded => "accountable action completed successfully",
             OutcomeKind::Denied => "accountable action denied",
             OutcomeKind::Failed => "accountable action failed",
+            OutcomeKind::LastAdministratorDenied => {
+                "accountable action denied; last Server Administration Permission grant retained"
+            }
         })
     }
 
@@ -695,6 +781,9 @@ impl TerminalOutcome {
             OutcomeKind::Succeeded => "corrected outcome: accountable action succeeded",
             OutcomeKind::Denied => "corrected outcome: accountable action was denied",
             OutcomeKind::Failed => "corrected outcome: accountable action failed",
+            OutcomeKind::LastAdministratorDenied => {
+                "corrected outcome: last Server Administration Permission grant retained"
+            }
         })
     }
 

@@ -13,7 +13,7 @@ use std::fmt;
 
 use subtle::ConstantTimeEq as _;
 
-use crate::{ContractInputError, DatabaseError, Name, StateIdentifier};
+use crate::{ContractInputError, CredentialRevision, DatabaseError, Name, StateIdentifier};
 
 /// Bytes in a stored session or CSRF digest.
 pub const SESSION_DIGEST_LENGTH: usize = 32;
@@ -128,6 +128,7 @@ pub struct NewSession {
     token_hash: SessionTokenHash,
     csrf_hash: SessionCsrfHash,
     account: StateIdentifier,
+    expected_credential_revision: CredentialRevision,
     client_module: Name,
     issued_at: SessionInstant,
 }
@@ -142,6 +143,7 @@ impl NewSession {
         token_hash: SessionTokenHash,
         csrf_hash: SessionCsrfHash,
         account: StateIdentifier,
+        expected_credential_revision: CredentialRevision,
         client_module: Name,
         issued_at: SessionInstant,
     ) -> Self {
@@ -149,6 +151,7 @@ impl NewSession {
             token_hash,
             csrf_hash,
             account,
+            expected_credential_revision,
             client_module,
             issued_at,
         }
@@ -169,6 +172,11 @@ impl NewSession {
         self.account
     }
 
+    /// Returns the credential revision the caller verified.
+    pub const fn expected_credential_revision(&self) -> CredentialRevision {
+        self.expected_credential_revision
+    }
+
     /// Returns the Client Module the session was issued to.
     pub const fn client_module(&self) -> &Name {
         &self.client_module
@@ -185,12 +193,22 @@ impl NewSession {
     }
 }
 
+/// The authorization posture derived from live Account credential state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionPosture {
+    /// The session may proceed to ordinary authorization.
+    Ordinary,
+    /// The session may be used only by password change or logout.
+    PasswordChangeRequired,
+}
+
 /// A stored session read back from the session store.
 #[derive(Debug)]
 pub struct StoredSession {
     csrf_hash: SessionCsrfHash,
     account: StateIdentifier,
     client_module: Name,
+    posture: SessionPosture,
     issued_at: SessionInstant,
     last_seen_at: SessionInstant,
     absolute_expires_at: SessionInstant,
@@ -202,6 +220,7 @@ impl StoredSession {
         csrf_hash: SessionCsrfHash,
         account: StateIdentifier,
         client_module: Name,
+        posture: SessionPosture,
         issued_at: SessionInstant,
         last_seen_at: SessionInstant,
         absolute_expires_at: SessionInstant,
@@ -210,6 +229,7 @@ impl StoredSession {
             csrf_hash,
             account,
             client_module,
+            posture,
             issued_at,
             last_seen_at,
             absolute_expires_at,
@@ -229,6 +249,11 @@ impl StoredSession {
     /// Returns the Client Module the session was issued to.
     pub const fn client_module(&self) -> &Name {
         &self.client_module
+    }
+
+    /// Returns the posture derived from the Account in the validation transaction.
+    pub const fn posture(&self) -> SessionPosture {
+        self.posture
     }
 
     /// Returns the moment the session was issued.
@@ -288,6 +313,15 @@ pub enum SessionValidation {
     Rejected(SessionRejection),
 }
 
+/// The reason-free result of attempting to issue one session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionIssuance {
+    /// The account remained eligible and the session was written.
+    Issued,
+    /// The account was absent, inactive, stale, or temporarily expired.
+    Rejected,
+}
+
 /// Durable live-session operations available during normal operation.
 ///
 /// Every operation is atomic on its own. None of them reads, caches, or
@@ -307,7 +341,7 @@ pub trait SessionStore {
     /// maintenance this operation's own correctness does not depend on, and the
     /// rows it fails to remove are already unusable, so it must not turn an
     /// otherwise valid login into a refusal.
-    fn create(&mut self, session: &NewSession) -> Result<(), DatabaseError>;
+    fn create(&mut self, session: &NewSession) -> Result<SessionIssuance, DatabaseError>;
 
     /// Validates a presented session pair and advances its activity when usable.
     ///
@@ -367,6 +401,7 @@ mod tests {
             SessionCsrfHash::from_bytes(CSRF_DIGEST).unwrap(),
             account(),
             Name::new("web-ui").unwrap(),
+            SessionPosture::Ordinary,
             instant(issued_at),
             instant(last_seen_at),
             instant(issued_at + SESSION_ABSOLUTE_LIFETIME_MILLISECONDS),
@@ -426,8 +461,14 @@ mod tests {
             SessionTokenHash::from_bytes(SESSION_DIGEST).unwrap(),
             SessionCsrfHash::from_bytes(CSRF_DIGEST).unwrap(),
             account(),
+            CredentialRevision::INITIAL,
             Name::new("web-ui").unwrap(),
             instant(1_700_000_000_000),
+        );
+
+        assert_eq!(
+            session.expected_credential_revision(),
+            CredentialRevision::INITIAL
         );
 
         assert_eq!(

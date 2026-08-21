@@ -1283,16 +1283,17 @@ mod tests {
         http::{Method, StatusCode, header},
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use rusqlite::{Connection, params};
     use tokio::{
         io::AsyncWriteExt as _,
         sync::{oneshot, watch},
     };
     use tower::ServiceExt as _;
     use weavelit_module_client::{
-        APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE, AUTH_SESSION_ROUTE, CSRF_COOKIE_NAME,
-        INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE, InitAdministratorSubmission, InitFinalizeSubmission,
-        InitRejection, InitRequestSubmission, RESTORE_ROUTE, SESSION_COOKIE_NAME, STATUS_ROUTE,
-        SelectedBackend as SubmittedBackend,
+        ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE, APPLICATION_DATABASE_ROUTE, AUTH_LOGIN_ROUTE,
+        AUTH_SESSION_ROUTE, CSRF_COOKIE_NAME, INIT_RECOVERY_KEY_ROUTE, INIT_ROUTE,
+        InitAdministratorSubmission, InitFinalizeSubmission, InitRejection, InitRequestSubmission,
+        RESTORE_ROUTE, SESSION_COOKIE_NAME, STATUS_ROUTE, SelectedBackend as SubmittedBackend,
     };
     use weavelit_server_database::{LogType, Name};
     use weavelit_server_lifecycle::{
@@ -1320,6 +1321,7 @@ mod tests {
         StartupOutcome, bounded_response_from_axum, classify_restricted_startup,
         close_active_database, fallback_router,
         operational::test_support::ActivationBarrier,
+        operational_audit::{AuditRecoverySequenceState, OperationalAuditRecoveryState},
         server_components, sqlite_catalog,
         tests::assert_no_write_ahead_log,
         transport::{
@@ -1506,6 +1508,16 @@ mod tests {
         /// tests, which release that lock first.
         fn record_state(&self) -> LifecycleState {
             self.startup.composition.adapter.arbiter.record_state()
+        }
+
+        fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
+            self.orchestrator()
+                .operational
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .expect("completed Init retains its operational composer")
+                .activation_audit_recovery_state()
         }
 
         fn anchor_snapshot(&self) -> Vec<(OsString, Vec<u8>, i64, i64)> {
@@ -2530,6 +2542,9 @@ mod tests {
             ServingMode::Operational(_)
         ));
         assert!(serves(&after, AUTH_SESSION_ROUTE).await);
+        let recovery = surface.activation_audit_recovery_state();
+        assert_eq!(recovery.active(), AuditRecoverySequenceState::Ready);
+        assert_eq!(recovery.late_delivery(), AuditRecoverySequenceState::Ready);
     }
 
     /// The completion record reaches the destination the committed System Log
@@ -3623,6 +3638,169 @@ mod tests {
         assert_signs_in(&surface.served()).await;
     }
 
+    #[tokio::test]
+    async fn operational_account_reads_are_paged_safe_live_authorized_and_not_audited() {
+        let surface = InitSurface::production();
+        let before = surface.served();
+        for target in [ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE] {
+            assert!(
+                !serves(&before, target).await,
+                "{target} must be pre-operationally absent"
+            );
+        }
+
+        surface.complete().await;
+        let operational = surface.served();
+        for target in [ACCOUNTS_LIST_ROUTE, ACCOUNTS_VIEW_ROUTE] {
+            assert!(
+                serves(&operational, target).await,
+                "{target} must be operationally mounted"
+            );
+        }
+        let session = established_session(&operational).await;
+
+        let database_path = surface.state_root.join(APPLICATION_DATABASE_FILE);
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account \
+                 (account_id, username, display_name, active, mfa_required) \
+                 VALUES (?1, 'zeta-operator', 'Zeta Operator', 0, 1)",
+                [[0x52_u8; 16].as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_account_public_identity (account_id, public_identifier) \
+                 VALUES (?1, ?2)",
+                params![[0x52_u8; 16].as_slice(), [0x92_u8; 16].as_slice()],
+            )
+            .unwrap();
+        let administrator_public_id: Vec<u8> = connection
+            .query_row(
+                "SELECT identity.public_identifier FROM weavelit_account_public_identity AS identity \
+                 JOIN weavelit_account AS account ON account.account_id = identity.account_id \
+                 WHERE account.username = 'administrator'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let administrator_public_id = URL_SAFE_NO_PAD.encode(administrator_public_id);
+        let audit_before: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM weavelit_audit_terminal_obligation",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(connection);
+
+        let first_body = r#"{"limit":1}"#;
+        let first = serve_head(
+            &operational,
+            session.head(ACCOUNTS_LIST_ROUTE, first_body.len()),
+            first_body,
+        )
+        .await;
+        assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+        assert!(first.body.contains(r#""username":"administrator""#));
+        assert!(!first.body.contains("zeta-operator"));
+        let cursor = json_string_field(&first.body, "next_cursor");
+
+        let second_body = format!(r#"{{"limit":1,"cursor":"{cursor}"}}"#);
+        let second = serve_head(
+            &operational,
+            session.head(ACCOUNTS_LIST_ROUTE, second_body.len()),
+            &second_body,
+        )
+        .await;
+        assert_eq!(second.status, StatusCode::OK, "{}", second.body);
+        assert!(second.body.contains(r#""username":"zeta-operator""#));
+        assert!(!second.body.contains(r#""username":"administrator""#));
+        assert!(second.body.contains(r#""next_cursor":null"#));
+
+        let view_body = format!(r#"{{"public_id":"{administrator_public_id}"}}"#);
+        let view = serve_head(
+            &operational,
+            session.head(ACCOUNTS_VIEW_ROUTE, view_body.len()),
+            &view_body,
+        )
+        .await;
+        assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+        assert!(view.body.contains(r#""username":"administrator""#));
+        assert!(
+            view.body
+                .contains(r#""display_name":"First Administrator""#)
+        );
+        for forbidden in [
+            "password",
+            "verifier",
+            "session",
+            "temporary",
+            "account_id",
+            "audit_reference",
+            "state_id",
+        ] {
+            assert!(
+                !view.body.contains(forbidden),
+                "response leaked {forbidden}"
+            );
+        }
+
+        let unknown_id = URL_SAFE_NO_PAD.encode([0x99_u8; 16]);
+        let unknown_body = format!(r#"{{"public_id":"{unknown_id}"}}"#);
+        let unknown = serve_head(
+            &operational,
+            session.head(ACCOUNTS_VIEW_ROUTE, unknown_body.len()),
+            &unknown_body,
+        )
+        .await;
+        assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
+        assert!(unknown.body.contains(r#""error":"not_found""#));
+
+        let malformed_body = r#"{"cursor":"not*base64"}"#;
+        let malformed = serve_head(
+            &operational,
+            session.head(ACCOUNTS_LIST_ROUTE, malformed_body.len()),
+            malformed_body,
+        )
+        .await;
+        assert_eq!(
+            malformed.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            malformed.body
+        );
+
+        let connection = Connection::open(&database_path).unwrap();
+        let audit_after_reads: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM weavelit_audit_terminal_obligation",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(audit_after_reads, audit_before);
+        connection
+            .execute(
+                "DELETE FROM weavelit_group_grant \
+                 WHERE grant_kind = 'server_administration' AND grant_value = ''",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let denied_body = "{}";
+        let denied = serve_head(
+            &operational,
+            session.head(ACCOUNTS_LIST_ROUTE, denied_body.len()),
+            denied_body,
+        )
+        .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
+        assert!(denied.body.contains(r#""error":"authorization_denied""#));
+    }
+
     /// The sealed deployment survives a restart: a new startup classifies it as
     /// initialized, serves the operational surface, and the seeded
     /// Administrator signs in against the reopened Application Database.
@@ -3695,36 +3873,16 @@ mod tests {
         .await;
         assert_eq!(denied.status, StatusCode::UNAUTHORIZED, "{}", denied.body);
 
-        let signed_in = serve(
-            surface,
-            AUTH_LOGIN_ROUTE,
-            &login_body(ADMINISTRATOR, ADMINISTRATOR_PASSWORD),
-        )
-        .await;
-        assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
-
-        let cookie = signed_in.session_cookie();
-        assert!(cookie.starts_with(SESSION_COOKIE_NAME));
-        assert!(
-            cookie.len() > SESSION_COOKIE_NAME.len() + 1,
-            "the session cookie must carry a value"
-        );
-
-        // The session route enforces a double-submit check, so the request
-        // carries both cookies and the header value the CSRF cookie holds. A
-        // request that presents the session cookie alone is refused, and the
-        // assertion below proves that refusal is still in force.
-        let csrf = signed_in.cookie(CSRF_COOKIE_NAME);
-        let csrf_value = csrf
-            .split_once('=')
-            .expect("the CSRF cookie is rendered as a name-value pair")
-            .1
-            .to_owned();
-        assert!(!csrf_value.is_empty(), "the CSRF cookie must carry a value");
+        let session_cookies = established_session(surface).await;
 
         let unaccompanied = serve_head(
             surface,
-            head(AUTH_SESSION_ROUTE, 0, Some(&cookie), Some("1")),
+            head(
+                AUTH_SESSION_ROUTE,
+                0,
+                Some(&session_cookies.session_cookie),
+                Some("1"),
+            ),
             "",
         )
         .await;
@@ -3740,12 +3898,64 @@ mod tests {
             head(
                 AUTH_SESSION_ROUTE,
                 0,
-                Some(&format!("{cookie}; {csrf}")),
-                Some(&csrf_value),
+                Some(&session_cookies.cookie_header),
+                Some(&session_cookies.csrf_value),
             ),
             "",
         )
         .await;
         assert_eq!(session.status, StatusCode::OK, "{}", session.body);
+    }
+
+    struct EstablishedSession {
+        session_cookie: String,
+        cookie_header: String,
+        csrf_value: String,
+    }
+
+    impl EstablishedSession {
+        fn head(&self, target: &str, declared_bytes: usize) -> Request {
+            head(
+                target,
+                declared_bytes,
+                Some(&self.cookie_header),
+                Some(&self.csrf_value),
+            )
+        }
+    }
+
+    async fn established_session(surface: &MountedSurface) -> EstablishedSession {
+        let signed_in = serve(
+            surface,
+            AUTH_LOGIN_ROUTE,
+            &login_body(ADMINISTRATOR, ADMINISTRATOR_PASSWORD),
+        )
+        .await;
+        assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
+        let session_cookie = signed_in.session_cookie();
+        assert!(session_cookie.starts_with(SESSION_COOKIE_NAME));
+        let csrf_cookie = signed_in.cookie(CSRF_COOKIE_NAME);
+        let csrf_value = csrf_cookie
+            .split_once('=')
+            .expect("the CSRF cookie is rendered as a name-value pair")
+            .1
+            .to_owned();
+        assert!(!csrf_value.is_empty());
+        EstablishedSession {
+            cookie_header: format!("{session_cookie}; {csrf_cookie}"),
+            session_cookie,
+            csrf_value,
+        }
+    }
+
+    fn json_string_field(body: &str, field: &str) -> String {
+        let marker = format!("\"{field}\":\"");
+        let value = body
+            .split_once(&marker)
+            .and_then(|(_, remainder)| remainder.split_once('"'))
+            .map(|(value, _)| value)
+            .expect("the typed response must contain the requested string field");
+        assert!(!value.is_empty());
+        value.to_owned()
     }
 }

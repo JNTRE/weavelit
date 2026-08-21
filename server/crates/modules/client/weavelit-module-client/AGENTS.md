@@ -25,6 +25,10 @@ Apply instructions in this order:
 
 - `Cargo.toml`: Compiled-in shared Client Module package manifest.
 - `src/lib.rs`: Canonical route paths, the pre-operational and operational capability declarations and their mounting, pre-operational status request translation, Application Database selection request translation and its same-origin and CSRF trust gate, the shared fixed-profile response helpers, the shared release-time clearing owner every collected secret-bearing request body is parsed through, and contract tests.
+- `src/administration.rs`: The shared account-list, account-view, and account-status Administration Plane contract: canonical routes, strict session-bearing requests, route-scoped cursor paging, safe public projections reusable by Group member reads, bounded typed envelopes, stable rejections, and Server-core hooks.
+- `src/configuration.rs`: The shared specialized TOTP enablement preview/apply and existing Log configuration list/view/change contracts: canonical strict routes, the opaque single-claim preview transport, name-scoped paging and changes, safe bounded projections, stable rejections, and Server-core hooks.
+- `src/groups.rs`: The shared Group CRUD, membership, direct-grant, and compiled-catalog Administration Plane contract: canonical routes, strict public identifiers and structured grants, route-scoped paging, bounded typed envelopes, stable rejections, and Server-core hooks.
+- `src/credential_issuance.rs`: The shared credential-issuance step-up, account-create, and password-reset contracts: canonical strict routes, clearing secret request ownership, single-use ticket transport, one-time temporary-password responses, stable rejections, and Server-core hooks.
 - `src/restore.rs`: The two-step Restore submission contract: both canonical
   route paths, the ticket header, every header precondition, the recovery-key
   request schema and the shared release-time clearing of its collected body,
@@ -48,6 +52,10 @@ Apply instructions in this order:
   each collected body, every header, CSRF, and session precondition, the
   one-time provisioning disclosure, and the Server-core hooks each declaration
   is composed over.
+- `src/mfa_policy.rs`: The shared TOTP step-up, account MFA-requirement, and
+  enrollment-reset contracts, including strict secret-bearing requests,
+  reusable opaque ticket transport, safe account results, and stable rejections.
+- `src/password_change.rs`: The restricted-session password-change route contract: its canonical path, strict one-field request, release-time body clearing, session and same-origin preconditions, fresh-session cookie result, stable rejections, and Server-core hook.
 - `src/authorization.rs`: The shared operational authorization denial contract:
   the single `AuthorizationRejection` value, the fixed `403` status and
   `authorization_denied` code, and the byte-identical response every denial

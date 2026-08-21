@@ -298,6 +298,10 @@ impl AuthorizationRuntime {
             &AuthorizationCatalog,
         ) -> Result<T, AuthorizationDenied>,
     ) -> Result<T, AuthorizationRejection> {
+        if !session.is_ordinary() {
+            return Err(AuthorizationRejection);
+        }
+
         // A request that names a Client Module other than the one the session
         // was established for is denied: the session authorizes through the
         // surface it was issued to and no other.
@@ -390,7 +394,8 @@ mod tests {
     use rusqlite::Connection;
     use weavelit_module_client::typed_json::TypedJsonEnvelope;
     use weavelit_server_administration::{
-        AdministrationAction, AdministrationClock, AdministrationPlane,
+        AccountAdministrationAction, AccountAdministrationRead, AdministrationAction,
+        AdministrationClock, AdministrationPlane,
         AdministrationRequest as AdministrationActionRequest, AuthorizedAdministrationAction,
         ComponentEnablementSource, ComponentOperation,
     };
@@ -549,11 +554,13 @@ mod tests {
                 SessionCsrfHash::from_bytes(*csrf_digest.as_bytes())
                     .expect("the csrf digest must be accepted"),
                 account,
+                weavelit_server_database::CredentialRevision::INITIAL,
                 name(client_module),
                 SessionInstant::from_unix_milliseconds(ISSUED_AT)
                     .expect("the test instant must be accepted"),
             );
-            self.database
+            let issuance = self
+                .database
                 .with(|database| {
                     database
                         .sessions()
@@ -562,6 +569,7 @@ mod tests {
                 })
                 .expect("the database lane must be usable")
                 .expect("the session must be stored");
+            assert_eq!(issuance, weavelit_server_database::SessionIssuance::Issued);
 
             let validated = self
                 .authentication
@@ -646,6 +654,9 @@ mod tests {
                     display_name: None,
                     active: true,
                     mfa_required: false,
+                    credential_revision: weavelit_server_database::CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
                 },
                 Account {
                     identifier: identifier(ADMINISTRATOR_BYTES),
@@ -653,6 +664,9 @@ mod tests {
                     display_name: None,
                     active: true,
                     mfa_required: false,
+                    credential_revision: weavelit_server_database::CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
                 },
             ],
             groups: vec![
@@ -731,6 +745,24 @@ mod tests {
             .expect("the enablement change must run");
     }
 
+    fn require_password_change(path: &Path, account: [u8; 16]) {
+        let connection = Connection::open(path).expect("the test connection must open");
+        connection
+            .execute(
+                "INSERT INTO weavelit_password_verifier (account_id, encoded_verifier) \
+                 VALUES (?1, '$argon2id$v=19$m=65536,t=3,p=1$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')",
+                [account.as_slice()],
+            )
+            .expect("the temporary account must have a verifier");
+        connection
+            .execute(
+                "UPDATE weavelit_account SET must_change_password = 1, \
+                 temporary_credential_expires_at_milliseconds = ?2 WHERE account_id = ?1",
+                rusqlite::params![account.as_slice(), ISSUED_AT + 60_000],
+            )
+            .expect("the temporary account state must be stored");
+    }
+
     struct AdministrationTestClock;
 
     impl AdministrationClock for AdministrationTestClock {
@@ -764,6 +796,25 @@ mod tests {
         )
         .authorize(admission, AdministrationActionRequest::new(action))
         .expect("the runtime-bound admission must authorize its matching action")
+    }
+
+    #[test]
+    fn password_change_required_sessions_are_rejected_by_ordinary_authorization() {
+        let surface = AuthorizationSurface::new();
+        require_password_change(&surface.database_path, OPERATOR_BYTES);
+        require_password_change(&surface.database_path, ADMINISTRATOR_BYTES);
+
+        let operator = surface.session(identifier(OPERATOR_BYTES), CLIENT_MODULE);
+        let administrator = surface.session(identifier(ADMINISTRATOR_BYTES), CLIENT_MODULE);
+
+        assert_eq!(
+            surface.authorize_operation(&operator),
+            Err(AuthorizationRejection)
+        );
+        assert!(matches!(
+            surface.authorize_administration(&administrator),
+            Err(AuthorizationRejection)
+        ));
     }
 
     #[test]
@@ -909,7 +960,9 @@ mod tests {
             surface
                 .authorize_administration(&administrator)
                 .expect("the administrator must receive a compound admission"),
-            AdministrationAction::Account,
+            AdministrationAction::Account(AccountAdministrationAction::Read(
+                AccountAdministrationRead::List,
+            )),
             surface.enablement(),
         );
         let component = authorize_administration_action(
@@ -957,7 +1010,9 @@ mod tests {
                 surface
                     .authorize_administration(&administrator)
                     .expect("an administrator must still reach the Administration Plane"),
-                AdministrationAction::Account,
+                AdministrationAction::Account(AccountAdministrationAction::Read(
+                    AccountAdministrationRead::List,
+                )),
                 surface.enablement(),
             )
             .client_module()

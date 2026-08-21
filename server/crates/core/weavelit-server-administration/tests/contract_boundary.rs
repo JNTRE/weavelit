@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-const FORBIDDEN_FIXTURES: [(&str, &str); 6] = [
+const FORBIDDEN_FIXTURES: [(&str, &str); 8] = [
     ("admission-literal", "E0451"),
     ("authority-reexport", "E0603"),
     ("authorized-action-literal", "E0451"),
     ("invoke-without-authorization", "E0308"),
+    ("projection-literal", "E0451"),
+    ("projection-sensitive-field", "E0609"),
     ("session-literal", "E0451"),
     ("step-up-literal", "E0451"),
 ];

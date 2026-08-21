@@ -6,13 +6,323 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::num::NonZeroU64;
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use weavelit_server_database_authority::ServerDatabaseAuthority;
 
 use crate::{ContractInputError, DeploymentIdentifier, WorkflowKind};
 
 /// Number of bytes in an application-state entity identifier.
 pub const STATE_IDENTIFIER_LENGTH: usize = 16;
+
+/// Number of random bytes in an Account Public Identifier.
+pub const ACCOUNT_PUBLIC_IDENTIFIER_LENGTH: usize = 16;
+
+/// Number of random bytes in a Group Public Identifier.
+pub const GROUP_PUBLIC_IDENTIFIER_LENGTH: usize = 16;
+
+/// Bytes in the persisted big-endian representation of a credential revision.
+pub const CREDENTIAL_REVISION_LENGTH: usize = size_of::<u64>();
+
+const ACCOUNT_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS: usize = 8;
+const GROUP_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS: usize = 8;
+
+/// Monotonically increasing generation of one account's credential state.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CredentialRevision(NonZeroU64);
+
+impl CredentialRevision {
+    /// Initial revision assigned when an account is created or legacy state is loaded.
+    pub const INITIAL: Self = Self(NonZeroU64::MIN);
+
+    /// Creates a revision and rejects the reserved zero value.
+    pub fn from_value(value: u64) -> Result<Self, ContractInputError> {
+        NonZeroU64::new(value)
+            .map(Self)
+            .ok_or(ContractInputError::InvalidCredentialRevision)
+    }
+
+    /// Decodes the exact eight-byte big-endian persistence representation.
+    pub fn from_stored_bytes(
+        bytes: [u8; CREDENTIAL_REVISION_LENGTH],
+    ) -> Result<Self, ContractInputError> {
+        Self::from_value(u64::from_be_bytes(bytes))
+    }
+
+    /// Returns the exact eight-byte big-endian persistence representation.
+    pub const fn to_stored_bytes(self) -> [u8; CREDENTIAL_REVISION_LENGTH] {
+        self.0.get().to_be_bytes()
+    }
+
+    /// Returns the next revision, or `None` when this revision is maximal.
+    pub fn checked_next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+}
+
+impl fmt::Debug for CredentialRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialRevision(REDACTED)")
+    }
+}
+
+/// Nonnegative UTC Unix millisecond instant bounding a temporary credential.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TemporaryCredentialExpiration(i64);
+
+impl TemporaryCredentialExpiration {
+    /// Creates an expiration and rejects instants before the Unix epoch.
+    pub fn from_unix_milliseconds(value: i64) -> Result<Self, ContractInputError> {
+        if value < 0 {
+            return Err(ContractInputError::InvalidTemporaryCredentialExpiration);
+        }
+
+        Ok(Self(value))
+    }
+
+    /// Returns the expiration in UTC Unix milliseconds.
+    pub const fn as_unix_milliseconds(self) -> i64 {
+        self.0
+    }
+}
+
+impl fmt::Debug for TemporaryCredentialExpiration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TemporaryCredentialExpiration(REDACTED)")
+    }
+}
+
+/// Failure to generate or decode an internal Account Public Identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountPublicIdentifierError {
+    /// Operating-system randomness was unavailable.
+    RandomnessUnavailable,
+    /// A persisted identifier was not the required nonzero binary value.
+    InvalidPersistedValue,
+}
+
+impl fmt::Display for AccountPublicIdentifierError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::RandomnessUnavailable => "account public identity is unavailable",
+            Self::InvalidPersistedValue => "persisted account public identity is invalid",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for AccountPublicIdentifierError {}
+
+/// Independent opaque identifier used as one account's stable public identity.
+///
+/// The private representation prevents conversion from a state identifier,
+/// Audit Reference, string, or caller-provided bytes. Only a selected
+/// Application Database binding can issue the capability that accesses a
+/// persisted binary value.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AccountPublicIdentifier([u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH]);
+
+impl AccountPublicIdentifier {
+    /// Generates an identifier from operating-system randomness without a fallback.
+    pub fn generate() -> Result<Self, AccountPublicIdentifierError> {
+        Self::generate_with(|bytes| {
+            getrandom::fill(bytes).map_err(|_| AccountPublicIdentifierError::RandomnessUnavailable)
+        })
+    }
+
+    /// Returns the canonical unpadded Base64url public representation.
+    #[must_use]
+    pub fn as_base64url(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.0)
+    }
+
+    fn from_persisted_bytes(
+        bytes: [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH],
+    ) -> Result<Self, AccountPublicIdentifierError> {
+        if bytes == [0; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] {
+            return Err(AccountPublicIdentifierError::InvalidPersistedValue);
+        }
+        Ok(Self(bytes))
+    }
+
+    fn generate_with(
+        mut fill: impl FnMut(
+            &mut [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH],
+        ) -> Result<(), AccountPublicIdentifierError>,
+    ) -> Result<Self, AccountPublicIdentifierError> {
+        for _ in 0..ACCOUNT_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS {
+            let mut bytes = [0_u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH];
+            fill(&mut bytes)?;
+            if bytes != [0; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] {
+                return Ok(Self(bytes));
+            }
+        }
+
+        Err(AccountPublicIdentifierError::RandomnessUnavailable)
+    }
+}
+
+impl fmt::Debug for AccountPublicIdentifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AccountPublicIdentifier(REDACTED)")
+    }
+}
+
+/// Capability to access Account Public Identifier values in trusted persistence.
+///
+/// The private field prevents ordinary callers from constructing this value. It
+/// is issued only to Server lifecycle code that holds database authority after
+/// selecting or reopening the real Application Database.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct AccountPublicIdentifierPersistence {
+    _private: (),
+}
+
+impl AccountPublicIdentifierPersistence {
+    /// Issues persistence access to the Server-owned database selection authority.
+    #[must_use]
+    pub const fn from_server_authority(_authority: &ServerDatabaseAuthority) -> Self {
+        Self { _private: () }
+    }
+
+    /// Decodes an exact nonzero 16-byte value from trusted persistence.
+    pub fn decode(
+        &self,
+        bytes: [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH],
+    ) -> Result<AccountPublicIdentifier, AccountPublicIdentifierError> {
+        AccountPublicIdentifier::from_persisted_bytes(bytes)
+    }
+
+    /// Returns the exact binary value for trusted persistence.
+    pub const fn encode(
+        &self,
+        identifier: &AccountPublicIdentifier,
+    ) -> [u8; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH] {
+        identifier.0
+    }
+}
+
+impl fmt::Debug for AccountPublicIdentifierPersistence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AccountPublicIdentifierPersistence(REDACTED)")
+    }
+}
+
+/// Failure to generate or decode an internal Group Public Identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GroupPublicIdentifierError {
+    /// Operating-system randomness was unavailable.
+    RandomnessUnavailable,
+    /// A persisted identifier was not the required nonzero binary value.
+    InvalidPersistedValue,
+}
+
+impl fmt::Display for GroupPublicIdentifierError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::RandomnessUnavailable => "group public identity is unavailable",
+            Self::InvalidPersistedValue => "persisted group public identity is invalid",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for GroupPublicIdentifierError {}
+
+/// Independent opaque identifier used as one Group's stable public identity.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct GroupPublicIdentifier([u8; GROUP_PUBLIC_IDENTIFIER_LENGTH]);
+
+impl GroupPublicIdentifier {
+    /// Generates an identifier from operating-system randomness without a fallback.
+    pub fn generate() -> Result<Self, GroupPublicIdentifierError> {
+        Self::generate_with(|bytes| {
+            getrandom::fill(bytes).map_err(|_| GroupPublicIdentifierError::RandomnessUnavailable)
+        })
+    }
+
+    /// Returns the canonical unpadded Base64url public representation.
+    #[must_use]
+    pub fn as_base64url(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.0)
+    }
+
+    fn from_persisted_bytes(
+        bytes: [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH],
+    ) -> Result<Self, GroupPublicIdentifierError> {
+        if bytes == [0; GROUP_PUBLIC_IDENTIFIER_LENGTH] {
+            return Err(GroupPublicIdentifierError::InvalidPersistedValue);
+        }
+        Ok(Self(bytes))
+    }
+
+    fn generate_with(
+        mut fill: impl FnMut(
+            &mut [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH],
+        ) -> Result<(), GroupPublicIdentifierError>,
+    ) -> Result<Self, GroupPublicIdentifierError> {
+        for _ in 0..GROUP_PUBLIC_IDENTIFIER_GENERATION_ATTEMPTS {
+            let mut bytes = [0_u8; GROUP_PUBLIC_IDENTIFIER_LENGTH];
+            fill(&mut bytes)?;
+            if bytes != [0; GROUP_PUBLIC_IDENTIFIER_LENGTH] {
+                return Ok(Self(bytes));
+            }
+        }
+
+        Err(GroupPublicIdentifierError::RandomnessUnavailable)
+    }
+}
+
+impl fmt::Debug for GroupPublicIdentifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GroupPublicIdentifier(REDACTED)")
+    }
+}
+
+/// Capability to access Group Public Identifier values in trusted persistence.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct GroupPublicIdentifierPersistence {
+    _private: (),
+}
+
+impl GroupPublicIdentifierPersistence {
+    /// Issues persistence access to the Server-owned database selection authority.
+    #[must_use]
+    pub const fn from_server_authority(_authority: &ServerDatabaseAuthority) -> Self {
+        Self { _private: () }
+    }
+
+    /// Issues the companion capability for the same selected database binding.
+    #[must_use]
+    pub const fn from_account_public_identifier_persistence(
+        _persistence: &AccountPublicIdentifierPersistence,
+    ) -> Self {
+        Self { _private: () }
+    }
+
+    /// Decodes an exact nonzero 16-byte value from trusted persistence.
+    pub fn decode(
+        &self,
+        bytes: [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH],
+    ) -> Result<GroupPublicIdentifier, GroupPublicIdentifierError> {
+        GroupPublicIdentifier::from_persisted_bytes(bytes)
+    }
+
+    /// Returns the exact binary value for trusted persistence.
+    pub const fn encode(
+        &self,
+        identifier: &GroupPublicIdentifier,
+    ) -> [u8; GROUP_PUBLIC_IDENTIFIER_LENGTH] {
+        identifier.0
+    }
+}
+
+impl fmt::Debug for GroupPublicIdentifierPersistence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GroupPublicIdentifierPersistence(REDACTED)")
+    }
+}
 
 /// Number of random bytes in an Audit Reference Identifier.
 pub const AUDIT_REFERENCE_IDENTIFIER_LENGTH: usize = 16;
@@ -395,6 +705,39 @@ pub struct Account {
     /// data, so a Restore reinstates the requirement together with the account
     /// it constrains.
     pub mfa_required: bool,
+    /// Generation of the credential state verified for session issuance.
+    pub credential_revision: CredentialRevision,
+    /// Whether the account must replace its current temporary credential.
+    pub must_change_password: bool,
+    /// Fixed absolute expiration of the current temporary credential.
+    pub temporary_credential_expiration: Option<TemporaryCredentialExpiration>,
+}
+
+/// Stable public identity assigned to one local account.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct AccountPublicIdentity {
+    account: StateIdentifier,
+    public_identifier: AccountPublicIdentifier,
+}
+
+impl AccountPublicIdentity {
+    /// Associates one account with its independently generated public identifier.
+    pub const fn new(account: StateIdentifier, public_identifier: AccountPublicIdentifier) -> Self {
+        Self {
+            account,
+            public_identifier,
+        }
+    }
+
+    /// Returns the account this projection references.
+    pub const fn account(&self) -> StateIdentifier {
+        self.account
+    }
+
+    /// Returns the typed Account Public Identifier.
+    pub const fn public_identifier(&self) -> AccountPublicIdentifier {
+        self.public_identifier
+    }
 }
 
 /// Typed Audit Reference Identifier assigned to one local account.
@@ -444,6 +787,33 @@ pub struct Group {
     pub description: Option<Description>,
 }
 
+/// Stable public identity assigned to one Group.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct GroupPublicIdentity {
+    group: StateIdentifier,
+    public_identifier: GroupPublicIdentifier,
+}
+
+impl GroupPublicIdentity {
+    /// Associates one Group with its independently generated public identifier.
+    pub const fn new(group: StateIdentifier, public_identifier: GroupPublicIdentifier) -> Self {
+        Self {
+            group,
+            public_identifier,
+        }
+    }
+
+    /// Returns the Group this projection references.
+    pub const fn group(&self) -> StateIdentifier {
+        self.group
+    }
+
+    /// Returns the typed Group Public Identifier.
+    pub const fn public_identifier(&self) -> GroupPublicIdentifier {
+        self.public_identifier
+    }
+}
+
 /// Typed Audit Reference Identifier assigned to one Group.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct GroupAuditReference {
@@ -463,6 +833,36 @@ impl GroupAuditReference {
     /// Returns the Group this projection references.
     pub const fn group(&self) -> StateIdentifier {
         self.group
+    }
+
+    /// Returns the typed Audit Reference Identifier.
+    pub const fn audit_reference(&self) -> AuditReferenceIdentifier {
+        self.audit_reference
+    }
+}
+
+/// Typed Audit Reference Identifier assigned to one Log Module configuration.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct LogConfigurationAuditReference {
+    configuration: StateIdentifier,
+    audit_reference: AuditReferenceIdentifier,
+}
+
+impl LogConfigurationAuditReference {
+    /// Associates one configuration with its independently generated audit reference.
+    pub const fn new(
+        configuration: StateIdentifier,
+        audit_reference: AuditReferenceIdentifier,
+    ) -> Self {
+        Self {
+            configuration,
+            audit_reference,
+        }
+    }
+
+    /// Returns the Log Module configuration this projection references.
+    pub const fn configuration(&self) -> StateIdentifier {
+        self.configuration
     }
 
     /// Returns the typed Audit Reference Identifier.
@@ -768,12 +1168,16 @@ pub struct ApplicationStateInput {
     pub protected_secrets: Vec<ProtectedSecret>,
     /// Local accounts.
     pub accounts: Vec<Account>,
+    /// Stable public identities for local accounts.
+    pub account_public_identities: Vec<AccountPublicIdentity>,
     /// Stable Audit Reference Identifiers for local accounts.
     pub account_audit_references: Vec<AccountAuditReference>,
     /// Password verifiers.
     pub password_verifiers: Vec<AccountPasswordVerifier>,
     /// Groups.
     pub groups: Vec<Group>,
+    /// Stable public identities for Groups.
+    pub group_public_identities: Vec<GroupPublicIdentity>,
     /// Stable Audit Reference Identifiers for Groups.
     pub group_audit_references: Vec<GroupAuditReference>,
     /// Group memberships.
@@ -788,6 +1192,8 @@ pub struct ApplicationStateInput {
     pub recovery_public_key: RecoveryPublicKey,
     /// Configured Log Modules.
     pub log_module_configurations: Vec<LogModuleConfiguration>,
+    /// Stable Audit Reference Identifiers for Log Module configurations.
+    pub log_configuration_audit_references: Vec<LogConfigurationAuditReference>,
     /// Log type assignments.
     pub log_assignments: Vec<LogAssignment>,
     /// Post-commit completion obligation.
@@ -803,9 +1209,11 @@ pub struct ApplicationState {
     configuration: Vec<ConfigurationEntry>,
     protected_secrets: Vec<ProtectedSecret>,
     accounts: Vec<Account>,
+    account_public_identities: Vec<AccountPublicIdentity>,
     account_audit_references: Vec<AccountAuditReference>,
     password_verifiers: Vec<AccountPasswordVerifier>,
     groups: Vec<Group>,
+    group_public_identities: Vec<GroupPublicIdentity>,
     group_audit_references: Vec<GroupAuditReference>,
     group_memberships: Vec<GroupMembership>,
     group_grants: Vec<GroupGrantRecord>,
@@ -813,6 +1221,7 @@ pub struct ApplicationState {
     service_connections: Vec<ServiceConnection>,
     recovery_public_key: RecoveryPublicKey,
     log_module_configurations: Vec<LogModuleConfiguration>,
+    log_configuration_audit_references: Vec<LogConfigurationAuditReference>,
     log_assignments: Vec<LogAssignment>,
     completion_obligation: CompletionObligation,
 }
@@ -824,9 +1233,11 @@ impl ApplicationState {
             mut configuration,
             mut protected_secrets,
             mut accounts,
+            mut account_public_identities,
             mut account_audit_references,
             mut password_verifiers,
             mut groups,
+            mut group_public_identities,
             mut group_audit_references,
             mut group_memberships,
             mut group_grants,
@@ -834,6 +1245,7 @@ impl ApplicationState {
             mut service_connections,
             recovery_public_key,
             mut log_module_configurations,
+            mut log_configuration_audit_references,
             mut log_assignments,
             completion_obligation,
         } = input;
@@ -841,9 +1253,11 @@ impl ApplicationState {
         configuration.sort();
         protected_secrets.sort();
         accounts.sort();
+        account_public_identities.sort();
         account_audit_references.sort();
         password_verifiers.sort();
         groups.sort();
+        group_public_identities.sort();
         group_audit_references.sort();
         group_memberships.sort();
         group_grants.sort();
@@ -853,6 +1267,7 @@ impl ApplicationState {
             log_module_configuration.settings.sort();
         }
         log_module_configurations.sort();
+        log_configuration_audit_references.sort();
         log_assignments.sort();
 
         reject_adjacent_duplicates(&configuration, |left, right| {
@@ -863,6 +1278,12 @@ impl ApplicationState {
         })?;
         reject_adjacent_duplicates(&accounts, |left, right| left.identifier == right.identifier)?;
         reject_duplicate_keys(&accounts, |account| account.username.clone())?;
+        reject_adjacent_duplicates(&account_public_identities, |left, right| {
+            left.account == right.account
+        })?;
+        reject_duplicate_keys(&account_public_identities, |identity| {
+            identity.public_identifier
+        })?;
         reject_adjacent_duplicates(&account_audit_references, |left, right| {
             left.account == right.account
         })?;
@@ -871,6 +1292,12 @@ impl ApplicationState {
         })?;
         reject_adjacent_duplicates(&groups, |left, right| left.identifier == right.identifier)?;
         reject_duplicate_keys(&groups, |group| group.name.clone())?;
+        reject_adjacent_duplicates(&group_public_identities, |left, right| {
+            left.group == right.group
+        })?;
+        reject_duplicate_keys(&group_public_identities, |identity| {
+            identity.public_identifier
+        })?;
         reject_adjacent_duplicates(&group_audit_references, |left, right| {
             left.group == right.group
         })?;
@@ -897,16 +1324,32 @@ impl ApplicationState {
                 left.key == right.key
             })?;
         }
+        reject_adjacent_duplicates(&log_configuration_audit_references, |left, right| {
+            left.configuration == right.configuration
+        })?;
 
         let account_identifiers = sorted_identifiers(&accounts, |account| account.identifier);
         let group_identifiers = sorted_identifiers(&groups, |group| group.identifier);
         let log_module_identifiers =
             sorted_identifiers(&log_module_configurations, |entry| entry.identifier);
 
+        let publicly_identified_accounts =
+            sorted_identifiers(&account_public_identities, |entry| entry.account);
+        let publicly_identified_groups =
+            sorted_identifiers(&group_public_identities, |entry| entry.group);
         let referenced_accounts =
             sorted_identifiers(&account_audit_references, |entry| entry.account);
         let referenced_groups = sorted_identifiers(&group_audit_references, |entry| entry.group);
-        if account_identifiers != referenced_accounts || group_identifiers != referenced_groups {
+        let referenced_log_configurations =
+            sorted_identifiers(&log_configuration_audit_references, |entry| {
+                entry.configuration
+            });
+        if account_identifiers != publicly_identified_accounts
+            || account_identifiers != referenced_accounts
+            || group_identifiers != publicly_identified_groups
+            || group_identifiers != referenced_groups
+            || log_module_identifiers != referenced_log_configurations
+        {
             return Err(ContractInputError::UnknownReference);
         }
 
@@ -918,12 +1361,30 @@ impl ApplicationState {
                     .iter()
                     .map(|entry| entry.audit_reference),
             )
+            .chain(
+                log_configuration_audit_references
+                    .iter()
+                    .map(|entry| entry.audit_reference),
+            )
             .collect::<Vec<_>>();
         audit_references.sort_unstable();
         reject_adjacent_duplicates(&audit_references, |left, right| left == right)?;
 
         for verifier in &password_verifiers {
             require_reference(&account_identifiers, verifier.account)?;
+        }
+        for account in &accounts {
+            let has_expiration = account.temporary_credential_expiration.is_some();
+            if account.must_change_password != has_expiration {
+                return Err(ContractInputError::InvalidTemporaryCredentialState);
+            }
+            if has_expiration
+                && password_verifiers
+                    .binary_search_by_key(&account.identifier, |verifier| verifier.account)
+                    .is_err()
+            {
+                return Err(ContractInputError::InvalidTemporaryCredentialState);
+            }
         }
         for membership in &group_memberships {
             require_reference(&group_identifiers, membership.group)?;
@@ -961,9 +1422,11 @@ impl ApplicationState {
             configuration,
             protected_secrets,
             accounts,
+            account_public_identities,
             account_audit_references,
             password_verifiers,
             groups,
+            group_public_identities,
             group_audit_references,
             group_memberships,
             group_grants,
@@ -971,6 +1434,7 @@ impl ApplicationState {
             service_connections,
             recovery_public_key,
             log_module_configurations,
+            log_configuration_audit_references,
             log_assignments,
             completion_obligation,
         })
@@ -991,6 +1455,11 @@ impl ApplicationState {
         &self.accounts
     }
 
+    /// Returns the local-account public identity projections.
+    pub fn account_public_identities(&self) -> &[AccountPublicIdentity] {
+        &self.account_public_identities
+    }
+
     /// Returns the local-account Audit Reference projections.
     pub fn account_audit_references(&self) -> &[AccountAuditReference] {
         &self.account_audit_references
@@ -1004,6 +1473,11 @@ impl ApplicationState {
     /// Returns the Groups.
     pub fn groups(&self) -> &[Group] {
         &self.groups
+    }
+
+    /// Returns the Group public identity projections.
+    pub fn group_public_identities(&self) -> &[GroupPublicIdentity] {
+        &self.group_public_identities
     }
 
     /// Returns the Group Audit Reference projections.
@@ -1039,6 +1513,11 @@ impl ApplicationState {
     /// Returns the configured Log Modules.
     pub fn log_module_configurations(&self) -> &[LogModuleConfiguration] {
         &self.log_module_configurations
+    }
+
+    /// Returns the Log Module configuration Audit Reference projections.
+    pub fn log_configuration_audit_references(&self) -> &[LogConfigurationAuditReference] {
+        &self.log_configuration_audit_references
     }
 
     /// Returns the log type assignments.
@@ -1143,12 +1622,142 @@ mod tests {
         StateIdentifier::from_bytes([byte; STATE_IDENTIFIER_LENGTH]).unwrap()
     }
 
+    fn account_public_identifier(byte: u8) -> AccountPublicIdentifier {
+        AccountPublicIdentifier::from_persisted_bytes([byte; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH])
+            .unwrap()
+    }
+
     fn audit_reference(byte: u8) -> AuditReferenceIdentifier {
         AuditReferenceIdentifier::from_persisted_value(&format!(
             "ar-{}",
             format!("{byte:02x}").repeat(AUDIT_REFERENCE_IDENTIFIER_LENGTH)
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn account_public_identifier_generation_is_nonzero_and_redacted() {
+        let mut attempts = 0;
+        let generated = AccountPublicIdentifier::generate_with(|bytes| {
+            attempts += 1;
+            if attempts == 2 {
+                bytes.fill(0x5a);
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert_eq!(
+            format!("{generated:?}"),
+            "AccountPublicIdentifier(REDACTED)"
+        );
+    }
+
+    #[test]
+    fn account_public_identifier_generation_fails_closed() {
+        assert_eq!(
+            AccountPublicIdentifier::generate_with(|_| {
+                Err(AccountPublicIdentifierError::RandomnessUnavailable)
+            }),
+            Err(AccountPublicIdentifierError::RandomnessUnavailable)
+        );
+        assert_eq!(
+            AccountPublicIdentifier::generate_with(|_| Ok(())),
+            Err(AccountPublicIdentifierError::RandomnessUnavailable)
+        );
+    }
+
+    #[test]
+    fn account_public_identifier_uses_canonical_unpadded_base64url() {
+        assert_eq!(
+            account_public_identifier(0x31).as_base64url(),
+            "MTExMTExMTExMTExMTExMQ"
+        );
+    }
+
+    #[test]
+    fn account_public_identifier_persistence_is_authority_gated() {
+        let persistence = AccountPublicIdentifierPersistence::from_server_authority(
+            &ServerDatabaseAuthority::new(),
+        );
+        let identifier = account_public_identifier(0x31);
+
+        assert_eq!(
+            persistence.decode(persistence.encode(&identifier)),
+            Ok(identifier)
+        );
+        assert_eq!(
+            persistence.decode([0; ACCOUNT_PUBLIC_IDENTIFIER_LENGTH]),
+            Err(AccountPublicIdentifierError::InvalidPersistedValue)
+        );
+        assert_eq!(
+            format!("{persistence:?}"),
+            "AccountPublicIdentifierPersistence(REDACTED)"
+        );
+    }
+
+    fn group_public_identifier(byte: u8) -> GroupPublicIdentifier {
+        GroupPublicIdentifier::from_persisted_bytes([byte; GROUP_PUBLIC_IDENTIFIER_LENGTH]).unwrap()
+    }
+
+    #[test]
+    fn group_public_identifier_generation_is_nonzero_and_redacted() {
+        let mut attempts = 0;
+        let generated = GroupPublicIdentifier::generate_with(|bytes| {
+            attempts += 1;
+            if attempts == 2 {
+                bytes.fill(0x5a);
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert_eq!(format!("{generated:?}"), "GroupPublicIdentifier(REDACTED)");
+    }
+
+    #[test]
+    fn group_public_identifier_generation_fails_closed() {
+        assert_eq!(
+            GroupPublicIdentifier::generate_with(|_| {
+                Err(GroupPublicIdentifierError::RandomnessUnavailable)
+            }),
+            Err(GroupPublicIdentifierError::RandomnessUnavailable)
+        );
+        assert_eq!(
+            GroupPublicIdentifier::generate_with(|_| Ok(())),
+            Err(GroupPublicIdentifierError::RandomnessUnavailable)
+        );
+    }
+
+    #[test]
+    fn group_public_identifier_uses_canonical_unpadded_base64url() {
+        assert_eq!(
+            group_public_identifier(0x31).as_base64url(),
+            "MTExMTExMTExMTExMTExMQ"
+        );
+    }
+
+    #[test]
+    fn group_public_identifier_persistence_is_authority_gated() {
+        let persistence = GroupPublicIdentifierPersistence::from_server_authority(
+            &ServerDatabaseAuthority::new(),
+        );
+        let identifier = group_public_identifier(0x31);
+
+        assert_eq!(
+            persistence.decode(persistence.encode(&identifier)),
+            Ok(identifier)
+        );
+        assert_eq!(
+            persistence.decode([0; GROUP_PUBLIC_IDENTIFIER_LENGTH]),
+            Err(GroupPublicIdentifierError::InvalidPersistedValue)
+        );
+        assert_eq!(
+            format!("{persistence:?}"),
+            "GroupPublicIdentifierPersistence(REDACTED)"
+        );
     }
 
     fn name(value: &str) -> Name {
@@ -1174,8 +1783,8 @@ mod tests {
     fn valid_input() -> ApplicationStateInput {
         ApplicationStateInput {
             configuration: vec![ConfigurationEntry {
-                component: name("mfa.totp"),
-                key: ConfigurationKey::new("enabled").unwrap(),
+                component: name("totp"),
+                key: ConfigurationKey::new("mfa-module.enabled").unwrap(),
                 value: ConfigurationValue::new("false").unwrap(),
             }],
             protected_secrets: vec![ProtectedSecret {
@@ -1189,7 +1798,14 @@ mod tests {
                 display_name: Some(name("First Admin")),
                 active: true,
                 mfa_required: false,
+                credential_revision: CredentialRevision::INITIAL,
+                must_change_password: false,
+                temporary_credential_expiration: None,
             }],
+            account_public_identities: vec![AccountPublicIdentity::new(
+                identifier(1),
+                account_public_identifier(0x91),
+            )],
             account_audit_references: vec![AccountAuditReference::new(
                 identifier(1),
                 audit_reference(0xA1),
@@ -1203,6 +1819,10 @@ mod tests {
                 name: name("Administrators"),
                 description: None,
             }],
+            group_public_identities: vec![GroupPublicIdentity::new(
+                identifier(2),
+                group_public_identifier(0x92),
+            )],
             group_audit_references: vec![GroupAuditReference::new(
                 identifier(2),
                 audit_reference(0xB2),
@@ -1244,6 +1864,10 @@ mod tests {
                     value: ConfigurationValue::new("unsupported").unwrap(),
                 }],
             }],
+            log_configuration_audit_references: vec![LogConfigurationAuditReference::new(
+                identifier(5),
+                audit_reference(0xC3),
+            )],
             log_assignments: vec![
                 LogAssignment {
                     log_type: LogType::System,
@@ -1268,6 +1892,91 @@ mod tests {
             StateIdentifier::from_bytes([0; STATE_IDENTIFIER_LENGTH]),
             Err(ContractInputError::InvalidStateIdentifier)
         );
+    }
+
+    #[test]
+    fn credential_revision_is_nonzero_checked_big_endian_and_redacted() {
+        assert_eq!(
+            CredentialRevision::from_value(0),
+            Err(ContractInputError::InvalidCredentialRevision)
+        );
+        assert_eq!(
+            CredentialRevision::INITIAL.to_stored_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 1]
+        );
+
+        let revision = CredentialRevision::from_value(0x0102_0304_0506_0708).unwrap();
+        assert_eq!(
+            revision.to_stored_bytes(),
+            [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
+        assert_eq!(
+            CredentialRevision::from_stored_bytes(revision.to_stored_bytes()),
+            Ok(revision)
+        );
+        assert_eq!(
+            revision.checked_next().unwrap().to_stored_bytes(),
+            0x0102_0304_0506_0709_u64.to_be_bytes()
+        );
+        assert_eq!(
+            CredentialRevision::from_value(u64::MAX)
+                .unwrap()
+                .checked_next(),
+            None
+        );
+        assert_eq!(format!("{revision:?}"), "CredentialRevision(REDACTED)");
+    }
+
+    #[test]
+    fn temporary_credential_expiration_is_nonnegative_and_redacted() {
+        assert_eq!(
+            TemporaryCredentialExpiration::from_unix_milliseconds(-1),
+            Err(ContractInputError::InvalidTemporaryCredentialExpiration)
+        );
+        let expiration = TemporaryCredentialExpiration::from_unix_milliseconds(i64::MAX).unwrap();
+        assert_eq!(expiration.as_unix_milliseconds(), i64::MAX);
+        assert_eq!(
+            format!("{expiration:?}"),
+            "TemporaryCredentialExpiration(REDACTED)"
+        );
+    }
+
+    #[test]
+    fn temporary_credential_state_is_paired_and_requires_a_verifier() {
+        let expiration = TemporaryCredentialExpiration::from_unix_milliseconds(1).unwrap();
+
+        let mut missing_expiration = valid_input();
+        missing_expiration.accounts[0].must_change_password = true;
+        assert_eq!(
+            reject(missing_expiration),
+            ContractInputError::InvalidTemporaryCredentialState
+        );
+
+        let mut unexpected_expiration = valid_input();
+        unexpected_expiration.accounts[0].temporary_credential_expiration = Some(expiration);
+        assert_eq!(
+            reject(unexpected_expiration),
+            ContractInputError::InvalidTemporaryCredentialState
+        );
+
+        let mut missing_verifier = valid_input();
+        missing_verifier.accounts[0].must_change_password = true;
+        missing_verifier.accounts[0].temporary_credential_expiration = Some(expiration);
+        missing_verifier.password_verifiers.clear();
+        assert_eq!(
+            reject(missing_verifier),
+            ContractInputError::InvalidTemporaryCredentialState
+        );
+
+        let mut temporary = valid_input();
+        temporary.accounts[0].must_change_password = true;
+        temporary.accounts[0].temporary_credential_expiration = Some(expiration);
+        ApplicationState::new(temporary).expect("paired temporary metadata is valid");
+
+        let mut ordinary_passwordless = valid_input();
+        ordinary_passwordless.password_verifiers.clear();
+        ApplicationState::new(ordinary_passwordless)
+            .expect("ordinary passwordless account state remains valid");
     }
 
     #[test]
@@ -1430,8 +2139,24 @@ mod tests {
 
         assert_eq!(ApplicationState::new(reversed).unwrap(), ordered);
         assert_eq!(ordered.accounts().len(), 1);
+        assert_eq!(ordered.account_public_identities().len(), 1);
+        assert_eq!(
+            ordered.account_public_identities()[0].account(),
+            identifier(1)
+        );
+        assert_eq!(
+            ordered.account_public_identities()[0].public_identifier(),
+            account_public_identifier(0x91)
+        );
         assert_eq!(ordered.account_audit_references().len(), 1);
+        assert_eq!(ordered.group_public_identities().len(), 1);
+        assert_eq!(ordered.group_public_identities()[0].group(), identifier(2));
+        assert_eq!(
+            ordered.group_public_identities()[0].public_identifier(),
+            group_public_identifier(0x92)
+        );
         assert_eq!(ordered.group_audit_references().len(), 1);
+        assert_eq!(ordered.log_configuration_audit_references().len(), 1);
         assert_eq!(ordered.group_grants().len(), 2);
         assert_eq!(
             ordered.group_grants()[0].grant,
@@ -1453,6 +2178,9 @@ mod tests {
             display_name: None,
             active: true,
             mfa_required: false,
+            credential_revision: CredentialRevision::INITIAL,
+            must_change_password: false,
+            temporary_credential_expiration: None,
         });
 
         let mut duplicate_username = valid_input();
@@ -1462,6 +2190,9 @@ mod tests {
             display_name: None,
             active: true,
             mfa_required: false,
+            credential_revision: CredentialRevision::INITIAL,
+            must_change_password: false,
+            temporary_credential_expiration: None,
         });
 
         let mut duplicate_group_name = valid_input();
@@ -1475,8 +2206,8 @@ mod tests {
         duplicate_configuration
             .configuration
             .push(ConfigurationEntry {
-                component: name("mfa.totp"),
-                key: ConfigurationKey::new("enabled").unwrap(),
+                component: name("totp"),
+                key: ConfigurationKey::new("mfa-module.enabled").unwrap(),
                 value: ConfigurationValue::new("true").unwrap(),
             });
 
@@ -1529,7 +2260,7 @@ mod tests {
     }
 
     #[test]
-    fn every_account_and_group_requires_one_globally_unique_audit_reference() {
+    fn every_audited_entity_requires_one_globally_unique_audit_reference() {
         let mut missing_account = valid_input();
         missing_account.account_audit_references.clear();
 
@@ -1537,14 +2268,132 @@ mod tests {
         unknown_group.group_audit_references[0] =
             GroupAuditReference::new(identifier(9), audit_reference(0xB2));
 
-        for input in [missing_account, unknown_group] {
+        let mut missing_configuration = valid_input();
+        missing_configuration
+            .log_configuration_audit_references
+            .clear();
+
+        let mut unknown_configuration = valid_input();
+        unknown_configuration.log_configuration_audit_references[0] =
+            LogConfigurationAuditReference::new(identifier(9), audit_reference(0xC3));
+
+        for input in [
+            missing_account,
+            unknown_group,
+            missing_configuration,
+            unknown_configuration,
+        ] {
             assert_eq!(reject(input), ContractInputError::UnknownReference);
         }
 
-        let mut duplicate = valid_input();
-        duplicate.group_audit_references[0] =
+        let mut duplicate_group = valid_input();
+        duplicate_group.group_audit_references[0] =
             GroupAuditReference::new(identifier(2), audit_reference(0xA1));
-        assert_eq!(reject(duplicate), ContractInputError::DuplicateEntry);
+        assert_eq!(reject(duplicate_group), ContractInputError::DuplicateEntry);
+
+        let mut duplicate_configuration = valid_input();
+        duplicate_configuration.log_configuration_audit_references[0] =
+            LogConfigurationAuditReference::new(identifier(5), audit_reference(0xB2));
+        assert_eq!(
+            reject(duplicate_configuration),
+            ContractInputError::DuplicateEntry
+        );
+    }
+
+    #[test]
+    fn every_account_requires_one_unique_public_identity() {
+        let mut missing = valid_input();
+        missing.account_public_identities.clear();
+        assert_eq!(reject(missing), ContractInputError::UnknownReference);
+
+        let mut unknown = valid_input();
+        unknown.account_public_identities[0] =
+            AccountPublicIdentity::new(identifier(0x22), account_public_identifier(0x91));
+        assert_eq!(reject(unknown), ContractInputError::UnknownReference);
+
+        let mut duplicate_account = valid_input();
+        duplicate_account
+            .account_public_identities
+            .push(AccountPublicIdentity::new(
+                identifier(1),
+                account_public_identifier(0x92),
+            ));
+        assert_eq!(
+            reject(duplicate_account),
+            ContractInputError::DuplicateEntry
+        );
+
+        let mut duplicate_identifier = valid_input();
+        duplicate_identifier.accounts.push(Account {
+            identifier: identifier(0x22),
+            username: name("second-admin"),
+            display_name: None,
+            active: true,
+            mfa_required: false,
+            credential_revision: CredentialRevision::INITIAL,
+            must_change_password: false,
+            temporary_credential_expiration: None,
+        });
+        duplicate_identifier
+            .account_public_identities
+            .push(AccountPublicIdentity::new(
+                identifier(0x22),
+                account_public_identifier(0x91),
+            ));
+        duplicate_identifier
+            .account_audit_references
+            .push(AccountAuditReference::new(
+                identifier(0x22),
+                audit_reference(0xA2),
+            ));
+        assert_eq!(
+            reject(duplicate_identifier),
+            ContractInputError::DuplicateEntry
+        );
+    }
+
+    #[test]
+    fn every_group_requires_one_unique_public_identity() {
+        let mut missing = valid_input();
+        missing.group_public_identities.clear();
+        assert_eq!(reject(missing), ContractInputError::UnknownReference);
+
+        let mut unknown = valid_input();
+        unknown.group_public_identities[0] =
+            GroupPublicIdentity::new(identifier(0x22), group_public_identifier(0x92));
+        assert_eq!(reject(unknown), ContractInputError::UnknownReference);
+
+        let mut duplicate_group = valid_input();
+        duplicate_group
+            .group_public_identities
+            .push(GroupPublicIdentity::new(
+                identifier(2),
+                group_public_identifier(0x93),
+            ));
+        assert_eq!(reject(duplicate_group), ContractInputError::DuplicateEntry);
+
+        let mut duplicate_identifier = valid_input();
+        duplicate_identifier.groups.push(Group {
+            identifier: identifier(0x22),
+            name: name("Operators"),
+            description: None,
+        });
+        duplicate_identifier
+            .group_public_identities
+            .push(GroupPublicIdentity::new(
+                identifier(0x22),
+                group_public_identifier(0x92),
+            ));
+        duplicate_identifier
+            .group_audit_references
+            .push(GroupAuditReference::new(
+                identifier(0x22),
+                audit_reference(0xB3),
+            ));
+        assert_eq!(
+            reject(duplicate_identifier),
+            ContractInputError::DuplicateEntry
+        );
     }
 
     #[test]
@@ -1596,6 +2445,12 @@ mod tests {
                 enabled: true,
                 settings: Vec::new(),
             });
+        duplicated
+            .log_configuration_audit_references
+            .push(LogConfigurationAuditReference::new(
+                identifier(0x30),
+                audit_reference(0xD4),
+            ));
         duplicated.log_assignments.push(LogAssignment {
             log_type: LogType::System,
             configuration: identifier(0x30),

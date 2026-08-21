@@ -37,14 +37,12 @@ function unauthenticatedProbe(): Promise<Response> {
   );
 }
 
-/** Refuses a second probe so determinate-outcome tests cannot pass silently. */
+/** Starts unauthenticated, then reports the ordinary session a completed login established. */
 function initialUnauthenticatedProbeOnly(): () => Promise<Response> {
   let probes = 0;
   return () => {
     probes += 1;
-    return probes === 1
-      ? unauthenticatedProbe()
-      : Promise.reject(new Error("unexpected session probe"));
+    return probes === 1 ? unauthenticatedProbe() : authenticatedProbe();
   };
 }
 
@@ -235,6 +233,22 @@ async function renderUnauthenticated(login: () => Promise<Response>) {
   return fetchMock;
 }
 
+async function renderUnauthenticatedThenAuthenticated(login: () => Promise<Response>) {
+  let probes = 0;
+  const fetchMock = mockRoutedFetch({
+    probe: () => {
+      probes += 1;
+      return probes === 1 ? unauthenticatedProbe() : authenticatedProbe();
+    },
+    login,
+  });
+  render(<LoginPanel />);
+  await waitFor(() => {
+    expect(panel().dataset.authenticationState).toBe("unauthenticated");
+  });
+  return fetchMock;
+}
+
 function fillCredentials(): void {
   fireEvent.change(usernameField(), { target: { value: USERNAME } });
   fireEvent.change(passwordField(), { target: { value: PASSWORD } });
@@ -259,7 +273,14 @@ function setupLinkField(): HTMLInputElement {
  * it settles; every other route belongs to the scenario under test.
  */
 async function signInWith(routes: Readonly<Record<string, () => Promise<Response>>>) {
-  const fetchMock = mockRoutes({ [SESSION_PATH]: unauthenticatedProbe, ...routes });
+  let probes = 0;
+  const session =
+    routes[SESSION_PATH] ??
+    (() => {
+      probes += 1;
+      return probes === 1 ? unauthenticatedProbe() : authenticatedProbe();
+    });
+  const fetchMock = mockRoutes({ ...routes, [SESSION_PATH]: session });
   render(<LoginPanel />);
   await waitFor(() => {
     expect(panel().dataset.authenticationState).toBe("unauthenticated");
@@ -354,7 +375,7 @@ describe("LoginPanel form", () => {
   });
 
   it("reaches the authenticated state and discards the password on success", async () => {
-    await renderUnauthenticated(establishedLogin);
+    await renderUnauthenticatedThenAuthenticated(establishedLogin);
 
     fillCredentials();
     fireEvent.click(submitButton());
@@ -494,7 +515,7 @@ describe("LoginPanel storage discipline", () => {
     expect(globalThis.sessionStorage.length).toBe(1);
     globalThis.sessionStorage.clear();
 
-    await renderUnauthenticated(establishedLogin);
+    await renderUnauthenticatedThenAuthenticated(establishedLogin);
 
     fillCredentials();
     fireEvent.click(submitButton());

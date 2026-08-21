@@ -29,7 +29,7 @@ Apply instructions in this order:
 - `Cargo.toml`: Compiled-in Web UI Client Module package manifest.
 - `build.rs`: Fail-closed check that the generated Web UI production assets embedded by this crate exist and are current before compilation.
 - `build_manifest.rs`: Bundle-input inventory, SHA-256 hashing, and strict build content manifest verification used by `build.rs`.
-- `src/lib.rs`: The pre-operational and operational capability declarations this Client Module returns, the compile-time Web UI asset allowlist and its delivery routes, and asset contract tests.
+- `src/lib.rs`: The pre-operational and operational capability declarations this Client Module returns, including authenticated account, Group, MFA-policy, TOTP enablement, and Log configuration administration, the compile-time Web UI asset allowlist including both deferred workspace chunks, and asset contract tests.
 - `tests/build_manifest.rs`: Tests for the build-time asset freshness verification.
 
 ## Working Rules
