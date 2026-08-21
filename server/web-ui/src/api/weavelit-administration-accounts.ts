@@ -4,7 +4,7 @@ export const ACCOUNTS_LIST_PATH = "/api/v1/administration/accounts/list";
 export const ACCOUNTS_VIEW_PATH = "/api/v1/administration/accounts/view";
 export const ACCOUNTS_STATUS_PATH = "/api/v1/administration/accounts/status";
 
-const CANONICAL_FINAL_BASE64URL_CHARACTER = "[AEIMQUYcgkosw048]";
+const CANONICAL_FINAL_BASE64URL_CHARACTER = "[AQgw]";
 const PUBLIC_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{21}${CANONICAL_FINAL_BASE64URL_CHARACTER}$`);
 const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,416}$/;

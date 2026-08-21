@@ -5,9 +5,12 @@ export const MFA_POLICY_STEP_UP_PATH = "/api/v1/administration/step-up/totp";
 export const ACCOUNTS_MFA_REQUIREMENT_PATH = "/api/v1/administration/accounts/mfa-requirement";
 export const ACCOUNTS_MFA_RESET_PATH = "/api/v1/administration/accounts/mfa-reset";
 
-const CANONICAL_FINAL_BASE64URL_CHARACTER = "[AEIMQUYcgkosw048]";
-const TICKET_PATTERN = new RegExp(`^[A-Za-z0-9_-]{42}${CANONICAL_FINAL_BASE64URL_CHARACTER}$`);
-const PUBLIC_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{21}${CANONICAL_FINAL_BASE64URL_CHARACTER}$`);
+const CANONICAL_PUBLIC_ID_FINAL_BASE64URL_CHARACTER = "[AQgw]";
+const TICKET_FINAL_BASE64URL_CHARACTER = "[AEIMQUYcgkosw048]";
+const TICKET_PATTERN = new RegExp(`^[A-Za-z0-9_-]{42}${TICKET_FINAL_BASE64URL_CHARACTER}$`);
+const PUBLIC_ID_PATTERN = new RegExp(
+  `^[A-Za-z0-9_-]{21}${CANONICAL_PUBLIC_ID_FINAL_BASE64URL_CHARACTER}$`,
+);
 const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
 const TICKET_RESULT_FIELDS = new Set(["totp_step_up_ticket"]);

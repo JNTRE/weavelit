@@ -91,6 +91,28 @@ describe("Group API", () => {
     ).toHaveLength(1);
   });
 
+  it("rejects public ids with non-canonical base64url final characters", () => {
+    expect(
+      readGroupProjection({
+        result: { public_id: "QUFBQUFBQUFBQUFBQUFBQUE", name: "Test", description: null },
+        correlation_id: CORRELATION,
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts public ids with canonical base64url final characters", () => {
+    const canonicalEndings = ["A", "Q", "g", "w"];
+    for (const ending of canonicalEndings) {
+      const publicIdWithEnding = "QUFBQUFBQUFBQUFBQUFBU" + ending;
+      expect(
+        readGroupProjection({
+          result: { public_id: publicIdWithEnding, name: "Test", description: null },
+          correlation_id: CORRELATION,
+        }),
+      ).not.toBeNull();
+    }
+  });
+
   it("uses one same-origin PUT per operation with only documented fields", async () => {
     csrf();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {

@@ -203,4 +203,34 @@ describe("MFA policy requests", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("rejects public ids with non-canonical base64url final characters", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(success(projection(false)));
+
+    await expect(
+      changeMfaRequirement("QUFBQUFBQUFBQUFBQUFBQUE", true, TICKET),
+    ).rejects.toBeInstanceOf(MfaPolicyRefusedError);
+    await expect(resetMfaEnrollment("QUFBQUFBQUFBQUFBQUFBQUE", TICKET)).rejects.toBeInstanceOf(
+      MfaPolicyRefusedError,
+    );
+  });
+
+  it("accepts public ids with canonical base64url final characters", async () => {
+    withCsrfCookie();
+    const canonicalEndings = ["A", "Q", "g", "w"];
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    for (const ending of canonicalEndings) {
+      const publicIdWithEnding = "QUFBQUFBQUFBQUFBQUFBU" + ending;
+      fetchMock.mockResolvedValueOnce(
+        success({ ...projection(true), public_id: publicIdWithEnding }),
+      );
+    }
+    for (const ending of canonicalEndings) {
+      const publicIdWithEnding = "QUFBQUFBQUFBQUFBQUFBU" + ending;
+      await expect(changeMfaRequirement(publicIdWithEnding, true, TICKET)).resolves.toMatchObject({
+        publicId: publicIdWithEnding,
+      });
+    }
+  });
 });

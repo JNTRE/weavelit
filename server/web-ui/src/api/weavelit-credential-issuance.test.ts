@@ -105,6 +105,19 @@ describe("credential issuance response parsing", () => {
       }),
     ).toBeNull();
   });
+
+  it("accepts public ids with canonical base64url final characters", () => {
+    const canonicalEndings = ["A", "Q", "g", "w"];
+    for (const ending of canonicalEndings) {
+      const publicIdWithEnding = "QUFBQUFBQUFBQUFBQUFBU" + ending;
+      expect(
+        readCredentialIssued({
+          result: { public_id: publicIdWithEnding, temporary_password: TEMPORARY_PASSWORD },
+          correlation_id: CORRELATION,
+        }),
+      ).not.toBeNull();
+    }
+  });
 });
 
 describe("credential issuance requests", () => {

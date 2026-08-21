@@ -83,10 +83,27 @@ describe("account response parsing", () => {
     ["an additive verifier", projection({ password_verifier: "secret" })],
     ["a malformed public id", projection({ public_id: "internal-state-id" })],
     ["a zero public id", projection({ public_id: "AAAAAAAAAAAAAAAAAAAAAA" })],
+    [
+      "a public id with non-canonical final character",
+      projection({ public_id: "QUFBQUFBQUFBQUFBQUFBQUE" }),
+    ],
     ["an overlong name", projection({ username: "a".repeat(257) })],
     ["a wrong active type", projection({ active: 1 })],
   ])("rejects %s without carrying response detail", (_label, item) => {
     expect(readAccountProjection({ result: item })).toBeNull();
+  });
+
+  it("accepts public ids with canonical base64url final characters", () => {
+    const canonicalEndings = ["A", "Q", "g", "w"];
+    for (const ending of canonicalEndings) {
+      const publicIdWithEnding = "QUFBQUFBQUFBQUFBQUFBU" + ending;
+      expect(
+        readAccountProjection({
+          result: projection({ public_id: publicIdWithEnding }),
+          correlation_id: CORRELATION,
+        }),
+      ).not.toBeNull();
+    }
   });
 
   it("rejects malformed and oversized collection results", () => {

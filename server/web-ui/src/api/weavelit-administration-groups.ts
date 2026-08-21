@@ -12,9 +12,10 @@ export const GROUP_GRANTS_LIST_PATH = "/api/v1/administration/groups/grants/list
 export const GROUP_GRANTS_CHANGE_PATH = "/api/v1/administration/groups/grants/change";
 export const ADMINISTRATION_CATALOG_PATH = "/api/v1/administration/catalog";
 
-const FINAL_BASE64URL_CHARACTER = "[AEIMQUYcgkosw048]";
-const PUBLIC_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{21}${FINAL_BASE64URL_CHARACTER}$`);
-const TICKET_PATTERN = new RegExp(`^[A-Za-z0-9_-]{42}${FINAL_BASE64URL_CHARACTER}$`);
+const CANONICAL_FINAL_BASE64URL_CHARACTER = "[AQgw]";
+const TICKET_FINAL_BASE64URL_CHARACTER = "[AEIMQUYcgkosw048]";
+const PUBLIC_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{21}${CANONICAL_FINAL_BASE64URL_CHARACTER}$`);
+const TICKET_PATTERN = new RegExp(`^[A-Za-z0-9_-]{42}${TICKET_FINAL_BASE64URL_CHARACTER}$`);
 const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,512}$/;
 const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
