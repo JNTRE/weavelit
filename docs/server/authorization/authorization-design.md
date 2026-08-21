@@ -233,7 +233,7 @@ weaker rule.
 | `Account(Create(...))` or `Account(PasswordReset(...))` | Not required at this gate | Admits one account credential writer. The separate exact-session credential-issuance check applies before temporary-password disclosure. |
 | `Account(StatusChange { target: AccountPublicIdentifier, desired: Active | Disabled })` | Not required | Admits one account status writer. The gate performs no database read, credential reauthentication, or MFA step-up. |
 | `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
-| `GrantMutation` | Required, scoped to `GrantMutation` | Covers future Group membership and grant mutations. |
+| `GrantMutation` | Required, scoped to `GrantMutation` | Covers existing-Group membership and direct Client Module, Service Module, named Operation, and Server Administration Permission grant changes. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
 | `ComponentEnablementChange` | Not required | The exact kind and name must identify a compiled-in Client Module, Service Module, MFA Module, or Operation. The descriptor retains the requested enabled state without reading current enablement. |
 | `LogConfigurationChange` | Not required | Carries one existing primary Log Module configuration, optional enabled state and complete non-secret settings, and canonically ordered assignment changes. The gate performs no configuration read or mutation. |
@@ -308,13 +308,41 @@ therefore declare a direct manifest dependency that is visible in review;
 ordinary contract consumers and compiled-in Modules do not receive that
 dependency.
 
-The foundation does not verify a TOTP code and does not add a route, session
-field, or continuation. Server runtime integration must bind the account and
-session digest only after `ValidatedSession` succeeds and call
-`issue_step_up` only after the MFA Module verifies a code for that same live
-session. The future MFA-policy and grant-mutation contracts then borrow the
-returned proof through `AdministrationRequest`; ordinary account contracts do
-not request one.
+The Server runtime accepts a TOTP step-up only after `ValidatedSession` succeeds.
+Its one transaction rechecks the exact session's liveness, account activity,
+factor ownership, and TOTP Module enablement before advancing the replay
+watermark. It issues no session and changes no session value. A replay, stale
+factor, inactive actor, disabled Module, or different session mints no proof.
+The MFA-policy and Group-mutation contracts borrow the resulting proof through
+`AdministrationRequest`; ordinary account contracts do not request one.
+
+### Existing-Group Membership And Grant Mutations
+
+An authorized `GrantMutation` consumes the exact typed membership or direct
+grant intent by value. Membership targets use an existing Group and an
+**[Account Public Identifier](../../glossary.md#identities-and-access)**;
+grant targets use an existing Group and one canonical current grant value. No
+route, Group public identifier, pagination, or client schema is implied by this
+internal writer.
+
+The current exact-session five-minute TOTP proof is the complete additional
+authorization for this action family. It requires neither password
+reauthentication nor a separate confirmation. Before an Audit Attempt is made,
+an absent target, unsupported grant, or already-present or already-absent
+association is refused without a mutation or Audit record.
+
+After the Attempt is acknowledged, one immediate transaction rechecks the
+issuer's exact session, account activity, Client Module, target associations,
+and expected presence. A stale target or denied issuer selects only the generic
+denied terminal. A removal that would leave no active Human User with the
+effective Server Administration Permission selects only the
+`authorization.group-grant.removal-denied` terminal and returns the fixed
+last-administrator refusal. Otherwise the transaction changes exactly one
+membership or direct-grant association and persists the successful terminal
+obligation atomically. Terminal persistence failure rolls back the association;
+postcommit recovery failure leaves the committed result and its obligation
+pending. Authorization rereads memberships and grants on the next request, so
+there is no session refresh or cache invalidation step.
 
 ### Component Inventory, Live Enablement, And Denial
 

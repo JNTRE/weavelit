@@ -9,8 +9,8 @@
 //! deployment's history.
 
 use crate::{
-    ContractInputError, DatabaseError, MfaFactor, Name, NewSession, StateIdentifier,
-    ValidatedAuditTerminalObligationWrite,
+    ContractInputError, DatabaseError, MfaFactor, Name, NewSession, SessionInstant,
+    SessionTokenHash, StateIdentifier, ValidatedAuditTerminalObligationWrite,
 };
 
 /// Largest accepted time step.
@@ -59,6 +59,71 @@ pub enum MfaAcceptance {
     /// The step did not advance the watermark, so the code is a replay.
     Replayed,
     /// The MFA Module was disabled when the code was presented.
+    ModuleDisabled,
+}
+
+/// Exact live session state an administration step-up must recheck.
+pub struct MfaAdministrationStepUpRecheck {
+    actor: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+    now: SessionInstant,
+}
+
+impl MfaAdministrationStepUpRecheck {
+    /// Binds one verified code to the exact current administration session.
+    #[must_use]
+    pub const fn new(
+        actor: StateIdentifier,
+        session: SessionTokenHash,
+        client_module: Name,
+        now: SessionInstant,
+    ) -> Self {
+        Self {
+            actor,
+            session,
+            client_module,
+            now,
+        }
+    }
+
+    /// Returns the authenticated account.
+    pub const fn actor(&self) -> StateIdentifier {
+        self.actor
+    }
+
+    /// Returns the exact current session digest.
+    pub const fn session(&self) -> &SessionTokenHash {
+        &self.session
+    }
+
+    /// Returns the issuing Client Module.
+    pub const fn client_module(&self) -> &Name {
+        &self.client_module
+    }
+
+    /// Returns the instant at which session liveness is judged.
+    pub const fn now(&self) -> SessionInstant {
+        self.now
+    }
+}
+
+impl std::fmt::Debug for MfaAdministrationStepUpRecheck {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MfaAdministrationStepUpRecheck(REDACTED)")
+    }
+}
+
+/// Authoritative result of consuming a verified TOTP step for administration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MfaAdministrationStepUpAcceptance {
+    /// The exact current session and factor were accepted and the watermark advanced.
+    Accepted,
+    /// Session, actor, account, or factor ownership was no longer exact.
+    Rejected,
+    /// The verified step did not advance the factor watermark.
+    Replayed,
+    /// The factor's MFA Module was disabled.
     ModuleDisabled,
 }
 
@@ -214,6 +279,19 @@ pub trait MfaStore {
         step: MfaTimeStep,
         session: &NewSession,
     ) -> Result<MfaAcceptance, DatabaseError>;
+
+    /// Consumes a verified step for one exact current administration session.
+    ///
+    /// Session ownership and liveness, actor activity, factor ownership,
+    /// Module enablement, and replay state are rechecked in the transaction
+    /// that advances the watermark. No session is issued, touched, or rotated.
+    fn accept_administration_step_up(
+        &mut self,
+        target: &MfaModuleTarget,
+        factor: StateIdentifier,
+        step: MfaTimeStep,
+        recheck: &MfaAdministrationStepUpRecheck,
+    ) -> Result<MfaAdministrationStepUpAcceptance, DatabaseError>;
 
     /// Writes one session for a login no second factor was found to gate.
     ///

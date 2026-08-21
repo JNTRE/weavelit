@@ -18,16 +18,24 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
 
 use axum::http::Method;
 use tokio::task;
 use weavelit_module_client::{
-    ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
+    AuthenticationRejection, ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
     ReconciliationCapability as ClientReconciliationCapability, ReconciliationOutcome,
     ReconciliationRejection, validate_reconciliation_request,
 };
+use weavelit_server_administration::{
+    AdministrationClock, AdministrationPlane, AuthorizedAdministrationAdmission,
+    ComponentEnablementSource, MfaStepUpProof, StepUpActionFamily,
+};
+use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authentication::RustCryptoArgon2;
+use weavelit_server_authorization::AuthorizationDenied;
+use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
     AccountAdministrationStore, AccountAuditReference, AccountCreateMutation, AccountCreateOutcome,
     AccountCredentialAuditTerminalWrites, AccountCredentialWriterStore,
@@ -35,13 +43,15 @@ use weavelit_server_database::{
     AccountPublicIdentifier, AccountPublicIdentifierPersistence, AccountStatusAuditTerminalWrites,
     AccountStatusMutation, AccountStatusMutationOutcome, AccountStatusTarget,
     AccountStatusWriterStore, AuditReferencePersistence, AuditTerminalRecoveryPersistence,
-    AuditTerminalRecoveryStore, LogConfigurationAuditReference,
-    LogConfigurationAuditTerminalWrites, LogConfigurationGeneration, LogConfigurationGenerationKey,
+    AuditTerminalRecoveryStore, GroupGrant, GroupGrantMutationTarget,
+    GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites, GroupMutationOutcome,
+    GroupMutationStore, LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
+    LogConfigurationGeneration, LogConfigurationGenerationKey,
     LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
     LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
     LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
     MfaStore, PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeOutcome,
-    PreparedLogConfigurationMutation, StateIdentifier,
+    PreparedGroupMutation, PreparedLogConfigurationMutation, StateIdentifier,
 };
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
@@ -52,7 +62,7 @@ use weavelit_server_restore::Name;
 use zeroize::Zeroizing;
 
 use crate::{
-    authentication::AuthenticationRuntime,
+    authentication::{AuthenticationRuntime, ValidatedSession},
     fallback_router,
     operational_audit::{OperationalAuditRecovery, OperationalAuditRecoveryState},
     transport::{
@@ -77,6 +87,8 @@ pub struct OperationalRuntime {
     pub log_catalog: Arc<LogModuleCatalog>,
     /// The Client Modules this build can issue a session for.
     pub client_modules: BTreeSet<Name>,
+    /// The complete compiled-in component inventory used by administration admission.
+    pub components: AvailableComponents,
     /// The process-wide owner shutdown closes the database through.
     pub active_database: ActiveDatabase,
     /// The deployment's at-rest protection for enrolled MFA factor data.
@@ -421,6 +433,62 @@ impl OperationalDatabase {
         })?
     }
 
+    /// Resolves one existing Group membership target through selected decoders.
+    pub(crate) fn prepare_group_membership_target(
+        &self,
+        group: StateIdentifier,
+        account: AccountPublicIdentifier,
+    ) -> Result<Option<GroupMembershipMutationTarget>, DatabaseError> {
+        self.with_group_mutations(|store| {
+            store.prepare_group_membership_target(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                group,
+                account,
+            )
+        })
+    }
+
+    /// Resolves one existing Group direct-grant target through the selected decoder.
+    pub(crate) fn prepare_group_grant_target(
+        &self,
+        group: StateIdentifier,
+        grant: GroupGrant,
+    ) -> Result<Option<GroupGrantMutationTarget>, DatabaseError> {
+        self.with_group_mutations(|store| {
+            store.prepare_group_grant_target(&self.audit_reference_persistence, group, grant)
+        })
+    }
+
+    /// Commits one Group association change and exactly one selected Audit terminal.
+    pub(crate) fn commit_group_mutation(
+        &self,
+        mutation: &PreparedGroupMutation,
+        audit_terminals: &GroupMutationAuditTerminalWrites<'_>,
+    ) -> Result<GroupMutationOutcome, DatabaseError> {
+        self.with_group_mutations(|store| {
+            store.commit_group_mutation(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    fn with_group_mutations<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn GroupMutationStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                database
+                    .group_mutations()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
     /// Loads the authenticated actor's typed Audit Reference through database authority.
     pub(crate) fn load_account_audit_reference(
         &self,
@@ -712,6 +780,95 @@ pub struct OperationalComposer {
     /// authentication route, so a Server that cannot deny safely serves no
     /// login at all rather than one that decides on a broken authenticator.
     authentication: Option<Arc<AuthenticationRuntime<RustCryptoArgon2>>>,
+    #[allow(dead_code)]
+    administration: Option<Arc<OperationalAdministration>>,
+}
+
+struct OperationalAdministrationClock(Instant);
+
+impl AdministrationClock for OperationalAdministrationClock {
+    fn now(&self) -> Duration {
+        self.0.elapsed()
+    }
+}
+
+struct OperationalComponentEnablement(OperationalDatabase);
+
+impl ComponentEnablementSource for OperationalComponentEnablement {
+    fn load_component_enablement(
+        &mut self,
+    ) -> Result<weavelit_server_database::ComponentEnablement, AuthorizationDenied> {
+        self.0
+            .with(|database| database.load_component_enablement())
+            .map_err(|_| AuthorizationDenied)?
+            .map_err(|_| AuthorizationDenied)
+    }
+}
+
+/// Internal transport-independent administration composition for current-session step-up.
+pub(crate) struct OperationalAdministration {
+    authentication: Arc<AuthenticationRuntime<RustCryptoArgon2>>,
+    plane:
+        Mutex<AdministrationPlane<OperationalAdministrationClock, OperationalComponentEnablement>>,
+}
+
+impl OperationalAdministration {
+    fn new(
+        authentication: Arc<AuthenticationRuntime<RustCryptoArgon2>>,
+        database: OperationalDatabase,
+        components: AvailableComponents,
+    ) -> Self {
+        Self {
+            authentication,
+            plane: Mutex::new(AdministrationPlane::new(
+                OperationalAdministrationClock(Instant::now()),
+                OperationalComponentEnablement(database),
+                components,
+            )),
+        }
+    }
+
+    /// Verifies and consumes current-session TOTP, then mints one five-minute grant proof.
+    #[allow(dead_code)]
+    pub(crate) fn verify_grant_mutation_step_up(
+        &self,
+        session: &ValidatedSession,
+        code: &str,
+    ) -> Result<MfaStepUpProof, AuthenticationRejection> {
+        let current = self
+            .authentication
+            .verify_administration_step_up(session, code)?;
+        self.plane
+            .lock()
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?
+            .issue_step_up(
+                &ServerAdministrationAuthority::new(),
+                &current,
+                StepUpActionFamily::GrantMutation,
+            )
+            .map_err(|_| AuthenticationRejection::AuthenticationFailed)
+    }
+
+    /// Authorizes one exact grant-mutation action against the same proof clock and inventory.
+    #[allow(dead_code)]
+    pub(crate) fn authorize_grant_mutation(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        mutation: weavelit_server_administration::GroupMutation,
+        proof: &MfaStepUpProof,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        self.plane
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .authorize(
+                admission,
+                weavelit_server_administration::AdministrationRequest::new(
+                    weavelit_server_administration::AdministrationAction::GrantMutation(mutation),
+                )
+                .with_step_up(proof),
+            )
+    }
 }
 
 impl OperationalComposer {
@@ -738,6 +895,13 @@ impl OperationalComposer {
             &runtime.log_catalog,
             Arc::clone(&runtime.protection),
         );
+        let administration = authentication.as_ref().map(|authentication| {
+            Arc::new(OperationalAdministration::new(
+                Arc::clone(authentication),
+                database.clone(),
+                runtime.components.clone(),
+            ))
+        });
 
         Self {
             runtime,
@@ -746,6 +910,7 @@ impl OperationalComposer {
             #[cfg(test)]
             activation_audit_recovery_state,
             authentication,
+            administration,
         }
     }
 
@@ -767,6 +932,13 @@ impl OperationalComposer {
             &runtime.log_catalog,
             Arc::clone(&runtime.protection),
         );
+        let administration = authentication.as_ref().map(|authentication| {
+            Arc::new(OperationalAdministration::new(
+                Arc::clone(authentication),
+                database.clone(),
+                runtime.components.clone(),
+            ))
+        });
 
         Self {
             runtime,
@@ -774,6 +946,7 @@ impl OperationalComposer {
             audit_recovery,
             activation_audit_recovery_state,
             authentication,
+            administration,
         }
     }
 
@@ -781,6 +954,7 @@ impl OperationalComposer {
     #[cfg(test)]
     pub(crate) fn without_authentication(mut self) -> Self {
         self.authentication = None;
+        self.administration = None;
         self
     }
 

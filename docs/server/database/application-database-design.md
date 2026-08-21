@@ -663,11 +663,38 @@ seeds it to a disabled value. Restore normalization removes the former
 an exact canonical value when no legacy entry is present and otherwise deriving
 the canonical value from the legacy entry. No second mutable authority remains.
 
+The same store accepts a current-session administration step-up for one exact
+TOTP factor. It atomically rechecks the live session, actor activity, factor
+ownership, and canonical TOTP enablement, then advances only the factor's replay
+watermark when the presented time step is new. It neither creates nor rotates a
+session. The Server converts the accepted store result into a five-minute,
+exact-session Administration proof; no rejected result creates a proof.
+
 A watermark is live operational data in the same sense as a session: it belongs
 to the running deployment rather than to the restorable aggregate. It is not a
 member of `ApplicationState`, it never reaches a backup, and completing a state
 replacement clears every watermark inside the same atomic replacement that
 clears every session.
+
+## Existing-Group Mutation Storage
+
+The Application Database exposes a prepared-target and commit boundary for
+membership and direct-grant changes on existing Groups. Preparation resolves
+the exact Group, Account Public Identifier or canonical grant, persisted Audit
+References, and association presence from one consistent snapshot; an absent
+target remains absent and a desired no-op is reported before an Audit Attempt.
+
+Commit accepts the exact issuer session recheck, prepared target, desired
+presence, and opaque prevalidated terminal alternatives. One atomic transaction
+rechecks issuer liveness and activity, Client Module, target associations, and
+expected association state. For a removal it computes active effective Server
+Administration Permission after the proposed change. It selects exactly one of
+the success, generic-denied, or last-administrator-denied terminal obligations,
+and commits that selected obligation with the row mutation or neither. The
+backend never parses or invents an Audit terminal. A committed membership or
+grant change becomes visible through the existing live authorization projection
+on the next request; it does not change a session or populate an authorization
+cache.
 
 ## Deployment Record, Locator, And Operational State
 

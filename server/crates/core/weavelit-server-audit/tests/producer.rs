@@ -3,9 +3,9 @@ use std::{collections::VecDeque, fmt::Write as _, path::PathBuf};
 use weavelit_server_audit::{
     AccountStatus, ActionOutcome, AuditActor, AuditError, AuditEvent, AuditOutcomeDetail,
     AuditTerminalObligationReference, AutomationReference, BackupReference, ComponentReference,
-    ComponentState, GrantReference, LogConfigurationAuditReferences, LogPolicyReference,
-    MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState, OperationReference,
-    ServerAudit, ServiceConnectionReference, StateChangeOutcome,
+    ComponentState, GrantReference, GroupMutationOutcome, LogConfigurationAuditReferences,
+    LogPolicyReference, MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState,
+    OperationReference, ServerAudit, ServiceConnectionReference, StateChangeOutcome,
 };
 use weavelit_server_database::{
     Account, AccountAuditReference, AuditReferenceIdentifier, AuditTerminalAcknowledgementProof,
@@ -155,12 +155,8 @@ fn acknowledging_destination() -> ConfiguredLogDestination {
 fn every_event_has_the_fixed_registered_taxonomy_action_and_safe_target() {
     let target_account = account(0x11);
     let target_account_value = account_target(target_account);
-    let last_admin = account(0x12);
-    let last_admin_value = account_target(last_admin);
     let operators = group(0x21);
     let operators_value = group_target(operators);
-    let administrators = group(0x22);
-    let administrators_value = group_target(administrators);
     let log_configuration = log_configuration(0x41);
     let log_configuration_value =
         format!("log-configuration:{}", log_configuration.audit_reference());
@@ -275,7 +271,9 @@ fn every_event_has_the_fixed_registered_taxonomy_action_and_safe_target() {
                 group: operators,
                 account: target_account,
             },
-            AuditOutcomeDetail::AuthorizationGroupMembershipChanged(ActionOutcome::Succeeded),
+            AuditOutcomeDetail::AuthorizationGroupMembershipChanged(
+                GroupMutationOutcome::Succeeded,
+            ),
             "authorization.group-membership.changed",
             "change-membership",
             format!("{operators_value};{target_account_value}"),
@@ -285,20 +283,10 @@ fn every_event_has_the_fixed_registered_taxonomy_action_and_safe_target() {
                 group: operators,
                 grant: reference(GrantReference::new, "server-admin"),
             },
-            AuditOutcomeDetail::AuthorizationGroupGrantChanged(ActionOutcome::Succeeded),
+            AuditOutcomeDetail::AuthorizationGroupGrantChanged(GroupMutationOutcome::Succeeded),
             "authorization.group-grant.changed",
             "change-grant",
             format!("{operators_value};grant:server-admin"),
-        ),
-        (
-            AuditEvent::AuthorizationGroupGrantRemovalDenied {
-                group: administrators,
-                account: last_admin,
-            },
-            AuditOutcomeDetail::AuthorizationGroupGrantRemovalDenied,
-            "authorization.group-grant.removal-denied",
-            "remove-grant",
-            format!("{administrators_value};{last_admin_value}"),
         ),
         (
             AuditEvent::AuthorizationAutomationScopeChanged {
@@ -749,19 +737,94 @@ fn account_and_group_targets_use_only_persisted_audit_projections() {
 }
 
 #[test]
-fn terminal_time_and_denial_only_event_invariants_are_refused_payload_free() {
+fn group_grant_last_administrator_denial_is_a_phase_aware_terminal() {
     let producer = producer();
     let destination = acknowledging_destination();
     let administrators = group(0x31);
     let last_admin = account(0x32);
+    let cases = [
+        (
+            AuditEvent::AuthorizationGroupMembershipChanged {
+                group: administrators,
+                account: last_admin,
+            },
+            AuditOutcomeDetail::AuthorizationGroupMembershipChanged(
+                GroupMutationOutcome::LastAdministratorDenied,
+            ),
+            "authorization.group-membership.changed",
+            "change-membership",
+            format!(
+                "{};{}",
+                group_target(administrators),
+                account_target(last_admin)
+            ),
+        ),
+        (
+            AuditEvent::AuthorizationGroupGrantChanged {
+                group: administrators,
+                grant: reference(GrantReference::new, "server-administration"),
+            },
+            AuditOutcomeDetail::AuthorizationGroupGrantChanged(
+                GroupMutationOutcome::LastAdministratorDenied,
+            ),
+            "authorization.group-grant.changed",
+            "change-grant",
+            format!(
+                "{};grant:server-administration",
+                group_target(administrators)
+            ),
+        ),
+    ];
+
+    for (index, (event, detail, classification, action, target)) in cases.into_iter().enumerate() {
+        let prepared = producer
+            .prepare_attempt(
+                EventTime::from_unix_milliseconds(index as u64 + 10),
+                correlation(),
+                human(),
+                event,
+            )
+            .unwrap();
+        let attempt_view = assert_audit(prepared.record());
+        assert_eq!(attempt_view.body().classification(), classification);
+        assert_eq!(attempt_view.body().action(), action);
+        assert_eq!(attempt_view.body().target(), target);
+        let attempt = prepared.deliver(&destination).unwrap();
+
+        let terminal = producer
+            .prepare_completion(
+                &attempt,
+                EventTime::from_unix_milliseconds(index as u64 + 20),
+                detail,
+            )
+            .unwrap();
+        let terminal_view = assert_audit(terminal.record());
+        assert_eq!(
+            terminal_view.body().classification(),
+            "authorization.group-grant.removal-denied"
+        );
+        assert_eq!(terminal_view.body().action(), "remove-grant");
+        assert_eq!(terminal_view.body().target(), target);
+        assert_eq!(terminal_view.phase().result(), Some(LogResult::Failure));
+        assert_eq!(
+            terminal_view.body().detail(),
+            "accountable action denied; last Server Administration Permission grant retained"
+        );
+    }
+}
+
+#[test]
+fn terminal_time_and_outcome_invariants_are_refused_payload_free() {
+    let producer = producer();
+    let destination = acknowledging_destination();
     let attempt = producer
         .prepare_attempt(
             EventTime::from_unix_milliseconds(10),
             correlation(),
             human(),
-            AuditEvent::AuthorizationGroupGrantRemovalDenied {
-                group: administrators,
-                account: last_admin,
+            AuditEvent::AuthorizationGroupGrantChanged {
+                group: group(0x31),
+                grant: reference(GrantReference::new, "server-administration"),
             },
         )
         .unwrap()
@@ -783,7 +846,9 @@ fn terminal_time_and_denial_only_event_invariants_are_refused_payload_free() {
             .prepare_completion(
                 &attempt,
                 EventTime::from_unix_milliseconds(9),
-                AuditOutcomeDetail::AuthorizationGroupGrantRemovalDenied,
+                AuditOutcomeDetail::AuthorizationGroupGrantChanged(
+                    GroupMutationOutcome::LastAdministratorDenied,
+                ),
             )
             .unwrap_err(),
         AuditError::InvalidRecord

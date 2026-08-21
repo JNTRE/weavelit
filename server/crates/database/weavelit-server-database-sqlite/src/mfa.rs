@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
-    COMPONENT_ENABLED_VALUE, ComponentKind, DatabaseError, MfaAcceptance, MfaDirectSession,
+    COMPONENT_ENABLED_VALUE, ComponentKind, DatabaseError, MfaAcceptance,
+    MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
     MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnrollment, MfaFactor,
     MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
 };
@@ -38,6 +39,7 @@ const SELECT_ACCOUNT_FACTOR: &str = "SELECT EXISTS \
      (SELECT 1 FROM weavelit_mfa_factor WHERE account_id = ?1 AND module = ?2)";
 const SELECT_ACCOUNT_REQUIREMENT: &str =
     "SELECT mfa_required FROM weavelit_account WHERE account_id = ?1";
+const SELECT_ACCOUNT_ACTIVE: &str = "SELECT active FROM weavelit_account WHERE account_id = ?1";
 const SELECT_ENABLEMENT: &str = "SELECT setting_value FROM weavelit_configuration \
      WHERE component = ?1 AND setting_key = ?2";
 const SET_ENABLEMENT: &str = "INSERT INTO weavelit_configuration \
@@ -128,6 +130,51 @@ impl MfaStore for SqliteDatabase {
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
 
         Ok(MfaAcceptance::Accepted)
+    }
+
+    fn accept_administration_step_up(
+        &mut self,
+        target: &MfaModuleTarget,
+        factor: StateIdentifier,
+        step: MfaTimeStep,
+        recheck: &MfaAdministrationStepUpRecheck,
+    ) -> Result<MfaAdministrationStepUpAcceptance, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        let Some(stored_session) = session::load(&transaction, recheck.session())? else {
+            return Ok(MfaAdministrationStepUpAcceptance::Rejected);
+        };
+        if stored_session.account() != recheck.actor()
+            || stored_session.client_module() != recheck.client_module()
+            || stored_session.rejection_at(recheck.now()).is_some()
+        {
+            return Ok(MfaAdministrationStepUpAcceptance::Rejected);
+        }
+        let active = transaction
+            .query_row(
+                SELECT_ACCOUNT_ACTIVE,
+                [recheck.actor().as_bytes().as_slice()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        if active != Some(1)
+            || factor_for_account(&transaction, recheck.actor(), target)? != Some(factor)
+        {
+            return Ok(MfaAdministrationStepUpAcceptance::Rejected);
+        }
+        if !enabled(&transaction, target)? {
+            return Ok(MfaAdministrationStepUpAcceptance::ModuleDisabled);
+        }
+        if !advance_watermark(&transaction, factor, step)? {
+            return Ok(MfaAdministrationStepUpAcceptance::Replayed);
+        }
+        transaction
+            .commit()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        Ok(MfaAdministrationStepUpAcceptance::Accepted)
     }
 
     fn issue_direct_session(

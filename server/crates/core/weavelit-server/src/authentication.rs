@@ -51,7 +51,9 @@ use weavelit_module_client::{
 use weavelit_module_mfa_totp::{SECRET_LENGTH, TotpSecret};
 use weavelit_server_administration::{
     AccountAdministrationAction, AuthorizedAccountAdministrationAction,
+    CurrentAdministrationSession,
 };
+use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authentication::{
     ACCEPTED_ARGON2_PROFILES, AccountCredentialIssuanceInput, Argon2Engine, Continuation,
     ContinuationDigest, CsrfTokenDigest, PasswordAuthenticator, PasswordPolicy,
@@ -64,7 +66,8 @@ use weavelit_server_database::MfaEnablementOutcome;
 use weavelit_server_database::{
     Account, AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck,
     AccountPasswordVerifier, ApplicationState, ComponentKind, CredentialRevision, DatabaseError,
-    DeploymentIdentifier, InitializedState, LogType, MfaAcceptance, MfaDirectSession,
+    DeploymentIdentifier, InitializedState, LogType, MfaAcceptance,
+    MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
     MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
     PasswordChangeMutation, PasswordChangeRecheck, PasswordVerifier, SessionCsrfHash,
     SessionInstant, SessionPosture, SessionStore, SessionTokenHash, SessionValidation,
@@ -1501,6 +1504,56 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
     ) -> Result<ValidatedSession, AuthenticationRejection> {
         self.authorized_session(session_token, csrf_token)
             .map(|(token_hash, session)| ValidatedSession::established(token_hash, &session))
+    }
+
+    /// Verifies and consumes one TOTP code for the exact validated administration session.
+    ///
+    /// The factor secret is opened and verified in Server authentication. The
+    /// database then atomically rechecks the live session, actor, factor,
+    /// Module enablement, and replay watermark before this method can mint the
+    /// non-forgeable current-session value. No session is issued or rotated.
+    pub(crate) fn verify_administration_step_up(
+        &self,
+        session: &ValidatedSession,
+        code: &str,
+    ) -> Result<CurrentAdministrationSession, AuthenticationRejection> {
+        if !session.is_ordinary() {
+            return Err(AuthenticationRejection::AuthenticationFailed);
+        }
+        let state = self.initialized_state()?;
+        let factor = enrolled_factor(state.state(), session.account())
+            .ok_or(AuthenticationRejection::AuthenticationFailed)?;
+        let secret = self.open_factor(factor)?;
+        let now = self.milliseconds()?;
+        let verified = secret
+            .verify(code, unix_seconds(now)?)
+            .ok_or(AuthenticationRejection::AuthenticationFailed)?;
+        let step = MfaTimeStep::from_step(verified.as_u64())
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+        let recheck = MfaAdministrationStepUpRecheck::new(
+            session.account(),
+            session.session_token_hash(),
+            session.client_module().clone(),
+            SessionInstant::from_unix_milliseconds(now)
+                .map_err(|_| AuthenticationRejection::ServiceUnavailable)?,
+        );
+        let target = totp_target()?;
+        match self.with_mfa(|store| {
+            store.accept_administration_step_up(&target, factor.identifier, step, &recheck)
+        })? {
+            MfaAdministrationStepUpAcceptance::Accepted => {
+                Ok(CurrentAdministrationSession::from_server_authority(
+                    &ServerAdministrationAuthority::new(),
+                    session.account(),
+                    session.session_token_hash(),
+                ))
+            }
+            MfaAdministrationStepUpAcceptance::Rejected
+            | MfaAdministrationStepUpAcceptance::Replayed
+            | MfaAdministrationStepUpAcceptance::ModuleDisabled => {
+                Err(AuthenticationRejection::AuthenticationFailed)
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

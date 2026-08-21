@@ -14,8 +14,8 @@ use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authorization::{AuthorizationDenied, AuthorizedAdministration};
 use weavelit_server_components::AvailableComponents;
 use weavelit_server_database::{
-    AccountPublicIdentifier, AccountStatus, ComponentEnablement, ComponentKind, LogModuleSetting,
-    LogType, Name, SessionTokenHash, StateIdentifier,
+    AccountPublicIdentifier, AccountStatus, ComponentEnablement, ComponentKind, GroupGrant,
+    LogModuleSetting, LogType, Name, SessionTokenHash, StateIdentifier,
 };
 
 /// Lifetime of one current-session MFA step-up proof.
@@ -337,6 +337,104 @@ pub enum AccountAdministrationAction {
     StatusChange(AccountStatusChange),
 }
 
+/// One exact existing-Group membership change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GroupMembershipMutation {
+    group: StateIdentifier,
+    account: AccountPublicIdentifier,
+    desired: bool,
+}
+
+impl GroupMembershipMutation {
+    /// Targets one existing Group and one account public identifier.
+    #[must_use]
+    pub const fn new(
+        group: StateIdentifier,
+        account: AccountPublicIdentifier,
+        desired: bool,
+    ) -> Self {
+        Self {
+            group,
+            account,
+            desired,
+        }
+    }
+
+    /// Returns the existing Group target.
+    #[must_use]
+    pub const fn group(&self) -> StateIdentifier {
+        self.group
+    }
+
+    /// Returns the exact account public identifier target.
+    #[must_use]
+    pub const fn account(&self) -> AccountPublicIdentifier {
+        self.account
+    }
+
+    /// Returns whether the membership must be present after the change.
+    #[must_use]
+    pub const fn desired(&self) -> bool {
+        self.desired
+    }
+}
+
+/// One exact existing-Group direct grant change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupGrantMutation {
+    group: StateIdentifier,
+    grant: GroupGrant,
+    desired: bool,
+}
+
+impl GroupGrantMutation {
+    /// Targets one existing Group and one canonical grant.
+    #[must_use]
+    pub const fn new(group: StateIdentifier, grant: GroupGrant, desired: bool) -> Self {
+        Self {
+            group,
+            grant,
+            desired,
+        }
+    }
+
+    /// Returns the existing Group target.
+    #[must_use]
+    pub const fn group(&self) -> StateIdentifier {
+        self.group
+    }
+
+    /// Returns the canonical direct grant target.
+    #[must_use]
+    pub const fn grant(&self) -> &GroupGrant {
+        &self.grant
+    }
+
+    /// Returns whether the grant must be present after the change.
+    #[must_use]
+    pub const fn desired(&self) -> bool {
+        self.desired
+    }
+
+    fn is_available(&self, components: &AvailableComponents) -> bool {
+        match &self.grant {
+            GroupGrant::ClientModule(name) => components.has_client_module(name),
+            GroupGrant::ServiceModule(name) => components.has_service_module(name),
+            GroupGrant::Operation(name) => components.has_operation(name),
+            GroupGrant::ServerAdministration => true,
+        }
+    }
+}
+
+/// Closed existing-Group mutation descriptors.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupMutation {
+    /// Add or remove one account membership.
+    Membership(GroupMembershipMutation),
+    /// Add or remove one direct Group grant.
+    Grant(GroupGrantMutation),
+}
+
 /// Closed Administration Plane action families owned by this foundation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdministrationAction {
@@ -345,7 +443,7 @@ pub enum AdministrationAction {
     /// MFA requirement or enrollment-reset administration.
     MfaPolicy,
     /// Group membership or grant mutation.
-    GrantMutation,
+    GrantMutation(GroupMutation),
     /// An action whose target component or named Operation must be enabled.
     ComponentOperation(ComponentOperation),
     /// A requested enablement change for one known compiled-in component.
@@ -362,7 +460,7 @@ impl AdministrationAction {
             | Self::ComponentEnablementChange(_)
             | Self::LogConfigurationChange(_) => None,
             Self::MfaPolicy => Some(StepUpActionFamily::MfaPolicy),
-            Self::GrantMutation => Some(StepUpActionFamily::GrantMutation),
+            Self::GrantMutation(_) => Some(StepUpActionFamily::GrantMutation),
         }
     }
 }
@@ -552,6 +650,23 @@ impl AuthorizedAdministrationAction {
             action,
         })
     }
+
+    /// Consumes an authorized action into the exact Group-mutation proof.
+    ///
+    /// A non-Group action is consumed and denied rather than returned for
+    /// reuse against another workflow.
+    pub fn into_group_mutation(self) -> Result<AuthorizedGroupMutation, AuthorizationDenied> {
+        let Self { admission, action } = self;
+        let AdministrationAction::GrantMutation(mutation) = action else {
+            return Err(AuthorizationDenied);
+        };
+        Ok(AuthorizedGroupMutation {
+            actor: admission.actor,
+            session: admission.session,
+            client_module: admission.authorization.client_module().clone(),
+            mutation,
+        })
+    }
 }
 
 impl fmt::Debug for AuthorizedAdministrationAction {
@@ -608,6 +723,55 @@ impl AuthorizedAccountAdministrationAction {
 impl fmt::Debug for AuthorizedAccountAdministrationAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthorizedAccountAdministrationAction(REDACTED)")
+    }
+}
+
+/// One authorized Group mutation bound to its exact validated session.
+///
+/// The value is not clonable and can be obtained only by consuming an
+/// [`AuthorizedAdministrationAction`].
+pub struct AuthorizedGroupMutation {
+    actor: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+    mutation: GroupMutation,
+}
+
+impl AuthorizedGroupMutation {
+    /// Returns the authenticated actor.
+    #[must_use]
+    pub const fn actor(&self) -> StateIdentifier {
+        self.actor
+    }
+
+    /// Returns the exact validated session digest.
+    #[must_use]
+    pub const fn session(&self) -> SessionTokenHash {
+        self.session
+    }
+
+    /// Returns the Client Module through which the action was authorized.
+    #[must_use]
+    pub const fn client_module(&self) -> &Name {
+        &self.client_module
+    }
+
+    /// Returns the exact authorized Group mutation.
+    #[must_use]
+    pub const fn mutation(&self) -> &GroupMutation {
+        &self.mutation
+    }
+
+    /// Consumes the proof and returns the exact authorized Group mutation.
+    #[must_use]
+    pub fn into_mutation(self) -> GroupMutation {
+        self.mutation
+    }
+}
+
+impl fmt::Debug for AuthorizedGroupMutation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedGroupMutation(REDACTED)")
     }
 }
 
@@ -688,6 +852,12 @@ where
         }
 
         if let AdministrationAction::ComponentEnablementChange(target) = &request.action
+            && !target.is_available(&self.components)
+        {
+            return Err(AuthorizationDenied);
+        }
+
+        if let AdministrationAction::GrantMutation(GroupMutation::Grant(target)) = &request.action
             && !target.is_available(&self.components)
         {
             return Err(AuthorizationDenied);
@@ -915,7 +1085,7 @@ mod tests {
                 match &action {
                     AdministrationAction::Account(action) => action,
                     AdministrationAction::MfaPolicy
-                    | AdministrationAction::GrantMutation
+                    | AdministrationAction::GrantMutation(_)
                     | AdministrationAction::ComponentOperation(_)
                     | AdministrationAction::ComponentEnablementChange(_)
                     | AdministrationAction::LogConfigurationChange(_) => unreachable!(),
@@ -1152,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn protected_action_families_accept_only_their_matching_step_up() {
+    fn grant_mutation_requires_matching_step_up_and_retains_exact_intent() {
         let authority = ServerAdministrationAuthority::new();
         let current = current_session(&authority, 1, 11);
         let clock = TestClock::new(Duration::from_secs(10));
@@ -1177,8 +1347,14 @@ mod tests {
             plane
                 .authorize(
                     administration_admission(&authority, 1, 11),
-                    AdministrationRequest::new(AdministrationAction::GrantMutation)
-                        .with_step_up(&mfa_proof),
+                    AdministrationRequest::new(AdministrationAction::GrantMutation(
+                        GroupMutation::Grant(GroupGrantMutation::new(
+                            identifier(5),
+                            GroupGrant::ServerAdministration,
+                            false,
+                        )),
+                    ))
+                    .with_step_up(&mfa_proof),
                 )
                 .unwrap_err(),
             AuthorizationDenied
@@ -1202,14 +1378,48 @@ mod tests {
                 .is_ok(),
             "one proof remains reusable for its matching family"
         );
-        assert!(
+        let authorized = plane
+            .authorize(
+                administration_admission(&authority, 1, 11),
+                AdministrationRequest::new(AdministrationAction::GrantMutation(
+                    GroupMutation::Membership(GroupMembershipMutation::new(
+                        identifier(5),
+                        AccountPublicIdentifier::generate().unwrap(),
+                        true,
+                    )),
+                ))
+                .with_step_up(&grant_proof),
+            )
+            .unwrap()
+            .into_group_mutation()
+            .unwrap();
+        assert_eq!(authorized.actor(), identifier(1));
+        assert!(authorized.session().matches(&session(11)));
+        assert_eq!(authorized.client_module().as_str(), CLIENT_MODULE);
+        assert!(matches!(
+            authorized.mutation(),
+            GroupMutation::Membership(mutation)
+                if mutation.group() == identifier(5) && mutation.desired()
+        ));
+        assert_eq!(
+            format!("{authorized:?}"),
+            "AuthorizedGroupMutation(REDACTED)"
+        );
+        assert_eq!(
             plane
                 .authorize(
                     administration_admission(&authority, 1, 11),
-                    AdministrationRequest::new(AdministrationAction::GrantMutation)
-                        .with_step_up(&grant_proof),
+                    AdministrationRequest::new(AdministrationAction::GrantMutation(
+                        GroupMutation::Grant(GroupGrantMutation::new(
+                            identifier(5),
+                            GroupGrant::Operation(Name::new("missing.operation").unwrap()),
+                            true,
+                        )),
+                    ))
+                    .with_step_up(&grant_proof),
                 )
-                .is_ok()
+                .unwrap_err(),
+            AuthorizationDenied
         );
     }
 

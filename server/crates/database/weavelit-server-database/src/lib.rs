@@ -6,6 +6,7 @@ mod account_administration;
 mod account_status;
 mod account_writer;
 mod audit_recovery;
+mod group_mutation;
 mod log_configuration;
 mod mfa;
 mod password_change;
@@ -34,6 +35,11 @@ pub use audit_recovery::{
     OpaqueAuditTerminalDisposition, OpaqueAuditTerminalProjection, StoredAuditDestinationBinding,
     ValidatedAuditTerminalObligationWrite,
 };
+pub use group_mutation::{
+    GroupGrantMutationTarget, GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites,
+    GroupMutationError, GroupMutationOutcome, GroupMutationRecheck, GroupMutationStore,
+    GroupMutationTarget, PreparedGroupMutation,
+};
 pub use log_configuration::{
     LogConfigurationAuditTerminalWrites, LogConfigurationGeneration,
     LogConfigurationGenerationError, LogConfigurationGenerationKey,
@@ -44,7 +50,8 @@ pub use log_configuration::{
     PreparedLogConfigurationMutation,
 };
 pub use mfa::{
-    MAX_MFA_TIME_STEP, MfaAcceptance, MfaDirectSession, MfaEnablementAuditTerminalWrites,
+    MAX_MFA_TIME_STEP, MfaAcceptance, MfaAdministrationStepUpAcceptance,
+    MfaAdministrationStepUpRecheck, MfaDirectSession, MfaEnablementAuditTerminalWrites,
     MfaEnablementOutcome, MfaEnrollment, MfaModuleTarget, MfaStore, MfaTimeStep,
 };
 pub use password_change::{
@@ -347,6 +354,11 @@ pub trait ApplicationDatabase: Send {
 
     /// Returns account status mutation storage, when available.
     fn account_status_writers(&mut self) -> Option<&mut dyn AccountStatusWriterStore> {
+        None
+    }
+
+    /// Returns existing-Group membership and direct-grant mutation storage, when available.
+    fn group_mutations(&mut self) -> Option<&mut dyn GroupMutationStore> {
         None
     }
 

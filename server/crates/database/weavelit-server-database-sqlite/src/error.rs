@@ -7,6 +7,7 @@ pub(super) enum ErrorContext {
     Checkpoint,
     Close,
     Completion,
+    GroupMutation,
     Open,
     Configure,
     Health,
@@ -33,6 +34,7 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
             | ErrorContext::AuditRecovery
             | ErrorContext::Checkpoint
             | ErrorContext::Completion
+            | ErrorContext::GroupMutation
             | ErrorContext::Configure
             | ErrorContext::Health
             | ErrorContext::Inspect

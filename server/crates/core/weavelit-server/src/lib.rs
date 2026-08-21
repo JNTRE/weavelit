@@ -2542,6 +2542,7 @@ impl PreoperationalComposer {
             state_root: startup.state_root.clone(),
             log_catalog: Arc::clone(&startup.log_catalog),
             client_modules: components.client_modules.clone(),
+            components: components.clone(),
             active_database: startup.active_database.clone(),
             protection: startup.protection(),
         });
@@ -3168,11 +3169,13 @@ pub(crate) mod tests {
         startup: &RestrictedStartup,
         listener: SocketAddr,
     ) -> Arc<OperationalRuntime> {
+        let components = server_components();
         Arc::new(OperationalRuntime {
             listener,
             state_root: startup.state_root().to_path_buf(),
             log_catalog: Arc::clone(&startup.log_catalog),
-            client_modules: server_components().client_modules,
+            client_modules: components.client_modules.clone(),
+            components,
             active_database: startup.active_database.clone(),
             protection: startup.protection(),
         })

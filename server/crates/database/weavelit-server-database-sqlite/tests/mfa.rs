@@ -5,9 +5,10 @@ use tempfile::TempDir;
 use weavelit_server_database::{
     ApplicationDatabase, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
     AuditTerminalReplayBatchSize, COMPONENT_ENABLED_VALUE, CredentialRevision, DatabaseError,
-    MfaAcceptance, MfaDirectSession, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome,
-    MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession,
-    ProtectedValue, SESSION_DIGEST_LENGTH, SessionCsrfHash, SessionInstant, SessionTokenHash,
+    MfaAcceptance, MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck,
+    MfaDirectSession, MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnrollment,
+    MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, Name, NewSession, ProtectedValue,
+    SESSION_DIGEST_LENGTH, SessionCsrfHash, SessionInstant, SessionStore, SessionTokenHash,
     StateIdentifier, StoredAuditDestinationBinding, ValidatedAuditTerminalObligationWrite,
 };
 use weavelit_server_database_authority::ServerDatabaseAuthority;
@@ -305,6 +306,124 @@ fn stored_step(path: &Path, factor: StateIdentifier) -> Option<i64> {
             |row| row.get(0),
         )
         .ok()
+}
+
+fn administration_recheck(actor: u8, session_byte: u8, now: i64) -> MfaAdministrationStepUpRecheck {
+    MfaAdministrationStepUpRecheck::new(
+        factor(actor),
+        SessionTokenHash::from_bytes([session_byte; SESSION_DIGEST_LENGTH]).unwrap(),
+        Name::new("web-ui").unwrap(),
+        SessionInstant::from_unix_milliseconds(now).unwrap(),
+    )
+}
+
+fn stored_session_activity(path: &Path, token_byte: u8) -> Option<i64> {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT last_seen_at_milliseconds FROM weavelit_session WHERE token_hash = ?1",
+            [
+                SessionTokenHash::from_bytes([token_byte; SESSION_DIGEST_LENGTH])
+                    .unwrap()
+                    .as_bytes()
+                    .as_slice(),
+            ],
+            |row| row.get(0),
+        )
+        .ok()
+}
+
+#[test]
+fn administration_step_up_advances_only_the_watermark_and_rejects_replay() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let path = database_path(&temporary_directory);
+    let mut database = enabled_database(&path);
+    insert_enrolled_account(&path, 1);
+    SessionStore::create(&mut database, &session(1)).unwrap();
+
+    assert_eq!(
+        database
+            .accept_administration_step_up(
+                &target(),
+                factor(0x41),
+                step(41_152_263),
+                &administration_recheck(1, 1, ISSUED_AT + 1),
+            )
+            .unwrap(),
+        MfaAdministrationStepUpAcceptance::Accepted
+    );
+    assert_eq!(stored_step(&path, factor(0x41)), Some(41_152_263));
+    assert_eq!(
+        session_count(&path),
+        1,
+        "step-up must not rotate the session"
+    );
+    assert_eq!(stored_session_activity(&path, 1), Some(ISSUED_AT));
+    assert_eq!(
+        database
+            .accept_administration_step_up(
+                &target(),
+                factor(0x41),
+                step(41_152_263),
+                &administration_recheck(1, 1, ISSUED_AT + 2),
+            )
+            .unwrap(),
+        MfaAdministrationStepUpAcceptance::Replayed
+    );
+}
+
+#[test]
+fn administration_step_up_denies_disabled_stale_wrong_session_and_inactive_actor() {
+    for (label, prepare, recheck, expected) in [
+        (
+            "wrong session",
+            None,
+            administration_recheck(1, 9, ISSUED_AT + 1),
+            MfaAdministrationStepUpAcceptance::Rejected,
+        ),
+        (
+            "stale session",
+            None,
+            administration_recheck(
+                1,
+                1,
+                ISSUED_AT + weavelit_server_database::SESSION_IDLE_TIMEOUT_MILLISECONDS,
+            ),
+            MfaAdministrationStepUpAcceptance::Rejected,
+        ),
+        (
+            "inactive actor",
+            Some((false, COMPONENT_ENABLED_VALUE)),
+            administration_recheck(1, 1, ISSUED_AT + 1),
+            MfaAdministrationStepUpAcceptance::Rejected,
+        ),
+        (
+            "disabled module",
+            Some((true, "false")),
+            administration_recheck(1, 1, ISSUED_AT + 1),
+            MfaAdministrationStepUpAcceptance::ModuleDisabled,
+        ),
+    ] {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let path = database_path(&temporary_directory);
+        let mut database = enabled_database(&path);
+        insert_enrolled_account(&path, 1);
+        SessionStore::create(&mut database, &session(1)).unwrap();
+        if let Some((active, enabled)) = prepare {
+            set_account_credential_state(&path, 1, active, 1, None);
+            set_enablement(&path, enabled);
+        }
+
+        assert_eq!(
+            database
+                .accept_administration_step_up(&target(), factor(0x41), step(41_152_264), &recheck,)
+                .unwrap(),
+            expected,
+            "{label}"
+        );
+        assert_eq!(stored_step(&path, factor(0x41)), None, "{label}");
+        assert_eq!(session_count(&path), 1, "{label}");
+    }
 }
 
 fn enablement(path: &Path) -> Option<String> {

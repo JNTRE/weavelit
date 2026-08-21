@@ -54,13 +54,13 @@ retried, deduplicated, and audited?
 
 The [Authorization Design](server/authorization/authorization-design.md#grant-model)
 defines the current four group-granted permission types, and grant mutations
-require the documented current-session MFA step-up. What additional
+require the documented current-session MFA step-up without password
+reauthentication or a separate confirmation. What additional
 group-granted permission types, if any, are needed beyond
 access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 **[Service Modules](glossary.md#applications-and-interfaces)**, named
 **[Operations](glossary.md#applications-and-interfaces)**, and the Server
-Administration Permission? Does any group-grant change require a separate
-confirmation beyond that step-up?
+Administration Permission?
 
 ### 6. Client Module command organization for the Weavelit CLI
 

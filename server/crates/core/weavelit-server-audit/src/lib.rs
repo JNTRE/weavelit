@@ -7,9 +7,9 @@ mod model;
 pub use model::{
     AccountStatus, ActionOutcome, AuditActor, AuditEvent, AuditOutcomeDetail,
     AuditTerminalObligationReference, AutomationReference, BackupReference, ComponentReference,
-    ComponentState, GrantReference, LogConfigurationAuditReferences, LogPolicyReference,
-    MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState, OperationReference,
-    ServiceConnectionReference, StateChangeOutcome,
+    ComponentState, GrantReference, GroupMutationOutcome, LogConfigurationAuditReferences,
+    LogPolicyReference, MfaModuleChange, MfaModuleReference, MfaRequirement, MfaResetState,
+    OperationReference, ServiceConnectionReference, StateChangeOutcome,
 };
 
 use core::fmt;
@@ -156,7 +156,7 @@ impl ServerAudit {
         };
         let body = attempt
             .event
-            .body(&attempt.actor, detail, model::EventPhase::Terminal)?;
+            .body(&attempt.actor, detail, outcome.event_phase())?;
         let attempt_record_id = attempt
             .record
             .attempt_record_id()
