@@ -124,6 +124,17 @@ Add a dedicated `Scope`, `Purpose`, or `Scope And Ownership` section when
 exclusions, parent-child ownership, or applicability need more than the opening
 summary.
 
+## Related Documents Maintenance
+
+Every production document MUST end with a `## Related Documents` section.
+Entries MUST use non-numbered Markdown link bullets in the format
+`[Description](path)` and include only valid, repository-relative links to
+current, directly relevant canonical documents.
+
+Update `Related Documents` in the same change whenever files are added, moved,
+renamed, replaced, or retired. Remove stale links and add canonical links so the
+section remains current.
+
 ## Related Documents
 
 - [Docs Agent Guide](AGENTS.md)
