@@ -297,6 +297,20 @@ fn checksum(bytes: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
 
+    fn migration_with_candidate_fixture(
+        sql: &'static str,
+        candidate_expression: &str,
+        attempt_limit: usize,
+    ) -> &'static str {
+        assert_eq!(sql.matches("randomblob(16)").count(), 1);
+        assert_eq!(sql.matches("attempt < 8").count(), 1);
+        Box::leak(
+            sql.replacen("randomblob(16)", candidate_expression, 1)
+                .replacen("attempt < 8", &format!("attempt < {attempt_limit}"), 1)
+                .into_boxed_str(),
+        )
+    }
+
     #[test]
     fn checksum_matches_sha256_known_vector() {
         assert_eq!(
@@ -639,6 +653,126 @@ mod tests {
     }
 
     #[test]
+    fn account_public_identity_backfill_retries_zero_and_collision_candidates() {
+        for (case, candidate_expression) in [
+            (
+                "zero",
+                "CASE WHEN attempt = 1 THEN zeroblob(16) ELSE account_id END",
+            ),
+            (
+                "collision",
+                "CASE WHEN attempt = 1 \
+                 THEN x'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ELSE account_id END",
+            ),
+        ] {
+            let mut connection = Connection::open_in_memory().unwrap();
+            apply_migrations(&mut connection, &MIGRATIONS[..11]).unwrap();
+            for (account_id, username) in [([0x11_u8; 16], "first"), ([0x22_u8; 16], "second")] {
+                connection
+                    .execute(
+                        "INSERT INTO weavelit_account \
+                         (account_id, username, display_name, active, mfa_required) \
+                         VALUES (?1, ?2, NULL, 1, 0)",
+                        params![account_id.as_slice(), username],
+                    )
+                    .unwrap();
+            }
+            let mut migrations = MIGRATIONS.to_vec();
+            migrations[11].sql =
+                migration_with_candidate_fixture(MIGRATIONS[11].sql, candidate_expression, 2);
+
+            apply_migrations(&mut connection, &migrations[..12])
+                .unwrap_or_else(|error| panic!("{case} candidate should retry: {error}"));
+
+            let identities = connection
+                .prepare(
+                    "SELECT account_id, public_identifier \
+                     FROM weavelit_account_public_identity ORDER BY account_id",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                identities,
+                vec![
+                    (vec![0x11_u8; 16], vec![0x11_u8; 16]),
+                    (vec![0x22_u8; 16], vec![0x22_u8; 16]),
+                ],
+                "{case} candidate must select the second draw"
+            );
+        }
+    }
+
+    #[test]
+    fn account_public_identity_backfill_exhaustion_rolls_back() {
+        for (case, candidate_expression) in [
+            ("zero", "zeroblob(16)"),
+            ("collision", "x'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"),
+        ] {
+            let mut connection = Connection::open_in_memory().unwrap();
+            apply_migrations(&mut connection, &MIGRATIONS[..11]).unwrap();
+            for (account_id, username) in [([0x11_u8; 16], "first"), ([0x22_u8; 16], "second")] {
+                connection
+                    .execute(
+                        "INSERT INTO weavelit_account \
+                         (account_id, username, display_name, active, mfa_required) \
+                         VALUES (?1, ?2, NULL, 1, 0)",
+                        params![account_id.as_slice(), username],
+                    )
+                    .unwrap();
+            }
+            let mut migrations = MIGRATIONS.to_vec();
+            migrations[11].sql =
+                migration_with_candidate_fixture(MIGRATIONS[11].sql, candidate_expression, 8);
+
+            assert_eq!(
+                apply_migrations(&mut connection, &migrations[..12]),
+                Err(DatabaseError::IntegrityFailure),
+                "{case} exhaustion must fail closed"
+            );
+            assert!(!table_exists_for_test(
+                &connection,
+                "weavelit_account_public_identity"
+            ));
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM weavelit_migration_ledger",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                11
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT count(*) FROM weavelit_account", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                2
+            );
+
+            apply_migrations(&mut connection, &MIGRATIONS[..12]).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM weavelit_account_public_identity",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                2,
+                "{case} exhaustion must leave the migration restartable"
+            );
+        }
+    }
+
+    #[test]
     fn failed_account_credential_state_migration_rolls_back_columns_and_ledger() {
         const FAILING_MIGRATION: &str = concat!(
             include_str!("../migrations/0013_add_account_credential_state.sql"),
@@ -740,6 +874,124 @@ mod tests {
                 .unwrap(),
             "existing"
         );
+    }
+
+    #[test]
+    fn group_public_identity_backfill_retries_zero_and_collision_candidates() {
+        for (case, candidate_expression) in [
+            (
+                "zero",
+                "CASE WHEN attempt = 1 THEN zeroblob(16) ELSE group_id END",
+            ),
+            (
+                "collision",
+                "CASE WHEN attempt = 1 \
+                 THEN x'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ELSE group_id END",
+            ),
+        ] {
+            let mut connection = Connection::open_in_memory().unwrap();
+            apply_migrations(&mut connection, &MIGRATIONS[..13]).unwrap();
+            for (group_id, name) in [([0x11_u8; 16], "first"), ([0x22_u8; 16], "second")] {
+                connection
+                    .execute(
+                        "INSERT INTO weavelit_group (group_id, name, description) \
+                         VALUES (?1, ?2, NULL)",
+                        params![group_id.as_slice(), name],
+                    )
+                    .unwrap();
+            }
+            let mut migrations = MIGRATIONS.to_vec();
+            migrations[13].sql =
+                migration_with_candidate_fixture(MIGRATIONS[13].sql, candidate_expression, 2);
+
+            apply_migrations(&mut connection, &migrations)
+                .unwrap_or_else(|error| panic!("{case} candidate should retry: {error}"));
+
+            let identities = connection
+                .prepare(
+                    "SELECT group_id, public_identifier \
+                     FROM weavelit_group_public_identity ORDER BY group_id",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                identities,
+                vec![
+                    (vec![0x11_u8; 16], vec![0x11_u8; 16]),
+                    (vec![0x22_u8; 16], vec![0x22_u8; 16]),
+                ],
+                "{case} candidate must select the second draw"
+            );
+        }
+    }
+
+    #[test]
+    fn group_public_identity_backfill_exhaustion_rolls_back() {
+        for (case, candidate_expression) in [
+            ("zero", "zeroblob(16)"),
+            ("collision", "x'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"),
+        ] {
+            let mut connection = Connection::open_in_memory().unwrap();
+            apply_migrations(&mut connection, &MIGRATIONS[..13]).unwrap();
+            for (group_id, name) in [([0x11_u8; 16], "first"), ([0x22_u8; 16], "second")] {
+                connection
+                    .execute(
+                        "INSERT INTO weavelit_group (group_id, name, description) \
+                         VALUES (?1, ?2, NULL)",
+                        params![group_id.as_slice(), name],
+                    )
+                    .unwrap();
+            }
+            let mut migrations = MIGRATIONS.to_vec();
+            migrations[13].sql =
+                migration_with_candidate_fixture(MIGRATIONS[13].sql, candidate_expression, 8);
+
+            assert_eq!(
+                apply_migrations(&mut connection, &migrations),
+                Err(DatabaseError::IntegrityFailure),
+                "{case} exhaustion must fail closed"
+            );
+            assert!(!table_exists_for_test(
+                &connection,
+                "weavelit_group_public_identity"
+            ));
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM weavelit_migration_ledger",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                13
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT count(*) FROM weavelit_group", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                2
+            );
+
+            apply_migrations(&mut connection, MIGRATIONS).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM weavelit_group_public_identity",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                2,
+                "{case} exhaustion must leave the migration restartable"
+            );
+        }
     }
 
     #[test]

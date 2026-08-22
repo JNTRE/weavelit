@@ -189,11 +189,13 @@ cross-kind uniqueness.
 `weavelit_account_public_identity` table. Its account identifier is both the
 primary key and a foreign key to `weavelit_account`; its public identifier is an
 exact nonzero 16-byte BLOB protected by a unique index. Update and delete
-triggers make every association immutable. The migration backfills every
-existing account with SQLite `randomblob`, and table creation, index, triggers,
-complete backfill, and the ledger row share one immediate transaction. A zero
-value, collision, orphan, or later failure rolls the database back to the exact
-`0011` prefix.
+triggers make every association immutable. The migration materializes up to
+eight SQLite `randomblob` candidates for every existing account, rejects zero
+and duplicated candidates, and selects the first remaining candidate for each
+account. Table creation, index, triggers, complete backfill, and the ledger row
+share one immediate transaction. Exhausting the candidate pool, an orphan, or
+a later failure rolls the database back to the exact `0011` prefix so reopening
+can retry the migration from unchanged legacy state.
 
 Init and Restore completion insert their already validated typed identities in
 the application-state replacement transaction. State reads require exact
@@ -215,10 +217,13 @@ index, or immutability trigger with `IntegrityFailure` before readiness.
 `weavelit_group_public_identity` table. Its Group owner is the primary key and
 foreign key, its public identifier is an exact nonzero 16-byte BLOB, and a
 unique index prevents reuse. Updates are forbidden. Owner deletion cascades the
-identity only as part of Group deletion. The migration backfills every existing
-Group from SQLite `randomblob`; table, index, trigger, backfill, and ledger row
-share one immediate transaction and roll back together on zero, collision,
-orphan, or later failure.
+identity only as part of Group deletion. The migration materializes up to eight
+SQLite `randomblob` candidates for every existing Group, rejects zero and
+duplicated candidates, and selects the first remaining candidate for each
+Group. Table, index, trigger, complete backfill, and ledger row share one
+immediate transaction. Exhausting the candidate pool, an orphan, or a later
+failure rolls the database back to the exact `0013` prefix so reopening can
+retry the migration from unchanged legacy state.
 
 SQLite Group administration reads join only Group name, nullable description,
 and public identity and validate complete reciprocal coverage before output.
