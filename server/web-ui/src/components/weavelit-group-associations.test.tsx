@@ -447,9 +447,8 @@ describe("GroupAssociations", () => {
       csrf();
 
       // Deferred response resolver for cursor-bearing pagination request
-      let resolvePaginationResponse:
-        | ((value: Response | PromiseLike<Response>) => void)
-        | null = null;
+      let resolvePaginationResponse: ((value: Response | PromiseLike<Response>) => void) | null =
+        null;
       const deferredPaginationPromise = new Promise<Response>((resolve) => {
         resolvePaginationResponse = resolve;
       });
