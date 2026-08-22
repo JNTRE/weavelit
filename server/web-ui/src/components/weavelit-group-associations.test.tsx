@@ -19,7 +19,88 @@ const TICKET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const CORRELATION = "group-associations";
 const CODE = "123456";
 
-function account(): Record<string, unknown> {
+type AccountFixture = {
+  public_id: string;
+  username: string;
+  display_name: string;
+  active: boolean;
+  mfa_required: boolean;
+};
+
+type GrantFixture = {
+  type: string;
+  value?: string;
+};
+
+type PaginationCase =
+  | {
+      readonly collection: "members";
+      readonly buttonLabel: "Load more members";
+      readonly listPath: string;
+      readonly cursor: string;
+      readonly pageItem: AccountFixture;
+      readonly renderedText: string;
+    }
+  | {
+      readonly collection: "grants";
+      readonly buttonLabel: "Load more grants";
+      readonly listPath: string;
+      readonly cursor: string;
+      readonly pageItem: GrantFixture;
+      readonly renderedText: string;
+    }
+  | {
+      readonly collection: "accounts";
+      readonly buttonLabel: "Load more Accounts";
+      readonly listPath: string;
+      readonly cursor: string;
+      readonly pageItem: AccountFixture;
+      readonly renderedText: string;
+    };
+
+const paginationCases = [
+  {
+    collection: "members",
+    buttonLabel: "Load more members",
+    listPath: GROUP_MEMBERS_LIST_PATH,
+    cursor: "members-cursor",
+    pageItem: {
+      public_id: "CCCCCCCCCCCCCCCCCCCCCg",
+      username: "member-user",
+      display_name: "Member User",
+      active: true,
+      mfa_required: false,
+    },
+    renderedText: "member-user",
+  },
+  {
+    collection: "grants",
+    buttonLabel: "Load more grants",
+    listPath: GROUP_GRANTS_LIST_PATH,
+    cursor: "grants-cursor",
+    pageItem: {
+      type: "operation",
+      value: "REdHREdHREdHREdHREdHRg",
+    },
+    renderedText: "Operation: REdHREdHREdHREdHREdHRg",
+  },
+  {
+    collection: "accounts",
+    buttonLabel: "Load more Accounts",
+    listPath: ACCOUNTS_LIST_PATH,
+    cursor: "accounts-cursor",
+    pageItem: {
+      public_id: "RElSRElSRElSRElSRElSRg",
+      username: "account-user",
+      display_name: "Account User",
+      active: true,
+      mfa_required: false,
+    },
+    renderedText: "account-user",
+  },
+] satisfies readonly PaginationCase[];
+
+function account(): AccountFixture {
   return {
     public_id: ACCOUNT_ID,
     username: "target-user",
@@ -46,6 +127,10 @@ function csrf(): void {
     configurable: true,
     get: () => `${CSRF_COOKIE_NAME}=csrf-token`,
   });
+}
+
+function safeRequestLabel(target: unknown): string {
+  return typeof target === "string" ? target : String(target);
 }
 
 afterEach(() => Reflect.deleteProperty(document, "cookie"));
@@ -78,7 +163,7 @@ describe("GroupAssociations", () => {
         return Promise.resolve(response({ totp_step_up_ticket: TICKET }));
       if (target === GROUP_MEMBERS_CHANGE_PATH)
         return Promise.resolve(response({ account: account(), present: true }));
-      throw new Error("unexpected request");
+      return Promise.reject(new Error(`unexpected request: ${safeRequestLabel(target)}`));
     });
 
     render(<GroupAssociations groupPublicId={GROUP_ID} />);
@@ -437,25 +522,22 @@ describe("GroupAssociations", () => {
     });
   });
 
-  it.each([
-    ["members", "Load more members", GROUP_MEMBERS_LIST_PATH, "CCCCCCCCCCCCCCCCCCCCCg"],
-    ["grants", "Load more grants", GROUP_GRANTS_LIST_PATH, "REdHREdHREdHREdHREdHRg"],
-    ["accounts", "Load more Accounts", ACCOUNTS_LIST_PATH, "RElSRElSRElSRElSRElSRg"],
-  ])(
-    "admits one request per %s pagination cursor despite double click and disables during flight",
-    async (collection, buttonLabel, listPath, paginationItemId) => {
+  it.each(paginationCases)(
+    "admits one request per $collection pagination cursor despite double click and disables during flight",
+    async (testCase) => {
       csrf();
 
       // Deferred response resolver for cursor-bearing pagination request
-      let resolvePaginationResponse: ((value: Response | PromiseLike<Response>) => void) | null =
-        null;
+      let resolvePaginationResponse:
+        | ((value: Response | PromiseLike<Response>) => void)
+        | null = null;
       const deferredPaginationPromise = new Promise<Response>((resolve) => {
         resolvePaginationResponse = resolve;
       });
 
-      const initialMembers = [];
-      const initialGrants = [];
-      const initialAccounts = [
+      const initialMembers: AccountFixture[] = [];
+      const initialGrants: GrantFixture[] = [];
+      const initialAccounts: AccountFixture[] = [
         {
           public_id: ACCOUNT_ID,
           username: "initial-account",
@@ -466,7 +548,7 @@ describe("GroupAssociations", () => {
       ];
 
       const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
-        if (target === listPath && init?.method !== "POST") {
+        if (target === testCase.listPath && init?.method !== "POST") {
           try {
             const req = body(init);
             // Cursor-bearing pagination request stays deferred
@@ -476,7 +558,7 @@ describe("GroupAssociations", () => {
           } catch {
             // Initial request without body, resolve immediately
           }
-          if (collection === "members") {
+          if (testCase.collection === "members") {
             return Promise.resolve(
               response({
                 items: initialMembers,
@@ -484,7 +566,7 @@ describe("GroupAssociations", () => {
               }),
             );
           }
-          if (collection === "grants") {
+          if (testCase.collection === "grants") {
             return Promise.resolve(
               response({
                 items: initialGrants,
@@ -492,7 +574,7 @@ describe("GroupAssociations", () => {
               }),
             );
           }
-          if (collection === "accounts") {
+          if (testCase.collection === "accounts") {
             return Promise.resolve(
               response({
                 items: initialAccounts,
@@ -505,34 +587,38 @@ describe("GroupAssociations", () => {
           return Promise.resolve(
             response({
               items: initialMembers,
-              next_cursor: collection === "members" ? "members-cursor" : null,
+              next_cursor: testCase.collection === "members" ? "members-cursor" : null,
             }),
           );
         if (target === GROUP_GRANTS_LIST_PATH)
           return Promise.resolve(
             response({
               items: initialGrants,
-              next_cursor: collection === "grants" ? "grants-cursor" : null,
+              next_cursor: testCase.collection === "grants" ? "grants-cursor" : null,
             }),
           );
         if (target === ACCOUNTS_LIST_PATH)
           return Promise.resolve(
             response({
               items: initialAccounts,
-              next_cursor: collection === "accounts" ? "accounts-cursor" : null,
+              next_cursor: testCase.collection === "accounts" ? "accounts-cursor" : null,
             }),
           );
         if (target === ADMINISTRATION_CATALOG_PATH)
           return Promise.resolve(
             response({ client_modules: [], service_modules: [], operations: ["operation"] }),
           );
-        return Promise.reject(new Error("unexpected request: " + target));
+        return Promise.reject(
+          new Error(`unexpected request: ${safeRequestLabel(target)}`),
+        );
       });
 
       render(<GroupAssociations groupPublicId={GROUP_ID} />);
 
       // Wait for initial load and find the pagination button
-      const paginationButton = await screen.findByRole("button", { name: buttonLabel });
+      const paginationButton = await screen.findByRole("button", {
+        name: testCase.buttonLabel,
+      });
 
       // Verify button is not disabled before clicking
       expect(paginationButton).not.toHaveAttribute("disabled");
@@ -547,7 +633,7 @@ describe("GroupAssociations", () => {
       });
 
       // Verify exactly one pagination request with cursor was made
-      const listRequests = fetchMock.mock.calls.filter(([target]) => target === listPath);
+      const listRequests = fetchMock.mock.calls.filter(([target]) => target === testCase.listPath);
       const paginationRequests = listRequests.filter((call) => {
         try {
           const req = body(call[1]);
@@ -558,37 +644,16 @@ describe("GroupAssociations", () => {
       });
       expect(paginationRequests).toHaveLength(1);
       expect(body(paginationRequests[0][1])).toEqual({
-        cursor:
-          collection === "members"
-            ? "members-cursor"
-            : collection === "grants"
-              ? "grants-cursor"
-              : "accounts-cursor",
+        cursor: testCase.cursor,
       });
 
-      // Resolve the deferred pagination response
-      expect(resolvePaginationResponse).not.toBeNull();
-      resolvePaginationResponse!(
+      // Resolve the deferred pagination response with null guard
+      if (resolvePaginationResponse === null) {
+        throw new Error("resolver was not initialized");
+      }
+      resolvePaginationResponse(
         response({
-          items: [
-            collection === "members"
-              ? {
-                  public_id: paginationItemId,
-                  username: `${paginationItemId}-user`,
-                  display_name: `${paginationItemId} Display`,
-                  active: true,
-                  mfa_required: false,
-                }
-              : collection === "grants"
-                ? { type: "operation", value: paginationItemId }
-                : {
-                    public_id: paginationItemId,
-                    username: `${paginationItemId}-user`,
-                    display_name: `${paginationItemId} Display`,
-                    active: true,
-                    mfa_required: false,
-                  },
-          ],
+          items: [testCase.pageItem],
           next_cursor: null,
         }),
       );
@@ -598,15 +663,9 @@ describe("GroupAssociations", () => {
         expect(paginationButton).not.toHaveAttribute("disabled");
       });
 
-      // Verify exactly one new item is rendered
-      // For members and accounts, the new public_id should appear in the display
-      // For grants, the operation value should appear
-      const newItemPattern =
-        collection === "grants"
-          ? new RegExp(`^${paginationItemId}$`)
-          : new RegExp(`^${paginationItemId}`);
-      const newItems = screen.queryAllByText(newItemPattern);
-      expect(newItems.length).toBeGreaterThan(0);
+      // Verify exactly one new item with exact rendered text
+      const newItems = screen.getAllByText(testCase.renderedText, { exact: true });
+      expect(newItems.length).toBe(1);
 
       fetchMock.mockRestore();
     },
