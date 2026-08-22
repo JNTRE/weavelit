@@ -512,8 +512,10 @@ describe("LoginPanel storage discipline", () => {
     // the mechanism works, then assert no secrets are ever stored.
     const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
     globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
     expect(globalThis.sessionStorage.length).toBe(1);
     globalThis.sessionStorage.clear();
+    setItemSpy.mockClear();
 
     await renderUnauthenticatedThenAuthenticated(establishedLogin);
 
@@ -527,10 +529,8 @@ describe("LoginPanel storage discipline", () => {
     expect(globalThis.sessionStorage.length).toBe(0);
     expect(globalThis.document.cookie).not.toContain(PASSWORD);
     expect(globalThis.location.href).not.toContain(PASSWORD);
-    // Assert that setItem was never called with the password secret
-    for (const call of setItemSpy.mock.calls) {
-      expect(call).not.toContain(PASSWORD);
-    }
+    // Assert that setItem was never called during the login workflow
+    expect(setItemSpy).not.toHaveBeenCalled();
     setItemSpy.mockRestore();
   });
 });
@@ -894,8 +894,10 @@ describe("LoginPanel enrollment", () => {
     // Use spy to verify storage works without storing secrets.
     const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
     globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
     expect(globalThis.sessionStorage.length).toBe(1);
     globalThis.sessionStorage.clear();
+    setItemSpy.mockClear();
 
     await signInWith({
       [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
@@ -916,6 +918,8 @@ describe("LoginPanel enrollment", () => {
     }
     expect(globalThis.localStorage.length).toBe(0);
     expect(globalThis.sessionStorage.length).toBe(0);
+    // Assert that setItem was never called during the enrollment workflow
+    expect(setItemSpy).not.toHaveBeenCalled();
 
     fireEvent.change(codeField(), { target: { value: CODE } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm authenticator app" }));
@@ -929,12 +933,7 @@ describe("LoginPanel enrollment", () => {
       expect(document.body.innerHTML).not.toContain(disclosed);
     }
     // Assert that setItem was never called with secrets
-    for (const call of setItemSpy.mock.calls) {
-      expect(call).not.toContain(SECRET);
-      expect(call).not.toContain(PROVISIONING_URI);
-      expect(call).not.toContain(ENROLLMENT);
-      expect(call).not.toContain(CONTINUATION);
-    }
+    expect(setItemSpy).not.toHaveBeenCalled();
     setItemSpy.mockRestore();
   });
 });
