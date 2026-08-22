@@ -639,7 +639,9 @@ describe("GroupAssociations", () => {
         }
       });
       expect(paginationRequests).toHaveLength(1);
-      expect(body(paginationRequests[0][1])).toEqual({
+      const paginationRequest = paginationRequests[0];
+      if (paginationRequest === undefined) throw new Error("pagination request was not captured");
+      expect(body(paginationRequest[1])).toEqual({
         cursor: testCase.cursor,
       });
 
