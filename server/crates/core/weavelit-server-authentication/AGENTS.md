@@ -72,6 +72,12 @@ Apply instructions in this order:
   it is given.
 - MUST prove equal-work denial by counting operations through an injected
   `Argon2Engine`, never by comparing elapsed time.
+- MAY use synthetic deterministic credential literals only in `#[cfg(test)]`
+  code that proves password or credential invariants.
+- MUST NOT copy those literals into production or deployable examples or
+  configuration.
+- CodeQL findings for this documented test-only pattern are not production
+  credential incidents.
 - MUST run the package tests during development and `make -C server check` before
   handoff.
 

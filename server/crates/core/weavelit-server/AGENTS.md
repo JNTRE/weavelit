@@ -117,3 +117,9 @@ Apply instructions in this order:
   fallback for missing or invalid deployment state.
 - MUST preserve the Server's default-deny authorization and its ownership of final authorization decisions.
 - MUST keep provider credentials and provider-integration behavior in the trusted Server environment; never move them into client applications.
+- MAY use synthetic deterministic credential literals only in `#[cfg(test)]`
+  code that proves password or credential invariants.
+- MUST NOT copy those literals into production or deployable examples or
+  configuration.
+- CodeQL findings for this documented test-only pattern are not production
+  credential incidents.
