@@ -104,10 +104,7 @@ export function TemporaryPasswordDisclosure({
   );
 }
 
-export function AccountsWorkspace({
-  currentAccountPublicId,
-  onSessionEnded,
-}: AccountsWorkspaceProps): JSX.Element {
+export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): JSX.Element {
   const [accounts, setAccounts] = useState<readonly AccountProjection[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [collectionState, setCollectionState] = useState<CollectionState>("loading");
@@ -422,7 +419,7 @@ export function AccountsWorkspace({
           setCreateUsername("");
           setCreateDisplayName("");
         }
-        if (action.kind === "reset" && action.publicId === currentAccountPublicId) {
+        if (action.kind === "reset") {
           await reconcileSelfResetSession(issued);
         } else {
           setCredentialState("idle");
@@ -599,8 +596,11 @@ export function AccountsWorkspace({
             type="button"
             className="accounts__action"
             onClick={() => {
-              loadFirstPage();
+              if (!actionLocked) {
+                loadFirstPage();
+              }
             }}
+            disabled={actionLocked}
           >
             Retry
           </button>

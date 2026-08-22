@@ -493,7 +493,7 @@ describe("AccountsWorkspace", () => {
     expect(document.body.textContent).not.toContain("private conflict cause");
   });
 
-  it("resets another account, preserves its disclosure, and refreshes without probing", async () => {
+  it("probes the authenticated session after another-account reset and refreshes once", async () => {
     withCsrfCookie();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
       if (target === ACCOUNTS_LIST_PATH) {
@@ -513,6 +513,18 @@ describe("AccountsWorkspace", () => {
           credential_issuance_ticket: TICKET,
         });
         return Promise.resolve(credentialResponse(BOB_ID));
+      }
+      if (target === AUTH_SESSION_PATH) {
+        return Promise.resolve(
+          response({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: ALICE_ID,
+              client_module: "web-ui",
+              password_change_required: false,
+            },
+          }),
+        );
       }
       throw new Error("unexpected request");
     });
@@ -539,10 +551,11 @@ describe("AccountsWorkspace", () => {
         2,
       );
     });
-    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
+    expect(screen.getAllByDisplayValue(TEMPORARY_PASSWORD)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(1);
   });
 
-  it("probes after self-reset and transfers the disclosure without refreshing or retrying", async () => {
+  it("probes despite a stale cached identity and transfers disclosure without retrying", async () => {
     localStorage.clear();
     sessionStorage.clear();
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");
@@ -552,13 +565,18 @@ describe("AccountsWorkspace", () => {
     const onSessionEnded = vi.fn();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === ACCOUNTS_LIST_PATH) {
-        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+        return Promise.resolve(
+          accountPage([
+            account(ALICE_ID, "alice", "Alice", true, false),
+            account(BOB_ID, "bob", "Bob", true, false),
+          ]),
+        );
       }
       if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
         return Promise.resolve(ticketResponse());
       }
       if (target === ACCOUNTS_RESET_PASSWORD_PATH) {
-        return Promise.resolve(credentialResponse(ALICE_ID));
+        return Promise.resolve(credentialResponse(BOB_ID));
       }
       if (target === AUTH_SESSION_PATH) {
         return Promise.resolve(
@@ -569,14 +587,14 @@ describe("AccountsWorkspace", () => {
     });
 
     render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
-    await screen.findByRole("rowheader", { name: "alice" });
-    fireEvent.click(screen.getByRole("button", { name: "Reset password for alice" }));
+    await screen.findByRole("rowheader", { name: "bob" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset password for bob" }));
     fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
 
     await waitFor(() => {
       expect(onSessionEnded).toHaveBeenCalledWith({
-        publicId: ALICE_ID,
+        publicId: BOB_ID,
         temporaryPassword: TEMPORARY_PASSWORD,
       });
     });
@@ -645,6 +663,85 @@ describe("AccountsWorkspace", () => {
       1,
     );
     expect(screen.getAllByDisplayValue(TEMPORARY_PASSWORD)).toHaveLength(1);
+  });
+
+  it("locks a failed paging Retry while reset session reconciliation is indeterminate", async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const cookieWrite = vi.fn();
+    withCsrfCookie(cookieWrite);
+    let rejectLoadMore!: (reason?: unknown) => void;
+    const pendingLoadMore = new Promise<Response>((_resolve, reject) => {
+      rejectLoadMore = reject;
+    });
+    let listRequests = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        listRequests += 1;
+        if (listRequests === 1) {
+          return Promise.resolve(
+            response({
+              result: {
+                items: [account(ALICE_ID, "alice", "Alice", true, false)],
+                next_cursor: "bmV4dC1wYWdl",
+              },
+              correlation_id: CORRELATION,
+            }),
+          );
+        }
+        return pendingLoadMore;
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_RESET_PASSWORD_PATH) {
+        return Promise.resolve(credentialResponse(ALICE_ID));
+      }
+      if (target === AUTH_SESSION_PATH) {
+        return Promise.resolve(new Response("unreadable", { status: 200 }));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => {
+      expect(listRequests).toBe(2);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reset password for alice" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    expect(
+      await screen.findByText(/The current session state could not be determined\./),
+    ).toBeTruthy();
+    await act(async () => {
+      rejectLoadMore(new Error("paging response lost"));
+      await pendingLoadMore.catch(() => undefined);
+    });
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(retry).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Check session again" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    retry.removeAttribute("disabled");
+    fireEvent.click(retry);
+
+    expect(screen.getAllByDisplayValue(TEMPORARY_PASSWORD)).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(TICKET);
+    expect(document.body.innerHTML).not.toContain(PASSWORD);
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(cookieWrite).not.toHaveBeenCalled();
+    expect(listRequests).toBe(2);
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_RESET_PASSWORD_PATH),
+    ).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(1);
+    storageWrite.mockRestore();
   });
 
   it("does not consume a ticket returned after the workspace unmounts", async () => {

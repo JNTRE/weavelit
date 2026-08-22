@@ -721,18 +721,18 @@ nor the consuming action. After an indeterminate consuming response it does not
 reissue a ticket, repeat the action, re-fetch the account to infer success, or
 attempt to recover the temporary password.
 
-On a valid create success or a reset of another account, the application
-captures the returned temporary password locally before requesting exactly one
-first-page account refresh. It does not use that refresh to retrieve or confirm
-the password. For a reset targeting the Account Public Identifier from the
-current Server-validated session identity, it preserves the disclosure and
-probes the existing session instead. An authenticated result causes one
-first-page Accounts refresh. An unauthenticated result transfers the disclosure
-to the shell before withdrawing the privileged workspace, then presents it
-beside blank sign-in controls. An absent or unreadable result keeps the
-disclosure in Accounts, locks further actions, and presents fixed text with a
-manual `Check session again` action; the application neither retries the reset
-nor refreshes Accounts in that state.
+On a valid create success, the application captures the returned temporary
+password locally before requesting exactly one first-page account refresh. It
+does not use that refresh to retrieve or confirm the password. After every
+valid reset success, the application preserves the disclosure and probes the
+existing session; it does not use a cached client identity to decide whether to
+probe. An authenticated result causes one first-page Accounts refresh. An
+unauthenticated result transfers the disclosure to the shell before withdrawing
+the privileged workspace, then presents it beside blank sign-in controls. An
+absent or unreadable result keeps the disclosure in Accounts, locks further
+actions, and presents fixed text with a manual `Check session again` action;
+the application neither retries the reset nor refreshes Accounts in that
+state.
 
 The temporary password appears only in one current disclosure panel as a plain
 read-only selectable field, with no copy-to-clipboard control. Starting another
