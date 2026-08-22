@@ -51,6 +51,13 @@ beforeEach(() => {
 
 describe("Configuration workspace", () => {
   it("keeps the preview unrendered, consumes it once, and reconciles self-disable", async () => {
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(sessionStorage.length).toBe(1);
+    sessionStorage.clear();
+    setItemSpy.mockClear();
+
     const onSessionEnded = vi.fn();
     vi.mocked(probeSession).mockResolvedValue({ kind: "unauthenticated" });
     render(<ConfigurationWorkspace onSessionEnded={onSessionEnded} />);
@@ -63,6 +70,7 @@ describe("Configuration workspace", () => {
     expect(location.href).not.toContain(PREVIEW);
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
+    expect(setItemSpy).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Apply disablement" }));
     await waitFor(() => {
@@ -72,6 +80,8 @@ describe("Configuration workspace", () => {
     });
     expect(applyTotpEnablement).toHaveBeenCalledTimes(1);
     expect(previewTotpEnablement).toHaveBeenCalledTimes(1);
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 
   it("loads safe Log detail and submits one complete name-based change", async () => {

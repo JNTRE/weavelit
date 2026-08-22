@@ -796,6 +796,15 @@ describe("InitWorkflow", () => {
   });
 
   it("writes neither the password nor the delivered key to browser storage or the URL", async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    window.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(window.sessionStorage.length).toBe(1);
+    window.sessionStorage.clear();
+    setItemSpy.mockClear();
+
     mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(completionResponse()),
@@ -813,9 +822,20 @@ describe("InitWorkflow", () => {
     expect(document.cookie).toBe("");
     expect(window.location.href).not.toContain(RECOVERY_KEY);
     expect(window.location.href).not.toContain(PASSWORD);
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 
   it("keeps the proof and the log assignments out of storage and the URL too", async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    window.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(window.sessionStorage.length).toBe(1);
+    window.sessionStorage.clear();
+    setItemSpy.mockClear();
+
     mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(completionResponse()),
@@ -845,6 +865,8 @@ describe("InitWorkflow", () => {
       expect(JSON.stringify(window.localStorage)).not.toContain(secret);
       expect(JSON.stringify(window.sessionStorage)).not.toContain(secret);
     }
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 
   it("writes nothing to the console on any failure path", async () => {
@@ -906,6 +928,15 @@ describe("InitWorkflow", () => {
   });
 
   it("offers no resume or reconstruction path after the page is reloaded", async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    window.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(window.sessionStorage.length).toBe(1);
+    window.sessionStorage.clear();
+    setItemSpy.mockClear();
+
     mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(completionResponse()),
@@ -928,5 +959,7 @@ describe("InitWorkflow", () => {
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
     expect(document.cookie).toBe("");
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 });

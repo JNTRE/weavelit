@@ -129,6 +129,15 @@ describe("Configuration API", () => {
   });
 
   it("sends one exact same-origin request per action and never retries", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.sessionStorage.clear();
+    setItemSpy.mockClear();
+
     csrf();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === TOTP_ENABLEMENT_PREVIEW_PATH)
@@ -152,8 +161,11 @@ describe("Configuration API", () => {
       return Promise.resolve(response(envelope(configuration())));
     });
 
-    await previewTotpEnablement(false);
+    const preview = await previewTotpEnablement(false);
+    expect(preview.preview).toBe(PREVIEW);
+    expect(setItemSpy).not.toHaveBeenCalled();
     const applied = await applyTotpEnablement(false, PREVIEW);
+    expect(setItemSpy).not.toHaveBeenCalled();
     await listLogConfigurations();
     const changed = await changeLogConfiguration({
       configurationName: "primary",
@@ -196,6 +208,7 @@ describe("Configuration API", () => {
         cache: "no-store",
         redirect: "error",
       });
+    setItemSpy.mockRestore();
   });
 
   it("maps a reported stale preview to conflict without retrying", async () => {
