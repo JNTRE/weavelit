@@ -250,10 +250,10 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
         setAccountPublicId(probe.publicId);
         endAttempt("authenticated");
       } else {
-        endAttempt("failed");
+        reconcileIndeterminateAuthentication();
       }
     });
-  }, [endAttempt]);
+  }, [endAttempt, reconcileIndeterminateAuthentication]);
 
   const submit = useCallback(() => {
     if (username === "" || password === "") {

@@ -598,6 +598,29 @@ capture them otherwise, and they are removed from the rendered output as soon
 as the enrollment they belong to settles or reconciliation begins. Nothing that
 outlives that enrollment retains them.
 
+### Restricted Password Change
+
+A session that requires password change mounts only the restricted password-change
+control. The control submits one replacement password and never retries that
+mutation automatically. A reported success withdraws the control and opens the
+authenticated Accounts workspace. A reported refusal clears the replacement and
+returns the control to its ready state with fixed reason-free text.
+
+An unreported, malformed, or otherwise indeterminate mutation result clears the
+replacement immediately and locks the password input and mutation action while the
+session outcome remains unresolved. The control offers only a manual session check.
+An authenticated probe that no longer requires password change opens Accounts. An
+unauthenticated probe does not establish whether the password mutation committed; it
+withdraws the password-change control and presents the neutral sign-in control with
+blank username and password inputs, no disclosure, and no claim that the prior
+mutation succeeded or failed. An absent or unreadable probe, or an authenticated
+probe that still requires password change, leaves the control indeterminate and
+mutation-locked with the manual check available.
+
+The replacement password is held only for its one submission and is never retained
+for reconciliation, prefilled into sign-in, rendered, placed in a URL or cookie, or
+written to `localStorage` or `sessionStorage`.
+
 ## Accounts Workspace
 
 The authenticated shell opens the Accounts workspace only for an ordinary

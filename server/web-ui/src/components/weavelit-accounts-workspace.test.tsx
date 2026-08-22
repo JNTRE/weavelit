@@ -230,6 +230,7 @@ describe("AccountsWorkspace", () => {
               client_module: "web-ui",
               password_change_required: false,
             },
+            correlation_id: CORRELATION,
           }),
         );
       }
@@ -523,6 +524,7 @@ describe("AccountsWorkspace", () => {
               client_module: "web-ui",
               password_change_required: false,
             },
+            correlation_id: CORRELATION,
           }),
         );
       }
@@ -828,6 +830,7 @@ describe("AccountsWorkspace", () => {
               client_module: "web-ui",
               password_change_required: false,
             },
+            correlation_id: CORRELATION,
           }),
         );
       }

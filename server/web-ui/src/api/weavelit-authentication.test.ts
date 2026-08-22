@@ -133,6 +133,16 @@ describe("isSessionEstablished", () => {
     ["an array", [{ result: { authenticated: true } }]],
     ["a bare flag", { authenticated: true }],
     ["a missing result", { correlation_id: CORRELATION }],
+    ["a missing correlation", { result: { authenticated: true } }],
+    ["a malformed correlation", { result: { authenticated: true }, correlation_id: "UPPERCASE" }],
+    [
+      "an extra envelope field",
+      { result: { authenticated: true }, correlation_id: CORRELATION, extra: true },
+    ],
+    [
+      "an extra result field",
+      { result: { authenticated: true, extra: true }, correlation_id: CORRELATION },
+    ],
     ["a false flag", { result: { authenticated: false } }],
     ["a truthy non-boolean flag", { result: { authenticated: "true" } }],
   ])("rejects %s", (_label, payload) => {
@@ -144,43 +154,150 @@ describe("isSessionIdentity", () => {
   it("accepts the documented identity envelope", () => {
     expect(
       isSessionIdentity({
-        result: { account_id: ACCOUNT, public_id: PUBLIC_ID, client_module: "web-ui" },
-        correlation_id: CORRELATION,
-      }),
-    ).toBe(true);
-  });
-
-  it("ignores additive fields permitted by the versioned contract", () => {
-    expect(
-      isSessionIdentity({
         result: {
           account_id: ACCOUNT,
           public_id: PUBLIC_ID,
           client_module: "web-ui",
-          future_field: 1,
+          password_change_required: false,
         },
         correlation_id: CORRELATION,
       }),
     ).toBe(true);
   });
 
+  it("rejects additive fields outside the documented typed result", () => {
+    expect(
+      isSessionIdentity({
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+          future_field: 1,
+        },
+        correlation_id: CORRELATION,
+      }),
+    ).toBe(false);
+  });
+
   it.each([
     ["null", null],
-    ["an array result", { result: [ACCOUNT] }],
-    ["a missing account", { result: { public_id: PUBLIC_ID, client_module: "web-ui" } }],
-    ["a missing public identifier", { result: { account_id: ACCOUNT, client_module: "web-ui" } }],
+    ["an array result", { result: [ACCOUNT], correlation_id: CORRELATION }],
+    [
+      "a missing account",
+      {
+        result: {
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
+    ],
+    [
+      "a missing public identifier",
+      {
+        result: {
+          account_id: ACCOUNT,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
+    ],
     [
       "a malformed public identifier",
-      { result: { account_id: ACCOUNT, public_id: "internal-account", client_module: "web-ui" } },
+      {
+        result: {
+          account_id: ACCOUNT,
+          public_id: "internal-account",
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
     ],
-    ["a missing Client Module", { result: { account_id: ACCOUNT, public_id: PUBLIC_ID } }],
+    [
+      "a missing Client Module",
+      {
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
+    ],
+    [
+      "a different Client Module",
+      {
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          client_module: "another-client",
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
+    ],
     [
       "an empty account",
-      { result: { account_id: "", public_id: PUBLIC_ID, client_module: "web-ui" } },
+      {
+        result: {
+          account_id: "",
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
+    ],
+    [
+      "a non-hexadecimal account",
+      {
+        result: {
+          account_id: "internal-account",
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
     ],
     [
       "a non-string account",
-      { result: { account_id: 1, public_id: PUBLIC_ID, client_module: "web-ui" } },
+      {
+        result: {
+          account_id: 1,
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
+    ],
+    [
+      "a missing correlation",
+      {
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+      },
+    ],
+    [
+      "a malformed correlation",
+      {
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+        correlation_id: "UPPERCASE",
+      },
     ],
   ])("rejects %s", (_label, payload) => {
     expect(isSessionIdentity(payload)).toBe(false);
@@ -205,13 +322,13 @@ describe("sessionPasswordChangeRequired", () => {
     ).toBe(passwordChangeRequired);
   });
 
-  it("keeps an identity response without a posture field ordinary", () => {
+  it("rejects an identity response without its documented posture field", () => {
     expect(
       sessionPasswordChangeRequired({
         result: { account_id: ACCOUNT, public_id: PUBLIC_ID, client_module: "web-ui" },
         correlation_id: CORRELATION,
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it("rejects a malformed restricted-session posture", () => {
@@ -294,6 +411,10 @@ describe("submitLogin", () => {
   it.each([
     ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
     ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
+    [
+      "an established-session body without a correlation",
+      () => Promise.resolve(jsonResponse({ result: { authenticated: true } }, 200)),
+    ],
     ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
   ])("reports %s as an opaque indeterminate outcome", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
@@ -306,6 +427,38 @@ describe("submitLogin", () => {
     expect(Object.keys(error)).toEqual(["name"]);
     expect(JSON.stringify(error)).toBe('{"name":"IndeterminateAuthenticationError"}');
   });
+
+  it.each([
+    [401, "authentication_failed"],
+    [403, "request_origin_denied"],
+    [503, "service_unavailable"],
+  ])(
+    "treats a %s rejection without a canonical correlation as indeterminate",
+    async (status, error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ error }, status));
+
+      await expect(submitLogin(USERNAME, PASSWORD)).rejects.toBeInstanceOf(
+        IndeterminateAuthenticationError,
+      );
+    },
+  );
+
+  it.each([
+    [401, "authentication_failed"],
+    [403, "request_origin_denied"],
+    [503, "service_unavailable"],
+  ])(
+    "treats a %s rejection with a malformed correlation as indeterminate",
+    async (status, error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        jsonResponse({ error, correlation_id: "UPPERCASE" }, status),
+      );
+
+      await expect(submitLogin(USERNAME, PASSWORD)).rejects.toBeInstanceOf(
+        IndeterminateAuthenticationError,
+      );
+    },
+  );
 
   it("reports an established session for the documented 200", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(establishedResponse());
@@ -337,10 +490,12 @@ describe("submitLogin", () => {
       () => Promise.resolve(continuationResponse("mfa_required", "not a token")),
     ],
     ["an unparseable 202 body", () => Promise.resolve(new Response("not json", { status: 202 }))],
-  ])("rejects %s with the same failure a denial produces", async (_label, response) => {
+  ])("reports %s as indeterminate", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
 
-    await expect(submitLogin(USERNAME, PASSWORD)).rejects.toBeInstanceOf(LoginFailedError);
+    await expect(submitLogin(USERNAME, PASSWORD)).rejects.toBeInstanceOf(
+      IndeterminateAuthenticationError,
+    );
   });
 });
 
@@ -361,16 +516,42 @@ describe("readLoginContinuation", () => {
     ["null", null],
     ["an array", [{ result: { mfa: "mfa_required", continuation: CONTINUATION } }]],
     ["a bare result", { mfa: "mfa_required", continuation: CONTINUATION }],
-    ["an unknown stage", { result: { mfa: "elevation_required", continuation: CONTINUATION } }],
-    ["a non-string stage", { result: { mfa: 1, continuation: CONTINUATION } }],
-    ["an empty continuation", { result: { mfa: "mfa_required", continuation: "" } }],
+    ["a missing correlation", { result: { mfa: "mfa_required", continuation: CONTINUATION } }],
+    [
+      "a malformed correlation",
+      {
+        result: { mfa: "mfa_required", continuation: CONTINUATION },
+        correlation_id: "UPPERCASE",
+      },
+    ],
+    [
+      "an unknown stage",
+      {
+        result: { mfa: "elevation_required", continuation: CONTINUATION },
+        correlation_id: CORRELATION,
+      },
+    ],
+    [
+      "a non-string stage",
+      { result: { mfa: 1, continuation: CONTINUATION }, correlation_id: CORRELATION },
+    ],
+    [
+      "an empty continuation",
+      { result: { mfa: "mfa_required", continuation: "" }, correlation_id: CORRELATION },
+    ],
     [
       "a continuation outside the token character set",
-      { result: { mfa: "mfa_required", continuation: "has space" } },
+      {
+        result: { mfa: "mfa_required", continuation: "has space" },
+        correlation_id: CORRELATION,
+      },
     ],
     [
       "an over-long continuation",
-      { result: { mfa: "mfa_required", continuation: "a".repeat(49) } },
+      {
+        result: { mfa: "mfa_required", continuation: "a".repeat(49) },
+        correlation_id: CORRELATION,
+      },
     ],
   ])("rejects %s", (_label, payload) => {
     expect(readLoginContinuation(payload)).toBeNull();
@@ -390,15 +571,44 @@ describe("readEnrollmentOpened", () => {
   it.each([
     ["null", null],
     [
-      "a missing secret",
-      { result: { provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT } },
+      "a missing correlation",
+      {
+        result: { secret: SECRET, provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT },
+      },
     ],
-    ["a missing URI", { result: { secret: SECRET, enrollment: ENROLLMENT } }],
-    ["a missing enrollment", { result: { secret: SECRET, provisioning_uri: PROVISIONING_URI } }],
+    [
+      "a malformed correlation",
+      {
+        result: { secret: SECRET, provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT },
+        correlation_id: "UPPERCASE",
+      },
+    ],
+    [
+      "a missing secret",
+      {
+        result: { provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT },
+        correlation_id: CORRELATION,
+      },
+    ],
+    [
+      "a missing URI",
+      {
+        result: { secret: SECRET, enrollment: ENROLLMENT },
+        correlation_id: CORRELATION,
+      },
+    ],
+    [
+      "a missing enrollment",
+      {
+        result: { secret: SECRET, provisioning_uri: PROVISIONING_URI },
+        correlation_id: CORRELATION,
+      },
+    ],
     [
       "a secret outside the token character set",
       {
         result: { secret: "has space", provisioning_uri: PROVISIONING_URI, enrollment: ENROLLMENT },
+        correlation_id: CORRELATION,
       },
     ],
     [
@@ -409,6 +619,7 @@ describe("readEnrollmentOpened", () => {
           provisioning_uri: "otpauth://totp/<script>",
           enrollment: ENROLLMENT,
         },
+        correlation_id: CORRELATION,
       },
     ],
     [
@@ -419,11 +630,15 @@ describe("readEnrollmentOpened", () => {
           provisioning_uri: `otpauth://${"a".repeat(289)}`,
           enrollment: ENROLLMENT,
         },
+        correlation_id: CORRELATION,
       },
     ],
     [
       "a non-string URI",
-      { result: { secret: SECRET, provisioning_uri: 1, enrollment: ENROLLMENT } },
+      {
+        result: { secret: SECRET, provisioning_uri: 1, enrollment: ENROLLMENT },
+        correlation_id: CORRELATION,
+      },
     ],
   ])("rejects %s", (_label, payload) => {
     expect(readEnrollmentOpened(payload)).toBeNull();
@@ -470,7 +685,6 @@ describe("submitSecondFactor", () => {
       "an unavailable response",
       () => Promise.resolve(rejectionResponse("service_unavailable", 503)),
     ],
-    ["a continuation answer", () => Promise.resolve(continuationResponse("mfa_required"))],
   ])("rejects %s as a reported refusal", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
 
@@ -483,6 +697,7 @@ describe("submitSecondFactor", () => {
   it.each([
     ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
     ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
+    ["a continuation answer", () => Promise.resolve(continuationResponse("mfa_required"))],
     ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
   ])("reports %s as an opaque indeterminate outcome", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
@@ -495,6 +710,38 @@ describe("submitSecondFactor", () => {
     expect(Object.keys(error)).toEqual(["name"]);
     expect(JSON.stringify(error)).toBe('{"name":"IndeterminateAuthenticationError"}');
   });
+
+  it.each([
+    [401, "authentication_failed"],
+    [403, "request_origin_denied"],
+    [503, "service_unavailable"],
+  ])(
+    "treats a %s mutation rejection without a correlation as indeterminate",
+    async (status, error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ error }, status));
+
+      await expect(submitSecondFactor(CONTINUATION, CODE)).rejects.toBeInstanceOf(
+        IndeterminateAuthenticationError,
+      );
+    },
+  );
+
+  it.each([
+    [401, "authentication_failed"],
+    [403, "request_origin_denied"],
+    [503, "service_unavailable"],
+  ])(
+    "treats a %s mutation rejection with a malformed correlation as indeterminate",
+    async (status, error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        jsonResponse({ error, correlation_id: "UPPERCASE" }, status),
+      );
+
+      await expect(submitSecondFactor(CONTINUATION, CODE)).rejects.toBeInstanceOf(
+        IndeterminateAuthenticationError,
+      );
+    },
+  );
 });
 
 describe("openEnrollment", () => {
@@ -595,7 +842,6 @@ describe("confirmEnrollment", () => {
       "an unavailable response",
       () => Promise.resolve(rejectionResponse("service_unavailable", 503)),
     ],
-    ["a continuation answer", () => Promise.resolve(continuationResponse("mfa_required"))],
   ])("rejects %s as a reported refusal", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
 
@@ -608,6 +854,7 @@ describe("confirmEnrollment", () => {
   it.each([
     ["an undocumented success body", () => Promise.resolve(jsonResponse({ result: {} }, 200))],
     ["an unparseable body", () => Promise.resolve(new Response("not json", { status: 200 }))],
+    ["a continuation answer", () => Promise.resolve(continuationResponse("mfa_required"))],
     ["a transport failure", () => Promise.reject(new Error("ECONNREFUSED 127.0.0.1:8443"))],
   ])("reports %s as an opaque indeterminate outcome", async (_label, response) => {
     vi.spyOn(globalThis, "fetch").mockImplementation(response);
@@ -647,6 +894,17 @@ describe("submitPasswordChange", () => {
 
     expect(failure).toBeInstanceOf(PasswordChangeFailedError);
     expect(JSON.stringify(failure)).toBe('{"name":"PasswordChangeFailedError"}');
+  });
+
+  it("treats a refusal without a canonical correlation as indeterminate", async () => {
+    withCookies(`${CSRF_COOKIE_NAME}=${CSRF_TOKEN}`);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: "session_invalid" }, 401),
+    );
+
+    await expect(submitPasswordChange(PASSWORD)).rejects.toBeInstanceOf(
+      IndeterminateAuthenticationError,
+    );
   });
 });
 
@@ -691,6 +949,19 @@ describe("probeSession", () => {
       { kind: "unauthenticated" },
     ],
     [
+      "an invalid session without a correlation",
+      () => Promise.resolve(jsonResponse({ error: "session_invalid" }, 401)),
+      { kind: "absent" },
+    ],
+    [
+      "an invalid session with a malformed correlation",
+      () =>
+        Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: "UPPERCASE" }, 401),
+        ),
+      { kind: "absent" },
+    ],
+    [
       "an absent route",
       () => Promise.resolve(jsonResponse({ error: "not_found" }, 404)),
       { kind: "absent" },
@@ -713,6 +984,43 @@ describe("probeSession", () => {
     [
       "an undocumented identity body",
       () => Promise.resolve(jsonResponse({ result: { account_id: 1 } }, 200)),
+      { kind: "absent" },
+    ],
+    [
+      "a session identity without a correlation",
+      () =>
+        Promise.resolve(
+          jsonResponse(
+            {
+              result: {
+                account_id: ACCOUNT,
+                public_id: PUBLIC_ID,
+                client_module: "web-ui",
+                password_change_required: false,
+              },
+            },
+            200,
+          ),
+        ),
+      { kind: "absent" },
+    ],
+    [
+      "a session identity with a malformed correlation",
+      () =>
+        Promise.resolve(
+          jsonResponse(
+            {
+              result: {
+                account_id: ACCOUNT,
+                public_id: PUBLIC_ID,
+                client_module: "web-ui",
+                password_change_required: false,
+              },
+              correlation_id: "UPPERCASE",
+            },
+            200,
+          ),
+        ),
       { kind: "absent" },
     ],
   ])("reports %s", async (_label, response, expected) => {

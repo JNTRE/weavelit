@@ -10,9 +10,13 @@ const PASSWORD_INPUT_ID = "weavelit-password-change-password";
 
 export interface PasswordChangeFormProps {
   readonly onCompleted: () => void;
+  readonly onSessionEnded: () => void;
 }
 
-export function PasswordChangeForm({ onCompleted }: PasswordChangeFormProps): JSX.Element {
+export function PasswordChangeForm({
+  onCompleted,
+  onSessionEnded,
+}: PasswordChangeFormProps): JSX.Element {
   const [password, setPassword] = useState("");
   const [state, setState] = useState<"ready" | "submitting" | "failed" | "indeterminate">("ready");
   const mutationLocked = state === "submitting" || state === "indeterminate";
@@ -42,6 +46,8 @@ export function PasswordChangeForm({ onCompleted }: PasswordChangeFormProps): JS
     void probeSession().then((probe) => {
       if (probe.kind === "authenticated" && !probe.passwordChangeRequired) {
         onCompleted();
+      } else if (probe.kind === "unauthenticated") {
+        onSessionEnded();
       } else {
         setState("indeterminate");
       }

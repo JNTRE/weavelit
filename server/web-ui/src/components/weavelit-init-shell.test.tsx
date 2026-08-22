@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ApplicationShell } from "./weavelit-init-shell";
 
+const AUTH_CORRELATION = "authentication-correlation";
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -431,7 +433,9 @@ describe("ApplicationShell Restore form gating", () => {
         return Promise.resolve(jsonResponse({ result: { lifecycle: "initialized" } }));
       }
       if (typeof input === "string" && input.startsWith("/api/v1/auth/")) {
-        return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
       }
       expect(init?.method).not.toBe("PUT");
       return selectedStatus();
@@ -541,7 +545,9 @@ describe("ApplicationShell Init workflow gating", () => {
         return Promise.resolve(jsonResponse({ result: { lifecycle: "initialized" } }));
       }
       if (typeof input === "string" && input.startsWith("/api/v1/auth/")) {
-        return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
       }
       expect(init?.method).not.toBe("PUT");
       return selectedStatus();
@@ -607,7 +613,9 @@ describe("ApplicationShell sign-in panel gating", () => {
   }
 
   function sessionRejected(): Promise<Response> {
-    return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+    return Promise.resolve(
+      jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+    );
   }
 
   function mockAuthenticatedAdministrationFetch() {
@@ -626,7 +634,9 @@ describe("ApplicationShell sign-in panel gating", () => {
               account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
               public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
               client_module: "web-ui",
+              password_change_required: false,
             },
+            correlation_id: AUTH_CORRELATION,
           }),
         );
       }
@@ -704,7 +714,9 @@ describe("ApplicationShell sign-in panel gating", () => {
               account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
               public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
               client_module: "web-ui",
+              password_change_required: false,
             },
+            correlation_id: AUTH_CORRELATION,
           }),
         );
       }
@@ -869,10 +881,13 @@ describe("ApplicationShell sign-in panel gating", () => {
                   client_module: "web-ui",
                   password_change_required: false,
                 },
+                correlation_id: AUTH_CORRELATION,
               }),
             );
           }
-          return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+          return Promise.resolve(
+            jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+          );
         }
         if (target === "/api/v1/administration/accounts/list") {
           listRequests += 1;
@@ -967,10 +982,13 @@ describe("ApplicationShell sign-in panel gating", () => {
                   client_module: "web-ui",
                   password_change_required: false,
                 },
+                correlation_id: AUTH_CORRELATION,
               }),
             );
           }
-          return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+          return Promise.resolve(
+            jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+          );
         }
         if (target === "/api/v1/administration/accounts/list") {
           listRequests += 1;
@@ -1086,6 +1104,7 @@ describe("ApplicationShell sign-in panel gating", () => {
               client_module: "web-ui",
               password_change_required: true,
             },
+            correlation_id: AUTH_CORRELATION,
           }),
         );
       }
@@ -1114,17 +1133,51 @@ describe("ApplicationShell sign-in panel gating", () => {
             client_module: "web-ui",
             password_change_required: false,
           },
+          correlation_id: AUTH_CORRELATION,
         }),
-      true,
+      "accounts",
     ],
-    ["unauthenticated", () => jsonResponse({ error: "session_invalid" }, 401), false],
+    [
+      "unauthenticated",
+      () => jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+      "login",
+    ],
+    [
+      "still restricted",
+      () =>
+        jsonResponse({
+          result: {
+            account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+            client_module: "web-ui",
+            password_change_required: true,
+          },
+          correlation_id: AUTH_CORRELATION,
+        }),
+      "indeterminate",
+    ],
+    ["absent", () => jsonResponse({ error: "not_found" }, 404), "indeterminate"],
+    [
+      "unreadable",
+      () =>
+        new Response("{", {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        }),
+      "indeterminate",
+    ],
   ] as const)(
-    "locks an indeterminate password change while %s session reconciliation is pending",
-    async (_outcome, reconciliationResponse, completes) => {
+    "reconciles an indeterminate password change after a %s session probe without resubmitting",
+    async (_outcome, reconciliationResponse, destination) => {
       Object.defineProperty(globalThis.document, "cookie", {
         configurable: true,
         get: () => "__Host-weavelit_csrf=csrf-token",
       });
+      localStorage.clear();
+      sessionStorage.clear();
+      const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+      const originalUrl = location.href;
+      const replacementPassword = "one-time replacement";
       let sessionProbes = 0;
       let resolveReconciliation: (response: Response) => void = () => {
         throw new Error("session reconciliation was not started");
@@ -1147,13 +1200,19 @@ describe("ApplicationShell sign-in panel gating", () => {
                   client_module: "web-ui",
                   password_change_required: true,
                 },
+                correlation_id: AUTH_CORRELATION,
               }),
             );
+          }
+          if (sessionProbes > 2 && destination === "login") {
+            return Promise.resolve(reconciliationResponse());
           }
           return deferredReconciliation;
         }
         if (target === "/api/v1/auth/password/change") {
-          return Promise.resolve(jsonResponse({ error: "gateway_timeout" }, 504));
+          return Promise.resolve(
+            jsonResponse({ error: "gateway_timeout", correlation_id: AUTH_CORRELATION }, 504),
+          );
         }
         if (target === "/api/v1/administration/accounts/list") {
           return Promise.resolve(jsonResponse({ result: { accounts: [], next_cursor: null } }));
@@ -1163,7 +1222,7 @@ describe("ApplicationShell sign-in panel gating", () => {
 
       render(<ApplicationShell />);
       const passwordInput = await screen.findByLabelText("New password");
-      fireEvent.change(passwordInput, { target: { value: "one-time replacement" } });
+      fireEvent.change(passwordInput, { target: { value: replacementPassword } });
       fireEvent.click(screen.getByRole("button", { name: "Save password" }));
 
       await waitFor(() => {
@@ -1175,22 +1234,31 @@ describe("ApplicationShell sign-in panel gating", () => {
       });
       const saveButton = screen.getByRole("button", { name: "Save password" });
       expect(passwordInput).toHaveProperty("disabled", true);
+      expect(passwordInput).toHaveProperty("value", "");
       expect(saveButton).toHaveProperty("disabled", true);
+      expect(document.body.innerHTML).not.toContain(replacementPassword);
+      expect(location.href).toBe(originalUrl);
+      expect(storageWrite).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: "Check session" }));
       await waitFor(() => {
         expect(sessionProbes).toBe(2);
       });
 
-      fireEvent.change(passwordInput, { target: { value: "second replacement" } });
       fireEvent.click(saveButton);
       expect(
         fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/password/change"),
       ).toHaveLength(1);
 
       resolveReconciliation(reconciliationResponse());
-      if (completes) {
+      if (destination === "accounts") {
         expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
         expect(screen.queryByRole("heading", { name: "Choose a new password" })).toBeNull();
+      } else if (destination === "login") {
+        expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+        expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
+        expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+        expect(screen.queryByRole("heading", { name: "Choose a new password" })).toBeNull();
+        expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
       } else {
         await waitFor(() => {
           expect(screen.getByRole("button", { name: "Check session" })).toBeTruthy();
@@ -1204,6 +1272,15 @@ describe("ApplicationShell sign-in panel gating", () => {
       expect(
         fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/password/change"),
       ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.every(
+          ([target]) => typeof target !== "string" || !target.includes(replacementPassword),
+        ),
+      ).toBe(true);
+      expect(document.body.innerHTML).not.toContain(replacementPassword);
+      expect(location.href).toBe(originalUrl);
+      expect(storageWrite).not.toHaveBeenCalled();
+      storageWrite.mockRestore();
       Reflect.deleteProperty(globalThis.document, "cookie");
     },
   );

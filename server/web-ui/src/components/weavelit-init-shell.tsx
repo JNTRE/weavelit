@@ -199,7 +199,10 @@ export function ApplicationShell({
         <h1 className="shell__title">Weavelit Server</h1>
         <p className="shell__subtitle">Administration</p>
         {passwordChangeRequired ? (
-          <PasswordChangeForm onCompleted={completePasswordChange} />
+          <PasswordChangeForm
+            onCompleted={completePasswordChange}
+            onSessionEnded={endAuthenticatedSession}
+          />
         ) : (
           <>
             <nav className="administration-nav" aria-label="Administration">

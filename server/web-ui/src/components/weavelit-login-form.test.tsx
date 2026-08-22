@@ -51,7 +51,12 @@ function authenticatedProbe(): Promise<Response> {
   return Promise.resolve(
     jsonResponse(
       {
-        result: { account_id: ACCOUNT, public_id: PUBLIC_ID, client_module: "web-ui" },
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
         correlation_id: CORRELATION,
       },
       200,
@@ -483,6 +488,51 @@ describe("LoginPanel failure presentation", () => {
     expect(document.body.innerHTML).not.toContain(PASSWORD);
     expect(requestsTo(fetchMock, LOGIN_PATH)).toHaveLength(1);
   });
+
+  it.each([
+    ["unavailable", () => Promise.reject(new Error("connection reset"))],
+    [
+      "malformed",
+      () =>
+        Promise.resolve(
+          jsonResponse(
+            {
+              result: {
+                account_id: ACCOUNT,
+                public_id: PUBLIC_ID,
+                client_module: "web-ui",
+              },
+              correlation_id: CORRELATION,
+            },
+            200,
+          ),
+        ),
+    ],
+  ])(
+    "keeps a valid login success indeterminate when its identity probe is %s",
+    async (_label, unresolvedProbe) => {
+      let probes = 0;
+      const fetchMock = mockRoutes({
+        [SESSION_PATH]: () => {
+          probes += 1;
+          return probes === 1 ? unauthenticatedProbe() : unresolvedProbe();
+        },
+        [LOGIN_PATH]: establishedLogin,
+      });
+      render(<LoginPanel />);
+      await reachState("unauthenticated");
+      fillCredentials();
+      fireEvent.click(submitButton());
+
+      await reachState("indeterminate");
+      expect(screen.getByRole("status").textContent).toBe(
+        "Checking whether your sign-in completed.",
+      );
+      expect(requestsTo(fetchMock, LOGIN_PATH)).toHaveLength(1);
+      expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(3);
+      expect(document.body.innerHTML).not.toContain(PASSWORD);
+    },
+  );
 
   it("renders the same markup for two different denials", async () => {
     const denial = (code: string, status: number) => () =>

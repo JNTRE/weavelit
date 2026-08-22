@@ -1209,28 +1209,6 @@ impl<'a> GroupMutationWorkflow<'a> {
         let authorization = action
             .into_group_mutation()
             .map_err(|_| GroupMutationWorkflowError::ActionNotSupported)?;
-        if self.audit.drain_before_consequential_operation().active()
-            != AuditRecoverySequenceState::Ready
-        {
-            return Err(GroupMutationWorkflowError::AuditLogUnavailable);
-        }
-        self.audit
-            .with_current_destination(|destination| {
-                destination
-                    .destination()
-                    .preflight(LogRecordType::Audit)
-                    .map_err(|_| GroupMutationWorkflowError::AuditLogUnavailable)?;
-                self.apply_with_destination(authorization, destination, correlation_id)
-            })
-            .map_err(|_| GroupMutationWorkflowError::AuditLogUnavailable)?
-    }
-
-    fn apply_with_destination(
-        &self,
-        authorization: weavelit_server_administration::AuthorizedGroupMutation,
-        destination: &OperationalAuditGenerationDestination,
-        correlation_id: &str,
-    ) -> Result<GroupMutationResult, GroupMutationWorkflowError> {
         let descriptor = authorization.mutation().clone();
         let target = match descriptor.clone() {
             GroupMutation::Membership(change) => self
@@ -1269,6 +1247,36 @@ impl<'a> GroupMutationWorkflow<'a> {
                 return Err(GroupMutationWorkflowError::TargetNotFound);
             }
         };
+        if self.audit.drain_before_consequential_operation().active()
+            != AuditRecoverySequenceState::Ready
+        {
+            return Err(GroupMutationWorkflowError::AuditLogUnavailable);
+        }
+        self.audit
+            .with_current_destination(|destination| {
+                destination
+                    .destination()
+                    .preflight(LogRecordType::Audit)
+                    .map_err(|_| GroupMutationWorkflowError::AuditLogUnavailable)?;
+                self.apply_with_destination(
+                    authorization,
+                    descriptor,
+                    mutation,
+                    destination,
+                    correlation_id,
+                )
+            })
+            .map_err(|_| GroupMutationWorkflowError::AuditLogUnavailable)?
+    }
+
+    fn apply_with_destination(
+        &self,
+        authorization: weavelit_server_administration::AuthorizedGroupMutation,
+        descriptor: GroupMutation,
+        mutation: PreparedGroupMutation,
+        destination: &OperationalAuditGenerationDestination,
+        correlation_id: &str,
+    ) -> Result<GroupMutationResult, GroupMutationWorkflowError> {
         let actor = self
             .database
             .load_account_audit_reference(authorization.actor())
@@ -1927,11 +1935,6 @@ impl<'a> LogConfigurationChangeWorkflow<'a> {
         correlation_id: &str,
     ) -> Result<LogConfigurationChangeResult, LogConfigurationChangeError> {
         let request = exact_log_configuration_change(&action)?;
-        if self.audit.drain_before_consequential_operation().active()
-            != AuditRecoverySequenceState::Ready
-        {
-            return Err(LogConfigurationChangeError::AuditLogUnavailable);
-        }
         let prepared = match self
             .database
             .prepare_log_configuration_mutation(&request)
@@ -1946,6 +1949,11 @@ impl<'a> LogConfigurationChangeWorkflow<'a> {
                 return Err(LogConfigurationChangeError::ChangeRejected);
             }
         };
+        if self.audit.drain_before_consequential_operation().active()
+            != AuditRecoverySequenceState::Ready
+        {
+            return Err(LogConfigurationChangeError::AuditLogUnavailable);
+        }
 
         self.audit
             .preflight_log_configuration_mutation(&prepared)
@@ -2439,8 +2447,9 @@ pub(crate) mod tests {
     use weavelit_server_administration::{
         AccountAdministrationRead, AccountStatusChange, AdministrationClock, AdministrationPlane,
         AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementChange,
-        ComponentEnablementSource, CurrentAdministrationSession, GroupCreate, GroupUpdate,
-        LogAssignmentChange, LogConfigurationChange, StepUpActionFamily,
+        ComponentEnablementSource, CurrentAdministrationSession, GroupCreate, GroupGrantMutation,
+        GroupMembershipMutation, GroupUpdate, LogAssignmentChange, LogConfigurationChange,
+        StepUpActionFamily,
     };
     use weavelit_server_administration_authority::ServerAdministrationAuthority;
     use weavelit_server_authorization::{
@@ -2486,6 +2495,7 @@ pub(crate) mod tests {
         attempts: Arc<AtomicUsize>,
         fail_preflight: bool,
         fail_on_attempt: Option<usize>,
+        fail_from_attempt: Option<usize>,
         after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     }
 
@@ -2496,7 +2506,9 @@ pub(crate) mod tests {
             acknowledgement: DurableAcknowledgement,
         ) -> Result<DurableAcknowledgement, LogDestinationError> {
             let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
-            if self.fail_on_attempt == Some(attempt) {
+            if self.fail_on_attempt == Some(attempt)
+                || self.fail_from_attempt.is_some_and(|first| attempt >= first)
+            {
                 return Err(LogDestinationError::Unavailable);
             }
             let LogRecordPersistenceView::Audit(view) = record.persistence_view() else {
@@ -2529,6 +2541,7 @@ pub(crate) mod tests {
         attempts: Arc<AtomicUsize>,
         fail_preflight: bool,
         fail_on_attempt: Option<usize>,
+        fail_from_attempt: Option<usize>,
         after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     }
 
@@ -2546,6 +2559,7 @@ pub(crate) mod tests {
                 attempts: Arc::clone(&self.attempts),
                 fail_preflight: self.fail_preflight,
                 fail_on_attempt: self.fail_on_attempt,
+                fail_from_attempt: self.fail_from_attempt,
                 after_delivery: self.after_delivery.clone(),
             }))
         }
@@ -2849,7 +2863,7 @@ pub(crate) mod tests {
         Arc<Mutex<Vec<ObservedAuditRecord>>>,
         Arc<AtomicUsize>,
     ) {
-        recovery_config(database, false, fail_on_attempt, after_delivery)
+        recovery_config(database, false, fail_on_attempt, None, after_delivery)
     }
 
     pub(crate) fn recovery_with_preflight_failure(
@@ -2859,13 +2873,24 @@ pub(crate) mod tests {
         Arc<Mutex<Vec<ObservedAuditRecord>>>,
         Arc<AtomicUsize>,
     ) {
-        recovery_config(database, true, None, None)
+        recovery_config(database, true, None, None, None)
+    }
+
+    fn recovery_with_persistently_unavailable_destination(
+        database: OperationalDatabase,
+    ) -> (
+        OperationalAuditRecovery,
+        Arc<Mutex<Vec<ObservedAuditRecord>>>,
+        Arc<AtomicUsize>,
+    ) {
+        recovery_config(database, false, None, Some(1), None)
     }
 
     fn recovery_config(
         database: OperationalDatabase,
         fail_preflight: bool,
         fail_on_attempt: Option<usize>,
+        fail_from_attempt: Option<usize>,
         after_delivery: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     ) -> (
         OperationalAuditRecovery,
@@ -2884,6 +2909,7 @@ pub(crate) mod tests {
                     attempts: Arc::clone(&attempts),
                     fail_preflight,
                     fail_on_attempt,
+                    fail_from_attempt,
                     after_delivery,
                 }),
             )])
@@ -3096,6 +3122,10 @@ pub(crate) mod tests {
     }
 
     fn authorized_group_delete(target: GroupPublicIdentifier) -> AuthorizedAdministrationAction {
+        authorized_group_mutation(GroupMutation::Delete(target))
+    }
+
+    fn authorized_group_mutation(mutation: GroupMutation) -> AuthorizedAdministrationAction {
         let client_module = name(CLIENT_MODULE);
         let authorization = authorize_administration(
             &HumanAuthorizationSnapshot::new(
@@ -3142,10 +3172,8 @@ pub(crate) mod tests {
         plane
             .authorize(
                 admission,
-                AdministrationRequest::new(AdministrationAction::GrantMutation(
-                    GroupMutation::Delete(target),
-                ))
-                .with_step_up(&proof),
+                AdministrationRequest::new(AdministrationAction::GrantMutation(mutation))
+                    .with_step_up(&proof),
             )
             .unwrap()
     }
@@ -3268,6 +3296,35 @@ pub(crate) mod tests {
             )
             .unwrap();
         public_identifier
+    }
+
+    fn seed_pending_audit_obligation(surface: &Surface) {
+        insert_live_status_session(&surface.path, 0x31, 1);
+        let (audit, _, _) = recovery(surface.database.clone(), Some(2));
+        let workflow = GroupAdministrationWorkflow::new(&surface.database, &audit);
+        let result = workflow
+            .mutate(
+                authorized_group_administration(GroupAdministrationAction::Create(
+                    GroupCreate::new("pending-audit-seed", None::<&str>).unwrap(),
+                )),
+                TEST_CORRELATION,
+            )
+            .unwrap();
+        assert!(matches!(
+            result,
+            GroupAdministrationMutationResult::Projection {
+                delivery: GroupAdministrationDelivery::Pending,
+                ..
+            }
+        ));
+        assert_eq!(
+            count(
+                &surface.path,
+                "weavelit_audit_terminal_obligation",
+                "WHERE acknowledged = 0",
+            ),
+            1
+        );
     }
 
     #[test]
@@ -3933,6 +3990,86 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn membership_no_op_bypasses_unavailable_pending_audit_recovery() {
+        let surface = surface(false, false, false);
+        insert_group(&surface, 0x51, 0xa1, "membership-target", None);
+        seed_pending_audit_obligation(&surface);
+        let (audit, records, attempts) =
+            recovery_with_persistently_unavailable_destination(surface.database.clone());
+        let workflow = GroupMutationWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(
+                authorized_group_mutation(GroupMutation::Membership(GroupMembershipMutation::new(
+                    identifier(0x51),
+                    account_public_identifier(0x91),
+                    false,
+                ),)),
+                TEST_CORRELATION,
+            ),
+            Ok(GroupMutationResult::Unchanged)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(count(&surface.path, "weavelit_group_membership", ""), 0);
+
+        assert_eq!(
+            workflow.apply(
+                authorized_group_mutation(GroupMutation::Membership(GroupMembershipMutation::new(
+                    identifier(0x51),
+                    account_public_identifier(0x91),
+                    true,
+                ),)),
+                TEST_CORRELATION,
+            ),
+            Err(GroupMutationWorkflowError::AuditLogUnavailable)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(count(&surface.path, "weavelit_group_membership", ""), 0);
+    }
+
+    #[test]
+    fn grant_no_op_bypasses_unavailable_pending_audit_recovery() {
+        let surface = surface(false, false, false);
+        insert_group(&surface, 0x51, 0xa1, "grant-target", None);
+        seed_pending_audit_obligation(&surface);
+        let (audit, records, attempts) =
+            recovery_with_persistently_unavailable_destination(surface.database.clone());
+        let workflow = GroupMutationWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(
+                authorized_group_mutation(GroupMutation::Grant(GroupGrantMutation::new(
+                    identifier(0x51),
+                    GroupGrant::ServerAdministration,
+                    false,
+                ))),
+                TEST_CORRELATION,
+            ),
+            Ok(GroupMutationResult::Unchanged)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(count(&surface.path, "weavelit_group_grant", ""), 0);
+
+        assert_eq!(
+            workflow.apply(
+                authorized_group_mutation(GroupMutation::Grant(GroupGrantMutation::new(
+                    identifier(0x51),
+                    GroupGrant::ServerAdministration,
+                    true,
+                ))),
+                TEST_CORRELATION,
+            ),
+            Err(GroupMutationWorkflowError::AuditLogUnavailable)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(count(&surface.path, "weavelit_group_grant", ""), 0);
+    }
+
+    #[test]
     fn exact_log_configuration_no_op_emits_no_audit_or_generation() {
         let surface = surface(false, false, false);
         let action = authorized_log_change(
@@ -3960,6 +4097,59 @@ pub(crate) mod tests {
         assert_eq!(
             count(&surface.path, "weavelit_audit_terminal_obligation", ""),
             0
+        );
+    }
+
+    #[test]
+    fn log_configuration_no_op_bypasses_unavailable_pending_audit_recovery() {
+        let surface = surface(false, false, false);
+        seed_pending_audit_obligation(&surface);
+        let (audit, records, attempts) =
+            recovery_with_persistently_unavailable_destination(surface.database.clone());
+        let workflow = LogConfigurationChangeWorkflow::new(&surface.database, &audit);
+
+        assert_eq!(
+            workflow.apply(
+                authorized_log_change(
+                    LogConfigurationChange::new(
+                        identifier(0x68),
+                        Some(true),
+                        Some(Vec::new()),
+                        vec![LogAssignmentChange::new(LogType::Audit, identifier(0x68))],
+                    )
+                    .unwrap(),
+                ),
+                TEST_CORRELATION,
+            ),
+            Ok(LogConfigurationChangeResult::Unchanged)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(
+            count(&surface.path, "weavelit_log_configuration_generation", ""),
+            2
+        );
+
+        assert_eq!(
+            workflow.apply(
+                authorized_log_change(
+                    LogConfigurationChange::new(
+                        identifier(0x69),
+                        Some(true),
+                        None,
+                        vec![LogAssignmentChange::new(LogType::Audit, identifier(0x69))],
+                    )
+                    .unwrap(),
+                ),
+                TEST_CORRELATION,
+            ),
+            Err(LogConfigurationChangeError::AuditLogUnavailable)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(records.lock().unwrap().is_empty());
+        assert_eq!(
+            count(&surface.path, "weavelit_log_configuration_generation", ""),
+            2
         );
     }
 
