@@ -508,10 +508,10 @@ describe("LoginPanel storage discipline", () => {
   it("writes no credential or token to browser storage", async () => {
     globalThis.localStorage.clear();
     globalThis.sessionStorage.clear();
-    // A sanity check that these assertions can fail: a written key is visible
-    // here, so an empty jar afterwards is a real observation rather than a
-    // storage object that never records anything.
-    globalThis.sessionStorage.setItem("probe", PASSWORD);
+    // A sanity check that these assertions can fail: spy on Storage to verify
+    // the mechanism works, then assert no secrets are ever stored.
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
     expect(globalThis.sessionStorage.length).toBe(1);
     globalThis.sessionStorage.clear();
 
@@ -527,6 +527,11 @@ describe("LoginPanel storage discipline", () => {
     expect(globalThis.sessionStorage.length).toBe(0);
     expect(globalThis.document.cookie).not.toContain(PASSWORD);
     expect(globalThis.location.href).not.toContain(PASSWORD);
+    // Assert that setItem was never called with the password secret
+    for (const call of setItemSpy.mock.calls) {
+      expect(call).not.toContain(PASSWORD);
+    }
+    setItemSpy.mockRestore();
   });
 });
 
@@ -886,7 +891,9 @@ describe("LoginPanel enrollment", () => {
     globalThis.localStorage.clear();
     globalThis.sessionStorage.clear();
     // A sanity check that these assertions can fail against a real store.
-    globalThis.sessionStorage.setItem("probe", SECRET);
+    // Use spy to verify storage works without storing secrets.
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
     expect(globalThis.sessionStorage.length).toBe(1);
     globalThis.sessionStorage.clear();
 
@@ -921,5 +928,13 @@ describe("LoginPanel enrollment", () => {
       expect(globalThis.location.href).not.toContain(disclosed);
       expect(document.body.innerHTML).not.toContain(disclosed);
     }
+    // Assert that setItem was never called with secrets
+    for (const call of setItemSpy.mock.calls) {
+      expect(call).not.toContain(SECRET);
+      expect(call).not.toContain(PROVISIONING_URI);
+      expect(call).not.toContain(ENROLLMENT);
+      expect(call).not.toContain(CONTINUATION);
+    }
+    setItemSpy.mockRestore();
   });
 });
