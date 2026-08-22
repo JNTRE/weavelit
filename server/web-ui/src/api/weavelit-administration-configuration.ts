@@ -324,8 +324,7 @@ async function request(path: string, body: object, mutation: boolean): Promise<u
   if (response.status !== 200) {
     const error = await reportedError(response);
     if (error === "session_invalid") throw new ConfigurationSessionInvalidError();
-    if (error === "authorization_denied")
-      throw new ConfigurationAdministrationAccessDeniedError();
+    if (error === "authorization_denied") throw new ConfigurationAdministrationAccessDeniedError();
     if (!mutation) throw new ConfigurationUnavailableError();
     if (error === "conflict") throw new ConfigurationConflictError();
     if (error !== null && error !== "service_unavailable") throw new ConfigurationRefusedError();

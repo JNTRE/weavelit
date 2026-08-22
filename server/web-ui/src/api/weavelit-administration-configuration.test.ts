@@ -233,10 +233,7 @@ describe("Configuration API", () => {
     ["TOTP apply", () => applyTotpEnablement(false, PREVIEW)],
     ["Log list", () => listLogConfigurations()],
     ["Log view", () => viewLogConfiguration("primary")],
-    [
-      "Log change",
-      () => changeLogConfiguration({ configurationName: "primary", enabled: false }),
-    ],
+    ["Log change", () => changeLogConfiguration({ configurationName: "primary", enabled: false })],
   ])("maps exact authorization loss from %s to the terminal error", async (_label, action) => {
     csrf();
     const fetchMock = vi
