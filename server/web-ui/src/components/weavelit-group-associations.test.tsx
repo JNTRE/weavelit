@@ -438,47 +438,21 @@ describe("GroupAssociations", () => {
   });
 
   it.each([
-    ["members", "Load more members", GROUP_MEMBERS_LIST_PATH, "member-item"],
-    ["grants", "Load more grants", GROUP_GRANTS_LIST_PATH, "grant-item"],
-    ["accounts", "Load more Accounts", ACCOUNTS_LIST_PATH, "account-item"],
+    ["members", "Load more members", GROUP_MEMBERS_LIST_PATH, "CCCCCCCCCCCCCCCCCCCCCg"],
+    ["grants", "Load more grants", GROUP_GRANTS_LIST_PATH, "REdHREdHREdHREdHREdHRg"],
+    ["accounts", "Load more Accounts", ACCOUNTS_LIST_PATH, "RElSRElSRElSRElSRElSRg"],
   ])(
     "admits one request per %s pagination cursor despite double click and disables during flight",
-    async (collection, buttonLabel, listPath, itemId) => {
+    async (collection, buttonLabel, listPath, paginationItemId) => {
       csrf();
-      const slowListResponse = (cursor?: string) => {
-        if (collection === "members")
-          return response({
-            items: [
-              {
-                public_id: itemId,
-                username: `${itemId}-user`,
-                display_name: `${itemId} Display`,
-                active: true,
-                mfa_required: false,
-              },
-            ],
-            next_cursor: cursor ? null : "next-" + itemId,
-          });
-        if (collection === "grants")
-          return response({
-            items: [{ type: "operation", value: itemId }],
-            next_cursor: cursor ? null : "next-" + itemId,
-          });
-        if (collection === "accounts")
-          return response({
-            items: [
-              {
-                public_id: itemId,
-                username: `${itemId}-user`,
-                display_name: `${itemId} Display`,
-                active: true,
-                mfa_required: false,
-              },
-            ],
-            next_cursor: cursor ? null : "next-" + itemId,
-          });
-        throw new Error("unknown collection");
-      };
+
+      // Deferred response resolver for cursor-bearing pagination request
+      let resolvePaginationResponse:
+        | ((value: Response | PromiseLike<Response>) => void)
+        | null = null;
+      const deferredPaginationPromise = new Promise<Response>((resolve) => {
+        resolvePaginationResponse = resolve;
+      });
 
       const initialMembers = [];
       const initialGrants = [];
@@ -492,22 +466,41 @@ describe("GroupAssociations", () => {
         },
       ];
 
-      let requestStarted = false;
       const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
-        // Introduce a small delay to allow double-click capture
         if (target === listPath && init?.method !== "POST") {
-          return new Promise((resolve) => {
-            requestStarted = true;
-            setTimeout(() => {
-              resolve(
-                slowListResponse(
-                  (init as RequestInit & { body?: string }).body
-                    ? JSON.parse((init as RequestInit & { body?: string }).body!).cursor
-                    : undefined,
-                ),
-              );
-            }, 10);
-          });
+          try {
+            const req = body(init);
+            // Cursor-bearing pagination request stays deferred
+            if ("cursor" in req) {
+              return deferredPaginationPromise;
+            }
+          } catch {
+            // Initial request without body, resolve immediately
+          }
+          if (collection === "members") {
+            return Promise.resolve(
+              response({
+                items: initialMembers,
+                next_cursor: "members-cursor",
+              }),
+            );
+          }
+          if (collection === "grants") {
+            return Promise.resolve(
+              response({
+                items: initialGrants,
+                next_cursor: "grants-cursor",
+              }),
+            );
+          }
+          if (collection === "accounts") {
+            return Promise.resolve(
+              response({
+                items: initialAccounts,
+                next_cursor: "accounts-cursor",
+              }),
+            );
+          }
         }
         if (target === GROUP_MEMBERS_LIST_PATH)
           return Promise.resolve(
@@ -554,28 +547,67 @@ describe("GroupAssociations", () => {
         expect(paginationButton).toHaveAttribute("disabled");
       });
 
-      // Wait for request to complete
-      await waitFor(() => {
-        expect(requestStarted).toBe(true);
-      });
-
-      // Verify only one request was made to the list endpoint
+      // Verify exactly one pagination request with cursor was made
       const listRequests = fetchMock.mock.calls.filter(([target]) => target === listPath);
       const paginationRequests = listRequests.filter((call) => {
-        const init = call[1];
-        return init && typeof init === "object" && "body" in init;
+        try {
+          const req = body(call[1]);
+          return "cursor" in req;
+        } catch {
+          return false;
+        }
+      });
+      expect(paginationRequests).toHaveLength(1);
+      expect(body(paginationRequests[0][1])).toEqual({
+        cursor:
+          collection === "members"
+            ? "members-cursor"
+            : collection === "grants"
+              ? "grants-cursor"
+              : "accounts-cursor",
       });
 
-      // Should have one initial load (no body) and one pagination request
-      expect(paginationRequests.length).toBeLessThanOrEqual(1);
+      // Resolve the deferred pagination response
+      expect(resolvePaginationResponse).not.toBeNull();
+      resolvePaginationResponse!(
+        response({
+          items: [
+            collection === "members"
+              ? {
+                  public_id: paginationItemId,
+                  username: `${paginationItemId}-user`,
+                  display_name: `${paginationItemId} Display`,
+                  active: true,
+                  mfa_required: false,
+                }
+              : collection === "grants"
+                ? { type: "operation", value: paginationItemId }
+                : {
+                    public_id: paginationItemId,
+                    username: `${paginationItemId}-user`,
+                    display_name: `${paginationItemId} Display`,
+                    active: true,
+                    mfa_required: false,
+                  },
+          ],
+          next_cursor: null,
+        }),
+      );
 
       // Wait for button to be re-enabled after response settles
       await waitFor(() => {
         expect(paginationButton).not.toHaveAttribute("disabled");
       });
 
-      // Verify the new item is rendered
-      expect(await screen.findByText(new RegExp(itemId))).toBeTruthy();
+      // Verify exactly one new item is rendered
+      // For members and accounts, the new public_id should appear in the display
+      // For grants, the operation value should appear
+      const newItemPattern =
+        collection === "grants"
+          ? new RegExp(`^${paginationItemId}$`)
+          : new RegExp(`^${paginationItemId}`);
+      const newItems = screen.queryAllByText(newItemPattern);
+      expect(newItems.length).toBeGreaterThan(0);
 
       fetchMock.mockRestore();
     },
