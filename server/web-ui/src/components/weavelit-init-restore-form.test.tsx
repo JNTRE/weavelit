@@ -380,6 +380,15 @@ describe("RestoreSubmissionForm", () => {
   });
 
   it("preserves A after a pre-ticket retry failure and confirms A once", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.sessionStorage.clear();
+    setItemSpy.mockClear();
+
     const fetchMock = mockRoutedFetch({
       key: vi
         .fn<() => Promise<Response>>()
@@ -423,6 +432,8 @@ describe("RestoreSubmissionForm", () => {
     expect(globalThis.localStorage.length).toBe(0);
     expect(globalThis.sessionStorage.length).toBe(0);
     expect(document.cookie).toBe("");
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 
   it("supersedes A only after B receives a valid ticket and reconciles B", async () => {
@@ -591,6 +602,15 @@ describe("RestoreSubmissionForm", () => {
   });
 
   it("writes nothing to browser storage", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.sessionStorage.clear();
+    setItemSpy.mockClear();
+
     mockRoutedFetch({
       key: () => Promise.resolve(ticketResponse()),
       upload: () => Promise.resolve(completionResponse()),
@@ -607,5 +627,7 @@ describe("RestoreSubmissionForm", () => {
     expect(globalThis.localStorage.length).toBe(0);
     expect(globalThis.sessionStorage.length).toBe(0);
     expect(document.cookie).toBe("");
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 });

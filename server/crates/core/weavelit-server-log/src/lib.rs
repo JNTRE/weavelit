@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde::{Deserialize, Serialize};
 use weavelit_server_log_authority::ServerLogAuthority;
 
 const MAX_LOG_MODULES: usize = 64;
@@ -32,6 +33,22 @@ const MAX_AUDIT_ACTION_BYTES: usize = 128;
 const MAX_AUDIT_TARGET_BYTES: usize = 1024;
 const MAX_AUDIT_DETAIL_BYTES: usize = 4 * 1024;
 const MAX_RECORD_PAYLOAD_BYTES: usize = 8 * 1024;
+const AUDIT_TERMINAL_RECOVERY_FORMAT_VERSION: u8 = 1;
+const AUDIT_TERMINAL_SUPERSESSION_FORMAT_VERSION: u8 = 1;
+const JSON_WORST_CASE_ESCAPED_BYTES_PER_INPUT_BYTE: usize = 6;
+const AUDIT_TERMINAL_RECOVERY_FIXED_OVERHEAD_BYTES: usize = 1024;
+
+/// Maximum encoded bytes in one durable normal-operation Audit terminal projection.
+///
+/// The bound covers the maximum complete-record payload after worst-case JSON
+/// string escaping plus the fixed document keys, scalar values, and three
+/// 16-byte identifier arrays.
+pub const MAX_AUDIT_TERMINAL_RECOVERY_BYTES: usize = MAX_RECORD_PAYLOAD_BYTES
+    * JSON_WORST_CASE_ESCAPED_BYTES_PER_INPUT_BYTE
+    + AUDIT_TERMINAL_RECOVERY_FIXED_OVERHEAD_BYTES;
+
+/// Maximum encoded bytes in one append-only Audit terminal supersession disposition.
+pub const MAX_AUDIT_TERMINAL_SUPERSESSION_BYTES: usize = 1024;
 
 /// Stable type of a complete record assigned to a Log Module.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -97,6 +114,27 @@ impl RecordId {
     /// Returns the stable opaque bytes issued by the Server for persistence matching.
     pub const fn as_bytes(&self) -> &[u8; RECORD_ID_LENGTH] {
         &self.0
+    }
+}
+
+/// Opaque capability linking a terminal Audit record to its precise Attempt.
+#[derive(Eq, PartialEq)]
+pub struct AttemptRecordId {
+    record_id: [u8; RECORD_ID_LENGTH],
+    event_time: EventTime,
+    correlation_id: CorrelationId,
+}
+
+impl fmt::Debug for AttemptRecordId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AttemptRecordId(REDACTED)")
+    }
+}
+
+impl AttemptRecordId {
+    /// Returns the opaque Attempt record identifier for persistence.
+    pub const fn as_bytes(&self) -> &[u8; RECORD_ID_LENGTH] {
+        &self.record_id
     }
 }
 
@@ -184,6 +222,57 @@ pub enum LogResult {
     Failure,
 }
 
+/// Closed phase, Attempt linkage, and outcome contract for an Audit Log record.
+#[derive(Debug, Eq, PartialEq)]
+pub enum AuditRecordPhase {
+    /// Accepted intent recorded before a consequential mutation.
+    Attempt,
+    /// Authoritative outcome recorded after the mutation decision.
+    #[non_exhaustive]
+    Completion {
+        attempt_record_id: AttemptRecordId,
+        result: LogResult,
+    },
+    /// Authoritative correction to prior Audit evidence.
+    #[non_exhaustive]
+    Correction {
+        attempt_record_id: AttemptRecordId,
+        result: LogResult,
+    },
+}
+
+impl AuditRecordPhase {
+    /// Returns the canonical phase literal persisted by a destination.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Attempt => "attempt",
+            Self::Completion { .. } => "completion",
+            Self::Correction { .. } => "correction",
+        }
+    }
+
+    /// Returns an outcome only for completion and correction records.
+    pub const fn result(&self) -> Option<LogResult> {
+        match self {
+            Self::Attempt => None,
+            Self::Completion { result, .. } | Self::Correction { result, .. } => Some(*result),
+        }
+    }
+
+    /// Returns the precise Attempt link required by terminal records.
+    pub const fn attempt_record_id(&self) -> Option<&AttemptRecordId> {
+        match self {
+            Self::Attempt => None,
+            Self::Completion {
+                attempt_record_id, ..
+            }
+            | Self::Correction {
+                attempt_record_id, ..
+            } => Some(attempt_record_id),
+        }
+    }
+}
+
 /// Closed catalog of System Log classifications selected by Observability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemLogClassification {
@@ -195,6 +284,7 @@ pub enum SystemLogClassification {
     AuthenticationFailure,
     AuthorizationDenial,
     DependencyFailure,
+    DependencyAuditLogUnavailable,
     ProviderFailure,
     InternalError,
 }
@@ -211,69 +301,68 @@ impl SystemLogClassification {
             Self::AuthenticationFailure => "authentication.failure",
             Self::AuthorizationDenial => "authorization.denial",
             Self::DependencyFailure => "dependency.failure",
+            Self::DependencyAuditLogUnavailable => "dependency.audit-log-unavailable",
             Self::ProviderFailure => "provider.failure",
             Self::InternalError => "internal.error",
         }
     }
 }
 
-/// Closed catalog of Audit Log classifications selected by Audit.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AuditLogClassification {
-    LifecycleBackupCreated,
-    AuthenticationUserCreated,
-    AuthenticationUserDisabled,
-    AuthenticationPasswordChanged,
-    AuthenticationPasswordResetStarted,
-    AuthenticationMfaEnrolled,
-    AuthenticationMfaReset,
-    AuthenticationMfaRequirementChanged,
-    AuthenticationMfaModuleEnablementChanged,
-    AuthenticationSessionRevoked,
-    AuthorizationGroupCreated,
-    AuthorizationGroupMembershipChanged,
-    AuthorizationGroupGrantChanged,
-    AuthorizationAutomationScopeChanged,
-    DependencyLogModuleConfigurationChanged,
-    DependencyServiceConnectionChanged,
-    ProviderOperationStarted,
-    ProviderOperationCompleted,
-    InternalServerConfigurationChanged,
-    InternalUserStatusChanged,
-    InternalLogPolicyChanged,
+macro_rules! audit_log_classifications {
+    ($( $variant:ident => $literal:literal, )+) => {
+        /// Closed catalog of Audit Log classifications selected by Audit.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum AuditLogClassification {
+            $( $variant, )+
+        }
+
+        impl AuditLogClassification {
+            /// Every classification accepted by terminal recovery.
+            pub const ALL: &'static [Self] = &[$( Self::$variant, )+];
+
+            /// Returns the canonical literal persisted by a destination.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $literal, )+
+                }
+            }
+
+            fn from_persisted(value: &str) -> Option<Self> {
+                match value {
+                    $( $literal => Some(Self::$variant), )+
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-impl AuditLogClassification {
-    /// Returns the canonical literal persisted by a destination.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::LifecycleBackupCreated => "lifecycle.backup.created",
-            Self::AuthenticationUserCreated => "authentication.user.created",
-            Self::AuthenticationUserDisabled => "authentication.user.disabled",
-            Self::AuthenticationPasswordChanged => "authentication.password.changed",
-            Self::AuthenticationPasswordResetStarted => "authentication.password-reset.started",
-            Self::AuthenticationMfaEnrolled => "authentication.mfa.enrolled",
-            Self::AuthenticationMfaReset => "authentication.mfa.reset",
-            Self::AuthenticationMfaRequirementChanged => "authentication.mfa-requirement.changed",
-            Self::AuthenticationMfaModuleEnablementChanged => {
-                "authentication.mfa-module-enablement.changed"
-            }
-            Self::AuthenticationSessionRevoked => "authentication.session.revoked",
-            Self::AuthorizationGroupCreated => "authorization.group.created",
-            Self::AuthorizationGroupMembershipChanged => "authorization.group-membership.changed",
-            Self::AuthorizationGroupGrantChanged => "authorization.group-grant.changed",
-            Self::AuthorizationAutomationScopeChanged => "authorization.automation-scope.changed",
-            Self::DependencyLogModuleConfigurationChanged => {
-                "dependency.log-module-configuration.changed"
-            }
-            Self::DependencyServiceConnectionChanged => "dependency.service-connection.changed",
-            Self::ProviderOperationStarted => "provider.operation.started",
-            Self::ProviderOperationCompleted => "provider.operation.completed",
-            Self::InternalServerConfigurationChanged => "internal.server-configuration.changed",
-            Self::InternalUserStatusChanged => "internal.user-status.changed",
-            Self::InternalLogPolicyChanged => "internal.log-policy.changed",
-        }
-    }
+audit_log_classifications! {
+    LifecycleBackupCreated => "lifecycle.backup.created",
+    AuthenticationUserCreated => "authentication.user.created",
+    AuthenticationUserDisabled => "authentication.user.disabled",
+    AuthenticationPasswordChanged => "authentication.password.changed",
+    AuthenticationPasswordResetStarted => "authentication.password-reset.started",
+    AuthenticationMfaEnrolled => "authentication.mfa.enrolled",
+    AuthenticationMfaReset => "authentication.mfa.reset",
+    AuthenticationMfaRequirementChanged => "authentication.mfa-requirement.changed",
+    AuthenticationMfaModuleEnablementChanged => "authentication.mfa-module-enablement.changed",
+    AuthenticationSessionRevoked => "authentication.session.revoked",
+    AuthorizationGroupCreated => "authorization.group.created",
+    AuthorizationGroupUpdated => "authorization.group.updated",
+    AuthorizationGroupDeleted => "authorization.group.deleted",
+    AuthorizationGroupMembershipChanged => "authorization.group-membership.changed",
+    AuthorizationGroupGrantChanged => "authorization.group-grant.changed",
+    AuthorizationGroupGrantRemovalDenied => "authorization.group-grant.removal-denied",
+    AuthorizationAutomationScopeChanged => "authorization.automation-scope.changed",
+    DependencyAuditTerminalSuperseded => "dependency.audit-terminal.superseded",
+    DependencyLogModuleConfigurationChanged => "dependency.log-module-configuration.changed",
+    DependencyServiceConnectionChanged => "dependency.service-connection.changed",
+    ProviderOperationStarted => "provider.operation.started",
+    ProviderOperationCompleted => "provider.operation.completed",
+    InternalServerConfigurationChanged => "internal.server-configuration.changed",
+    InternalUserStatusChanged => "internal.user-status.changed",
+    InternalLogPolicyChanged => "internal.log-policy.changed",
 }
 
 /// The accountable kind of an Audit principal.
@@ -525,10 +614,11 @@ pub enum CompleteLogRecord {
         body: SystemLogBody,
     },
     /// An Audit Log record constructed by Audit.
+    #[non_exhaustive]
     Audit {
         record_id: RecordId,
         event_time: EventTime,
-        result: LogResult,
+        phase: AuditRecordPhase,
         correlation_id: CorrelationId,
         body: AuditLogBody,
     },
@@ -563,11 +653,87 @@ impl CompleteLogRecord {
         })
     }
 
-    /// Constructs a complete pre-redacted Audit Log record.
-    pub fn audit(
+    /// Constructs a complete pre-redacted Audit Attempt record.
+    pub fn audit_attempt(
         record_id: RecordId,
         event_time: EventTime,
+        correlation_id: CorrelationId,
+        body: AuditLogBody,
+    ) -> Result<Self, RecordError> {
+        Self::audit(
+            record_id,
+            event_time,
+            AuditRecordPhase::Attempt,
+            correlation_id,
+            body,
+        )
+    }
+
+    /// Constructs a complete pre-redacted Audit Completion linked to its Attempt.
+    pub fn audit_completion(
+        record_id: RecordId,
+        event_time: EventTime,
+        attempt_record_id: AttemptRecordId,
         result: LogResult,
+        correlation_id: CorrelationId,
+        body: AuditLogBody,
+    ) -> Result<Self, RecordError> {
+        Self::validate_attempt_link(&record_id, event_time, &attempt_record_id, &correlation_id)?;
+        Self::audit(
+            record_id,
+            event_time,
+            AuditRecordPhase::Completion {
+                attempt_record_id,
+                result,
+            },
+            correlation_id,
+            body,
+        )
+    }
+
+    /// Constructs a complete pre-redacted Audit Correction linked to its Attempt.
+    pub fn audit_correction(
+        record_id: RecordId,
+        event_time: EventTime,
+        attempt_record_id: AttemptRecordId,
+        result: LogResult,
+        correlation_id: CorrelationId,
+        body: AuditLogBody,
+    ) -> Result<Self, RecordError> {
+        Self::validate_attempt_link(&record_id, event_time, &attempt_record_id, &correlation_id)?;
+        Self::audit(
+            record_id,
+            event_time,
+            AuditRecordPhase::Correction {
+                attempt_record_id,
+                result,
+            },
+            correlation_id,
+            body,
+        )
+    }
+
+    fn validate_attempt_link(
+        record_id: &RecordId,
+        event_time: EventTime,
+        attempt_record_id: &AttemptRecordId,
+        correlation_id: &CorrelationId,
+    ) -> Result<(), RecordError> {
+        if attempt_record_id.correlation_id != *correlation_id {
+            return Err(RecordError::MismatchedAttemptCorrelation);
+        }
+        if attempt_record_id.record_id == *record_id.as_bytes()
+            || attempt_record_id.event_time.unix_milliseconds() > event_time.unix_milliseconds()
+        {
+            return Err(RecordError::InvalidAttemptLink);
+        }
+        Ok(())
+    }
+
+    fn audit(
+        record_id: RecordId,
+        event_time: EventTime,
+        phase: AuditRecordPhase,
         correlation_id: CorrelationId,
         body: AuditLogBody,
     ) -> Result<Self, RecordError> {
@@ -595,10 +761,32 @@ impl CompleteLogRecord {
         Ok(Self::Audit {
             record_id,
             event_time,
-            result,
+            phase,
             correlation_id,
             body,
         })
+    }
+
+    /// Mints the typed linkage capability only for an Audit Attempt.
+    pub fn attempt_record_id(&self) -> Option<AttemptRecordId> {
+        match self {
+            Self::Audit {
+                record_id,
+                event_time,
+                phase: AuditRecordPhase::Attempt,
+                correlation_id,
+                ..
+            } => Some(AttemptRecordId {
+                record_id: *record_id.as_bytes(),
+                event_time: *event_time,
+                correlation_id: correlation_id.clone(),
+            }),
+            Self::System { .. }
+            | Self::Audit {
+                phase: AuditRecordPhase::Completion { .. } | AuditRecordPhase::Correction { .. },
+                ..
+            } => None,
+        }
     }
 
     /// Returns the immutable opaque record identifier.
@@ -635,13 +823,13 @@ impl CompleteLogRecord {
             Self::Audit {
                 record_id,
                 event_time,
-                result,
+                phase,
                 correlation_id,
                 body,
             } => LogRecordPersistenceView::Audit(AuditLogPersistenceView {
                 record_id,
                 event_time: *event_time,
-                result: *result,
+                phase,
                 correlation_id,
                 body,
             }),
@@ -703,7 +891,7 @@ impl SystemLogPersistenceView<'_> {
 pub struct AuditLogPersistenceView<'a> {
     record_id: &'a RecordId,
     event_time: EventTime,
-    result: LogResult,
+    phase: &'a AuditRecordPhase,
     correlation_id: &'a CorrelationId,
     body: &'a AuditLogBody,
 }
@@ -719,9 +907,9 @@ impl AuditLogPersistenceView<'_> {
         self.event_time
     }
 
-    /// Returns the immutable result classification.
-    pub const fn result(&self) -> LogResult {
-        self.result
+    /// Returns the immutable Audit phase, result, and terminal Attempt link.
+    pub const fn phase(&self) -> &AuditRecordPhase {
+        self.phase
     }
 
     /// Returns the immutable correlation identifier.
@@ -759,6 +947,823 @@ impl fmt::Debug for LogModuleIdentifier {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("LogModuleIdentifier(REDACTED)")
     }
+}
+
+/// Stable identity and version of one committed Audit Log destination binding.
+///
+/// The identity names the application-owned Log Module configuration, while the
+/// version changes whenever that configuration or its Audit assignment changes.
+/// Only Server logging authority can bind those persisted values for delivery.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuditDestinationBinding {
+    identifier: [u8; RECORD_ID_LENGTH],
+    version: u64,
+}
+
+impl AuditDestinationBinding {
+    /// Binds a nonzero persisted configuration identity and version in trusted context.
+    pub fn from_server_authority(
+        _authority: &ServerLogAuthority,
+        identifier: [u8; RECORD_ID_LENGTH],
+        version: u64,
+    ) -> Result<Self, AuditTerminalRecoveryError> {
+        Self::from_persisted(identifier, version)
+    }
+
+    fn from_persisted(
+        identifier: [u8; RECORD_ID_LENGTH],
+        version: u64,
+    ) -> Result<Self, AuditTerminalRecoveryError> {
+        if identifier == [0; RECORD_ID_LENGTH] || version == 0 {
+            return Err(AuditTerminalRecoveryError::InvalidProjection);
+        }
+        Ok(Self {
+            identifier,
+            version,
+        })
+    }
+
+    /// Returns the opaque persisted configuration identity for exact matching.
+    pub const fn identifier(&self) -> &[u8; RECORD_ID_LENGTH] {
+        &self.identifier
+    }
+
+    /// Returns the persisted binding version for exact matching.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+}
+
+impl fmt::Debug for AuditDestinationBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditDestinationBinding(REDACTED)")
+    }
+}
+
+/// Exact prior and replacement bindings for one authorized destination change.
+///
+/// This value retains the prior identity and version for pending terminal replay.
+/// The owning configuration workflow remains responsible for generation ordering,
+/// durable destination retention, and applying the replacement atomically.
+pub struct AuditDestinationBindingTransition {
+    retained: AuditDestinationBinding,
+    replacement: AuditDestinationBinding,
+}
+
+impl AuditDestinationBindingTransition {
+    /// Records two distinct bindings after the Server authorizes a destination change.
+    pub fn from_server_authority(
+        _authority: &ServerLogAuthority,
+        retained: &AuditDestinationBinding,
+        replacement: &AuditDestinationBinding,
+    ) -> Result<Self, AuditDestinationBindingTransitionError> {
+        if retained == replacement {
+            return Err(AuditDestinationBindingTransitionError::UnchangedBinding);
+        }
+        Ok(Self {
+            retained: retained.clone(),
+            replacement: replacement.clone(),
+        })
+    }
+
+    /// Returns the exact prior binding that remains eligible for replay.
+    pub const fn retained(&self) -> &AuditDestinationBinding {
+        &self.retained
+    }
+
+    /// Returns the exact replacement binding selected by the owning workflow.
+    pub const fn replacement(&self) -> &AuditDestinationBinding {
+        &self.replacement
+    }
+}
+
+impl fmt::Debug for AuditDestinationBindingTransition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditDestinationBindingTransition(REDACTED)")
+    }
+}
+
+/// Payload-free rejection of an invalid binding transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditDestinationBindingTransitionError {
+    /// A transition did not identify a distinct replacement binding.
+    UnchangedBinding,
+}
+
+impl fmt::Display for AuditDestinationBindingTransitionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Audit destination binding transition is invalid")
+    }
+}
+
+impl StdError for AuditDestinationBindingTransitionError {}
+
+/// Opaque bounded encoding of one exact immutable terminal Audit record and binding.
+pub struct AuditTerminalRecoveryProjection(Box<[u8]>);
+
+impl AuditTerminalRecoveryProjection {
+    /// Captures a terminal Audit record without accepting caller-selected record fields.
+    pub fn capture(
+        record: &CompleteLogRecord,
+        binding: &AuditDestinationBinding,
+    ) -> Result<Self, AuditTerminalRecoveryError> {
+        let LogRecordPersistenceView::Audit(view) = record.persistence_view() else {
+            return Err(AuditTerminalRecoveryError::NotTerminalAudit);
+        };
+        let (phase, attempt_record_id, attempt_event_time_milliseconds, result) = match view.phase()
+        {
+            AuditRecordPhase::Attempt => {
+                return Err(AuditTerminalRecoveryError::NotTerminalAudit);
+            }
+            AuditRecordPhase::Completion {
+                attempt_record_id,
+                result,
+            } => (
+                RecoveryAuditPhase::Completion,
+                *attempt_record_id.as_bytes(),
+                attempt_record_id.event_time.unix_milliseconds(),
+                RecoveryLogResult::from(*result),
+            ),
+            AuditRecordPhase::Correction {
+                attempt_record_id,
+                result,
+            } => (
+                RecoveryAuditPhase::Correction,
+                *attempt_record_id.as_bytes(),
+                attempt_record_id.event_time.unix_milliseconds(),
+                RecoveryLogResult::from(*result),
+            ),
+        };
+        let body = view.body();
+        let document = AuditTerminalRecoveryDocument {
+            version: AUDIT_TERMINAL_RECOVERY_FORMAT_VERSION,
+            binding: RecoveryDestinationBinding {
+                identifier: binding.identifier,
+                version: binding.version,
+            },
+            record: RecoveryAuditRecord {
+                record_id: *view.record_id().as_bytes(),
+                event_time_milliseconds: view.event_time().unix_milliseconds(),
+                phase,
+                result,
+                attempt_record_id,
+                attempt_event_time_milliseconds,
+                correlation_id: view.correlation_id().as_str().to_owned(),
+                classification: body.classification().to_owned(),
+                principal_type: RecoveryPrincipalType::from(body.principal_type()),
+                principal: body.principal().to_owned(),
+                responsible_owner: body.responsible_owner().map(str::to_owned),
+                action: body.action().to_owned(),
+                target: body.target().to_owned(),
+                detail: body.detail().to_owned(),
+            },
+        };
+        let encoded = serde_json::to_vec(&document)
+            .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)?;
+        Self::from_persisted(encoded)
+    }
+
+    /// Accepts bounded opaque bytes loaded from live Application Database storage.
+    pub fn from_persisted(
+        encoded: impl Into<Box<[u8]>>,
+    ) -> Result<Self, AuditTerminalRecoveryError> {
+        let encoded = encoded.into();
+        if encoded.is_empty() || encoded.len() > MAX_AUDIT_TERMINAL_RECOVERY_BYTES {
+            return Err(AuditTerminalRecoveryError::InvalidProjection);
+        }
+        Ok(Self(encoded))
+    }
+
+    /// Returns the opaque bytes for durable live, non-restorable persistence.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Revalidates and imports the exact record using the Server-owned record issuer.
+    pub fn restore(
+        &self,
+        issuer: &TrustedRecordIssuer,
+    ) -> Result<RecoveredAuditTerminal, AuditTerminalRecoveryError> {
+        let document: AuditTerminalRecoveryDocument = serde_json::from_slice(&self.0)
+            .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)?;
+        if document.version != AUDIT_TERMINAL_RECOVERY_FORMAT_VERSION {
+            return Err(AuditTerminalRecoveryError::InvalidProjection);
+        }
+        let binding = AuditDestinationBinding::from_persisted(
+            document.binding.identifier,
+            document.binding.version,
+        )?;
+        let record = document.record.into_complete_record(issuer)?;
+        Ok(RecoveredAuditTerminal { record, binding })
+    }
+}
+
+impl fmt::Debug for AuditTerminalRecoveryProjection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditTerminalRecoveryProjection(REDACTED)")
+    }
+}
+
+/// Trusted pairing of one resolved Audit binding and its configured destination.
+///
+/// Construction requires Server logging authority because binding equality alone
+/// cannot prove that an independently supplied destination handle represents that
+/// binding. The Server assignment resolver must derive both members from the same
+/// committed configuration before constructing this value.
+pub struct ResolvedAuditDestination<'a> {
+    binding: &'a AuditDestinationBinding,
+    destination: &'a ConfiguredLogDestination,
+}
+
+impl<'a> ResolvedAuditDestination<'a> {
+    /// Records a binding and destination resolved together by trusted Server code.
+    pub const fn from_server_authority(
+        _authority: &ServerLogAuthority,
+        binding: &'a AuditDestinationBinding,
+        destination: &'a ConfiguredLogDestination,
+    ) -> Self {
+        Self {
+            binding,
+            destination,
+        }
+    }
+
+    /// Returns the resolved committed binding.
+    pub const fn binding(&self) -> &AuditDestinationBinding {
+        self.binding
+    }
+
+    /// Preflights this exact binding for use as a supersession replacement.
+    pub fn preflight_for_terminal_supersession(
+        &self,
+    ) -> Result<PreflightedAuditDestination<'a>, LogDeliveryError> {
+        self.destination.preflight(LogRecordType::Audit)?;
+        Ok(PreflightedAuditDestination {
+            binding: self.binding,
+            destination: self.destination,
+        })
+    }
+}
+
+impl fmt::Debug for ResolvedAuditDestination<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResolvedAuditDestination(REDACTED)")
+    }
+}
+
+/// Exact resolved replacement binding proven able to accept Audit records.
+pub struct PreflightedAuditDestination<'a> {
+    binding: &'a AuditDestinationBinding,
+    destination: &'a ConfiguredLogDestination,
+}
+
+impl PreflightedAuditDestination<'_> {
+    /// Returns the exact replacement binding that passed Audit preflight.
+    pub const fn binding(&self) -> &AuditDestinationBinding {
+        self.binding
+    }
+
+    /// Returns the configured destination paired with the preflighted binding.
+    pub const fn destination(&self) -> &ConfiguredLogDestination {
+        self.destination
+    }
+}
+
+impl fmt::Debug for PreflightedAuditDestination<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreflightedAuditDestination(REDACTED)")
+    }
+}
+
+/// Restored terminal record that can replay only to its retained destination binding.
+pub struct RecoveredAuditTerminal {
+    record: CompleteLogRecord,
+    binding: AuditDestinationBinding,
+}
+
+impl RecoveredAuditTerminal {
+    /// Returns the exact restored immutable record for typed internal inspection.
+    pub const fn record(&self) -> &CompleteLogRecord {
+        &self.record
+    }
+
+    /// Returns the retained destination binding required for replay.
+    pub const fn binding(&self) -> &AuditDestinationBinding {
+        &self.binding
+    }
+
+    /// Performs one delivery when the resolved assignment matches the retained binding.
+    ///
+    /// Callers may invoke this repeatedly; every call replays the exact immutable
+    /// record, and every successful call yields a fresh acknowledgement proof.
+    pub fn deliver(
+        &self,
+        destination: &ResolvedAuditDestination<'_>,
+    ) -> Result<AuditTerminalDeliveryAcknowledgement, AuditTerminalReplayError> {
+        if destination.binding != &self.binding {
+            return Err(AuditTerminalReplayError::DestinationBindingChanged);
+        }
+        destination
+            .destination
+            .deliver(&self.record)
+            .map_err(AuditTerminalReplayError::DeliveryPending)?;
+        Ok(AuditTerminalDeliveryAcknowledgement {
+            record_id: self.record.record_id().duplicate(),
+            binding: self.binding.clone(),
+        })
+    }
+}
+
+impl fmt::Debug for RecoveredAuditTerminal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RecoveredAuditTerminal(REDACTED)")
+    }
+}
+
+/// Trusted proof that the exact current session satisfied supersession reauthentication.
+///
+/// Server code may construct this proof only after fresh password reauthentication for
+/// the exact session and fresh TOTP verification when that account is enrolled. This
+/// contract intentionally contains no boolean bypass or credential-verification logic.
+pub struct AuditTerminalSupersessionAuthorization {
+    original_record_id: [u8; RECORD_ID_LENGTH],
+    original_binding: AuditDestinationBinding,
+}
+
+impl AuditTerminalSupersessionAuthorization {
+    /// Records completed exact-session authorization under Server logging authority.
+    pub fn from_server_authority(
+        _authority: &ServerLogAuthority,
+        original: &RecoveredAuditTerminal,
+    ) -> Self {
+        Self {
+            original_record_id: *original.record.record_id().as_bytes(),
+            original_binding: original.binding.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for AuditTerminalSupersessionAuthorization {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditTerminalSupersessionAuthorization(REDACTED)")
+    }
+}
+
+/// Trusted proof of explicit confirmation for one exact original and replacement.
+pub struct AuditTerminalSupersessionConfirmation {
+    original_record_id: [u8; RECORD_ID_LENGTH],
+    original_binding: AuditDestinationBinding,
+    replacement_binding: AuditDestinationBinding,
+}
+
+impl AuditTerminalSupersessionConfirmation {
+    /// Records explicit confirmation after presenting the exact integrity exception.
+    pub fn from_server_authority(
+        _authority: &ServerLogAuthority,
+        original: &RecoveredAuditTerminal,
+        transition: &AuditDestinationBindingTransition,
+        authorization: &AuditTerminalSupersessionAuthorization,
+    ) -> Result<Self, AuditTerminalSupersessionError> {
+        if original.binding != transition.retained
+            || authorization.original_record_id != *original.record.record_id().as_bytes()
+            || authorization.original_binding != original.binding
+        {
+            return Err(AuditTerminalSupersessionError::EvidenceMismatch);
+        }
+        Ok(Self {
+            original_record_id: *original.record.record_id().as_bytes(),
+            original_binding: original.binding.clone(),
+            replacement_binding: transition.replacement.clone(),
+        })
+    }
+}
+
+impl fmt::Debug for AuditTerminalSupersessionConfirmation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditTerminalSupersessionConfirmation(REDACTED)")
+    }
+}
+
+/// Fixed reason for the constrained terminal supersession exception.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditTerminalSupersessionReason {
+    /// The exact retained destination binding is permanently unavailable after repair failed.
+    DestinationPermanentlyUnavailable,
+}
+
+impl AuditTerminalSupersessionReason {
+    /// Returns the canonical fixed reason.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DestinationPermanentlyUnavailable => "destination_permanently_unavailable",
+        }
+    }
+}
+
+/// Completeness state caused by terminal supersession.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditTerminalCompleteness {
+    /// Required evidence is incomplete until the original receives exact late delivery.
+    Degraded,
+}
+
+impl AuditTerminalCompleteness {
+    /// Returns the canonical completeness state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
+/// Immutable state of the original obligation after supersession.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupersededAuditTerminalState {
+    /// The original remains pending and eligible only for exact late delivery.
+    RetainedPendingLateDelivery,
+}
+
+impl SupersededAuditTerminalState {
+    /// Returns the canonical original-obligation state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RetainedPendingLateDelivery => "retained_pending_late_delivery",
+        }
+    }
+}
+
+/// Append-only disposition recording a constrained terminal supersession exception.
+pub struct AuditTerminalSupersessionDisposition {
+    original_record_id: [u8; RECORD_ID_LENGTH],
+    original_binding: AuditDestinationBinding,
+    replacement_binding: AuditDestinationBinding,
+    encoded: Box<[u8]>,
+}
+
+impl AuditTerminalSupersessionDisposition {
+    /// Captures a disposition only when every trusted prerequisite names the same exception.
+    pub fn capture(
+        original: &RecoveredAuditTerminal,
+        transition: &AuditDestinationBindingTransition,
+        authorization: &AuditTerminalSupersessionAuthorization,
+        confirmation: &AuditTerminalSupersessionConfirmation,
+        replacement: &PreflightedAuditDestination<'_>,
+    ) -> Result<Self, AuditTerminalSupersessionError> {
+        let original_record_id = original.record.record_id().as_bytes();
+        let evidence_matches = authorization.original_record_id == *original_record_id
+            && authorization.original_binding == original.binding
+            && confirmation.original_record_id == *original_record_id
+            && confirmation.original_binding == original.binding
+            && transition.retained == original.binding
+            && confirmation.replacement_binding == transition.replacement
+            && replacement.binding == &transition.replacement;
+        if !evidence_matches {
+            return Err(AuditTerminalSupersessionError::EvidenceMismatch);
+        }
+
+        let document = AuditTerminalSupersessionDocument {
+            version: AUDIT_TERMINAL_SUPERSESSION_FORMAT_VERSION,
+            original_obligation_identifier: *original_record_id,
+            original_binding: RecoveryDestinationBinding {
+                identifier: transition.retained.identifier,
+                version: transition.retained.version,
+            },
+            reason: AuditTerminalSupersessionReason::DestinationPermanentlyUnavailable,
+            replacement_binding: RecoveryDestinationBinding {
+                identifier: transition.replacement.identifier,
+                version: transition.replacement.version,
+            },
+            completeness: AuditTerminalCompleteness::Degraded,
+            original_state: SupersededAuditTerminalState::RetainedPendingLateDelivery,
+        };
+        let encoded = serde_json::to_vec(&document)
+            .map_err(|_| AuditTerminalSupersessionError::InvalidDisposition)?;
+        Self::from_persisted(encoded)
+    }
+
+    /// Imports and validates one bounded append-only disposition.
+    pub fn from_persisted(
+        encoded: impl Into<Box<[u8]>>,
+    ) -> Result<Self, AuditTerminalSupersessionError> {
+        let encoded = encoded.into();
+        if encoded.is_empty() || encoded.len() > MAX_AUDIT_TERMINAL_SUPERSESSION_BYTES {
+            return Err(AuditTerminalSupersessionError::InvalidDisposition);
+        }
+        let document: AuditTerminalSupersessionDocument = serde_json::from_slice(&encoded)
+            .map_err(|_| AuditTerminalSupersessionError::InvalidDisposition)?;
+        if document.version != AUDIT_TERMINAL_SUPERSESSION_FORMAT_VERSION
+            || document.original_obligation_identifier == [0; RECORD_ID_LENGTH]
+        {
+            return Err(AuditTerminalSupersessionError::InvalidDisposition);
+        }
+        let original_binding = AuditDestinationBinding::from_persisted(
+            document.original_binding.identifier,
+            document.original_binding.version,
+        )
+        .map_err(|_| AuditTerminalSupersessionError::InvalidDisposition)?;
+        let replacement_binding = AuditDestinationBinding::from_persisted(
+            document.replacement_binding.identifier,
+            document.replacement_binding.version,
+        )
+        .map_err(|_| AuditTerminalSupersessionError::InvalidDisposition)?;
+        if original_binding == replacement_binding {
+            return Err(AuditTerminalSupersessionError::InvalidDisposition);
+        }
+        Ok(Self {
+            original_record_id: document.original_obligation_identifier,
+            original_binding,
+            replacement_binding,
+            encoded,
+        })
+    }
+
+    /// Returns the opaque bytes for append-only persistence.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.encoded
+    }
+
+    /// Returns the exact original terminal record identity.
+    pub const fn original_record_id(&self) -> &[u8; RECORD_ID_LENGTH] {
+        &self.original_record_id
+    }
+
+    /// Returns the exact original binding retained for late delivery.
+    pub const fn original_binding(&self) -> &AuditDestinationBinding {
+        &self.original_binding
+    }
+
+    /// Returns the exact preflighted replacement binding.
+    pub const fn replacement_binding(&self) -> &AuditDestinationBinding {
+        &self.replacement_binding
+    }
+
+    /// Returns the only accepted supersession reason.
+    pub const fn reason(&self) -> AuditTerminalSupersessionReason {
+        AuditTerminalSupersessionReason::DestinationPermanentlyUnavailable
+    }
+
+    /// Returns the integrity state created by supersession.
+    pub const fn completeness(&self) -> AuditTerminalCompleteness {
+        AuditTerminalCompleteness::Degraded
+    }
+
+    /// Returns the unchanged late-delivery state of the original obligation.
+    pub const fn original_state(&self) -> SupersededAuditTerminalState {
+        SupersededAuditTerminalState::RetainedPendingLateDelivery
+    }
+}
+
+impl fmt::Debug for AuditTerminalSupersessionDisposition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditTerminalSupersessionDisposition(REDACTED)")
+    }
+}
+
+/// Payload-free rejection of invalid or mismatched supersession evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditTerminalSupersessionError {
+    /// Persisted disposition bytes are malformed, unsupported, or oversized.
+    InvalidDisposition,
+    /// Trusted prerequisites do not name the same original and replacement bindings.
+    EvidenceMismatch,
+}
+
+impl fmt::Display for AuditTerminalSupersessionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Audit terminal supersession disposition is invalid")
+    }
+}
+
+impl StdError for AuditTerminalSupersessionError {}
+
+/// Proof that the exact retained record was acknowledged by its exact bound destination.
+pub struct AuditTerminalDeliveryAcknowledgement {
+    record_id: RecordId,
+    binding: AuditDestinationBinding,
+}
+
+impl AuditTerminalDeliveryAcknowledgement {
+    /// Returns the exact acknowledged record identity for pending-obligation matching.
+    pub const fn record_id(&self) -> &[u8; RECORD_ID_LENGTH] {
+        self.record_id.as_bytes()
+    }
+
+    /// Returns whether this acknowledgement matches one retained record identity and binding.
+    pub fn matches(
+        &self,
+        record_id: &[u8; RECORD_ID_LENGTH],
+        binding: &AuditDestinationBinding,
+    ) -> bool {
+        self.record_id.as_bytes() == record_id && &self.binding == binding
+    }
+}
+
+impl fmt::Debug for AuditTerminalDeliveryAcknowledgement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuditTerminalDeliveryAcknowledgement(REDACTED)")
+    }
+}
+
+/// Payload-free invalid durable Audit terminal projection category.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditTerminalRecoveryError {
+    /// The supplied record is not an Audit Completion or Correction.
+    NotTerminalAudit,
+    /// The binding or encoded projection is malformed, unsupported, or oversized.
+    InvalidProjection,
+}
+
+impl fmt::Display for AuditTerminalRecoveryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Audit terminal recovery projection is invalid")
+    }
+}
+
+impl StdError for AuditTerminalRecoveryError {}
+
+/// Post-commit replay failure that never represents a rejected mutation.
+#[derive(Debug, Eq, PartialEq)]
+pub enum AuditTerminalReplayError {
+    /// The current Audit assignment no longer names the retained binding.
+    DestinationBindingChanged,
+    /// Exact delivery did not receive a durable acknowledgement.
+    DeliveryPending(LogDeliveryError),
+}
+
+impl fmt::Display for AuditTerminalReplayError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("committed Audit terminal recovery remains pending")
+    }
+}
+
+impl StdError for AuditTerminalReplayError {}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuditTerminalRecoveryDocument {
+    version: u8,
+    binding: RecoveryDestinationBinding,
+    record: RecoveryAuditRecord,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuditTerminalSupersessionDocument {
+    version: u8,
+    original_obligation_identifier: [u8; RECORD_ID_LENGTH],
+    original_binding: RecoveryDestinationBinding,
+    reason: AuditTerminalSupersessionReason,
+    replacement_binding: RecoveryDestinationBinding,
+    completeness: AuditTerminalCompleteness,
+    original_state: SupersededAuditTerminalState,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryDestinationBinding {
+    identifier: [u8; RECORD_ID_LENGTH],
+    version: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryAuditRecord {
+    record_id: [u8; RECORD_ID_LENGTH],
+    event_time_milliseconds: u64,
+    phase: RecoveryAuditPhase,
+    result: RecoveryLogResult,
+    attempt_record_id: [u8; RECORD_ID_LENGTH],
+    attempt_event_time_milliseconds: u64,
+    correlation_id: String,
+    classification: String,
+    principal_type: RecoveryPrincipalType,
+    principal: String,
+    responsible_owner: Option<String>,
+    action: String,
+    target: String,
+    detail: String,
+}
+
+impl RecoveryAuditRecord {
+    fn into_complete_record(
+        self,
+        issuer: &TrustedRecordIssuer,
+    ) -> Result<CompleteLogRecord, AuditTerminalRecoveryError> {
+        let record_id = issuer
+            .issue(self.record_id)
+            .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)?;
+        let attempt_record_id = issuer
+            .issue(self.attempt_record_id)
+            .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)?;
+        let correlation_id = CorrelationId::new(self.correlation_id)
+            .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)?;
+        let attempt_record_id = AttemptRecordId {
+            record_id: *attempt_record_id.as_bytes(),
+            event_time: EventTime::from_unix_milliseconds(self.attempt_event_time_milliseconds),
+            correlation_id: correlation_id.clone(),
+        };
+        let principal = match self.principal_type {
+            RecoveryPrincipalType::Human if self.responsible_owner.is_none() => {
+                AuditPrincipal::human(self.principal)
+                    .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)
+            }
+            RecoveryPrincipalType::Automation => self
+                .responsible_owner
+                .ok_or(AuditTerminalRecoveryError::InvalidProjection)
+                .and_then(|owner| {
+                    AuditPrincipal::automation(self.principal, owner)
+                        .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)
+                }),
+            RecoveryPrincipalType::Human => {
+                return Err(AuditTerminalRecoveryError::InvalidProjection);
+            }
+        }?;
+        let body = AuditLogBody::new(
+            audit_classification(&self.classification)?,
+            principal,
+            self.action,
+            self.target,
+            self.detail,
+        )
+        .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)?;
+        let event_time = EventTime::from_unix_milliseconds(self.event_time_milliseconds);
+        let result = self.result.into();
+        match self.phase {
+            RecoveryAuditPhase::Completion => CompleteLogRecord::audit_completion(
+                record_id,
+                event_time,
+                attempt_record_id,
+                result,
+                correlation_id,
+                body,
+            ),
+            RecoveryAuditPhase::Correction => CompleteLogRecord::audit_correction(
+                record_id,
+                event_time,
+                attempt_record_id,
+                result,
+                correlation_id,
+                body,
+            ),
+        }
+        .map_err(|_| AuditTerminalRecoveryError::InvalidProjection)
+    }
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RecoveryAuditPhase {
+    Completion,
+    Correction,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RecoveryLogResult {
+    Success,
+    Failure,
+}
+
+impl From<LogResult> for RecoveryLogResult {
+    fn from(value: LogResult) -> Self {
+        match value {
+            LogResult::Success => Self::Success,
+            LogResult::Failure => Self::Failure,
+        }
+    }
+}
+
+impl From<RecoveryLogResult> for LogResult {
+    fn from(value: RecoveryLogResult) -> Self {
+        match value {
+            RecoveryLogResult::Success => Self::Success,
+            RecoveryLogResult::Failure => Self::Failure,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RecoveryPrincipalType {
+    Human,
+    Automation,
+}
+
+impl From<AuditPrincipalType> for RecoveryPrincipalType {
+    fn from(value: AuditPrincipalType) -> Self {
+        match value {
+            AuditPrincipalType::Human => Self::Human,
+            AuditPrincipalType::Automation => Self::Automation,
+        }
+    }
+}
+
+fn audit_classification(value: &str) -> Result<AuditLogClassification, AuditTerminalRecoveryError> {
+    AuditLogClassification::from_persisted(value)
+        .ok_or(AuditTerminalRecoveryError::InvalidProjection)
 }
 
 /// The non-secret configuration one destination is opened against.
@@ -1042,7 +2047,17 @@ impl fmt::Debug for DurableAcknowledgement {
 
 /// Destination contract for capability validation and durable record handling only.
 pub trait LogDestination: Send + Sync {
-    /// Durably commits the record and returns its exact acknowledgement capability.
+    /// Durably commits the record or confirms an exact prior commit.
+    ///
+    /// Every destination must treat the record identifier as an idempotency key
+    /// inside the same atomic delivery operation that commits a new record. An
+    /// existing identifier is acknowledged only when its record type and every
+    /// immutable field equal the supplied complete record. An exact match must
+    /// not create a second record. A proven type or field mismatch returns
+    /// [`LogDestinationError::IntegrityFailure`]; lock, query, decode, or other
+    /// failures that prevent an exact comparison return
+    /// [`LogDestinationError::Unavailable`] without acknowledgement. This is a
+    /// required destination invariant, not an optional capability.
     fn deliver(
         &self,
         record: &CompleteLogRecord,
@@ -1272,15 +2287,22 @@ impl ConfiguredLogDestination {
     }
 
     /// Synchronously delivers one complete record and requires durable acknowledgement.
+    ///
+    /// A destination-reported immutable-record conflict is normalized to
+    /// [`LogDeliveryError::IntegrityFailure`]. Other destination failures retain
+    /// their payload-free [`LogDeliveryError::Destination`] classification.
     pub fn deliver(&self, record: &CompleteLogRecord) -> Result<(), LogDeliveryError> {
         if !self.capabilities.supports(record.record_type()) {
             return Err(LogDeliveryError::CapabilityUnavailable);
         }
         let acknowledgement = DurableAcknowledgement::for_record(record);
-        let acknowledgement = self
-            .destination
-            .deliver(record, acknowledgement)
-            .map_err(LogDeliveryError::Destination)?;
+        let acknowledgement =
+            self.destination
+                .deliver(record, acknowledgement)
+                .map_err(|error| match error {
+                    LogDestinationError::IntegrityFailure => LogDeliveryError::IntegrityFailure,
+                    error => LogDeliveryError::Destination(error),
+                })?;
         if !acknowledgement.matches(record) {
             return Err(LogDeliveryError::IntegrityFailure);
         }
@@ -1304,6 +2326,10 @@ pub enum RecordError {
     InvalidRecordIdentifier,
     /// The correlation identifier was empty or exceeded its fixed bound.
     InvalidCorrelationIdentifier,
+    /// A terminal Audit record did not reuse its Attempt's correlation identifier.
+    MismatchedAttemptCorrelation,
+    /// A terminal Audit record reused its Attempt identifier or preceded its Attempt time.
+    InvalidAttemptLink,
     /// A System Log field was empty or exceeded its fixed bound.
     InvalidSystemLogBody,
     /// An Audit principal was empty, too long, or lacked its required owner.
@@ -1355,9 +2381,9 @@ impl StdError for LogCatalogError {}
 pub enum LogDestinationError {
     /// Destination configuration is invalid.
     ConfigurationInvalid,
-    /// The destination cannot currently accept delivery.
+    /// The destination cannot accept delivery or prove an exact replay match.
     Unavailable,
-    /// The destination detected a conflicting record identifier or immutable content.
+    /// The destination proved that a record identifier has conflicting type or content.
     IntegrityFailure,
 }
 
@@ -1404,7 +2430,7 @@ impl StdError for LogConfigurationError {}
 pub enum LogDeliveryError {
     /// The configured destination cannot accept the record type.
     CapabilityUnavailable,
-    /// The destination did not produce a valid acknowledgement for the record.
+    /// The destination proved a replay conflict or returned an invalid acknowledgement.
     IntegrityFailure,
     /// The destination could not complete synchronous durable delivery.
     Destination(LogDestinationError),
@@ -1468,7 +2494,9 @@ mod tests {
         Audit {
             record_id: [u8; RECORD_ID_LENGTH],
             event_time: u64,
-            result: LogResult,
+            phase: Box<str>,
+            result: Option<LogResult>,
+            attempt_record_id: Option<[u8; RECORD_ID_LENGTH]>,
             correlation_id: Box<str>,
             classification: Box<str>,
             principal: Box<str>,
@@ -1500,7 +2528,12 @@ mod tests {
                 LogRecordPersistenceView::Audit(record) => Self::Audit {
                     record_id: *record.record_id().as_bytes(),
                     event_time: record.event_time().unix_milliseconds(),
-                    result: record.result(),
+                    phase: record.phase().as_str().into(),
+                    result: record.phase().result(),
+                    attempt_record_id: record
+                        .phase()
+                        .attempt_record_id()
+                        .map(|record_id| *record_id.as_bytes()),
                     correlation_id: record.correlation_id().as_str().into(),
                     classification: record.body().classification().into(),
                     principal: record.body().principal().into(),
@@ -1715,9 +2748,25 @@ mod tests {
     }
 
     fn audit_record(record_id: RecordId) -> CompleteLogRecord {
-        CompleteLogRecord::audit(
+        let issuer = TrustedRecordIssuer::new();
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([0xa0; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1_724_999_999_999),
+            CorrelationId::new("correlation-1").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "init",
+                "deployment",
+                "attempt",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        CompleteLogRecord::audit_completion(
             record_id,
             EventTime::from_unix_milliseconds(1_725_000_000_000),
+            attempt.attempt_record_id().unwrap(),
             LogResult::Success,
             CorrelationId::new("correlation-1").expect("valid correlation identifier"),
             AuditLogBody::new(
@@ -1774,6 +2823,10 @@ mod tests {
             (
                 SystemLogClassification::DependencyFailure,
                 "dependency.failure",
+            ),
+            (
+                SystemLogClassification::DependencyAuditLogUnavailable,
+                "dependency.audit-log-unavailable",
             ),
             (SystemLogClassification::ProviderFailure, "provider.failure"),
             (SystemLogClassification::InternalError, "internal.error"),
@@ -1839,6 +2892,10 @@ mod tests {
             (
                 AuditLogClassification::AuthorizationGroupGrantChanged,
                 "authorization.group-grant.changed",
+            ),
+            (
+                AuditLogClassification::AuthorizationGroupGrantRemovalDenied,
+                "authorization.group-grant.removal-denied",
             ),
             (
                 AuditLogClassification::AuthorizationAutomationScopeChanged,
@@ -1915,6 +2972,139 @@ mod tests {
             let error = AuditPrincipal::automation("automation", rejected.as_str()).unwrap_err();
             assert_eq!(error, RecordError::InvalidAuditPrincipal);
             assert_rejection_is_payload_free(error, &rejected);
+        }
+    }
+
+    #[test]
+    fn audit_phases_expose_only_their_valid_result_combinations() {
+        let issuer = TrustedRecordIssuer::new();
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([0xa1; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            CorrelationId::new("correlation-1").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "attempt",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let valid = [
+            (AuditRecordPhase::Attempt, "attempt", None, false),
+            (
+                AuditRecordPhase::Completion {
+                    attempt_record_id: attempt.attempt_record_id().unwrap(),
+                    result: LogResult::Success,
+                },
+                "completion",
+                Some(LogResult::Success),
+                true,
+            ),
+            (
+                AuditRecordPhase::Completion {
+                    attempt_record_id: attempt.attempt_record_id().unwrap(),
+                    result: LogResult::Failure,
+                },
+                "completion",
+                Some(LogResult::Failure),
+                true,
+            ),
+            (
+                AuditRecordPhase::Correction {
+                    attempt_record_id: attempt.attempt_record_id().unwrap(),
+                    result: LogResult::Success,
+                },
+                "correction",
+                Some(LogResult::Success),
+                true,
+            ),
+            (
+                AuditRecordPhase::Correction {
+                    attempt_record_id: attempt.attempt_record_id().unwrap(),
+                    result: LogResult::Failure,
+                },
+                "correction",
+                Some(LogResult::Failure),
+                true,
+            ),
+        ];
+
+        for (phase, literal, result, has_attempt_link) in valid {
+            assert_eq!(phase.as_str(), literal);
+            assert_eq!(phase.result(), result);
+            assert_eq!(phase.attempt_record_id().is_some(), has_attempt_link);
+        }
+    }
+
+    #[test]
+    fn only_attempts_mint_redacted_linkage_capabilities_for_matching_correlations() {
+        let issuer = TrustedRecordIssuer::new();
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([0xa2; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            CorrelationId::new("correlation-1").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "attempt",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let attempt_record_id = attempt.attempt_record_id().unwrap();
+        assert_eq!(attempt_record_id.as_bytes(), &[0xa2; RECORD_ID_LENGTH]);
+        assert_eq!(
+            format!("{attempt_record_id:?}"),
+            "AttemptRecordId(REDACTED)"
+        );
+
+        let error = CompleteLogRecord::audit_completion(
+            issuer.issue([0xa3; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(2),
+            attempt_record_id,
+            LogResult::Success,
+            CorrelationId::new("different-correlation").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "complete",
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(error, RecordError::MismatchedAttemptCorrelation);
+        assert!(!format!("{error:?}").contains("correlation-1"));
+        assert!(!error.to_string().contains("different-correlation"));
+        assert!(attempt.attempt_record_id().is_some());
+
+        for (record_id, event_time) in
+            [([0xa2; RECORD_ID_LENGTH], 2), ([0xa4; RECORD_ID_LENGTH], 0)]
+        {
+            let error = CompleteLogRecord::audit_correction(
+                issuer.issue(record_id).unwrap(),
+                EventTime::from_unix_milliseconds(event_time),
+                attempt.attempt_record_id().unwrap(),
+                LogResult::Failure,
+                CorrelationId::new("correlation-1").unwrap(),
+                AuditLogBody::new(
+                    AuditLogClassification::LifecycleBackupCreated,
+                    AuditPrincipal::human("administrator").unwrap(),
+                    "backup",
+                    "deployment",
+                    "corrected",
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+            assert_eq!(error, RecordError::InvalidAttemptLink);
+            assert_eq!(error.to_string(), "log record is invalid");
         }
     }
 
@@ -2021,21 +3211,19 @@ mod tests {
             )
             .is_ok()
         );
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([2; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            correlation_id,
+            audit_body,
+        )
+        .unwrap();
         assert!(
-            CompleteLogRecord::audit(
-                issuer.issue([2; RECORD_ID_LENGTH]).unwrap(),
-                EventTime::from_unix_milliseconds(1),
-                LogResult::Success,
-                correlation_id,
-                audit_body,
-            )
-            .is_ok()
-        );
-        assert!(
-            CompleteLogRecord::audit(
+            CompleteLogRecord::audit_correction(
                 issuer.issue([3; RECORD_ID_LENGTH]).unwrap(),
                 EventTime::from_unix_milliseconds(1),
-                LogResult::Success,
+                attempt.attempt_record_id().unwrap(),
+                LogResult::Failure,
                 CorrelationId::new("c".repeat(MAX_CORRELATION_ID_BYTES)).unwrap(),
                 automation_body,
             )
@@ -2046,6 +3234,7 @@ mod tests {
     #[test]
     fn record_constructors_reject_byte_and_utf8_overflows_without_payloads() {
         for rejected in [
+            String::new(),
             "x".repeat(MAX_CORRELATION_ID_BYTES + 1),
             utf8_overflow(MAX_CORRELATION_ID_BYTES),
         ] {
@@ -2055,6 +3244,7 @@ mod tests {
         }
 
         for rejected in [
+            String::new(),
             "x".repeat(MAX_SYSTEM_DETAIL_BYTES + 1),
             utf8_overflow(MAX_SYSTEM_DETAIL_BYTES),
         ] {
@@ -2065,29 +3255,42 @@ mod tests {
             assert_rejection_is_payload_free(error, &rejected);
         }
 
-        for rejected in [
-            "x".repeat(MAX_AUDIT_TARGET_BYTES + 1),
-            utf8_overflow(MAX_AUDIT_TARGET_BYTES),
+        for (field, maximum_bytes) in [
+            ("action", MAX_AUDIT_ACTION_BYTES),
+            ("target", MAX_AUDIT_TARGET_BYTES),
+            ("detail", MAX_AUDIT_DETAIL_BYTES),
         ] {
-            let error = AuditLogBody::new(
-                AuditLogClassification::LifecycleBackupCreated,
-                AuditPrincipal::human("principal").unwrap(),
-                "action",
-                rejected.as_str(),
-                "detail",
-            )
-            .unwrap_err();
-            assert_eq!(error, RecordError::InvalidAuditLogBody);
-            assert_rejection_is_payload_free(error, &rejected);
+            for rejected in [
+                String::new(),
+                "x".repeat(maximum_bytes + 1),
+                utf8_overflow(maximum_bytes),
+            ] {
+                let (action, target, detail) = match field {
+                    "action" => (rejected.as_str(), "target", "detail"),
+                    "target" => ("action", rejected.as_str(), "detail"),
+                    "detail" => ("action", "target", rejected.as_str()),
+                    _ => unreachable!("the test enumerates every Audit body field"),
+                };
+                let error = AuditLogBody::new(
+                    AuditLogClassification::LifecycleBackupCreated,
+                    AuditPrincipal::human("principal").unwrap(),
+                    action,
+                    target,
+                    detail,
+                )
+                .unwrap_err();
+                assert_eq!(error, RecordError::InvalidAuditLogBody);
+                assert_rejection_is_payload_free(error, &rejected);
+            }
         }
     }
 
     #[test]
-    fn complete_record_rejects_an_aggregate_overflow_before_delivery() {
-        let rejected = "x".repeat(MAX_RECORD_PAYLOAD_BYTES);
+    fn complete_records_reject_aggregate_overflows_before_delivery() {
+        let system_rejected = "x".repeat(MAX_RECORD_PAYLOAD_BYTES);
         let body = SystemLogBody {
             classification: SystemLogClassification::LifecycleStartup,
-            detail: rejected.clone().into(),
+            detail: system_rejected.clone().into(),
         };
         let mut deliveries = 0;
         let result = (|| -> Result<(), RecordError> {
@@ -2105,7 +3308,27 @@ mod tests {
 
         assert_eq!(result, Err(RecordError::RecordSizeLimitExceeded));
         assert_eq!(deliveries, 0);
-        assert_rejection_is_payload_free(RecordError::RecordSizeLimitExceeded, &rejected);
+        assert_rejection_is_payload_free(RecordError::RecordSizeLimitExceeded, &system_rejected);
+
+        let audit_rejected = "y".repeat(MAX_RECORD_PAYLOAD_BYTES);
+        let audit_body = AuditLogBody {
+            classification: AuditLogClassification::LifecycleBackupCreated,
+            principal: AuditPrincipal::human("principal").unwrap(),
+            action: "action".into(),
+            target: "target".into(),
+            detail: audit_rejected.clone().into(),
+        };
+        let error = CompleteLogRecord::audit_attempt(
+            TrustedRecordIssuer::new()
+                .issue([2; RECORD_ID_LENGTH])
+                .unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            CorrelationId::new("correlation").unwrap(),
+            audit_body,
+        )
+        .unwrap_err();
+        assert_eq!(error, RecordError::RecordSizeLimitExceeded);
+        assert_rejection_is_payload_free(error, &audit_rejected);
     }
 
     fn catalog(
@@ -2256,9 +3479,135 @@ mod tests {
         assert_eq!(destination.deliver(&original), Ok(()));
         assert_eq!(
             destination.deliver(&changed),
-            Err(LogDeliveryError::Destination(
-                LogDestinationError::IntegrityFailure
-            ))
+            Err(LogDeliveryError::IntegrityFailure)
+        );
+    }
+
+    #[test]
+    fn changed_audit_phase_for_the_same_identifier_is_an_integrity_failure() {
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
+        let catalog = catalog(
+            LogCapabilities::new(vec![LogRecordType::Audit]).expect("valid capability declaration"),
+            records,
+        );
+        let identifier = LogModuleIdentifier::new("sqlite").expect("valid module identifier");
+        let destination = catalog
+            .create_destination(&identifier, &trusted_context())
+            .expect("registered destination is configured");
+        let issuer = TrustedRecordIssuer::new();
+        let attempt_record_id = issuer
+            .issue([6; RECORD_ID_LENGTH])
+            .expect("valid record ID");
+        let terminal_record_id = issuer
+            .issue([7; RECORD_ID_LENGTH])
+            .expect("valid record ID");
+        let correlation_id = CorrelationId::new("correlation-1").unwrap();
+        let body = || {
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "pre-redacted",
+            )
+            .unwrap()
+        };
+        let attempt = CompleteLogRecord::audit_attempt(
+            attempt_record_id,
+            EventTime::from_unix_milliseconds(1_725_000_000_000),
+            correlation_id.clone(),
+            body(),
+        )
+        .unwrap();
+        let original = CompleteLogRecord::audit_completion(
+            terminal_record_id.duplicate(),
+            EventTime::from_unix_milliseconds(1_725_000_000_001),
+            attempt.attempt_record_id().unwrap(),
+            LogResult::Success,
+            correlation_id.clone(),
+            body(),
+        )
+        .unwrap();
+        let changed = CompleteLogRecord::audit_correction(
+            terminal_record_id,
+            EventTime::from_unix_milliseconds(1_725_000_000_001),
+            attempt.attempt_record_id().unwrap(),
+            LogResult::Success,
+            correlation_id,
+            body(),
+        )
+        .unwrap();
+
+        assert_eq!(destination.deliver(&attempt), Ok(()));
+        assert_eq!(destination.deliver(&original), Ok(()));
+        assert_eq!(
+            destination.deliver(&changed),
+            Err(LogDeliveryError::IntegrityFailure)
+        );
+    }
+
+    #[test]
+    fn changed_audit_result_with_the_same_phase_is_an_integrity_failure() {
+        let records = Arc::new(Mutex::new(Vec::<PersistedRecord>::new()));
+        let catalog = catalog(
+            LogCapabilities::new(vec![LogRecordType::Audit]).expect("valid capability declaration"),
+            records,
+        );
+        let destination = catalog
+            .create_destination(
+                &LogModuleIdentifier::new("sqlite").unwrap(),
+                &trusted_context(),
+            )
+            .unwrap();
+        let issuer = TrustedRecordIssuer::new();
+        let attempt = CompleteLogRecord::audit_attempt(
+            issuer.issue([0xa4; RECORD_ID_LENGTH]).unwrap(),
+            EventTime::from_unix_milliseconds(1),
+            CorrelationId::new("correlation-1").unwrap(),
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "attempt",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let body = || {
+            AuditLogBody::new(
+                AuditLogClassification::LifecycleBackupCreated,
+                AuditPrincipal::human("administrator").unwrap(),
+                "backup",
+                "deployment",
+                "complete",
+            )
+            .unwrap()
+        };
+        let record_id = issuer.issue([0xa5; RECORD_ID_LENGTH]).unwrap();
+        let original = CompleteLogRecord::audit_completion(
+            record_id.duplicate(),
+            EventTime::from_unix_milliseconds(2),
+            attempt.attempt_record_id().unwrap(),
+            LogResult::Success,
+            CorrelationId::new("correlation-1").unwrap(),
+            body(),
+        )
+        .unwrap();
+        let changed = CompleteLogRecord::audit_completion(
+            record_id,
+            EventTime::from_unix_milliseconds(2),
+            attempt.attempt_record_id().unwrap(),
+            LogResult::Failure,
+            CorrelationId::new("correlation-1").unwrap(),
+            body(),
+        )
+        .unwrap();
+
+        assert_eq!(destination.deliver(&original), Ok(()));
+        assert_eq!(
+            destination.deliver(&changed),
+            Err(LogDeliveryError::IntegrityFailure)
         );
     }
 
@@ -2284,9 +3633,7 @@ mod tests {
         assert_eq!(destination.deliver(&system_record), Ok(()));
         assert_eq!(
             destination.deliver(&audit_record),
-            Err(LogDeliveryError::Destination(
-                LogDestinationError::IntegrityFailure
-            ))
+            Err(LogDeliveryError::IntegrityFailure)
         );
     }
 
@@ -2318,7 +3665,7 @@ mod tests {
 
     #[test]
     fn errors_do_not_disclose_record_or_destination_payloads() {
-        let error = LogDeliveryError::Destination(LogDestinationError::IntegrityFailure);
+        let error = LogDeliveryError::IntegrityFailure;
         let record = system_record(
             TrustedRecordIssuer::new()
                 .issue([6; RECORD_ID_LENGTH])
@@ -2677,6 +4024,10 @@ mod tests {
         for (binary, expected_code) in [
             ("issuer", "E0624"),
             ("record-identity", "E0308"),
+            ("attempt-record-identity", "E0308"),
+            ("audit-record", "E0639"),
+            ("audit-completion-phase", "E0639"),
+            ("audit-correction-phase", "E0639"),
             ("context", "E0624"),
             ("acknowledgement", "E0624"),
             ("dispatch", "E0451"),

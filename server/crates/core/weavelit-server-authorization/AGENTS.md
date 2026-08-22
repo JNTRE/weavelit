@@ -5,6 +5,14 @@ folding Group grants into effective grants, evaluating one request against the
 catalogued component enablement, and producing an unforgeable proof only when
 every requirement is satisfied.
 
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
 ## Purpose and Scope
 
 - This crate owns the additive union of Group grants, the separation of the
@@ -24,7 +32,6 @@ every requirement is satisfied.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local routing, inventory, and authorization-boundary rules.
 - `Cargo.toml`: Package metadata, the single Application Database dependency,
   and the JSON dev-dependency used to read Cargo's compiler diagnostics.
 - `src/lib.rs`: Crate boundary and public surface.
@@ -39,36 +46,32 @@ every requirement is satisfied.
 - `tests/fixtures/forbidden-proof/`: External crate that attempts to forge each
   proof type.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then each parent `AGENTS.md` through the
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then each parent `AGENTS.md` through the
   repository root.
-- Read the Server Authorization Design, Security Model, Technical
+- MUST read the Server Authorization Design, Security Model, Technical
   Specification, and Testing and Validation Policy before changing behavior
   here.
-- Keep every proof constructor and proof field private to this crate. A proof
+- MUST keep every proof constructor and proof field private to this crate. A proof
   value must be constructible only on the single successful branch of an
   evaluator, and the forbidden fixture must keep failing with its pinned rustc
   code.
-- Keep the User Plane evaluator free of the Server Administration Permission.
+- MUST keep the User Plane evaluator free of the Server Administration Permission.
   It must receive `OperationalGrants` only, so an Administrator cannot
   structurally imply an Operation grant.
-- Keep every match over a grant kind, a plane, or the permission exhaustive with
+- MUST keep every match over a grant kind, a plane, or the permission exhaustive with
   no wildcard arm, so a new requirement variant fails to compile until each
   decision handles it.
-- Keep an uncatalogued component equivalent to a disabled one, and keep
+- MUST keep an uncatalogued component equivalent to a disabled one, and keep
   Operation grants matched by whole name with no wildcard or prefix form.
-- Keep the denial reason-free: one denial value, no branch-specific detail, and
+- MUST keep the denial reason-free: one denial value, no branch-specific detail, and
   no request or account content in any rendering.
-- Run the package tests during development and `make -C server check` before
+- MUST run the package tests during development and `make -C server check` before
   handoff.
 
-## Standards and Conventions
-
-- Update this inventory whenever crate assets are added, removed, renamed, or
+- MUST update this inventory whenever crate assets are added, removed, renamed, or
   moved.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.

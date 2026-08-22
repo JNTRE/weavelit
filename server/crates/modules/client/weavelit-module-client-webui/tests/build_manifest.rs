@@ -56,6 +56,14 @@ impl WebUi {
         web_ui.write("src/test-setup.ts", "test-only");
         web_ui.write("dist/index.html", "<!doctype html>built");
         web_ui.write("dist/assets/weavelit-application.js", "console.log(1);");
+        web_ui.write(
+            "dist/assets/weavelit-groups-workspace.js",
+            "console.log(2);",
+        );
+        web_ui.write(
+            "dist/assets/weavelit-configuration-workspace.js",
+            "console.log(3);",
+        );
         web_ui.write("dist/assets/weavelit-application.css", "body{}");
         web_ui.write_manifest();
         web_ui
@@ -210,11 +218,14 @@ fn an_edited_test_only_source_still_verifies() {
 #[test]
 fn a_corrupted_generated_asset_fails_closed() {
     let web_ui = WebUi::fresh();
-    web_ui.write("dist/assets/weavelit-application.js", "console.log(2);");
+    web_ui.write(
+        "dist/assets/weavelit-groups-workspace.js",
+        "console.log(3);",
+    );
     assert_eq!(
         failures(&web_ui),
         vec![
-            "the generated asset `assets/weavelit-application.js` changed after the Web UI was built"
+            "the generated asset `assets/weavelit-groups-workspace.js` changed after the Web UI was built"
         ]
     );
 }
@@ -280,6 +291,7 @@ fn every_bundle_input_and_generated_asset_triggers_a_rebuild() {
         web_ui.path("package-lock.json"),
         web_ui.path("dist").join(MANIFEST_FILE_NAME),
         web_ui.path("dist/assets/weavelit-application.js"),
+        web_ui.path("dist/assets/weavelit-groups-workspace.js"),
     ] {
         assert!(watched.contains(&expected), "{expected:?} is not watched");
     }

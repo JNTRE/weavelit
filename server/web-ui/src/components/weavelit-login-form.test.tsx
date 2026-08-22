@@ -5,6 +5,7 @@ import { LoginPanel } from "./weavelit-login-form";
 
 const CORRELATION = "0123456789abcdef0123456789abcdef";
 const ACCOUNT = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+const PUBLIC_ID = "QUFBQUFBQUFBQUFBQUFBQQ";
 const USERNAME = "administrator";
 const PASSWORD = "fixture-administrator-password";
 const CONTINUATION = "Y29udGludWF0aW9uLXZhbHVlLWZvci10ZXN0aW5n";
@@ -37,21 +38,27 @@ function unauthenticatedProbe(): Promise<Response> {
   );
 }
 
-/** Refuses a second probe so determinate-outcome tests cannot pass silently. */
+/** Starts unauthenticated, then reports the ordinary session a completed login established. */
 function initialUnauthenticatedProbeOnly(): () => Promise<Response> {
   let probes = 0;
   return () => {
     probes += 1;
-    return probes === 1
-      ? unauthenticatedProbe()
-      : Promise.reject(new Error("unexpected session probe"));
+    return probes === 1 ? unauthenticatedProbe() : authenticatedProbe();
   };
 }
 
 function authenticatedProbe(): Promise<Response> {
   return Promise.resolve(
     jsonResponse(
-      { result: { account_id: ACCOUNT, client_module: "web-ui" }, correlation_id: CORRELATION },
+      {
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: false,
+        },
+        correlation_id: CORRELATION,
+      },
       200,
     ),
   );
@@ -235,6 +242,22 @@ async function renderUnauthenticated(login: () => Promise<Response>) {
   return fetchMock;
 }
 
+async function renderUnauthenticatedThenAuthenticated(login: () => Promise<Response>) {
+  let probes = 0;
+  const fetchMock = mockRoutedFetch({
+    probe: () => {
+      probes += 1;
+      return probes === 1 ? unauthenticatedProbe() : authenticatedProbe();
+    },
+    login,
+  });
+  render(<LoginPanel />);
+  await waitFor(() => {
+    expect(panel().dataset.authenticationState).toBe("unauthenticated");
+  });
+  return fetchMock;
+}
+
 function fillCredentials(): void {
   fireEvent.change(usernameField(), { target: { value: USERNAME } });
   fireEvent.change(passwordField(), { target: { value: PASSWORD } });
@@ -259,7 +282,14 @@ function setupLinkField(): HTMLInputElement {
  * it settles; every other route belongs to the scenario under test.
  */
 async function signInWith(routes: Readonly<Record<string, () => Promise<Response>>>) {
-  const fetchMock = mockRoutes({ [SESSION_PATH]: unauthenticatedProbe, ...routes });
+  let probes = 0;
+  const session =
+    routes[SESSION_PATH] ??
+    (() => {
+      probes += 1;
+      return probes === 1 ? unauthenticatedProbe() : authenticatedProbe();
+    });
+  const fetchMock = mockRoutes({ ...routes, [SESSION_PATH]: session });
   render(<LoginPanel />);
   await waitFor(() => {
     expect(panel().dataset.authenticationState).toBe("unauthenticated");
@@ -354,7 +384,7 @@ describe("LoginPanel form", () => {
   });
 
   it("reaches the authenticated state and discards the password on success", async () => {
-    await renderUnauthenticated(establishedLogin);
+    await renderUnauthenticatedThenAuthenticated(establishedLogin);
 
     fillCredentials();
     fireEvent.click(submitButton());
@@ -459,6 +489,51 @@ describe("LoginPanel failure presentation", () => {
     expect(requestsTo(fetchMock, LOGIN_PATH)).toHaveLength(1);
   });
 
+  it.each([
+    ["unavailable", () => Promise.reject(new Error("connection reset"))],
+    [
+      "malformed",
+      () =>
+        Promise.resolve(
+          jsonResponse(
+            {
+              result: {
+                account_id: ACCOUNT,
+                public_id: PUBLIC_ID,
+                client_module: "web-ui",
+              },
+              correlation_id: CORRELATION,
+            },
+            200,
+          ),
+        ),
+    ],
+  ])(
+    "keeps a valid login success indeterminate when its identity probe is %s",
+    async (_label, unresolvedProbe) => {
+      let probes = 0;
+      const fetchMock = mockRoutes({
+        [SESSION_PATH]: () => {
+          probes += 1;
+          return probes === 1 ? unauthenticatedProbe() : unresolvedProbe();
+        },
+        [LOGIN_PATH]: establishedLogin,
+      });
+      render(<LoginPanel />);
+      await reachState("unauthenticated");
+      fillCredentials();
+      fireEvent.click(submitButton());
+
+      await reachState("indeterminate");
+      expect(screen.getByRole("status").textContent).toBe(
+        "Checking whether your sign-in completed.",
+      );
+      expect(requestsTo(fetchMock, LOGIN_PATH)).toHaveLength(1);
+      expect(requestsTo(fetchMock, SESSION_PATH)).toHaveLength(3);
+      expect(document.body.innerHTML).not.toContain(PASSWORD);
+    },
+  );
+
   it("renders the same markup for two different denials", async () => {
     const denial = (code: string, status: number) => () =>
       Promise.resolve(jsonResponse({ error: code, correlation_id: CORRELATION }, status));
@@ -487,14 +562,16 @@ describe("LoginPanel storage discipline", () => {
   it("writes no credential or token to browser storage", async () => {
     globalThis.localStorage.clear();
     globalThis.sessionStorage.clear();
-    // A sanity check that these assertions can fail: a written key is visible
-    // here, so an empty jar afterwards is a real observation rather than a
-    // storage object that never records anything.
-    globalThis.sessionStorage.setItem("probe", PASSWORD);
+    // A sanity check that these assertions can fail: spy on Storage to verify
+    // the mechanism works, then assert no secrets are ever stored.
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
     expect(globalThis.sessionStorage.length).toBe(1);
     globalThis.sessionStorage.clear();
+    setItemSpy.mockClear();
 
-    await renderUnauthenticated(establishedLogin);
+    await renderUnauthenticatedThenAuthenticated(establishedLogin);
 
     fillCredentials();
     fireEvent.click(submitButton());
@@ -506,6 +583,9 @@ describe("LoginPanel storage discipline", () => {
     expect(globalThis.sessionStorage.length).toBe(0);
     expect(globalThis.document.cookie).not.toContain(PASSWORD);
     expect(globalThis.location.href).not.toContain(PASSWORD);
+    // Assert that setItem was never called during the login workflow
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 });
 
@@ -865,9 +945,13 @@ describe("LoginPanel enrollment", () => {
     globalThis.localStorage.clear();
     globalThis.sessionStorage.clear();
     // A sanity check that these assertions can fail against a real store.
-    globalThis.sessionStorage.setItem("probe", SECRET);
+    // Use spy to verify storage works without storing secrets.
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
     expect(globalThis.sessionStorage.length).toBe(1);
     globalThis.sessionStorage.clear();
+    setItemSpy.mockClear();
 
     await signInWith({
       [LOGIN_PATH]: continuationLogin("mfa_enrollment_required"),
@@ -888,6 +972,8 @@ describe("LoginPanel enrollment", () => {
     }
     expect(globalThis.localStorage.length).toBe(0);
     expect(globalThis.sessionStorage.length).toBe(0);
+    // Assert that setItem was never called during the enrollment workflow
+    expect(setItemSpy).not.toHaveBeenCalled();
 
     fireEvent.change(codeField(), { target: { value: CODE } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm authenticator app" }));
@@ -900,5 +986,8 @@ describe("LoginPanel enrollment", () => {
       expect(globalThis.location.href).not.toContain(disclosed);
       expect(document.body.innerHTML).not.toContain(disclosed);
     }
+    // Assert that setItem was never called with secrets
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 });

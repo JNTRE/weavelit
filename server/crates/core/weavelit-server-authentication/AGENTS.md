@@ -2,8 +2,17 @@
 
 This crate owns the Server's local password authentication core: the approved
 Argon2id profile, the closed allowlist of profiles a stored verifier may be
-attempted against, the equal-work password decision, and generation and hashing
-of session and CSRF bearer values.
+attempted against, the equal-work password decision, preparation of temporary
+password credentials, and generation and hashing of session and CSRF bearer
+values.
+
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
 
 ## Purpose and Scope
 
@@ -12,6 +21,7 @@ of session and CSRF bearer values.
   matching, the Argon2 execution seam, the decoy-backed equal-work denial,
   rehash-on-profile-drift, redacted authentication errors, session and CSRF
   token generation, encoding, digesting, and constant-time digest comparison,
+  preparation of a non-recoverable temporary password and approved verifier,
   and the opaque single-use continuation ticket that binds a verified password
   to a later second-factor or enrollment step.
 - It does not own account lookup, persistence, session lifetime, cookies, route
@@ -24,7 +34,6 @@ of session and CSRF bearer values.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local routing, inventory, and authentication-boundary rules.
 - `Cargo.toml`: Package metadata and the approved password-hashing, encoding,
   digest, randomness, constant-time, and zeroization dependencies with their
   excluded feature surface.
@@ -34,36 +43,43 @@ of session and CSRF bearer values.
 - `src/phc.rs`: PHC encoding of a salt and output at a known profile.
 - `src/engine.rs`: The `Argon2Engine` seam and its RustCrypto implementation.
 - `src/password.rs`: The equal-work password decision and rehash-on-drift.
+- `src/password_replacement.rs`: Bounded zeroizing replacement input, same-password refusal, and approved verifier preparation.
 - `src/session.rs`: Session and CSRF tokens, their digests, and redaction.
+- `src/temporary_password.rs`: Temporary-password generation, approved verifier
+  preparation, one-response disclosure ownership, and the fixed lifetime.
 - `src/continuation.rs`: The opaque, single-use, short-lived continuation
   ticket and its stored digest.
+- `src/credential_issuance.rs`: Zeroizing, non-clonable current-password and
+  optional TOTP input for exact-session account credential issuance.
 - `src/error.rs`: Payload-free authentication errors.
 - `src/random.rs`: Operating-system randomness with no fallback.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then each parent `AGENTS.md` through the
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then each parent `AGENTS.md` through the
   repository root.
-- Read the Server Authentication Design, Security Model, Server Architecture
+- MUST read the Server Authentication Design, Security Model, Server Architecture
   Design, and Testing and Validation Policy before changing behavior here.
-- Treat `ACCEPTED_ARGON2_PROFILES` as policy: adding an entry accepts stored
+- MUST treat `ACCEPTED_ARGON2_PROFILES` as policy: adding an entry accepts stored
   verifiers at that profile forever, and removing one immediately refuses them.
   Every entry must stay within `MAX_VERIFICATION_MEMORY_KIB`, and the same
   change must update the Server Authentication Design.
-- Never verify a password against a stored profile that the allowlist did not
+- Agents MUST NOT verify a password against a stored profile that the allowlist did not
   resolve; the hashing library takes its cost parameters from the encoded value
   it is given.
-- Prove equal-work denial by counting operations through an injected
+- MUST prove equal-work denial by counting operations through an injected
   `Argon2Engine`, never by comparing elapsed time.
-- Run the package tests during development and `make -C server check` before
+- MAY use synthetic deterministic credential literals only in `#[cfg(test)]`
+  code that proves password or credential invariants.
+- MUST NOT copy those literals into production or deployable examples or
+  configuration.
+- CodeQL findings for this documented test-only pattern are not production
+  credential incidents.
+- MUST run the package tests during development and `make -C server check` before
   handoff.
 
-## Standards and Conventions
-
-- Update this inventory whenever crate assets are added, removed, renamed, or
+- MUST update this inventory whenever crate assets are added, removed, renamed, or
   moved.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.

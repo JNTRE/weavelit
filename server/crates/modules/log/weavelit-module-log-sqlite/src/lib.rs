@@ -9,9 +9,10 @@ use rusqlite::{
 };
 use sha2::{Digest, Sha256};
 use weavelit_server_log::{
-    CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
+    AuditRecordPhase, CompleteLogRecord, DurableAcknowledgement, LogCapabilities, LogDestination,
     LogDestinationError, LogDestinationFactory, LogModuleFactoryContext, LogModuleRegistration,
-    LogRecordPersistenceView, LogRecordType, LogSettingsContract, TrustedLogModuleContext,
+    LogRecordPersistenceView, LogRecordType, LogResult, LogSettingsContract,
+    TrustedLogModuleContext,
 };
 
 /// The canonical identifier this Log Module is compiled in and registered under.
@@ -124,6 +125,52 @@ const MIGRATIONS: &[Migration] = &[
         sql: "ALTER TABLE weavelit_log_audit_records ADD COLUMN classification TEXT;\
               ALTER TABLE weavelit_log_audit_records ADD COLUMN principal_type TEXT;\
               ALTER TABLE weavelit_log_audit_records ADD COLUMN responsible_owner TEXT;",
+    },
+    Migration {
+        sequence: 4,
+        identifier: "0004_add_audit_attempt_link",
+        sql: "ALTER TABLE weavelit_log_audit_records RENAME TO weavelit_log_audit_records_legacy;\
+              CREATE TABLE weavelit_log_audit_records (\
+                  record_id BLOB PRIMARY KEY CHECK (length(record_id) = 16),\
+                  event_time_milliseconds TEXT NOT NULL,\
+                  phase TEXT NOT NULL CHECK (phase IN ('attempt', 'completion', 'correction')),\
+                  result INTEGER,\
+                  attempt_record_id BLOB CHECK (\
+                      (phase = 'attempt' AND result IS NULL AND attempt_record_id IS NULL) OR\
+                      (phase = 'completion' AND result IS NOT NULL AND result IN (0, 1) AND (attempt_record_id IS NULL OR length(attempt_record_id) = 16)) OR\
+                      (phase = 'correction' AND result IS NOT NULL AND result IN (0, 1) AND attempt_record_id IS NOT NULL AND length(attempt_record_id) = 16)\
+                  ),\
+                  correlation_id TEXT NOT NULL CHECK (length(CAST(correlation_id AS BLOB)) BETWEEN 1 AND 64),\
+                  classification TEXT,\
+                  principal TEXT NOT NULL CHECK (length(CAST(principal AS BLOB)) BETWEEN 1 AND 256),\
+                  principal_type TEXT,\
+                  responsible_owner TEXT,\
+                  action TEXT NOT NULL CHECK (length(CAST(action AS BLOB)) BETWEEN 1 AND 128),\
+                  target TEXT NOT NULL CHECK (length(CAST(target AS BLOB)) BETWEEN 1 AND 1024),\
+                  detail TEXT NOT NULL CHECK (length(CAST(detail AS BLOB)) BETWEEN 1 AND 4096),\
+                  CHECK (length(CAST(correlation_id AS BLOB)) + length(CAST(principal AS BLOB)) + length(CAST(action AS BLOB)) + length(CAST(target AS BLOB)) + length(CAST(detail AS BLOB)) <= 8192)\
+              );\
+              INSERT INTO weavelit_log_audit_records \
+                  (record_id, event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+                  SELECT record_id, event_time_milliseconds, 'completion', result, NULL, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail \
+                  FROM weavelit_log_audit_records_legacy;\
+              DROP TABLE weavelit_log_audit_records_legacy;\
+              CREATE INDEX weavelit_log_audit_attempt_record_id_idx \
+                  ON weavelit_log_audit_records (attempt_record_id) \
+                  WHERE attempt_record_id IS NOT NULL;\
+              CREATE TRIGGER weavelit_log_audit_terminal_attempt_guard \
+                  BEFORE INSERT ON weavelit_log_audit_records \
+                  WHEN NEW.phase IN ('completion', 'correction') AND (\
+                      NEW.attempt_record_id IS NULL OR NOT EXISTS (\
+                          SELECT 1 FROM weavelit_log_audit_records AS attempt \
+                          WHERE attempt.record_id = NEW.attempt_record_id \
+                            AND attempt.phase = 'attempt' \
+                            AND attempt.correlation_id = NEW.correlation_id\
+                      )\
+                  ) \
+                  BEGIN \
+                      SELECT RAISE(ABORT, 'invalid Audit Attempt link');\
+                  END;",
     },
 ];
 
@@ -323,6 +370,7 @@ impl SqliteLogDestination {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| LogDestinationError::Unavailable)?;
 
+        validate_attempt_link(&transaction, record)?;
         match record_match(&transaction, record)? {
             RecordMatch::Exact => {}
             RecordMatch::Absent => insert_record(&transaction, record)?,
@@ -360,8 +408,8 @@ impl SqliteLogDestination {
             ),
             LogRecordType::Audit => transaction.execute(
                 "INSERT INTO weavelit_log_audit_records \
-                    (record_id, event_time_milliseconds, result, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
-                    VALUES (?1, '0', 0, 'preflight', 'lifecycle.backup.created', 'preflight', 'human', NULL, 'preflight', 'preflight', 'preflight')",
+                    (record_id, event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+                    VALUES (?1, '0', 'attempt', NULL, NULL, 'preflight', 'lifecycle.backup.created', 'preflight', 'human', NULL, 'preflight', 'preflight', 'preflight')",
                 params![PREFLIGHT_PROBE_RECORD_ID.as_slice()],
             ),
         };
@@ -405,6 +453,7 @@ impl LogDestination for SqliteLogDestination {
     }
 }
 
+#[derive(Clone)]
 enum PersistedLogRecord {
     System {
         record_id: [u8; 16],
@@ -417,7 +466,8 @@ enum PersistedLogRecord {
     Audit {
         record_id: [u8; 16],
         event_time: u64,
-        result: weavelit_server_log::LogResult,
+        phase: PersistedAuditPhase,
+        attempt_record_id: Option<[u8; 16]>,
         correlation_id: Box<str>,
         classification: Box<str>,
         principal: Box<str>,
@@ -427,6 +477,40 @@ enum PersistedLogRecord {
         target: Box<str>,
         detail: Box<str>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PersistedAuditPhase {
+    Attempt,
+    Completion(LogResult),
+    Correction(LogResult),
+}
+
+impl PersistedAuditPhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Attempt => "attempt",
+            Self::Completion(_) => "completion",
+            Self::Correction(_) => "correction",
+        }
+    }
+
+    const fn result(self) -> Option<LogResult> {
+        match self {
+            Self::Attempt => None,
+            Self::Completion(result) | Self::Correction(result) => Some(result),
+        }
+    }
+}
+
+impl From<&AuditRecordPhase> for PersistedAuditPhase {
+    fn from(phase: &AuditRecordPhase) -> Self {
+        match phase {
+            AuditRecordPhase::Attempt => Self::Attempt,
+            AuditRecordPhase::Completion { result, .. } => Self::Completion(*result),
+            AuditRecordPhase::Correction { result, .. } => Self::Correction(*result),
+        }
+    }
 }
 
 impl From<&CompleteLogRecord> for PersistedLogRecord {
@@ -443,7 +527,11 @@ impl From<&CompleteLogRecord> for PersistedLogRecord {
             LogRecordPersistenceView::Audit(view) => Self::Audit {
                 record_id: *view.record_id().as_bytes(),
                 event_time: view.event_time().unix_milliseconds(),
-                result: view.result(),
+                phase: view.phase().into(),
+                attempt_record_id: view
+                    .phase()
+                    .attempt_record_id()
+                    .map(|record_id| *record_id.as_bytes()),
                 correlation_id: view.correlation_id().as_str().into(),
                 classification: view.body().classification().into(),
                 principal: view.body().principal().into(),
@@ -708,6 +796,60 @@ fn checksum(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
+fn validate_attempt_link(
+    transaction: &Transaction<'_>,
+    record: &PersistedLogRecord,
+) -> Result<(), LogDestinationError> {
+    let PersistedLogRecord::Audit {
+        event_time,
+        phase,
+        attempt_record_id,
+        correlation_id,
+        ..
+    } = record
+    else {
+        return Ok(());
+    };
+
+    if *phase == PersistedAuditPhase::Attempt {
+        return if attempt_record_id.is_none() {
+            Ok(())
+        } else {
+            Err(LogDestinationError::IntegrityFailure)
+        };
+    }
+    let attempt_record_id = attempt_record_id.ok_or(LogDestinationError::IntegrityFailure)?;
+    let target = transaction
+        .query_row(
+            "SELECT event_time_milliseconds, phase, correlation_id \
+             FROM weavelit_log_audit_records WHERE record_id = ?1",
+            [attempt_record_id.as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| LogDestinationError::Unavailable)?;
+
+    let Some((attempt_time, attempt_phase, attempt_correlation)) = target else {
+        return Err(LogDestinationError::IntegrityFailure);
+    };
+    if attempt_phase != "attempt" || attempt_correlation != correlation_id.as_ref() {
+        return Err(LogDestinationError::IntegrityFailure);
+    }
+    let attempt_time = attempt_time
+        .parse::<u64>()
+        .map_err(|_| LogDestinationError::Unavailable)?;
+    if attempt_time > *event_time {
+        return Err(LogDestinationError::IntegrityFailure);
+    }
+    Ok(())
+}
+
 fn record_match(
     transaction: &Transaction<'_>,
     record: &PersistedLogRecord,
@@ -738,7 +880,7 @@ fn record_match(
                     },
                 )
                 .optional()
-                .map_err(|_| LogDestinationError::IntegrityFailure)?;
+                .map_err(|_| LogDestinationError::Unavailable)?;
             let other_type = record_exists(transaction, "weavelit_log_audit_records", record_id)?;
             match (same_type, other_type) {
                 (Some(_), true) => Ok(RecordMatch::Conflicting),
@@ -762,7 +904,8 @@ fn record_match(
         PersistedLogRecord::Audit {
             record_id,
             event_time,
-            result,
+            phase,
+            attempt_record_id,
             correlation_id,
             classification,
             principal,
@@ -775,26 +918,28 @@ fn record_match(
             let record_id = record_id.as_slice();
             let same_type = transaction
                 .query_row(
-                    "SELECT event_time_milliseconds, result, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail \
+                    "SELECT event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail \
                      FROM weavelit_log_audit_records WHERE record_id = ?1",
                     [record_id],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<i64>>(2)?,
+                            row.get::<_, Option<Vec<u8>>>(3)?,
                             row.get::<_, String>(4)?,
                             row.get::<_, String>(5)?,
-                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, String>(6)?,
                             row.get::<_, String>(7)?,
-                            row.get::<_, String>(8)?,
+                            row.get::<_, Option<String>>(8)?,
                             row.get::<_, String>(9)?,
+                            row.get::<_, String>(10)?,
+                            row.get::<_, String>(11)?,
                         ))
                     },
                 )
                 .optional()
-                .map_err(|_| LogDestinationError::IntegrityFailure)?;
+                .map_err(|_| LogDestinationError::Unavailable)?;
             let other_type = record_exists(transaction, "weavelit_log_system_records", record_id)?;
             match (same_type, other_type) {
                 (Some(_), true) => Ok(RecordMatch::Conflicting),
@@ -802,7 +947,9 @@ fn record_match(
                     if row
                         == (
                             event_time.to_string(),
-                            result_value(*result),
+                            phase.as_str().to_owned(),
+                            phase.result().map(result_value),
+                            attempt_record_id.map(|record_id| record_id.to_vec()),
                             correlation_id.to_string(),
                             classification.to_string(),
                             principal.to_string(),
@@ -834,7 +981,7 @@ fn record_exists(
             [record_id],
             |row| row.get(0),
         )
-        .map_err(|_| LogDestinationError::IntegrityFailure)
+        .map_err(|_| LogDestinationError::Unavailable)
 }
 
 fn insert_record(
@@ -865,7 +1012,8 @@ fn insert_record(
         PersistedLogRecord::Audit {
             record_id,
             event_time,
-            result,
+            phase,
+            attempt_record_id,
             correlation_id,
             classification,
             principal,
@@ -876,12 +1024,14 @@ fn insert_record(
             detail,
         } => transaction.execute(
             "INSERT INTO weavelit_log_audit_records \
-             (record_id, event_time_milliseconds, result, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (record_id, event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 record_id.as_slice(),
                 event_time.to_string(),
-                result_value(*result),
+                phase.as_str(),
+                phase.result().map(result_value),
+                attempt_record_id.as_ref().map(<[u8; 16]>::as_slice),
                 correlation_id.as_ref(),
                 classification.as_ref(),
                 principal.as_ref(),
@@ -921,9 +1071,35 @@ mod tests {
     };
 
     use super::{
-        MIGRATIONS, Migration, PersistedLogRecord, SqliteLogDestination as ProductionDestination,
-        SqliteLogDestinationFactory, apply_migration, checksum, trusted_open_flags,
+        MIGRATIONS, Migration, PersistedAuditPhase, PersistedLogRecord,
+        SqliteLogDestination as ProductionDestination, SqliteLogDestinationFactory,
+        apply_migration, checksum,
     };
+
+    type LegacyAuditFields = (
+        String,
+        i64,
+        Option<Vec<u8>>,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        String,
+    );
+    type RecordMutation = (&'static str, fn(&mut PersistedLogRecord));
+    type PersistedAuditRow = (
+        String,
+        Option<i64>,
+        Option<Vec<u8>>,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+    );
 
     struct TestDestinationInputs {
         local_root: std::path::PathBuf,
@@ -1106,6 +1282,26 @@ mod tests {
             .unwrap();
     }
 
+    fn create_migration_three_destination(
+        temporary_directory: &tempfile::TempDir,
+        deployment_identity: [u8; 16],
+    ) {
+        create_migration_two_destination(temporary_directory, deployment_identity);
+        let connection = Connection::open(database_path(temporary_directory)).unwrap();
+        connection.execute_batch(MIGRATIONS[2].sql).unwrap();
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_migration_ledger \
+                 (sequence_number, identifier, checksum) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    MIGRATIONS[2].sequence,
+                    MIGRATIONS[2].identifier,
+                    checksum(MIGRATIONS[2].sql.as_bytes()).as_slice()
+                ],
+            )
+            .unwrap();
+    }
+
     fn create_current_destination(
         temporary_directory: &tempfile::TempDir,
         deployment_identity: [u8; 16],
@@ -1137,21 +1333,36 @@ mod tests {
         }
     }
 
-    fn audit_record(record_id: [u8; 16]) -> PersistedLogRecord {
-        audit_record_with(record_id, "lifecycle.backup.created", "human", None)
+    fn audit_attempt_record(record_id: [u8; 16]) -> PersistedLogRecord {
+        audit_record_with(
+            record_id,
+            42,
+            PersistedAuditPhase::Attempt,
+            None,
+            "audit-correlation",
+            "lifecycle.backup.created",
+            "human",
+            None,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn audit_record_with(
         record_id: [u8; 16],
+        event_time: u64,
+        phase: PersistedAuditPhase,
+        attempt_record_id: Option<[u8; 16]>,
+        correlation_id: &str,
         classification: &str,
         principal_type: &str,
         responsible_owner: Option<&str>,
     ) -> PersistedLogRecord {
         PersistedLogRecord::Audit {
             record_id,
-            event_time: 42,
-            result: LogResult::Failure,
-            correlation_id: "audit-correlation".into(),
+            event_time,
+            phase,
+            attempt_record_id,
+            correlation_id: correlation_id.into(),
             classification: classification.into(),
             principal: "operator".into(),
             principal_type: principal_type.into(),
@@ -1284,7 +1495,7 @@ mod tests {
         assert!(!error.to_string().contains("state-root"));
         let sqlite_error = match Connection::open_with_flags(
             context.local_root().join("log.sqlite3"),
-            trusted_open_flags(),
+            super::trusted_open_flags(),
         ) {
             Err(error) => error,
             Ok(_) => panic!("SQLite must reject the descriptor-relative NOFOLLOW path"),
@@ -1430,7 +1641,7 @@ mod tests {
         let context = context(&temporary_directory, [7; 16]);
         let destination = open(&context).unwrap();
         let system = system_record([1; 16], "pre-redacted-system-detail");
-        let audit = audit_record([2; 16]);
+        let audit = audit_attempt_record([2; 16]);
 
         deliver(&destination, &system).unwrap();
         deliver(&destination, &audit).unwrap();
@@ -1444,9 +1655,9 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        let audit_row: (String, String, String, Option<String>, String, String) = connection
+        let audit_row: PersistedAuditRow = connection
             .query_row(
-                "SELECT classification, principal, principal_type, responsible_owner, action, detail \
+                "SELECT phase, result, attempt_record_id, classification, principal, principal_type, responsible_owner, action, detail \
                  FROM weavelit_log_audit_records",
                 [],
                 |row| {
@@ -1457,6 +1668,9 @@ mod tests {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
                     ))
                 },
             )
@@ -1468,6 +1682,9 @@ mod tests {
         assert_eq!(
             audit_row,
             (
+                "attempt".into(),
+                None,
+                None,
                 "lifecycle.backup.created".into(),
                 "operator".into(),
                 "human".into(),
@@ -1494,7 +1711,8 @@ mod tests {
         let audit = PersistedLogRecord::Audit {
             record_id: [2; 16],
             event_time: 1,
-            result: LogResult::Success,
+            phase: PersistedAuditPhase::Attempt,
+            attempt_record_id: None,
             correlation_id: "c".repeat(64).into(),
             classification: "c".repeat(128).into(),
             principal: "p".repeat(256).into(),
@@ -1554,6 +1772,137 @@ mod tests {
                 4 * 1024
             )
         );
+    }
+
+    #[test]
+    fn destination_persists_every_valid_audit_phase_and_result_combination() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let destination = open(&context(&temporary_directory, [7; 16])).unwrap();
+        let attempt_record_id = [10; 16];
+        let attempt = audit_record_with(
+            attempt_record_id,
+            40,
+            PersistedAuditPhase::Attempt,
+            None,
+            "audit-correlation",
+            "internal.log-policy.changed",
+            "human",
+            None,
+        );
+        deliver(&destination, &attempt).unwrap();
+        let phases = [
+            PersistedAuditPhase::Completion(LogResult::Success),
+            PersistedAuditPhase::Completion(LogResult::Failure),
+            PersistedAuditPhase::Correction(LogResult::Success),
+            PersistedAuditPhase::Correction(LogResult::Failure),
+        ];
+
+        for (index, phase) in phases.into_iter().enumerate() {
+            let record_id = [u8::try_from(index + 11).unwrap(); 16];
+            deliver(
+                &destination,
+                &audit_record_with(
+                    record_id,
+                    42,
+                    phase,
+                    Some(attempt_record_id),
+                    "audit-correlation",
+                    "internal.log-policy.changed",
+                    "human",
+                    None,
+                ),
+            )
+            .unwrap();
+            let persisted: (String, Option<i64>, Option<Vec<u8>>) = destination
+                .connection
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT phase, result, attempt_record_id FROM weavelit_log_audit_records WHERE record_id = ?1",
+                    [record_id.as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                persisted,
+                (
+                    phase.as_str().into(),
+                    phase.result().map(super::result_value),
+                    Some(attempt_record_id.to_vec()),
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn schema_rejects_every_invalid_audit_phase_and_result_combination() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        drop(open(&context(&temporary_directory, [7; 16])).unwrap());
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        let attempt_record_id = vec![0x19_u8; 16];
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_audit_records \
+                 (record_id, event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+                 VALUES (?1, '1', 'attempt', NULL, NULL, 'correlation', 'internal.log-policy.changed', 'principal', 'human', NULL, 'action', 'target', 'detail')",
+                [attempt_record_id.as_slice()],
+            )
+            .unwrap();
+
+        for (index, (phase, result, attempt_record_id)) in [
+            ("attempt", Some(0_i64), None),
+            ("attempt", Some(1_i64), None),
+            ("attempt", None, Some(attempt_record_id.clone())),
+            ("completion", None, Some(attempt_record_id.clone())),
+            ("correction", None, Some(attempt_record_id.clone())),
+            ("completion", Some(2_i64), Some(attempt_record_id.clone())),
+            ("correction", Some(2_i64), Some(attempt_record_id.clone())),
+            ("unknown", None, None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let inserted = connection.execute(
+                "INSERT INTO weavelit_log_audit_records \
+                 (record_id, event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+                 VALUES (?1, '1', ?2, ?3, ?4, 'correlation', 'internal.log-policy.changed', 'principal', 'human', NULL, 'action', 'target', 'detail')",
+                rusqlite::params![
+                    vec![u8::try_from(index + 20).unwrap(); 16],
+                    phase,
+                    result,
+                    attempt_record_id,
+                ],
+            );
+            assert!(
+                matches!(
+                    inserted,
+                    Err(rusqlite::Error::SqliteFailure(error, _))
+                        if error.code == rusqlite::ErrorCode::ConstraintViolation
+                            && error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_CHECK
+                ),
+                "invalid {phase}/{result:?} did not return SQLITE_CONSTRAINT_CHECK"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_rejects_a_malformed_terminal_attempt_link() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        drop(open(&context(&temporary_directory, [7; 16])).unwrap());
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+
+        let inserted = connection.execute(
+            "INSERT INTO weavelit_log_audit_records \
+             (record_id, event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+             VALUES (?1, '1', 'correction', 1, ?2, 'correlation', 'internal.log-policy.changed', 'principal', 'human', NULL, 'action', 'target', 'detail')",
+            rusqlite::params![vec![0x30_u8; 16], vec![0x19_u8; 15]],
+        );
+
+        assert!(matches!(
+            inserted,
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation
+        ));
     }
 
     #[test]
@@ -1828,27 +2177,27 @@ mod tests {
     fn populated_migration_two_destination_upgrades_audit_schema_without_rewriting_legacy_rows() {
         let temporary_directory = tempfile::tempdir().unwrap();
         create_migration_two_destination(&temporary_directory, [7; 16]);
-        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        let mut connection = Connection::open(database_path(&temporary_directory)).unwrap();
         connection
             .execute(
                 "INSERT INTO weavelit_log_audit_records \
                  (record_id, event_time_milliseconds, result, correlation_id, principal, action, target, detail) \
                  VALUES (?1, '42', 0, 'legacy-correlation', 'legacy-principal', 'legacy-action', 'legacy-target', 'legacy-detail')",
-                rusqlite::params![vec![0x32_u8; 16]],
+                rusqlite::params![vec![0x31_u8; 16]],
             )
             .unwrap();
-        drop(connection);
-        let context = context(&temporary_directory, [7; 16]);
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
 
-        drop(open(&context).unwrap());
-        drop(open(&context).unwrap());
+        apply_migration(&transaction, &MIGRATIONS[2]).unwrap();
+        transaction.commit().unwrap();
 
-        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
         let legacy_fields: (Option<String>, Option<String>, Option<String>) = connection
             .query_row(
                 "SELECT classification, principal_type, responsible_owner \
                  FROM weavelit_log_audit_records WHERE record_id = ?1",
-                rusqlite::params![vec![0x32_u8; 16]],
+                rusqlite::params![vec![0x31_u8; 16]],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
@@ -1875,7 +2224,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_audit_schema_migration_leaves_no_partial_schema_or_ledger_entry() {
+    fn failed_audit_accountability_migration_leaves_no_partial_schema_or_ledger_entry() {
         let temporary_directory = tempfile::tempdir().unwrap();
         create_migration_two_destination(&temporary_directory, [7; 16]);
         let mut connection = Connection::open(database_path(&temporary_directory)).unwrap();
@@ -1908,6 +2257,208 @@ mod tests {
     }
 
     #[test]
+    fn migration_four_maps_legacy_rows_to_unlinked_completions_without_losing_fields() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        create_migration_three_destination(&temporary_directory, [7; 16]);
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        for (record_id, result, classification, principal_type, responsible_owner) in [
+            (0x32_u8, 0_i64, None, None, None),
+            (
+                0x33_u8,
+                1_i64,
+                Some("internal.log-policy.changed"),
+                Some("automation"),
+                Some("administrator"),
+            ),
+        ] {
+            connection
+                .execute(
+                "INSERT INTO weavelit_log_audit_records \
+                     (record_id, event_time_milliseconds, result, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+                     VALUES (?1, '42', ?2, 'legacy-correlation', ?3, 'legacy-principal', ?4, ?5, 'legacy-action', 'legacy-target', 'legacy-detail')",
+                    rusqlite::params![
+                        vec![record_id; 16],
+                        result,
+                        classification,
+                        principal_type,
+                        responsible_owner,
+                    ],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        let context = context(&temporary_directory, [7; 16]);
+
+        drop(open(&context).unwrap());
+        drop(open(&context).unwrap());
+
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        let legacy_fields: Vec<LegacyAuditFields> = connection
+            .prepare(
+                "SELECT phase, result, attempt_record_id, classification, principal, principal_type, responsible_owner, action, target, detail \
+                     FROM weavelit_log_audit_records ORDER BY record_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let ledger: Vec<(i64, String)> = connection
+            .prepare(
+                "SELECT sequence_number, identifier FROM weavelit_log_migration_ledger \
+                 ORDER BY sequence_number",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(
+            legacy_fields,
+            vec![
+                (
+                    "completion".into(),
+                    0,
+                    None,
+                    None,
+                    "legacy-principal".into(),
+                    None,
+                    None,
+                    "legacy-action".into(),
+                    "legacy-target".into(),
+                    "legacy-detail".into(),
+                ),
+                (
+                    "completion".into(),
+                    1,
+                    None,
+                    Some("internal.log-policy.changed".into()),
+                    "legacy-principal".into(),
+                    Some("automation".into()),
+                    Some("administrator".into()),
+                    "legacy-action".into(),
+                    "legacy-target".into(),
+                    "legacy-detail".into(),
+                ),
+            ]
+        );
+        assert_eq!(
+            ledger,
+            vec![
+                (1, "0001_create_log_destination_schema".into()),
+                (2, "0002_bound_record_payloads".into()),
+                (3, "0003_add_audit_accountability_schema".into()),
+                (4, "0004_add_audit_attempt_link".into()),
+            ]
+        );
+        let index_sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema \
+                 WHERE type = 'index' AND name = 'weavelit_log_audit_attempt_record_id_idx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(index_sql.contains("(attempt_record_id)"));
+        assert!(index_sql.contains("WHERE attempt_record_id IS NOT NULL"));
+        let terminal_guard_count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema \
+                 WHERE type = 'trigger' AND name = 'weavelit_log_audit_terminal_attempt_guard'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminal_guard_count, 1);
+    }
+
+    #[test]
+    fn migration_four_trigger_rejects_invalid_terminal_attempt_links() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        create_migration_three_destination(&temporary_directory, [7; 16]);
+        drop(open(&context(&temporary_directory, [7; 16])).unwrap());
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        let cross_correlation_attempt_id = [0x34_u8; 16];
+        connection
+            .execute(
+                "INSERT INTO weavelit_log_audit_records \
+                 (record_id, event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+                 VALUES (?1, '40', 'attempt', NULL, NULL, 'different-correlation', 'internal.log-policy.changed', 'principal', 'human', NULL, 'action', 'target', 'detail')",
+                [cross_correlation_attempt_id.as_slice()],
+            )
+            .unwrap();
+
+        for (record_id, attempt_record_id) in [
+            ([0x35_u8; 16], [0x7f_u8; 16]),
+            ([0x36_u8; 16], cross_correlation_attempt_id),
+        ] {
+            let error = connection
+                .execute(
+                    "INSERT INTO weavelit_log_audit_records \
+                     (record_id, event_time_milliseconds, phase, result, attempt_record_id, correlation_id, classification, principal, principal_type, responsible_owner, action, target, detail) \
+                     VALUES (?1, '42', 'completion', 1, ?2, 'audit-correlation', 'internal.log-policy.changed', 'principal', 'human', NULL, 'action', 'target', 'detail')",
+                    rusqlite::params![record_id.as_slice(), attempt_record_id.as_slice()],
+                )
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                rusqlite::Error::SqliteFailure(sqlite_error, Some(message))
+                    if sqlite_error.code == rusqlite::ErrorCode::ConstraintViolation
+                        && sqlite_error.extended_code
+                            == rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER
+                        && message == "invalid Audit Attempt link"
+            ));
+        }
+    }
+
+    #[test]
+    fn failed_audit_link_migration_leaves_no_partial_schema_or_ledger_entry() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        create_migration_three_destination(&temporary_directory, [7; 16]);
+        let mut connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        let before_columns = audit_schema_columns(&connection);
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let failing_migration = Migration {
+            sequence: MIGRATIONS[3].sequence,
+            identifier: MIGRATIONS[3].identifier,
+            sql: "ALTER TABLE weavelit_log_audit_records RENAME TO weavelit_log_audit_records_legacy; \
+                  THIS IS NOT VALID SQL;",
+        };
+
+        assert_eq!(
+            apply_migration(&transaction, &failing_migration),
+            Err(LogDestinationError::IntegrityFailure)
+        );
+        drop(transaction);
+
+        assert_eq!(audit_schema_columns(&connection), before_columns);
+        let ledger_entries: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_migration_ledger",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ledger_entries, 3);
+    }
+
+    #[test]
     fn exact_replay_is_acknowledged_and_changed_replay_is_rejected() {
         let temporary_directory = tempfile::tempdir().unwrap();
         let context = context(&temporary_directory, [7; 16]);
@@ -1921,9 +2472,233 @@ mod tests {
             Err(LogDestinationError::IntegrityFailure)
         );
         assert_eq!(
-            deliver(&destination, &audit_record([3; 16])),
+            deliver(&destination, &audit_attempt_record([3; 16])),
             Err(LogDestinationError::IntegrityFailure)
         );
+
+        let connection = destination.connection.lock().unwrap();
+        let persisted: (i64, String) = connection
+            .query_row(
+                "SELECT count(*), detail FROM weavelit_log_system_records WHERE record_id = ?1",
+                [[3_u8; 16].as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let cross_type_rows: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_audit_records WHERE record_id = ?1",
+                [[3_u8; 16].as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, (1, "pre-redacted-detail".into()));
+        assert_eq!(cross_type_rows, 0);
+    }
+
+    #[test]
+    fn exact_replay_survives_reopen_without_a_second_row() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let system = system_record([0x30; 16], "pre-redacted-detail");
+        let attempt = audit_attempt_record([0x31; 16]);
+        let terminal = audit_record_with(
+            [0x32; 16],
+            43,
+            PersistedAuditPhase::Completion(LogResult::Success),
+            Some([0x31; 16]),
+            "audit-correlation",
+            "lifecycle.backup.created",
+            "human",
+            None,
+        );
+
+        let destination = SqliteLogDestination::open(&context).unwrap();
+        for record in [&system, &attempt, &terminal] {
+            deliver(&destination, record).unwrap();
+        }
+        drop(destination);
+
+        let reopened = SqliteLogDestination::open(&context).unwrap();
+        for record in [&system, &attempt, &terminal] {
+            deliver(&reopened, record).unwrap();
+        }
+        let connection = reopened.connection.lock().unwrap();
+        let system_rows: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_system_records",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let audit_rows: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_audit_records",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(system_rows, 1);
+        assert_eq!(audit_rows, 2);
+    }
+
+    #[test]
+    fn system_replay_compares_every_immutable_field_without_mutation() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let destination = SqliteLogDestination::open(&context).unwrap();
+        let original = system_record([0x40; 16], "pre-redacted-detail");
+
+        deliver(&destination, &original).unwrap();
+        let mutations: [RecordMutation; 5] = [
+            ("event_time", |record| {
+                let PersistedLogRecord::System { event_time, .. } = record else {
+                    unreachable!()
+                };
+                *event_time = (*event_time).saturating_sub(1);
+            }),
+            ("result", |record| {
+                let PersistedLogRecord::System { result, .. } = record else {
+                    unreachable!()
+                };
+                *result = LogResult::Failure;
+            }),
+            ("correlation_id", |record| {
+                let PersistedLogRecord::System { correlation_id, .. } = record else {
+                    unreachable!()
+                };
+                *correlation_id = "changed-correlation".into();
+            }),
+            ("classification", |record| {
+                let PersistedLogRecord::System { classification, .. } = record else {
+                    unreachable!()
+                };
+                *classification = "internal.error".into();
+            }),
+            ("detail", |record| {
+                let PersistedLogRecord::System { detail, .. } = record else {
+                    unreachable!()
+                };
+                *detail = "password=changed-secret".into();
+            }),
+        ];
+
+        for (field, mutate) in mutations {
+            let mut changed = original.clone();
+            mutate(&mut changed);
+            let error = deliver(&destination, &changed).unwrap_err();
+            assert_eq!(error, LogDestinationError::IntegrityFailure, "{field}");
+            assert!(!error.to_string().contains("changed-secret"), "{field}");
+        }
+
+        let persisted: (i64, String) = destination
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*), detail FROM weavelit_log_system_records WHERE record_id = ?1",
+                [[0x40_u8; 16].as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(persisted, (1, "pre-redacted-detail".into()));
+    }
+
+    #[test]
+    fn audit_replay_compares_every_immutable_body_field_without_mutation() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let destination = SqliteLogDestination::open(&context).unwrap();
+        let original = audit_record_with(
+            [0x45; 16],
+            42,
+            PersistedAuditPhase::Attempt,
+            None,
+            "audit-correlation",
+            "internal.log-policy.changed",
+            "automation",
+            Some("administrator"),
+        );
+
+        deliver(&destination, &original).unwrap();
+        let mutations: [RecordMutation; 9] = [
+            ("event_time", |record| {
+                let PersistedLogRecord::Audit { event_time, .. } = record else {
+                    unreachable!()
+                };
+                *event_time += 1;
+            }),
+            ("correlation_id", |record| {
+                let PersistedLogRecord::Audit { correlation_id, .. } = record else {
+                    unreachable!()
+                };
+                *correlation_id = "changed-correlation".into();
+            }),
+            ("classification", |record| {
+                let PersistedLogRecord::Audit { classification, .. } = record else {
+                    unreachable!()
+                };
+                *classification = "internal.server-configuration.changed".into();
+            }),
+            ("principal", |record| {
+                let PersistedLogRecord::Audit { principal, .. } = record else {
+                    unreachable!()
+                };
+                *principal = "different-operator".into();
+            }),
+            ("principal_type", |record| {
+                let PersistedLogRecord::Audit { principal_type, .. } = record else {
+                    unreachable!()
+                };
+                *principal_type = "human".into();
+            }),
+            ("responsible_owner", |record| {
+                let PersistedLogRecord::Audit {
+                    responsible_owner, ..
+                } = record
+                else {
+                    unreachable!()
+                };
+                *responsible_owner = Some("different-administrator".into());
+            }),
+            ("action", |record| {
+                let PersistedLogRecord::Audit { action, .. } = record else {
+                    unreachable!()
+                };
+                *action = "different-action".into();
+            }),
+            ("target", |record| {
+                let PersistedLogRecord::Audit { target, .. } = record else {
+                    unreachable!()
+                };
+                *target = "different-target".into();
+            }),
+            ("detail", |record| {
+                let PersistedLogRecord::Audit { detail, .. } = record else {
+                    unreachable!()
+                };
+                *detail = "password=changed-secret".into();
+            }),
+        ];
+
+        for (field, mutate) in mutations {
+            let mut changed = original.clone();
+            mutate(&mut changed);
+            let error = deliver(&destination, &changed).unwrap_err();
+            assert_eq!(error, LogDestinationError::IntegrityFailure, "{field}");
+            assert!(!error.to_string().contains("changed-secret"), "{field}");
+        }
+
+        let persisted: (i64, String) = destination
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*), detail FROM weavelit_log_audit_records WHERE record_id = ?1",
+                [[0x45_u8; 16].as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(persisted, (1, "pre-redacted".into()));
     }
 
     #[test]
@@ -1933,6 +2708,10 @@ mod tests {
         let destination = SqliteLogDestination::open(&context).unwrap();
         let original = audit_record_with(
             [0x45; 16],
+            42,
+            PersistedAuditPhase::Attempt,
+            None,
+            "audit-correlation",
             "internal.log-policy.changed",
             "automation",
             Some("administrator"),
@@ -1943,16 +2722,43 @@ mod tests {
         for changed in [
             audit_record_with(
                 [0x45; 16],
+                42,
+                PersistedAuditPhase::Attempt,
+                None,
+                "audit-correlation",
                 "internal.server-configuration.changed",
                 "automation",
                 Some("administrator"),
             ),
-            audit_record_with([0x45; 16], "internal.log-policy.changed", "human", None),
             audit_record_with(
                 [0x45; 16],
+                42,
+                PersistedAuditPhase::Attempt,
+                None,
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x45; 16],
+                42,
+                PersistedAuditPhase::Attempt,
+                None,
+                "audit-correlation",
                 "internal.log-policy.changed",
                 "automation",
                 Some("different-administrator"),
+            ),
+            audit_record_with(
+                [0x45; 16],
+                42,
+                PersistedAuditPhase::Completion(LogResult::Success),
+                Some([0x45; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "automation",
+                Some("administrator"),
             ),
         ] {
             assert_eq!(
@@ -1978,6 +2784,271 @@ mod tests {
                 Some("administrator".into()),
             )
         );
+    }
+
+    #[test]
+    fn audit_replay_compares_terminal_result_and_attempt_link() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let destination = open(&context(&temporary_directory, [7; 16])).unwrap();
+        for attempt_record_id in [[0x50; 16], [0x51; 16]] {
+            deliver(
+                &destination,
+                &audit_record_with(
+                    attempt_record_id,
+                    40,
+                    PersistedAuditPhase::Attempt,
+                    None,
+                    "audit-correlation",
+                    "internal.log-policy.changed",
+                    "human",
+                    None,
+                ),
+            )
+            .unwrap();
+        }
+        let original = audit_record_with(
+            [0x52; 16],
+            42,
+            PersistedAuditPhase::Completion(LogResult::Success),
+            Some([0x50; 16]),
+            "audit-correlation",
+            "internal.log-policy.changed",
+            "human",
+            None,
+        );
+
+        deliver(&destination, &original).unwrap();
+        deliver(&destination, &original).unwrap();
+        for changed in [
+            audit_record_with(
+                [0x52; 16],
+                42,
+                PersistedAuditPhase::Correction(LogResult::Success),
+                Some([0x50; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x52; 16],
+                42,
+                PersistedAuditPhase::Completion(LogResult::Failure),
+                Some([0x50; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x52; 16],
+                42,
+                PersistedAuditPhase::Completion(LogResult::Success),
+                Some([0x51; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+        ] {
+            assert_eq!(
+                deliver(&destination, &changed),
+                Err(LogDestinationError::IntegrityFailure)
+            );
+        }
+
+        let terminal_rows: i64 = destination
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_audit_records WHERE record_id = ?1",
+                [[0x52_u8; 16].as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminal_rows, 1);
+    }
+
+    #[test]
+    fn terminal_links_reject_absent_non_attempt_cross_correlation_and_future_targets() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let destination = open(&context(&temporary_directory, [7; 16])).unwrap();
+        for attempt in [
+            audit_record_with(
+                [0x60; 16],
+                40,
+                PersistedAuditPhase::Attempt,
+                None,
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x61; 16],
+                40,
+                PersistedAuditPhase::Attempt,
+                None,
+                "different-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x62; 16],
+                50,
+                PersistedAuditPhase::Attempt,
+                None,
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+        ] {
+            deliver(&destination, &attempt).unwrap();
+        }
+        let prior_completion = audit_record_with(
+            [0x63; 16],
+            42,
+            PersistedAuditPhase::Completion(LogResult::Success),
+            Some([0x60; 16]),
+            "audit-correlation",
+            "internal.log-policy.changed",
+            "human",
+            None,
+        );
+        deliver(&destination, &prior_completion).unwrap();
+
+        for rejected in [
+            audit_record_with(
+                [0x64; 16],
+                42,
+                PersistedAuditPhase::Completion(LogResult::Success),
+                None,
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x65; 16],
+                42,
+                PersistedAuditPhase::Completion(LogResult::Success),
+                Some([0x7f; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x66; 16],
+                42,
+                PersistedAuditPhase::Completion(LogResult::Success),
+                Some([0x61; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x67; 16],
+                42,
+                PersistedAuditPhase::Correction(LogResult::Failure),
+                Some([0x63; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x68; 16],
+                42,
+                PersistedAuditPhase::Completion(LogResult::Success),
+                Some([0x62; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+            audit_record_with(
+                [0x69; 16],
+                42,
+                PersistedAuditPhase::Attempt,
+                Some([0x60; 16]),
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+        ] {
+            let error = deliver(&destination, &rejected).unwrap_err();
+            assert_eq!(error, LogDestinationError::IntegrityFailure);
+            assert_eq!(
+                error.to_string(),
+                "log destination integrity validation failed"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_delivery_reports_a_malformed_stored_attempt_time_as_unavailable() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let destination = open(&context(&temporary_directory, [7; 16])).unwrap();
+        let attempt_record_id = [0x6a_u8; 16];
+        let terminal_record_id = [0x6b_u8; 16];
+        deliver(
+            &destination,
+            &audit_record_with(
+                attempt_record_id,
+                40,
+                PersistedAuditPhase::Attempt,
+                None,
+                "audit-correlation",
+                "internal.log-policy.changed",
+                "human",
+                None,
+            ),
+        )
+        .unwrap();
+        destination
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE weavelit_log_audit_records \
+                 SET event_time_milliseconds = 'not-a-timestamp' WHERE record_id = ?1",
+                [attempt_record_id.as_slice()],
+            )
+            .unwrap();
+
+        assert_eq!(
+            deliver(
+                &destination,
+                &audit_record_with(
+                    terminal_record_id,
+                    42,
+                    PersistedAuditPhase::Completion(LogResult::Success),
+                    Some(attempt_record_id),
+                    "audit-correlation",
+                    "internal.log-policy.changed",
+                    "human",
+                    None,
+                ),
+            ),
+            Err(LogDestinationError::Unavailable)
+        );
+        let terminal_count: i64 = destination
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_audit_records WHERE record_id = ?1",
+                [terminal_record_id.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminal_count, 0);
     }
 
     #[test]
@@ -2028,6 +3099,8 @@ mod tests {
         let temporary_directory = tempfile::tempdir().unwrap();
         let context = context(&temporary_directory, [7; 16]);
         let destination = SqliteLogDestination::open(&context).unwrap();
+        let record = system_record([4; 16], "secret-record-content");
+        deliver(&destination, &record).unwrap();
         destination
             .connection
             .lock()
@@ -2037,24 +3110,70 @@ mod tests {
         let lock = Connection::open(database_path(&temporary_directory)).unwrap();
         lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
 
-        let error = deliver(
-            &destination,
-            &system_record([4; 16], "secret-record-content"),
-        )
-        .unwrap_err();
+        let error = deliver(&destination, &record).unwrap_err();
         assert_eq!(error, LogDestinationError::Unavailable);
         assert!(!error.to_string().contains("secret-record-content"));
         lock.execute_batch("ROLLBACK").unwrap();
+
+        let persisted_rows: i64 = destination
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM weavelit_log_system_records",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted_rows, 1);
+    }
+
+    #[test]
+    fn undecodable_existing_record_makes_replay_unavailable_without_mutation() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let context = context(&temporary_directory, [7; 16]);
+        let record = system_record([0x70; 16], "secret-record-content");
+        let destination = SqliteLogDestination::open(&context).unwrap();
+        deliver(&destination, &record).unwrap();
+        drop(destination);
+
+        let connection = Connection::open(database_path(&temporary_directory)).unwrap();
+        connection
+            .execute(
+                "UPDATE weavelit_log_system_records SET detail = zeroblob(8) WHERE record_id = ?1",
+                [[0x70_u8; 16].as_slice()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let reopened = SqliteLogDestination::open(&context).unwrap();
+        let error = deliver(&reopened, &record).unwrap_err();
+        assert_eq!(error, LogDestinationError::Unavailable);
+        for secret in ["secret-record-content", "log.sqlite3", "detail"] {
+            assert!(!error.to_string().contains(secret));
+            assert!(!format!("{error:?}").contains(secret));
+        }
+        let persisted: (i64, String) = reopened
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*), typeof(detail) FROM weavelit_log_system_records WHERE record_id = ?1",
+                [[0x70_u8; 16].as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(persisted, (1, "blob".into()));
     }
 
     #[test]
     fn tampered_migration_ledger_fails_closed() {
         for mutation in [
             "UPDATE weavelit_log_migration_ledger SET checksum = zeroblob(32)",
-            "UPDATE weavelit_log_migration_ledger SET sequence_number = 4 WHERE sequence_number = 2",
+            "UPDATE weavelit_log_migration_ledger SET sequence_number = 5 WHERE sequence_number = 2",
             "DELETE FROM weavelit_log_migration_ledger",
             "INSERT INTO weavelit_log_migration_ledger (sequence_number, identifier, checksum) \
-               VALUES (4, '0004_unknown', zeroblob(32))",
+                    VALUES (5, '0005_unknown', zeroblob(32))",
         ] {
             let temporary_directory = tempfile::tempdir().unwrap();
             let context = context(&temporary_directory, [7; 16]);

@@ -6,9 +6,15 @@ including authentication, User Plane and Administration Plane requests,
 structured results, and the failure conditions most likely to make a release
 unusable.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns Weavelit CLI-focused test suites.
 - It does not replace Server contract, authorization, provider integration, or package tests in their owning boundaries.
@@ -16,29 +22,17 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
+## Working Rules
 
-- `AGENTS.md`: Local routing, inventory, and Weavelit CLI test-boundary rules.
+- MUST follow [Contribution Guidelines](../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../docs/), application documentation MUST comply with the [Documentation Standards](../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../docs/glossary.md), formatting them as bold links on first substantive use.
 
-## Usage Guidance
+- Before editing, agents MUST read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
+- MUST read `../../docs/testing.md` and the relevant Weavelit CLI requirement before adding or changing a test workflow.
+- MUST exercise observable CLI results and Server interaction boundaries rather than private implementation call order.
+- MUST keep tests deterministic, isolated, repeatable, and free of live provider credentials, provider services, real user data, and network timing dependencies.
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
-
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../docs/testing.md` and the relevant Weavelit CLI requirement before adding or changing a test workflow.
-- Exercise observable CLI results and Server interaction boundaries rather than private implementation call order.
-- Keep tests deterministic, isolated, repeatable, and free of live provider credentials, provider services, real user data, and network timing dependencies.
-
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Cover sign-in, sign-out, permitted and denied User Plane and Administration Plane requests, unavailable access, and structured result behavior as each workflow is implemented.
-- Verify the separately packaged CLI against the versioned Server interface on its supported macOS `arm64` platform when release workflows are introduced.
-- Use controlled Server fixtures; do not depend on a live provider as part of the default CLI test suite.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- MUST cover sign-in, sign-out, permitted and denied User Plane and Administration Plane requests, unavailable access, and structured result behavior as each workflow is implemented.
+- MUST verify the separately packaged CLI against the versioned Server interface on its supported macOS `arm64` platform when release workflows are introduced.
+- MUST use controlled Server fixtures; do not depend on a live provider as part of the default CLI test suite.

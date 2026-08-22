@@ -193,6 +193,10 @@ fn non_secret_state_is_carried_through_unchanged() {
     let backup = validated.backup();
 
     assert_eq!(state.accounts(), backup.accounts());
+    assert_eq!(
+        state.account_public_identities(),
+        backup.account_public_identities()
+    );
     assert_eq!(state.groups(), backup.groups());
     assert_eq!(state.group_memberships(), backup.group_memberships());
     assert_eq!(state.group_grants(), backup.group_grants());

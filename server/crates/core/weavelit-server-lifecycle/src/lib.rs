@@ -10,6 +10,7 @@ mod filesystem;
 mod format;
 mod persistence;
 mod protection;
+mod selected;
 
 pub use arbitration::{
     AcknowledgedWorkflow, CommittedWorkflow, PendingWorkflow, ReleasedInitCheckpoint,
@@ -39,6 +40,7 @@ pub use protection::{
     MAX_PROTECTED_PLAINTEXT_BYTES, ProtectedValueAccess, ProtectedValueKind, ProtectedValueOpener,
     ProtectedValueSealer,
 };
+pub use selected::SelectedDatabase;
 pub use weavelit_server_database::{
     ApplicationDatabase, ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection,
     DeploymentIdentifier, InitializedState, StateIdentifier, WorkflowCheckpoint, WorkflowKind,

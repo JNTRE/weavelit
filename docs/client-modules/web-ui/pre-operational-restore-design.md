@@ -157,7 +157,8 @@ is rejected. The request must carry either no `Accept` header or exactly one
 ### Success
 
 An accepted submission responds `202 Accepted` with
-`Content-Type: application/json; charset=utf-8` and this typed envelope:
+`Content-Type: application/json; charset=utf-8`,
+`Cache-Control: no-store`, and this typed envelope:
 
 ```json
 {"result":{"restore_ticket":"<43-character token>",
@@ -364,9 +365,11 @@ handshake capacity, the shared per-source rate budget, request-target and
 header-section limits, and connection-close response framing.
 
 Both routes emit no cross-origin resource sharing (CORS) headers, set no cookie,
-accept no credentials, and answer no preflight. No response on either route is
-cached: neither carries a recovery key or an artifact byte, and the one response
-that carries a ticket carries it once.
+accept no credentials, and answer no preflight. Only the successful ticket
+response carries the closed secret-disclosure cache effect and its fixed
+`Cache-Control: no-store` header. Artifact results and every rejection carry no
+cache-control effect; the Web UI still uses no-store request behavior for every
+route.
 
 ## Compatibility
 

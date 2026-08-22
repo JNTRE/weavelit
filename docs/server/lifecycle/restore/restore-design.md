@@ -23,7 +23,9 @@ decryption, compatibility checks, and restored-state transformation. It does
 not own startup classification, the deployment record, the database locator,
 Application Database selection, final lifecycle sealing, or client
 presentation. It receives a validated lifecycle authority and selected
-database bound to the trusted replacement deployment identifier.
+database binding: the trusted replacement deployment identifier, selected
+backend identifier, and the `AuditReferencePersistence` decoder minted only
+after lifecycle reopened and inspected that selected database.
 
 Every mutating Restore operation independently calls the lifecycle authority
 before reading a private recovery key or backup content or causing side effects.
@@ -312,6 +314,44 @@ Module destination remains unusable until an authorized Administrator re-enters
 its credentials through an
 **[Administration Plane](../../../glossary.md#applications-and-interfaces)**.
 
+Version-1 account, Group, and Log Module configuration entries may carry an
+**[Audit Reference Identifier](../../../glossary.md#applications-and-interfaces)**
+in its exact canonical `ar-` plus 32-lowercase-hexadecimal representation.
+Lifecycle carries the selected Application Database's private-field persistence
+decoder into Restore, which preserves a supplied value exactly and rejects
+malformed or reused values as invalid backup content without disclosing them.
+The field may be omitted for compatibility with version-1 backups written
+before Audit References existed, but an explicitly present JSON `null` is
+malformed and is not treated as an omission. Normalization assigns every omitted
+value a fresh independent random nonzero 128-bit identifier before it returns
+usable state; generation never uses the entity name or `StateIdentifier`. All
+three entity kinds share one uniqueness domain. The
+wire bound is derived from the canonical prefix and twice the identifier byte
+length and asserted to remain 35 bytes. This additive reader compatibility does
+not change either backup format version. Unavailable operating-system
+randomness stops normalization as the existing payload-free `restore_failed`
+internal outcome rather than misclassifying valid legacy content as invalid.
+
+Each version-1 Group entry may also carry `public_id` as exactly 22 canonical
+unpadded Base64url characters encoding a nonzero 16-byte Group Public
+Identifier. Lifecycle carries the selected Application Database's distinct
+Group persistence decoder into Restore. A supplied value is preserved exactly;
+malformed, zero, duplicate, or explicit-null values are invalid backup content.
+Omission remains compatible with legacy version-1 backups and generates a fresh
+independent random value for each Group during normalization.
+
+Version-1 account entries may also carry a nonzero credential revision, a
+`must_change_password` flag, and a nonnegative absolute temporary-credential
+expiry in Unix milliseconds. Omission remains compatible with backups written
+before those fields existed and supplies revision `1`, a false flag, and no
+expiry. A supplied flag and expiry must be present together, and temporary
+metadata requires a supplied verifier for that account. Zero or malformed
+revisions, negative or malformed expiries, inconsistent combinations, and a
+temporary account without a verifier are all the existing payload-free
+`backup_invalid` outcome. Valid supplied metadata survives normalization
+exactly, and this additive compatibility does not change the backup format
+version.
+
 Restore binds all normalized state to the replacement deployment identifier.
 It creates no active session, accepts no session from the artifact, and ensures
 that credentials from the prior deployment cannot resume a Server session. It
@@ -432,9 +472,10 @@ step that can fail without leaving retained state runs before the checkpoint.
 1. Start the request budget, then acquire the shared lifecycle mutation lane
    without waiting. Contention returns `restore_pending`.
 2. Authorize the workflow through the lifecycle authority. The permit that
-   authorization returns supplies both the replacement deployment identifier and
-   the selected backend the backup must match, so the authority is consulted
-   before any submitted key or artifact byte is read.
+   authorization returns supplies the replacement deployment identifier, the
+   selected backend the backup must match, and the selected database's
+   persistence decoder, so the authority is consulted before any submitted key
+   or artifact byte is read.
 3. Validate the artifact and recovery key, then release both immediately.
 4. Generate the Restore-result record identifier and correlation identifier from
    operating-system randomness and read the event time.
@@ -526,7 +567,8 @@ digest a prior completed workflow left in that same singleton record. It is the
 only value the submission-bound lifecycle reconciliation route the
 [API Contract Design](../../../server/api/api-contract-design.md#lifecycle-reconciliation)
 defines ever compares a submitted capability against; the capability itself is
-never persisted.
+never persisted. This ticket-bearing response emits
+`Cache-Control: no-store` through the closed typed response effect.
 
 The runtime owns the ticket store and nothing about the wire format. It retains
 only a domain-separated digest of the ticket and compares a submitted ticket
@@ -594,6 +636,13 @@ state classification, absence of reconciliation, retry, reset, automatic
 cleanup, recreation, and sealing after interruption, Restore-specific valid-run
 failure classification, concurrency with Init and Restore requests, direct
 invocation after sealing, and rejection before key or artifact processing.
+Its content tests also prove exact preservation of supplied account and Group
+Audit Reference Identifiers through the injected selected-database persistence
+decoder, fresh independent generation from operating-system randomness,
+canonical and duplicate rejection, explicit-null rejection, and independent
+generation for committed legacy fixtures. They also prove credential revision
+and temporary-metadata preservation, legacy defaults, paired-field validation,
+the verifier requirement, and uniform invalid-backup rejection.
 Fixture-based tests use immutable raw `.wlitbackup` files, their canonical
 private-key line, the expected decrypted plaintext, and a canonical JSON
 manifest recording each fixture's exact byte lengths and SHA-256 digests. Every

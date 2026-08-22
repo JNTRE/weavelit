@@ -8,7 +8,11 @@
 //! watermark that could accept or refuse a code on evidence from another
 //! deployment's history.
 
-use crate::{ContractInputError, DatabaseError, MfaFactor, Name, NewSession, StateIdentifier};
+use crate::{
+    AccountCredentialIssuanceRecheck, ContractInputError, DatabaseError, MfaFactor, Name,
+    NewSession, SessionInstant, SessionTokenHash, StateIdentifier,
+    ValidatedAuditTerminalObligationWrite,
+};
 
 /// Largest accepted time step.
 ///
@@ -51,10 +55,88 @@ impl MfaTimeStep {
 pub enum MfaAcceptance {
     /// The step advanced the factor's watermark and the session was issued.
     Accepted,
+    /// Account state no longer permits the verified credential to issue a session.
+    Rejected,
     /// The step did not advance the watermark, so the code is a replay.
     Replayed,
     /// The MFA Module was disabled when the code was presented.
     ModuleDisabled,
+}
+
+/// Exact live session state an administration step-up must recheck.
+pub struct MfaAdministrationStepUpRecheck {
+    actor: StateIdentifier,
+    session: SessionTokenHash,
+    client_module: Name,
+    now: SessionInstant,
+}
+
+impl MfaAdministrationStepUpRecheck {
+    /// Binds one verified code to the exact current administration session.
+    #[must_use]
+    pub const fn new(
+        actor: StateIdentifier,
+        session: SessionTokenHash,
+        client_module: Name,
+        now: SessionInstant,
+    ) -> Self {
+        Self {
+            actor,
+            session,
+            client_module,
+            now,
+        }
+    }
+
+    /// Returns the authenticated account.
+    pub const fn actor(&self) -> StateIdentifier {
+        self.actor
+    }
+
+    /// Returns the exact current session digest.
+    pub const fn session(&self) -> &SessionTokenHash {
+        &self.session
+    }
+
+    /// Returns the issuing Client Module.
+    pub const fn client_module(&self) -> &Name {
+        &self.client_module
+    }
+
+    /// Returns the instant at which session liveness is judged.
+    pub const fn now(&self) -> SessionInstant {
+        self.now
+    }
+}
+
+impl std::fmt::Debug for MfaAdministrationStepUpRecheck {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MfaAdministrationStepUpRecheck(REDACTED)")
+    }
+}
+
+/// Authoritative result of consuming a verified TOTP step for administration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MfaAdministrationStepUpAcceptance {
+    /// The exact current session and factor were accepted and the watermark advanced.
+    Accepted,
+    /// Session, actor, account, or factor ownership was no longer exact.
+    Rejected,
+    /// The verified step did not advance the factor watermark.
+    Replayed,
+    /// The factor's MFA Module was disabled.
+    ModuleDisabled,
+}
+
+/// Authoritative result of accepting credential-issuance assurance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialIssuanceStepUpAcceptance {
+    /// Exact live state was accepted and any TOTP watermark was advanced.
+    Accepted,
+    /// Session, actor, credential, factor, or Module state was no longer exact.
+    Rejected,
+    /// The verified TOTP step did not advance its factor watermark.
+    Replayed,
 }
 
 /// The result of issuing a session no second factor was found to gate.
@@ -93,6 +175,8 @@ pub enum MfaEnrollment {
     AlreadyEnrolled,
     /// The MFA Module was disabled when the enrollment was presented.
     ModuleDisabled,
+    /// Account state no longer permits the verified credential to issue a session.
+    Rejected,
 }
 
 /// The two names one MFA Module is addressed by.
@@ -107,6 +191,36 @@ pub struct MfaModuleTarget {
     pub module: Name,
     /// The configuration component that owns the module's enabled setting.
     pub component: Name,
+}
+
+/// Current state shown before one MFA Module enablement decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MfaEnablementPreviewState {
+    current_enabled: bool,
+    affected_users: usize,
+}
+
+impl MfaEnablementPreviewState {
+    /// Constructs one snapshot from values read in a single database transaction.
+    #[must_use]
+    pub const fn new(current_enabled: bool, affected_users: usize) -> Self {
+        Self {
+            current_enabled,
+            affected_users,
+        }
+    }
+
+    /// Returns whether the Module is currently enabled.
+    #[must_use]
+    pub const fn current_enabled(self) -> bool {
+        self.current_enabled
+    }
+
+    /// Returns the number of distinct enrolled Human Users.
+    #[must_use]
+    pub const fn affected_users(self) -> usize {
+        self.affected_users
+    }
 }
 
 /// The result of changing one MFA Module's enabled state.
@@ -125,9 +239,47 @@ pub enum MfaEnablementOutcome {
     /// for the module, which the caller already asked for by previewing it.
     /// Nothing was written.
     EnrolledCountChanged {
-        /// The enrolled-account count observed inside the rejecting transaction.
-        enrolled: usize,
+        /// The affected-Human-User count observed inside the rejecting transaction.
+        current_affected_users: usize,
     },
+}
+
+/// Prevalidated terminal obligations for either authoritative enablement outcome.
+pub struct MfaEnablementAuditTerminalWrites<'a> {
+    applied: &'a ValidatedAuditTerminalObligationWrite,
+    enrolled_count_changed: &'a ValidatedAuditTerminalObligationWrite,
+}
+
+impl<'a> MfaEnablementAuditTerminalWrites<'a> {
+    /// Binds the success and stale-preview terminal writes before mutation begins.
+    #[must_use]
+    pub const fn new(
+        applied: &'a ValidatedAuditTerminalObligationWrite,
+        enrolled_count_changed: &'a ValidatedAuditTerminalObligationWrite,
+    ) -> Self {
+        Self {
+            applied,
+            enrolled_count_changed,
+        }
+    }
+
+    /// Returns the terminal obligation for an applied state change.
+    #[must_use]
+    pub const fn applied(&self) -> &ValidatedAuditTerminalObligationWrite {
+        self.applied
+    }
+
+    /// Returns the terminal obligation for a stale enrolled-user preview.
+    #[must_use]
+    pub const fn enrolled_count_changed(&self) -> &ValidatedAuditTerminalObligationWrite {
+        self.enrolled_count_changed
+    }
+}
+
+impl std::fmt::Debug for MfaEnablementAuditTerminalWrites<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MfaEnablementAuditTerminalWrites(REDACTED)")
+    }
 }
 
 /// Durable live MFA replay watermarks available during normal operation.
@@ -138,6 +290,15 @@ pub enum MfaEnablementOutcome {
 /// presentation of the same code observes the same earlier watermark and is
 /// also accepted.
 pub trait MfaStore {
+    /// Counts distinct Human Users holding a factor for the target Module.
+    fn enrolled_accounts(&mut self, target: &MfaModuleTarget) -> Result<usize, DatabaseError>;
+
+    /// Reads current enablement and affected Human Users in one snapshot.
+    fn enablement_preview(
+        &mut self,
+        target: &MfaModuleTarget,
+    ) -> Result<MfaEnablementPreviewState, DatabaseError>;
+
     /// Returns the last step one factor accepted, when it has accepted one.
     fn accepted_step(
         &mut self,
@@ -167,6 +328,30 @@ pub trait MfaStore {
         session: &NewSession,
     ) -> Result<MfaAcceptance, DatabaseError>;
 
+    /// Consumes a verified step for one exact current administration session.
+    ///
+    /// Session ownership and liveness, actor activity, factor ownership,
+    /// Module enablement, and replay state are rechecked in the transaction
+    /// that advances the watermark. No session is issued, touched, or rotated.
+    fn accept_administration_step_up(
+        &mut self,
+        target: &MfaModuleTarget,
+        factor: StateIdentifier,
+        step: MfaTimeStep,
+        recheck: &MfaAdministrationStepUpRecheck,
+    ) -> Result<MfaAdministrationStepUpAcceptance, DatabaseError>;
+
+    /// Atomically accepts one credential-issuance assurance snapshot.
+    ///
+    /// The transaction rechecks the exact live session, active ordinary actor
+    /// credential revision, factor identity or absence, and Module state. A
+    /// present factor's verified step must advance its replay watermark. No
+    /// account business state, Audit record, or session is written.
+    fn accept_credential_issuance_step_up(
+        &mut self,
+        recheck: &AccountCredentialIssuanceRecheck,
+    ) -> Result<CredentialIssuanceStepUpAcceptance, DatabaseError>;
+
     /// Writes one session for a login no second factor was found to gate.
     ///
     /// The enabled-state read, the account's enrollment read, the account's
@@ -183,7 +368,6 @@ pub trait MfaStore {
     fn issue_direct_session(
         &mut self,
         target: &MfaModuleTarget,
-        account: StateIdentifier,
         session: &NewSession,
     ) -> Result<MfaDirectSession, DatabaseError>;
 
@@ -224,6 +408,7 @@ pub trait MfaStore {
         target: &MfaModuleTarget,
         enabled: bool,
         expected_enrolled: usize,
+        audit_terminals: &MfaEnablementAuditTerminalWrites<'_>,
     ) -> Result<MfaEnablementOutcome, DatabaseError>;
 }
 

@@ -146,7 +146,8 @@ exactly one `Accept: application/json`.
 ### Success
 
 An accepted submission responds `200 OK` with
-`Content-Type: application/json; charset=utf-8` and this typed envelope:
+`Content-Type: application/json; charset=utf-8`,
+`Cache-Control: no-store`, and this typed envelope:
 
 ```json
 {"result":{"recovery_key":"AGE-SECRET-KEY-1...","delivery_nonce":"<opaque-value>",
@@ -377,9 +378,11 @@ and handshake capacity, the shared per-source rate budget, request-target and
 header-section limits, and connection-close response framing.
 
 Both routes emit no cross-origin resource sharing (CORS) headers, set no
-cookie, accept no credentials, and answer no preflight. No response on either
-route is cached: the rejection bodies carry no secret, and the one response
-that carries a recovery key carries it once.
+cookie, accept no credentials, and answer no preflight. Only the successful
+recovery-key response carries the closed secret-disclosure cache effect and its
+fixed `Cache-Control: no-store` header. Finalization results and every rejection
+carry no cache-control effect; the Web UI still uses no-store request behavior
+for every route.
 
 ## Compatibility
 

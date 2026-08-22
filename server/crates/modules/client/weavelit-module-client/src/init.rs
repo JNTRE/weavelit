@@ -37,7 +37,7 @@ use crate::{
     single_header,
     typed_json::{
         OpaqueToken, RecoveryKeyLine, ResponseCorrelation, StableCode, TypedJsonEnvelope,
-        TypedResult, TypedValue, typed_json_response,
+        TypedResult, TypedValue, typed_json_response, typed_json_secret_response,
     },
 };
 
@@ -992,7 +992,7 @@ fn init_recovery_key_prepared_response(prepared: &InitRecoveryKeyPrepared) -> Re
         return InitRejection::InitializationFailed.response();
     };
     match ResponseCorrelation::new(&prepared.correlation_id) {
-        Some(correlation_id) => typed_json_response(
+        Some(correlation_id) => typed_json_secret_response(
             StatusCode::OK,
             TypedJsonEnvelope::Result {
                 result,
@@ -1457,6 +1457,7 @@ mod tests {
             correlation_id: CORRELATION.to_owned(),
         });
         assert_eq!(prepared.status(), StatusCode::OK);
+        assert!(crate::typed_json::has_secret_disclosure_effect(&prepared));
         assert_eq!(
             envelope(&prepared),
             format!(
@@ -1469,6 +1470,7 @@ mod tests {
             correlation_id: CORRELATION.to_owned(),
         });
         assert_eq!(completed.status(), StatusCode::OK);
+        assert!(!crate::typed_json::has_secret_disclosure_effect(&completed));
         assert_eq!(
             envelope(&completed),
             format!(

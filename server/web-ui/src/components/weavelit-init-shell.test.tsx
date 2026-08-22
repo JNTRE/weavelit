@@ -1,7 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentType } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApplicationShell } from "./weavelit-init-shell";
+
+const AUTH_CORRELATION = "authentication-correlation";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -430,7 +433,9 @@ describe("ApplicationShell Restore form gating", () => {
         return Promise.resolve(jsonResponse({ result: { lifecycle: "initialized" } }));
       }
       if (typeof input === "string" && input.startsWith("/api/v1/auth/")) {
-        return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
       }
       expect(init?.method).not.toBe("PUT");
       return selectedStatus();
@@ -540,7 +545,9 @@ describe("ApplicationShell Init workflow gating", () => {
         return Promise.resolve(jsonResponse({ result: { lifecycle: "initialized" } }));
       }
       if (typeof input === "string" && input.startsWith("/api/v1/auth/")) {
-        return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
       }
       expect(init?.method).not.toBe("PUT");
       return selectedStatus();
@@ -606,7 +613,43 @@ describe("ApplicationShell sign-in panel gating", () => {
   }
 
   function sessionRejected(): Promise<Response> {
-    return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+    return Promise.resolve(
+      jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+    );
+  }
+
+  function mockAuthenticatedAdministrationFetch() {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    return vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+              password_change_required: false,
+            },
+            correlation_id: AUTH_CORRELATION,
+          }),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        return Promise.resolve(
+          jsonResponse({
+            result: { items: [], next_cursor: null },
+            correlation_id: "accounts-list-correlation",
+          }),
+        );
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
   }
 
   it.each([
@@ -659,4 +702,709 @@ describe("ApplicationShell sign-in panel gating", () => {
       expect(loginSection()).toBeNull();
     });
   });
+
+  it("opens the Accounts workspace when the Server session probe authenticates", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+              password_change_required: false,
+            },
+            correlation_id: AUTH_CORRELATION,
+          }),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              items: [
+                {
+                  public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+                  username: "administrator",
+                  display_name: "First Administrator",
+                  active: true,
+                  mfa_required: false,
+                },
+              ],
+              next_cursor: null,
+            },
+            correlation_id: "accounts-list-correlation",
+          }),
+        );
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+
+    render(<ApplicationShell />);
+
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(await screen.findByRole("rowheader", { name: "administrator" })).toBeTruthy();
+    expect(screen.getByText("Administration")).toBeTruthy();
+    expect(loginSection()).toBeNull();
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("returns to neutral sign-in when an Accounts read reports an expired session", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    let listRequests = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        sessionProbes += 1;
+        if (sessionProbes === 1) {
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+                client_module: "web-ui",
+                password_change_required: false,
+              },
+              correlation_id: AUTH_CORRELATION,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        listRequests += 1;
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(screen.queryByText("Accounts are unavailable.")).toBeNull();
+    expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+    expect(listRequests).toBe(1);
+    expect(sessionProbes).toBe(2);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("loads the Groups workspace only after authenticated navigation selects it", async () => {
+    const fetchMock = mockAuthenticatedAdministrationFetch();
+    let completeLoad: (module: { GroupsWorkspace: ComponentType }) => void = () => {};
+    const loadGroupsWorkspace = vi.fn(
+      () =>
+        new Promise<{ GroupsWorkspace: ComponentType }>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+
+    render(<ApplicationShell loadGroupsWorkspace={loadGroupsWorkspace} />);
+
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(loadGroupsWorkspace).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/administration/groups/list"),
+    ).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Groups" }));
+
+    expect(loadGroupsWorkspace).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toBe("Loading Groups.");
+    completeLoad({ GroupsWorkspace: () => <h2>Groups</h2> });
+    expect(await screen.findByRole("heading", { name: "Groups" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Groups" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("returns Groups access loss to neutral sign-in without re-adopting the session", async () => {
+    const fetchMock = mockAuthenticatedAdministrationFetch();
+    const GroupsWorkspace = ({
+      onAdministrationEnded,
+    }: {
+      readonly onAdministrationEnded?: () => void;
+    }) => (
+      <button type="button" onClick={onAdministrationEnded}>
+        End Groups administration
+      </button>
+    );
+
+    render(<ApplicationShell loadGroupsWorkspace={() => Promise.resolve({ GroupsWorkspace })} />);
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Groups" }));
+    fireEvent.click(await screen.findByRole("button", { name: "End Groups administration" }));
+
+    expect(await screen.findByLabelText("Username")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.queryByText("Administration")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/session"),
+    ).toHaveLength(1);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("offers a redacted retry when the Groups workspace loader fails", async () => {
+    mockAuthenticatedAdministrationFetch();
+    const loadGroupsWorkspace = vi
+      .fn<() => Promise<{ GroupsWorkspace: ComponentType }>>()
+      .mockRejectedValueOnce(new Error("private chunk delivery detail"))
+      .mockResolvedValueOnce({ GroupsWorkspace: () => <h2>Groups</h2> });
+
+    render(<ApplicationShell loadGroupsWorkspace={loadGroupsWorkspace} />);
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Groups" }));
+
+    const failure = await screen.findByRole("alert");
+    expect(failure.textContent).toBe("Groups could not be loaded.");
+    expect(document.body.textContent).not.toContain("private chunk delivery detail");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("heading", { name: "Groups" })).toBeTruthy();
+    expect(loadGroupsWorkspace).toHaveBeenCalledTimes(2);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("loads Configuration only after authenticated navigation selects it", async () => {
+    mockAuthenticatedAdministrationFetch();
+    let completeLoad: (module: {
+      ConfigurationWorkspace: ComponentType<{ readonly onAdministrationEnded?: () => void }>;
+    }) => void = () => {};
+    const loadConfigurationWorkspace = vi.fn(
+      () =>
+        new Promise<{
+          ConfigurationWorkspace: ComponentType<{
+            readonly onAdministrationEnded?: () => void;
+          }>;
+        }>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+
+    render(<ApplicationShell loadConfigurationWorkspace={loadConfigurationWorkspace} />);
+    expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+    expect(loadConfigurationWorkspace).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
+    expect(loadConfigurationWorkspace).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toBe("Loading Configuration.");
+    completeLoad({ ConfigurationWorkspace: () => <h2>Configuration</h2> });
+    expect(await screen.findByRole("heading", { name: "Configuration" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Configuration" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("returns Configuration access loss to neutral sign-in without re-adopting the session", async () => {
+    const fetchMock = mockAuthenticatedAdministrationFetch();
+    const ConfigurationWorkspace = ({
+      onAdministrationEnded,
+    }: {
+      readonly onAdministrationEnded?: () => void;
+    }) => (
+      <button type="button" onClick={onAdministrationEnded}>
+        End Configuration administration
+      </button>
+    );
+
+    render(
+      <ApplicationShell
+        loadConfigurationWorkspace={() => Promise.resolve({ ConfigurationWorkspace })}
+      />,
+    );
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "End Configuration administration" }),
+    );
+
+    expect(await screen.findByLabelText("Username")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.queryByText("Administration")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/session"),
+    ).toHaveLength(1);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("offers a redacted retry when the Configuration chunk fails", async () => {
+    mockAuthenticatedAdministrationFetch();
+    const loadConfigurationWorkspace = vi
+      .fn<
+        () => Promise<{
+          ConfigurationWorkspace: ComponentType<{
+            readonly onAdministrationEnded?: () => void;
+          }>;
+        }>
+      >()
+      .mockRejectedValueOnce(new Error("private Configuration chunk detail"))
+      .mockResolvedValueOnce({ ConfigurationWorkspace: () => <h2>Configuration</h2> });
+
+    render(<ApplicationShell loadConfigurationWorkspace={loadConfigurationWorkspace} />);
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
+
+    const failure = await screen.findByRole("alert");
+    expect(failure.textContent).toBe("Configuration could not be loaded.");
+    expect(document.body.textContent).not.toContain("private Configuration chunk detail");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("heading", { name: "Configuration" })).toBeTruthy();
+    expect(loadConfigurationWorkspace).toHaveBeenCalledTimes(2);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("returns to sign-in after self-disable succeeds without retrying the mutation", async () => {
+    const publicId = "QUFBQUFBQUFBQUFBQUFBQQ";
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    let listRequests = 0;
+    let statusRequests = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((target: unknown, init?: RequestInit) => {
+        if (target === "/api/v1/status") {
+          return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+        }
+        if (target === "/api/v1/auth/session") {
+          sessionProbes += 1;
+          if (sessionProbes === 1) {
+            return Promise.resolve(
+              jsonResponse({
+                result: {
+                  account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  public_id: publicId,
+                  client_module: "web-ui",
+                  password_change_required: false,
+                },
+                correlation_id: AUTH_CORRELATION,
+              }),
+            );
+          }
+          return Promise.resolve(
+            jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+          );
+        }
+        if (target === "/api/v1/administration/accounts/list") {
+          listRequests += 1;
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                items: [
+                  {
+                    public_id: publicId,
+                    username: "administrator",
+                    display_name: "First Administrator",
+                    active: true,
+                    mfa_required: false,
+                  },
+                ],
+                next_cursor: null,
+              },
+              correlation_id: "accounts-list-correlation",
+            }),
+          );
+        }
+        if (target === "/api/v1/administration/accounts/status") {
+          statusRequests += 1;
+          if (typeof init?.body !== "string") {
+            throw new Error("the status request body must be a JSON string");
+          }
+          expect(JSON.parse(init.body)).toEqual({ public_id: publicId, active: false });
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                public_id: publicId,
+                username: "administrator",
+                display_name: "First Administrator",
+                active: false,
+                mfa_required: false,
+              },
+              correlation_id: "account-status-correlation",
+            }),
+          );
+        }
+        return Promise.reject(new Error("unexpected request"));
+      });
+
+    render(<ApplicationShell />);
+    await screen.findByRole("rowheader", { name: "administrator" });
+    fireEvent.click(screen.getByRole("button", { name: "Disable administrator" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(statusRequests).toBe(1);
+    expect(listRequests).toBe(1);
+    expect(sessionProbes).toBe(3);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([target]) => target === "/api/v1/administration/accounts/status",
+      ),
+    ).toHaveLength(1);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("carries a self-reset disclosure to sign-in and clears it after fresh authentication", async () => {
+    const publicId = "QUFBQUFBQUFBQUFBQUFBQQ";
+    const temporaryPassword = "YWJjZGVmZ2hpamtsbW5vcHFy";
+    const currentPassword = "current-administrator-password";
+    const ticket = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    localStorage.clear();
+    sessionStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const originalUrl = location.href;
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    let listRequests = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((target: unknown, init?: RequestInit) => {
+        if (target === "/api/v1/status") {
+          return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+        }
+        if (target === "/api/v1/auth/session") {
+          sessionProbes += 1;
+          if (sessionProbes === 1 || sessionProbes === 4) {
+            return Promise.resolve(
+              jsonResponse({
+                result: {
+                  account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  public_id: publicId,
+                  client_module: "web-ui",
+                  password_change_required: false,
+                },
+                correlation_id: AUTH_CORRELATION,
+              }),
+            );
+          }
+          return Promise.resolve(
+            jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+          );
+        }
+        if (target === "/api/v1/administration/accounts/list") {
+          listRequests += 1;
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                items: [
+                  {
+                    public_id: publicId,
+                    username: "administrator",
+                    display_name: "First Administrator",
+                    active: true,
+                    mfa_required: false,
+                  },
+                ],
+                next_cursor: null,
+              },
+              correlation_id: "accounts-list-correlation",
+            }),
+          );
+        }
+        if (target === "/api/v1/administration/step-up/credential-issuance") {
+          return Promise.resolve(
+            jsonResponse({
+              result: { credential_issuance_ticket: ticket },
+              correlation_id: "credential-issuance-correlation",
+            }),
+          );
+        }
+        if (target === "/api/v1/administration/accounts/reset-password") {
+          return Promise.resolve(
+            jsonResponse({
+              result: { public_id: publicId, temporary_password: temporaryPassword },
+              correlation_id: "credential-issuance-correlation",
+            }),
+          );
+        }
+        if (target === "/api/v1/auth/login") {
+          if (typeof init?.body !== "string") {
+            throw new Error("the login request body must be a JSON string");
+          }
+          expect(JSON.parse(init.body)).toEqual({
+            username: "administrator",
+            password: temporaryPassword,
+            client_module: "web-ui",
+          });
+          return Promise.resolve(
+            jsonResponse({ result: { authenticated: true }, correlation_id: "login-correlation" }),
+          );
+        }
+        return Promise.reject(new Error("unexpected request"));
+      });
+
+    render(<ApplicationShell />);
+    await screen.findByRole("rowheader", { name: "administrator" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset password for administrator" }));
+    fireEvent.change(screen.getByLabelText("Current password"), {
+      target: { value: currentPassword },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(screen.getAllByDisplayValue(temporaryPassword)).toHaveLength(1);
+    expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+    expect(document.body.innerHTML).not.toContain(ticket);
+    expect(document.body.innerHTML).not.toContain(currentPassword);
+    expect(location.href).toBe(originalUrl);
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(listRequests).toBe(1);
+
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "administrator" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: temporaryPassword },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => {
+      expect(listRequests).toBe(2);
+    });
+    expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(temporaryPassword);
+    expect(sessionProbes).toBe(4);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([target]) => target === "/api/v1/administration/accounts/reset-password",
+      ),
+    ).toHaveLength(1);
+    expect(storageWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("withholds the Accounts workspace for a restricted password-change session", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+              password_change_required: true,
+            },
+            correlation_id: AUTH_CORRELATION,
+          }),
+        );
+      }
+      return Promise.reject(new Error("the restricted session must not read administration data"));
+    });
+
+    render(<ApplicationShell />);
+
+    expect(await screen.findByRole("heading", { name: "Choose a new password" })).toBeTruthy();
+    expect(screen.getByLabelText("New password")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/administration/accounts/list"),
+    ).toHaveLength(0);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it.each([
+    [
+      "completed",
+      () =>
+        jsonResponse({
+          result: {
+            account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+            client_module: "web-ui",
+            password_change_required: false,
+          },
+          correlation_id: AUTH_CORRELATION,
+        }),
+      "accounts",
+    ],
+    [
+      "unauthenticated",
+      () => jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+      "login",
+    ],
+    [
+      "still restricted",
+      () =>
+        jsonResponse({
+          result: {
+            account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+            client_module: "web-ui",
+            password_change_required: true,
+          },
+          correlation_id: AUTH_CORRELATION,
+        }),
+      "indeterminate",
+    ],
+    ["absent", () => jsonResponse({ error: "not_found" }, 404), "indeterminate"],
+    [
+      "unreadable",
+      () =>
+        new Response("{", {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        }),
+      "indeterminate",
+    ],
+  ] as const)(
+    "reconciles an indeterminate password change after a %s session probe without resubmitting",
+    async (_outcome, reconciliationResponse, destination) => {
+      Object.defineProperty(globalThis.document, "cookie", {
+        configurable: true,
+        get: () => "__Host-weavelit_csrf=csrf-token",
+      });
+      localStorage.clear();
+      sessionStorage.clear();
+      const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+      const originalUrl = location.href;
+      const replacementPassword = "one-time replacement";
+      let sessionProbes = 0;
+      let resolveReconciliation: (response: Response) => void = () => {
+        throw new Error("session reconciliation was not started");
+      };
+      const deferredReconciliation = new Promise<Response>((resolve) => {
+        resolveReconciliation = resolve;
+      });
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+        if (target === "/api/v1/status") {
+          return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+        }
+        if (target === "/api/v1/auth/session") {
+          sessionProbes += 1;
+          if (sessionProbes === 1) {
+            return Promise.resolve(
+              jsonResponse({
+                result: {
+                  account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+                  client_module: "web-ui",
+                  password_change_required: true,
+                },
+                correlation_id: AUTH_CORRELATION,
+              }),
+            );
+          }
+          if (sessionProbes > 2 && destination === "login") {
+            return Promise.resolve(reconciliationResponse());
+          }
+          return deferredReconciliation;
+        }
+        if (target === "/api/v1/auth/password/change") {
+          return Promise.resolve(
+            jsonResponse({ error: "gateway_timeout", correlation_id: AUTH_CORRELATION }, 504),
+          );
+        }
+        if (target === "/api/v1/administration/accounts/list") {
+          return Promise.resolve(jsonResponse({ result: { accounts: [], next_cursor: null } }));
+        }
+        return Promise.reject(new Error("unexpected request"));
+      });
+
+      render(<ApplicationShell />);
+      const passwordInput = await screen.findByLabelText("New password");
+      fireEvent.change(passwordInput, { target: { value: replacementPassword } });
+      fireEvent.click(screen.getByRole("button", { name: "Save password" }));
+
+      await waitFor(() => {
+        expect(
+          document
+            .querySelector("section.password-change")
+            ?.getAttribute("data-password-change-state"),
+        ).toBe("indeterminate");
+      });
+      const saveButton = screen.getByRole("button", { name: "Save password" });
+      expect(passwordInput).toHaveProperty("disabled", true);
+      expect(passwordInput).toHaveProperty("value", "");
+      expect(saveButton).toHaveProperty("disabled", true);
+      expect(document.body.innerHTML).not.toContain(replacementPassword);
+      expect(location.href).toBe(originalUrl);
+      expect(storageWrite).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Check session" }));
+      await waitFor(() => {
+        expect(sessionProbes).toBe(2);
+      });
+
+      fireEvent.click(saveButton);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/password/change"),
+      ).toHaveLength(1);
+
+      resolveReconciliation(reconciliationResponse());
+      if (destination === "accounts") {
+        expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+        expect(screen.queryByRole("heading", { name: "Choose a new password" })).toBeNull();
+      } else if (destination === "login") {
+        expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+        expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
+        expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+        expect(screen.queryByRole("heading", { name: "Choose a new password" })).toBeNull();
+        expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
+      } else {
+        await waitFor(() => {
+          expect(screen.getByRole("button", { name: "Check session" })).toBeTruthy();
+        });
+        expect(
+          document
+            .querySelector("section.password-change")
+            ?.getAttribute("data-password-change-state"),
+        ).toBe("indeterminate");
+      }
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/password/change"),
+      ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.every(
+          ([target]) => typeof target !== "string" || !target.includes(replacementPassword),
+        ),
+      ).toBe(true);
+      expect(document.body.innerHTML).not.toContain(replacementPassword);
+      expect(location.href).toBe(originalUrl);
+      expect(storageWrite).not.toHaveBeenCalled();
+      storageWrite.mockRestore();
+      Reflect.deleteProperty(globalThis.document, "cookie");
+    },
+  );
 });

@@ -40,6 +40,7 @@ Each change must include the tests appropriate to its risk and boundary:
 | Versioned API, **[Client Module](glossary.md#applications-and-interfaces)**, or **[Service Module](glossary.md#applications-and-interfaces)** contract | Contract tests for accepted requests and stable success and error responses. |
 | Web UI Client Module pre-operational status surface | Direct-TLS process and contract tests for both database-selection results; every lifecycle availability boundary; accepted and rejected media negotiation; every fixed method, body, malformed-request, target, header, capacity, rate, and timeout rejection; connection, handler, handshake, rate, and response-size limits; redaction; and absence of CORS, cookies, normal routes, and a cleartext listener. |
 | Authentication, authorization, secret handling, audit logging, MFA, or destructive operations | Tests for every allowed and denied path, plus tests that sensitive values are absent from returned errors and logs. |
+| Audit terminal recovery, binding retention, and supersession | Contract, projection, and import tests proving ordinary transitions retain the exact prior identity/version and resolved handle; changed-binding delivery is rejected before destination access; only matching authority, exact confirmation, and successful replacement preflight evidence can create the fixed disposition; malformed, repeated, mismatched, non-oldest, and out-of-order input fails closed; a same-identifier but byte-different original projection or retained-binding mismatch is rejected before mutation; the original remains immutable in an oldest-first late-delivery sequence; the replacement action records degraded completeness without secret or raw-error content; and only exact delivery through each obligation's own binding permits acknowledgement. Restore and System Logs are tested as non-substitutes. Concrete backend work adds restart and transactional rollback evidence for exact-original comparison, disposition, assignment, and replacement-obligation persistence. |
 | Server-owned lifecycle and pre-operational database-selection contract | Direct tests for every startup classification; the published anchor known-answer vector; strict version, canonical JSON, Base64, schema, size, setting, and cryptographic validation; deployment-record creation and irreversible sealing; deployment-identifier and locator-generation matching; database selection and generation-pointer locator persistence; rejection of client-supplied paths and file references; Server-derived local paths; encrypted secret connection persistence and restart reopening; workflow exclusivity and process-lifetime root locking; mutation serialization; valid-run failure handling for file or directory synchronization, locator commit, cleanup, and cross-store operations; direct invocation after sealing; exact redacted category/reason output; and fail-closed missing, malformed, mismatched, unavailable, or integrity-failing deployment state. Isolated real-filesystem tests cover non-root ownership, exact modes, every path-component and child symlink position, hard links, non-regular and unknown entries, closed-inventory bounds, unavailable filesystem behavior, retained temporary and orphan classification, interrupted-bootstrap classification, SQLite recovery sidecars, and restart. Contract and process tests verify nonzero exit before HTTPS bind, route gating, stable redacted interruption action-class diagnostics, absence of post-interruption completion-log delivery, reconciliation, cleanup, or sealing, and transitions to normal operation only after valid completion. They must not assert survival across power loss or abrupt process termination as an application guarantee; where the Server can start and classify state, they must assert the fail-closed result and stable redacted error reporting. |
 | Server-owned **[Init](glossary.md#states-and-requests)** use case and Init-capable **[Pre-Operational Surface](glossary.md#applications-and-interfaces)** | Direct workflow tests for normalized request validation, validation before later secret submission, recovery-key generation, one-time delivery, proof, Init-checkpoint handling, atomic fresh-state creation, durable Init-result System Log recording during a valid run, retained-partial-state classification, absence of post-interruption reconciliation, retry, reset, automatic deletion, recreation, and sealing, concurrency, redaction, and rejection before secret reading or side effects; contract and process tests for lifecycle composition, fail-closed route removal, stable redacted action-class diagnostics, and the transition to normal operation only after valid completion. |
 | Server-owned **[Restore](glossary.md#states-and-requests)** use case and Restore-capable Pre-Operational Surface | Direct workflow tests for every artifact and resource bound, malformed, unauthentic, integrity-failing, incompatible, and semantically invalid backups, wrong recovery keys, checkpoint handling, session invalidation, recovery-public-key preservation, protected-secret re-encryption, private-key and plaintext non-persistence, atomic rollback, durable Restore-result System Log recording during a valid run, retained-partial-state classification, absence of post-interruption reconciliation, retry, reset, automatic cleanup, recreation, and sealing, Restore-specific valid-run failure classification, concurrency with Init and Restore, redaction, and rejection before key or artifact processing; runtime tests that judge at least one complete submission against the Server's own compiled-in component inventory rather than a supplied one, and that a backup naming a component the build lacks is refused as `backup_incompatible` before any state changes; external known-answer vectors from the C2SP Community Cryptography Test Vectors for age, vendored at a pinned upstream commit, run against the age v1 reader with each vector's outcome pinned by category; a fixture-credential test that reads the committed fixtures' administrator password verifier back through the production Restore reader and authenticates it against the documented fixture password through the real password authenticator, pinning it to the current approved Argon2 profile rather than merely an accepted one, and denies every other tried password; content tests that a backup carrying a password verifier outside the approved profile allowlist is refused as `backup_invalid` before restored state is constructed, that a verifier at the approved profile still normalizes, and that the refusal is indistinguishable from every other invalid-backup cause; and contract, process, and Web UI end-to-end tests for transfer, the two-request submission protocol and its one-time ticket, lifecycle gating, stable redacted action-class diagnostics, fail-closed route removal, and a real sign-in, only reachable after valid Restore completion, whose session persists across a Server restart. |
@@ -70,6 +71,7 @@ validation remain identical:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --doc
 cargo test --locked --workspace --all-targets
 cargo build --locked --workspace --release
 ```
@@ -121,7 +123,7 @@ would fail if the fixture named a component the binary does not compile in; the
 `weavelit-server` suite proves the same pairing first, so that failure is caught
 before the browser layer.
 
-The sign-in scenario runs three Server generations against one restored
+The sign-in scenario runs four Server generations against one restored
 deployment: the first restores the committed `valid-web-ui-sqlite.wlitbackup`
 fixture, the deployment is sealed, the pre-operational status route becomes
 absent, and the shell falls through to the sign-in control. The second
@@ -132,9 +134,15 @@ message, and neither sets a cookie; it then submits the documented fixture
 password and asserts a session is established with exactly the two approved
 cookies at their documented attributes. The third generation restarts the
 Server and reloads the page with no credential re-entered, asserting the
-persisted session, not remembered client state, is what authenticates. The
-scenario also asserts that a pinned set of real, non-empty observed secret
-values, namely both passwords and the issued session and CSRF tokens, is
+persisted session, not remembered client state, is what authenticates. It loads
+the Groups chunk only after selection and exercises its safe access-detail
+reads. The fourth generation again adopts the persisted session, proves neither
+lazy chunk loads with Accounts, loads only the fixed Configuration chunk after
+selection, exercises real Log configuration list and view projections, and
+receives a real TOTP enablement preview without applying it. The scenario also
+asserts that a pinned set of real, non-empty observed secret values, namely both
+passwords, the issued session and CSRF tokens, and the single-claim TOTP
+enablement preview, is
 absent from every request URL, browser storage, rendered page, and captured
 Server stdout and stderr; pinning each secret to a value the run actually
 produced keeps that absence check from passing vacuously against an unobserved
@@ -218,3 +226,4 @@ tests to a final hardening phase.
 - [Security Model](security-model.md)
 - [Glossary](glossary.md)
 - [Server Init Design](server/lifecycle/init/init-design.md)
+- [Audit Terminal Binding Retention And Supersession Decision](log-modules/audit-terminal-binding-retention-decision.md)

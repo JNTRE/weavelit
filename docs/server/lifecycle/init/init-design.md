@@ -144,7 +144,8 @@ initialized before the requesting client proves possession of the private key:
    capability itself is returned once, in the same response as the private
    key, and is held only by the requesting browser; the crate retains only
    the digest, in memory with the pending delivery, until finalization
-   persists it.
+   persists it. This secret-bearing response emits
+   `Cache-Control: no-store` through the closed typed response effect.
 2. The client saves the private key outside Weavelit and computes the same
    HMAC-SHA-256 over the delivery nonce, keyed by the private key's raw bytes
    it retained. It submits that proof, but not the private key, with the
@@ -158,6 +159,13 @@ initialized before the requesting client proves possession of the private key:
    [Technical Specification](../../../spec.md#logging-and-accountability) for
    each assigned log type, and atomically replaces the checkpoint with complete
    initialized application state bound to the deployment identifier. The
+   replacement assigns the first account, the system-defined Administrators
+   Group, and every Log Module configuration distinct, independently random
+   **[Audit Reference Identifiers](../../../glossary.md#applications-and-interfaces)**;
+   no value is derived from a submitted username, Group or configuration name,
+   or internal state identifier. The first account receives initial credential
+   revision `1`, an ordinary credential with no temporary expiry, and no forced
+   password-change flag. The
    committed state includes the non-secret Init completion-event fields as a
    pending obligation. That same atomic replacement also writes the
    reconciliation digest minted during preparation into the Application
@@ -384,7 +392,8 @@ reach clients or logs.
 `weavelit-server-init` has direct tests for normalized-request validation,
 recovery-key generation, one-time delivery, constant-time proof comparison,
 Init-checkpoint validation,
-atomic new-state creation, durable System Log completion during a
+atomic new-state creation including the initial ordinary-credential defaults,
+durable System Log completion during a
 valid run, retained-partial-state classification, absence of restart retry,
 reset, deletion, recreation, reconciliation, and sealing, redaction, rollback,
 concurrency under a lifecycle mutation permit, direct invocation of every

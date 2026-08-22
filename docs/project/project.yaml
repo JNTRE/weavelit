@@ -1,8 +1,0 @@
-schema: jntre-project-profile/v1
-repository: JNTRE/weavelit
-repository_url: https://github.com/JNTRE/weavelit
-project:
-  owner: JNTRE
-  number: 1
-  title: Weavelit
-  url: https://github.com/orgs/JNTRE/projects/1

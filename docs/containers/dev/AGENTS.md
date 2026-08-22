@@ -5,9 +5,15 @@ build, run, test, and restart the Weavelit Server without a host Rust install.
 It makes the future image contract explicit without defining production runtime
 or deployment behavior.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns the development container image contract and its
   validation requirements.
@@ -17,40 +23,21 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
-
-- `AGENTS.md`: Local routing and documentation-maintenance rules.
 - `development-container-design.md`: Canonical development container image contract.
 
-## Usage Guidance
+## Working Rules
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
-
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`,
-  and the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Update this documentation when the matching development Containerfile or its
+- MUST read the nearest `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then the repository root `AGENTS.md` before editing.
+- MUST follow [Contribution Guidelines](../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- Documentation changes under `docs/` MUST comply with the [Documentation Standards](../../documentation-standards.md).
+- MUST use the exact canonical names in [the glossary](../../glossary.md) and format a term as a bold glossary link on its first substantive use.
+- MUST update this inventory when local assets or routing directories are added, removed, renamed, or moved.
+- MUST read the [Documentation Standards](../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
+- MUST update this documentation when the matching development Containerfile or its
   build, mount, configuration, or validation contract changes.
-- Keep Docker as a supported local client without requiring Docker-only image or
+- MUST keep Docker as a supported local client without requiring Docker-only image or
   runtime behavior.
-- Record unresolved production-container decisions in `../../open-questions.md`.
+- MUST record unresolved production-container decisions in `../../open-questions.md`.
 
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep the required heading order and keep this guide under 100 lines.
-- Keep the development image distinct from the production OCI image; link to the
+- MUST keep the development image distinct from the production OCI image; link to the
   production documentation instead of duplicating its deployment requirements.
-- Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
-- Every production document must include a `## Related Documents` section at the end of the document.
-- `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
-- Include only valid, repository-relative links to existing canonical documents.
-- Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
-- Remove stale links and add canonical links so the section reflects current source-of-truth references.

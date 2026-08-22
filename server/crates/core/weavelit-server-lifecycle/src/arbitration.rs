@@ -4,17 +4,19 @@ use std::{
 };
 
 use weavelit_server_database::{
-    ApplicationDatabase, ApplicationState, CheckpointMetadata, DatabaseError, DatabaseInspection,
-    DeploymentIdentifier, InitializedState, ProtectedValue, ReconciliationDigest, StateIdentifier,
-    WorkflowCheckpoint, WorkflowKind,
+    AccountPublicIdentifierPersistence, ApplicationDatabase, ApplicationState,
+    AuditReferencePersistence, CheckpointMetadata, DatabaseError, DatabaseInspection,
+    DeploymentIdentifier, GroupPublicIdentifierPersistence, InitializedState, ProtectedValue,
+    ReconciliationDigest, StateIdentifier, WorkflowCheckpoint, WorkflowKind,
 };
 use zeroize::Zeroizing;
 
 use crate::{
     BackendCatalog, BackendIdentifier, ConnectionFieldInput, DatabaseLocator, DeploymentRecord,
     LifecycleError, LifecycleProjection, LifecycleState, ProtectedValueKind, ProtectedValueOpener,
-    ProtectedValueSealer, SelectionError, TrustedBackendContext, WorkflowError,
+    ProtectedValueSealer, SelectedDatabase, SelectionError, TrustedBackendContext, WorkflowError,
     persistence::{LifecycleStore, RecordPersistencePermit},
+    selected::selected_database,
 };
 
 /// A poisoned permit means a prior mutation panicked, so durable lifecycle state
@@ -61,7 +63,7 @@ impl WorkflowArbiter {
         context: &TrustedBackendContext,
         backend: &BackendIdentifier,
         inputs: Vec<ConnectionFieldInput>,
-    ) -> Result<(Box<dyn ApplicationDatabase>, LifecycleProjection), SelectionError> {
+    ) -> Result<(SelectedDatabase, LifecycleProjection), SelectionError> {
         let mut store = self
             .store
             .lock()
@@ -118,6 +120,7 @@ impl WorkflowArbiter {
             }
         }
 
+        let database = selected_database(database);
         Ok(WorkflowPermit { store, database })
     }
 
@@ -177,6 +180,7 @@ impl WorkflowArbiter {
             }
         }
 
+        let database = selected_database(database);
         Ok(PendingWorkflow {
             store,
             database,
@@ -220,6 +224,7 @@ impl WorkflowArbiter {
             _ => return Err(WorkflowError::StateMismatch),
         }
 
+        let mut database = selected_database(database);
         let state = database
             .load_initialized_state(deployment_identifier)
             .map_err(map_database_error)?;
@@ -270,7 +275,7 @@ impl ProtectedValueOpener for WorkflowArbiter {
 /// opened during startup stays open rather than being reopened per request.
 pub struct SealedDeployment {
     state: InitializedState,
-    database: Box<dyn ApplicationDatabase>,
+    database: SelectedDatabase,
 }
 
 impl SealedDeployment {
@@ -279,9 +284,12 @@ impl SealedDeployment {
         &self.state
     }
 
-    /// Returns the Application Database this deployment holds open.
-    pub fn database(&mut self) -> &mut dyn ApplicationDatabase {
-        &mut *self.database
+    /// Runs one operation against the selected database without exposing its handle.
+    pub fn with_database<R>(
+        &mut self,
+        operation: impl FnOnce(&mut dyn ApplicationDatabase) -> R,
+    ) -> R {
+        self.database.with(operation)
     }
 
     /// Consumes the sealed deployment and hands its loaded state and its open
@@ -291,7 +299,7 @@ impl SealedDeployment {
     /// serves from the handle sealing or startup already opened instead of
     /// creating a second one against the same target.
     #[must_use]
-    pub fn into_parts(self) -> (InitializedState, Box<dyn ApplicationDatabase>) {
+    pub fn into_parts(self) -> (InitializedState, SelectedDatabase) {
         (self.state, self.database)
     }
 }
@@ -308,7 +316,7 @@ impl fmt::Debug for SealedDeployment {
 /// completes its preparation and releases it rather than retaining it.
 pub struct WorkflowPermit<'arbiter> {
     store: MutexGuard<'arbiter, LifecycleStore>,
-    database: Box<dyn ApplicationDatabase>,
+    database: SelectedDatabase,
 }
 
 impl<'arbiter> WorkflowPermit<'arbiter> {
@@ -329,6 +337,21 @@ impl<'arbiter> WorkflowPermit<'arbiter> {
             .expect("authorization established the selected database locator")
     }
 
+    /// Returns the selected Application Database's persistence decoder.
+    pub fn audit_reference_persistence(&self) -> AuditReferencePersistence {
+        self.database.audit_reference_persistence()
+    }
+
+    /// Returns the selected Application Database's Account Public Identifier persistence.
+    pub fn account_public_identifier_persistence(&self) -> AccountPublicIdentifierPersistence {
+        self.database.account_public_identifier_persistence()
+    }
+
+    /// Returns the selected Application Database's Group Public Identifier persistence.
+    pub fn group_public_identifier_persistence(&self) -> GroupPublicIdentifierPersistence {
+        self.database.group_public_identifier_persistence()
+    }
+
     /// Returns the capability that protects application secrets at rest.
     pub fn sealer(&self) -> &dyn ProtectedValueSealer {
         &*self.store
@@ -347,7 +370,7 @@ impl<'arbiter> WorkflowPermit<'arbiter> {
         let checkpoint =
             WorkflowCheckpoint::new(self.store.record().deployment_identifier(), kind, metadata);
         self.database
-            .create_checkpoint(&checkpoint)
+            .with(|database| database.create_checkpoint(&checkpoint))
             .map_err(map_database_checkpoint_error)?;
 
         // A crash here leaves a durable checkpoint that startup classifies as interrupted.
@@ -446,7 +469,7 @@ impl fmt::Debug for ReleasedInitCheckpoint {
 /// A durable checkpoint awaiting its one atomic state replacement.
 pub struct PendingWorkflow<'arbiter> {
     store: MutexGuard<'arbiter, LifecycleStore>,
-    database: Box<dyn ApplicationDatabase>,
+    database: SelectedDatabase,
     checkpoint: WorkflowCheckpoint,
 }
 
@@ -487,7 +510,7 @@ impl<'arbiter> PendingWorkflow<'arbiter> {
 /// Committed application state whose completion obligation is still outstanding.
 pub struct CommittedWorkflow<'arbiter> {
     store: MutexGuard<'arbiter, LifecycleStore>,
-    database: Box<dyn ApplicationDatabase>,
+    database: SelectedDatabase,
 }
 
 impl<'arbiter> CommittedWorkflow<'arbiter> {
@@ -501,7 +524,9 @@ impl<'arbiter> CommittedWorkflow<'arbiter> {
     ) -> Result<AcknowledgedWorkflow<'arbiter>, WorkflowError> {
         let deployment_identifier = self.store.record().deployment_identifier();
         self.database
-            .acknowledge_completion(deployment_identifier, record_identifier)
+            .with(|database| {
+                database.acknowledge_completion(deployment_identifier, record_identifier)
+            })
             .map_err(map_database_completion_error)?;
 
         Ok(AcknowledgedWorkflow {
@@ -514,7 +539,7 @@ impl<'arbiter> CommittedWorkflow<'arbiter> {
 /// Acknowledged application state eligible to seal the deployment.
 pub struct AcknowledgedWorkflow<'arbiter> {
     store: MutexGuard<'arbiter, LifecycleStore>,
-    database: Box<dyn ApplicationDatabase>,
+    database: SelectedDatabase,
 }
 
 impl AcknowledgedWorkflow<'_> {
@@ -533,7 +558,7 @@ impl AcknowledgedWorkflow<'_> {
         }
         match self
             .database
-            .inspect(deployment_identifier)
+            .with(|database| database.inspect(deployment_identifier))
             .map_err(map_database_error)?
         {
             DatabaseInspection::Initialized {

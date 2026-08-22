@@ -1,10 +1,10 @@
 # Weavelit Open Questions
 
-This document records architecture and product decisions that remain open after
-the current Vision decisions. It describes the complete intended application,
-not a release roadmap. Resolved decisions belong in the Vision, Technical
-Specification, Glossary, or an architecture decision record rather than
-remaining here.
+This document records unresolved architecture and product questions as they
+arise throughout Weavelit's design and development. When a question is resolved,
+record the decision in its authoritative Vision, Technical Specification,
+Glossary, security, or component design document and remove it from this
+register.
 
 ## Identity and Credentials
 
@@ -26,14 +26,17 @@ represented, and how does `logout` remove local credentials?
 
 ### 3. Automation credential lifecycle
 
+The [Technical Specification](spec.md#automation-identities) settles that
 **[Administrators](glossary.md#identities-and-access)** create and manage local
-**[Automation Identities](glossary.md#identities-and-access)**. How are their
+**[Automation Identities](glossary.md#identities-and-access)**, credentials
+support Administrator-controlled revocation and expiration, and an inactive
+**[Responsible Owner](glossary.md#identities-and-access)** disables the identity
+until an Administrator assigns a new active owner without changing its
+Operation scopes or restoring an expired or revoked credential. How are
 credentials generated, displayed once, stored by a scheduler or trigger,
-rotated, expired, revoked, and recovered? What default and maximum validity
-periods apply? What confirmation, notification, and audit behavior applies when
-an Administrator reassigns the
-**[Responsible Owner](glossary.md#identities-and-access)** of an
-owner-status-disabled Automation Identity?
+rotated, recovered, and bounded by default and maximum validity periods? What
+confirmation, notification, and audit behavior applies when an Administrator
+reassigns the owner?
 
 ## Automation and Accountability
 
@@ -49,12 +52,15 @@ retried, deduplicated, and audited?
 
 ### 5. Permission and group model
 
-What additional group-granted permission types, if any, are needed beyond
+The [Authorization Design](server/authorization/authorization-design.md#grant-model)
+defines the current four group-granted permission types, and grant mutations
+require the documented current-session MFA step-up without password
+reauthentication or a separate confirmation. What additional
+group-granted permission types, if any, are needed beyond
 access to **[Client Modules](glossary.md#applications-and-interfaces)**,
 **[Service Modules](glossary.md#applications-and-interfaces)**, named
 **[Operations](glossary.md#applications-and-interfaces)**, and the Server
-Administration Permission? Which group-grant changes require additional
-confirmation or reauthentication?
+Administration Permission?
 
 ### 6. Client Module command organization for the Weavelit CLI
 
@@ -75,25 +81,26 @@ architecture?
 
 ### 10. Secrets and provider credential management
 
-Which **[Service Connection](glossary.md#applications-and-interfaces)** type
-does each **[Service Module](glossary.md#applications-and-interfaces)** support,
-and who may establish it? How are its authentication artifacts and local
-automation credentials encrypted or protected by the host, rotated, revoked,
-recovered, and kept out of clients, System Logs, and Audit Logs? How are
-credentials used by remote Log Modules protected, rotated, revoked, and kept out
-of all log output?
+The [Technical Specification](spec.md#service-modules-and-connections) and
+[Security Model](security-model.md) settle that each
+**[Service Module](glossary.md#applications-and-interfaces)** declares one
+**[Service Connection](glossary.md#applications-and-interfaces)** type, that
+setup and provider authentication remain Server-owned, and that connection
+credentials are protected from clients and logs. Which connection type does
+each Service Module support, who may establish it, and what rotation,
+revocation, and recovery policy applies? What protection and lifecycle policy
+applies to credentials used by remote Log Modules?
 
 ### 15. Direct-TLS HTTP version compatibility
 
-The Milestone 1 [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md)
-listener currently accepts HTTP/1.0 request lines while serializing fixed HTTP/1.1
-response lines. This limited compatibility risk is explicitly deferred and
-accepted for the current loopback-only, status-only scope. Should the direct-TLS
-listener preserve the request version in fixed responses to support HTTP/1.0, or
-instead restrict supported request versions to HTTP/1.1? The future decision
-needs executable direct-TLS process compatibility evidence for the selected
-behavior and validation that no cleartext listener exists, consistent with the
-[Testing and Validation Policy](testing.md).
+The [Web UI Pre-Operational Status Surface](client-modules/web-ui/pre-operational-status-design.md)
+settles the loopback-only direct-TLS boundary and fixed response contract, but
+does not state which HTTP request versions the listener supports or whether a
+response version varies with the request. Should the direct-TLS listener
+explicitly support HTTP/1.0, restrict requests to HTTP/1.1, or define another
+bounded compatibility policy? The decision needs executable direct-TLS process
+compatibility evidence and validation that no cleartext listener exists,
+consistent with the [Testing and Validation Policy](testing.md).
 
 ### 16. Backup-format and Server-version compatibility window
 
@@ -113,23 +120,19 @@ an incompatible-but-recognized artifact from a corrupt one?
 
 ### 11. Package, update, and container model
 
-For the MVP release, what versioning scheme, distribution channel,
-artifact-integrity or signing mechanism, update policy, and rollback procedure
-apply to the Ubuntu
-**[Weavelit Server](glossary.md#applications-and-interfaces)** package and the
-macOS **[Weavelit CLI](glossary.md#applications-and-interfaces)** artifact?
-Which additional Weavelit CLI platforms are supported after macOS 26 and later
-on Apple Silicon (`arm64`)?
+The [Technical Specification](spec.md#distribution-and-deployment) settles the
+MVP Server `.deb` target, the macOS 26-and-newer Apple Silicon (`arm64`) CLI
+target, and the requirement that the OCI production image use the same
+versioned, prebuilt Server output as the package. What release versioning,
+artifact-integrity or signing, update, and rollback policy applies to the
+package and CLI artifact, and which additional CLI platforms are supported?
 
-For the post-MVP OCI-compliant production Server image, how does the build and
-verification workflow prove that the image contains the same versioned,
-prebuilt Server release output used to assemble the `.deb` package? How are the
-Server-local Application Database deployment record, locator, and typed secret
-connection values persisted and protected across container replacement while
-the Server retains exclusive control of their local storage paths? What
-persistent-volume and backup model, TLS termination, secret injection mechanism,
-supported orchestrators, image provenance, and upgrade and rollback policy
-apply?
+The [Production Container Design](containers/prod/production-container-design.md)
+settles the sibling-image boundary and the requirement to preserve the
+Server-owned state without exposing client-selected paths. What persistent-
+volume and backup model, TLS termination, secret injection mechanism,
+supported orchestrators, image provenance, and production upgrade and rollback
+policy complete that deployment contract?
 
 ### 12. Zendesk reference integration
 

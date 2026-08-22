@@ -30,6 +30,12 @@ successful decision is spent exactly once, enforced by
 execution themselves belong to `weavelit-server-operation`, not to this
 document.
 
+It also owns the transport-independent administration authorization contract
+that consumes an exact-session-bound `AuthorizedAdministrationAdmission`
+before a future Server-owned administration workflow may begin. It does not own
+those workflows, their transport routes, Application Database mutations, or
+Audit Log sequencing.
+
 ## Grant Model
 
 A Group confers exactly four kinds of grant:
@@ -174,6 +180,15 @@ Client Module other than the one the session was established for, so two
 Client Modules that share an API surface cannot be interchanged by a caller
 naming the other one in the request.
 
+On Administration Plane success, the same runtime call consumes the neutral
+`AuthorizedAdministration` proof and binds it to the same `ValidatedSession`'s
+authenticated actor and exact stored session digest. The resulting private-field,
+non-clonable `AuthorizedAdministrationAdmission` derives its Client Module from
+the consumed proof. No later action-gate API accepts an independently supplied
+session or actor, so a successful decision for one session cannot be
+reattributed to another account or session that uses the same Client Module.
+The lower-level authorization proof remains identity- and session-neutral.
+
 ## Live Inputs And Why Caching Is Prohibited
 
 `AuthorizationRuntime::live_inputs` reads `load_human_authorization` and
@@ -192,6 +207,226 @@ past the moment an administrator changed it, in both cases until whatever
 invalidated the cache caught up. Reading live on every call removes that window
 entirely, so a Group change or a component enablement change takes effect on
 the very next request, with no re-login and no cache invalidation to race.
+
+## Administration Action Gate
+
+`weavelit-server-administration` owns the typed, transport-independent gate
+between the existing **[Administration Plane](../../glossary.md#applications-and-interfaces)**
+decision and future administration workflows. Its one action entry point,
+`AdministrationPlane::authorize`, takes `AuthorizedAdministrationAdmission` by
+value and returns a private-field `AuthorizedAdministrationAction` by value.
+The gate therefore cannot be called without the runtime-bound actor, exact
+session digest, and Client Module, and a future workflow cannot receive its
+authorized-action result unless that admission was spent at the gate. Neither
+value is clonable or default-constructible. The result retains the admission
+and derives its actor and Client Module from it rather than accepting either as
+a separate input.
+
+The gate accepts only the following closed action descriptors. The descriptor
+states policy; a transport or future workflow cannot supply an independent
+"step-up required" flag or implement another action family that selects a
+weaker rule.
+
+| Action | Current-session MFA step-up | Additional decision |
+| --- | --- | --- |
+| `Account(List)` or `Account(View(AccountPublicIdentifier))` | Not required | Admits one bounded account administration read. The gate performs no database read. |
+| `Account(Create(...))` or `Account(PasswordReset(...))` | Not required at this gate | Admits one account credential writer. The separate exact-session credential-issuance check applies before temporary-password disclosure. |
+| `Account(StatusChange { target: AccountPublicIdentifier, desired: Active \| Disabled })` | Not required | Admits one account status writer. The gate performs no database read, credential reauthentication, or MFA step-up. |
+| `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
+| `GrantMutation` | Required, scoped to `GrantMutation` | Covers existing-Group membership, direct Client Module, Service Module, named Operation, and Server Administration Permission grant changes, and deletion of an existing Group. |
+| `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
+| `ComponentEnablementChange` | Not required | The exact kind and name must identify a compiled-in Client Module, Service Module, MFA Module, or Operation. The descriptor retains the requested enabled state without reading current enablement. |
+| `LogConfigurationChange` | Not required | Carries one existing primary Log Module configuration, optional enabled state and complete non-secret settings, and canonically ordered assignment changes. The gate performs no configuration read or mutation. |
+
+Account-create and password-reset workflows use the `Account` family for
+authorization and add a separate exact-session credential-issuance check before returning a
+temporary password. That check is a distinct reauthentication gate that
+reverifies the current Administrator's password and TOTP enrollment status
+within the same session; it does not consume or extend `MfaStepUpProof` and is
+independent of the `MfaPolicy` action's step-up requirement. The issuance check
+is specific to credential delivery. The Server must not treat an ordinary `Account`
+authorization as sufficient for returning a temporary password, and it must
+not make ordinary account reads or status operations pay this
+issuance-specific gate.
+
+The status workflow consumes the exact authorized account action and derives
+its actor, exact session digest, Client Module, target, and desired state from
+that value. It prepares target state through the Application Database only
+after admission. Disable and re-enable do not accept a password, TOTP code,
+step-up proof, current credential revision, or independent actor or session.
+
+An account-read workflow consumes the exact `AuthorizedAdministrationAction`
+by value. `List` returns the Application Database store's deterministic bounded
+projections, and `View` returns one exact typed Account Public Identifier match
+or absence. Each projection contains only the Account Public Identifier,
+username, optional display name, active state, and MFA-required state. The
+workflow does not produce an Audit terminal record, read or change a session,
+or accept a state identifier, Audit Reference Identifier, password verifier,
+MFA factor, temporary credential value, or temporary credential metadata. It
+adds no route, public identifier codec, response schema, or pagination contract;
+the [Server API Contract](../api/api-contract-design.md#account-administration-reads)
+owns that public wire surface and consumes this exact action boundary.
+
+`ComponentOperation` means an administration action performed through an
+already enabled target. It is not an enablement mutation. A
+`ComponentEnablementChange` instead carries the exact component kind, bounded
+name, and desired enabled state. The gate retains that descriptor but performs
+no mutation, persistence, Audit Log delivery, or configuration generation. The
+Server's first consuming workflow accepts only the exact TOTP MFA Module target
+and spends the authorized action by value when it applies a target-bound
+preview. Other component kinds remain without a mutation workflow. This
+preserves the
+[MFA re-enable exception](#mfa-re-enablement-exception), so a disabled target
+cannot prevent the authorized action that re-enables it.
+
+`LogConfigurationChange` is a separate assignment-aware action. Its constructor
+rejects an empty change, duplicate setting keys, and duplicate Log Type
+assignments, then orders settings and assignments canonically. It does not
+accept a public identifier, destination credential, protected setting, or
+generation number. Trusted Server composition consumes the authorized action
+and owns every later database read, destination preflight, Audit sequence, and
+mutation decision; this action family does not add a route or client contract.
+
+### Current-Session Step-Up Proof
+
+`MfaStepUpProof` is a private-field, non-clonable capability containing the
+authenticated account, the stored digest of the current session bearer, the
+exact TOTP factor that was accepted, exactly one of the two bounded step-up
+action families, its issuer-observed monotonic time, and an expiry derived
+exactly five minutes later. No public API accepts a
+boolean, actor, session, issuance time, or expiry from a caller when minting the
+proof. The proof is borrowed so matching actions may reuse it during that fixed
+window. The gate compares its actor and digest with the compound admission, not
+with a separately supplied current session. A different actor, session, or
+family, a monotonic clock rollback, and the exact expiry instant all deny.
+
+`CurrentAdministrationSession` binds the account and `SessionTokenHash` retained
+from successful session validation only for trusted step-up issuance; the
+action gate never accepts it. Constructing that value, binding an
+`AuthorizedAdministrationAdmission`, or minting the step-up proof requires
+`ServerAdministrationAuthority` from the separate, dependency-free
+`weavelit-server-administration-authority` crate. The administration crate does
+not reexport that capability. A component that may exercise this privilege must
+therefore declare a direct manifest dependency that is visible in review;
+ordinary contract consumers and compiled-in Modules do not receive that
+dependency.
+
+The Server runtime accepts a TOTP step-up only after `ValidatedSession` succeeds.
+Its one transaction rechecks the exact session's liveness, account activity,
+factor ownership, and TOTP Module enablement before advancing the replay
+watermark. It issues no session and changes no session value. A replay, stale
+factor, inactive actor, disabled Module, or different session mints no proof.
+The MFA-policy and Group-mutation contracts borrow the resulting proof through
+`AdministrationRequest`; ordinary account contracts do not request one.
+
+The public `/api/v1/administration/step-up/totp` route exposes the closed
+`MfaPolicy` and `GrantMutation` families. Because the private proof cannot cross
+the Client Module boundary, the Server retains it behind a bounded opaque
+process-memory ticket. Ticket digests are domain-separated by family and each
+retained proof is bound to the exact actor, session, Client Module, factor, and
+five-minute monotonic window. Every use re-enters this gate. A ticket from one
+family cannot authorize the other and neither can substitute for the separate
+credential-issuance proof.
+
+### Existing-Group Membership, Grant, And Deletion Mutations
+
+An authorized `GrantMutation` consumes the exact typed membership or direct
+grant intent by value. Membership targets use an existing Group and an
+**[Account Public Identifier](../../glossary.md#identities-and-access)**;
+grant targets use an existing Group and one canonical current grant value. No
+route, Group public identifier, pagination, or client schema is implied by this
+internal writer.
+
+The public Group adapter independently authorizes each read or change through
+a live ordinary session and Administration Plane decision, resolves only Group
+and Account Public Identifiers, and converts the closed public grant union into
+this typed intent. Client Module, Service Module, and Operation values are
+admitted only when they exist in the same compiled-in component inventory the
+action gate uses; Server Administration Permission is the only nameless
+variant. The adapter cannot supply an independent actor, session, grant kind,
+proof family, enablement decision, or final recheck.
+
+Member, grant, and compiled-catalog reads are ordinary typed Group reads. They
+require effective Server Administration Permission, produce only safe public
+projections, and do not request step-up or create Audit records. The compiled
+catalog is selection data, not component enablement authority: it reveals only
+the closed Client Module, Service Module, and Operation names the build can
+accept and adds no enablement mutation family.
+
+Deletion of an existing Group is also a `GrantMutation`. Any Group-deletion
+workflow MUST consume a current exact-session proof scoped to that family
+before it can begin. It MUST NOT classify deletion as an ordinary `Account`
+action, credential-issuance proof operation, or component change. The consuming
+workflow remains responsible for target validation, last-administrator
+protection, Audit sequencing, and the atomic deletion; this authorization
+classification does not itself add a route or mutation implementation.
+
+Ordinary Group list, view, creation, and metadata update use a separate typed
+`Group` action and require no step-up beyond live Administration authorization.
+Deletion is represented only as `GrantMutation(Delete(GroupPublicIdentifier))`
+and is consumed by the Group CRUD workflow rather than the membership or
+direct-grant writer.
+
+The current exact-session five-minute TOTP proof is the complete additional
+authorization for this action family. It requires neither password
+reauthentication nor a separate confirmation. Before an Audit Attempt is made,
+an absent target, unsupported grant, or already-present or already-absent
+association is refused without a mutation or Audit record.
+
+After the Attempt is acknowledged, one immediate transaction rechecks the
+issuer's exact session, account activity, Client Module, target associations,
+and expected presence. A stale target or denied issuer selects only the generic
+denied terminal. A removal that would leave no active Human User with the
+effective Server Administration Permission selects only the
+`authorization.group-grant.removal-denied` terminal and returns the fixed
+last-administrator refusal. Otherwise the transaction changes exactly one
+membership or direct-grant association and persists the successful terminal
+obligation atomically. Terminal persistence failure rolls back the association;
+postcommit recovery failure leaves the committed result and its obligation
+pending. Authorization rereads memberships and grants on the next request, so
+there is no session refresh or cache invalidation step.
+
+### Component Inventory, Live Enablement, And Denial
+
+A `ComponentOperation` carries `ComponentKind` and the Application Database
+contract's bounded `Name`; empty, control-character, or over-bound input is
+rejected before a request exists. The gate first requires that exact kind and
+name in the build's neutral `AvailableComponents` inventory, so an unknown
+target denies rather than inheriting the projection's enabled-by-default
+meaning for compiled-in components. It then asks its
+`ComponentEnablementSource` for the persisted `ComponentEnablement` projection
+inside every targeted check and retains no projection on the gate, session,
+request, or result. An enabled target may proceed. A disabled target or an
+unavailable projection read returns the same `AuthorizationDenied` as every
+unknown target and every missing, mismatched, rolled-back, or expired step-up
+proof.
+
+A `ComponentEnablementChange` applies the same bounded name and exact
+`(ComponentKind, Name)` inventory-membership check, then retains the requested
+boolean state in the authorized action. It never asks `ComponentEnablementSource`
+for the current projection, so an already-disabled target can be admitted for
+re-enablement. An unknown or wrong-kind target still returns
+`AuthorizationDenied` before any workflow can receive the action.
+
+Inventory membership and enablement are keyed by the compound
+`(ComponentKind, Name)` identity. A valid name under the wrong kind is unknown,
+and disabling one kind leaves the same name under every other kind enabled.
+
+`Account`, `MfaPolicy`, `GrantMutation`, and `ComponentEnablementChange` actions
+do not read component enablement. Rejecting an unknown target before a live
+enablement read is an accepted stable-value ordering that avoids unnecessary
+database work and pins observable dependency calls; it does not promise
+constant-time behavior between unknown, disabled, unavailable, or otherwise
+denied targets.
+
+The contract adds no reason-bearing error. Input construction has one stable,
+payload-free `AdministrationInputRejected`; every policy and enablement refusal
+uses the existing payload-free `AuthorizationDenied`. An external compile
+fixture pins that the action gate rejects a value other than
+`AuthorizedAdministrationAdmission`, that neither the admission nor its
+authorized-action result can be forged through struct literals, and that
+neither the current-session value nor the step-up proof can be constructed
+through a struct literal.
 
 ## Proof Consumption Is Spent Exactly Once
 
@@ -267,6 +502,8 @@ own enablement is not represented in the catalog this decision evaluates
 against at all, so a disabled MFA Module cannot deny the Administration Plane
 function that re-enables it: that function is authorized the same way every
 other Administration Plane function is, with no reference to any component's
+enablement. The `ComponentEnablementChange` action gate then requires only exact
+membership in the compiled-in component inventory, not the target's current
 enablement. This satisfies the Administration Plane requirement in the
 [Technical Specification](../../spec.md#multifactor-authentication) that
 Administrators be able to configure MFA Module enablement, and is consistent
@@ -284,3 +521,4 @@ with the module starting disabled after Init as described in
 - [Security Model](../../security-model.md)
 - [Technical Specification](../../spec.md)
 - [Glossary](../../glossary.md)
+- [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)

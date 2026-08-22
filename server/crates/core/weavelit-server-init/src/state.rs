@@ -8,8 +8,11 @@
 
 use weavelit_server_authentication::PasswordVerifierFactory;
 use weavelit_server_database::{
-    Account, AccountPasswordVerifier, ApplicationState, ApplicationStateInput,
-    CompletionObligation, Group, GroupGrant, GroupGrantRecord, GroupMembership, LogAssignment,
+    Account, AccountAuditReference, AccountPasswordVerifier, AccountPublicIdentifier,
+    AccountPublicIdentity, ApplicationState, ApplicationStateInput, AuditReferenceIdentifier,
+    CompletionObligation, ComponentKind, ConfigurationEntry, ConfigurationKey, ConfigurationValue,
+    CredentialRevision, Group, GroupAuditReference, GroupGrant, GroupGrantRecord, GroupMembership,
+    GroupPublicIdentifier, GroupPublicIdentity, LogAssignment, LogConfigurationAuditReference,
     LogModuleConfiguration, LogType, Name, PasswordVerifier, ProtectedSecret,
     STATE_IDENTIFIER_LENGTH, StateIdentifier,
 };
@@ -47,6 +50,14 @@ pub(crate) fn build_initial_state(
 
     let account_identifier = state_identifier()?;
     let group_identifier = state_identifier()?;
+    let account_public_identifier =
+        AccountPublicIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
+    let group_public_identifier =
+        GroupPublicIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
+    let account_audit_reference =
+        AuditReferenceIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
+    let group_audit_reference =
+        AuditReferenceIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
 
     let account = Account {
         identifier: account_identifier,
@@ -57,6 +68,9 @@ pub(crate) fn build_initial_state(
         // requiring one here would lock the deployment out of its own first
         // sign-in. Enrollment is a later, separately authorized act.
         mfa_required: false,
+        credential_revision: CredentialRevision::INITIAL,
+        must_change_password: false,
+        temporary_credential_expiration: None,
     };
 
     let created = verifier_factory
@@ -85,9 +99,13 @@ pub(crate) fn build_initial_state(
     ];
 
     let mut log_module_configurations = Vec::with_capacity(request.log_module_configurations.len());
+    let mut log_configuration_audit_references =
+        Vec::with_capacity(request.log_module_configurations.len());
     let mut protected_secrets = Vec::new();
     for configuration in &request.log_module_configurations {
         let identifier = state_identifier()?;
+        let audit_reference =
+            AuditReferenceIdentifier::generate().map_err(|_| InitError::InitializationFailed)?;
         for setting in &configuration.protected_settings {
             protected_secrets.push(ProtectedSecret {
                 component: configuration.module.clone(),
@@ -105,6 +123,10 @@ pub(crate) fn build_initial_state(
             enabled: configuration.enabled,
             settings: configuration.settings.clone(),
         });
+        log_configuration_audit_references.push(LogConfigurationAuditReference::new(
+            identifier,
+            audit_reference,
+        ));
     }
 
     let log_assignments = vec![
@@ -119,17 +141,35 @@ pub(crate) fn build_initial_state(
     ];
 
     ApplicationState::new(ApplicationStateInput {
-        // Every compiled-in component is enabled unless an entry disables it,
-        // so the first state records no enablement entry rather than freezing
-        // this build's inventory into the deployment.
-        configuration: Vec::new(),
+        configuration: vec![ConfigurationEntry {
+            component: Name::new("totp").map_err(|_| InitError::InitializationFailed)?,
+            key: ConfigurationKey::new(ComponentKind::MfaModule.enablement_key())
+                .map_err(|_| InitError::InitializationFailed)?,
+            value: ConfigurationValue::new("false").map_err(|_| InitError::InitializationFailed)?,
+        }],
         protected_secrets,
         accounts: vec![account],
+        account_public_identities: vec![AccountPublicIdentity::new(
+            account_identifier,
+            account_public_identifier,
+        )],
+        account_audit_references: vec![AccountAuditReference::new(
+            account_identifier,
+            account_audit_reference,
+        )],
         password_verifiers: vec![AccountPasswordVerifier {
             account: account_identifier,
             verifier,
         }],
         groups: vec![group],
+        group_public_identities: vec![GroupPublicIdentity::new(
+            group_identifier,
+            group_public_identifier,
+        )],
+        group_audit_references: vec![GroupAuditReference::new(
+            group_identifier,
+            group_audit_reference,
+        )],
         group_memberships: vec![GroupMembership {
             group: group_identifier,
             account: account_identifier,
@@ -141,6 +181,7 @@ pub(crate) fn build_initial_state(
         service_connections: Vec::new(),
         recovery_public_key: checkpoint.recovery_public_key().clone(),
         log_module_configurations,
+        log_configuration_audit_references,
         log_assignments,
         completion_obligation,
     })

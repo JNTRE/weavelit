@@ -70,11 +70,13 @@ crates are:
 
 ```text
 weavelit-server-database
+weavelit-server-database-authority
 weavelit-server-database-sqlite
 ```
 
 The first crate owns the shared Application Database contract; the second owns
-the SQLite implementation. This convention also permits a future dedicated
+the Server database-selection capability; the third owns the SQLite
+implementation. This convention also permits a future dedicated
 **[Log Module](../glossary.md#applications-and-interfaces)** implementation crate
 such as `weavelit-module-log-sqlite`, without requiring a shared Log Module
 crate before it has meaningful shared code or a shared contract.
@@ -89,9 +91,10 @@ weavelit-server-init
 weavelit-server-restore
 ```
 
-The Server-owned logging producer crates are:
+The implemented Server-owned logging authority and producer crates are:
 
 ```text
+weavelit-server-audit
 weavelit-server-log-authority
 weavelit-server-observability
 ```
@@ -100,6 +103,13 @@ The Server-owned authentication crate is:
 
 ```text
 weavelit-server-authentication
+```
+
+The Server-owned Administration Plane foundation crates are:
+
+```text
+weavelit-server-administration
+weavelit-server-administration-authority
 ```
 
 `weavelit-server-authentication` owns the local password authentication core:
@@ -114,6 +124,28 @@ the replacement verifier and token digests the crate returns; the crate itself
 neither reads nor writes storage and issues no cookie. The
 [Authentication Design](authentication/authentication-design.md) owns the
 profile, the allowlist policy, and the session representation it implements.
+
+`weavelit-server-administration` owns the transport-independent action gate
+after an Administration Plane decision: its closed action families, bounded
+component and Log Module configuration-change targets, exact-session-bound
+compound admission, current-session MFA step-up proof and policy, live
+component enablement source, and authorized-action result. Trusted Server
+composition consumes the existing neutral
+`AuthorizedAdministration` proof and binds it atomically to the same validated
+session's actor and exact digest; the action gate accepts only that compound
+admission. The crate reuses the neutral `AvailableComponents` inventory for
+compiled-in membership and depends on the Application Database only for bounded
+identity, session-digest, and `ComponentEnablement` projection types. It owns no
+transport, Client Module, database mutation, Audit producer, or concrete
+administration workflow.
+
+`weavelit-server-administration-authority` carries the capability that permits
+trusted Server composition to bind one successful Administration Plane proof to
+the exact session used by that authorization and mint a step-up proof only after
+current-session MFA verification. The administration contract does not reexport
+it. As with the logging and database authorities, a consumer must declare the
+direct dependency explicitly, so the privilege is visible in its manifest and
+reviewable in isolation.
 
 The shared Log Module contract is `weavelit-server-log`. It owns the Server
 core's typed record and dispatch boundary, not log-record construction or a
@@ -130,6 +162,46 @@ delivery, destination configuration, workflow orchestration, or Application
 Database access. A workflow crate asks Observability for a prepared record
 rather than constructing one.
 
+`weavelit-server-audit` is the only producer of complete, pre-redacted
+**[Audit Logs](../glossary.md#applications-and-interfaces)**. It accepts
+database-owned account, Group, and Log Module configuration Audit projections,
+other closed typed facts, and a Server-supplied workflow correlation
+identifier. It depends on the shared Application Database contract only for
+those projection types and never reads a backend, lifecycle binding, entity
+name, or state identifier. It constructs
+bounded attempt, completion, and correction records with each terminal record
+directly linked to its precise Attempt. Exhaustive event-specific terminal
+details derive the result and carry committed state only through closed typed
+facts. It mints fresh record identifiers internally, retains an Attempt through
+a non-forgeable reference, and returns the shared delivery error without
+mapping.
+
+Attempt delivery is consuming and yields the retained reference only after
+acknowledgement. Terminal delivery borrows one immutable record and supports
+deliberate exact idempotent re-delivery, but performs only one synchronous
+dispatch per call. The producer never loops, schedules, replaces, or chooses to
+recover a terminal record.
+
+It owns no authorization, mutation sequencing, decision to create a correction,
+client-error mapping, System Log construction, retry scheduling, database
+storage implementation, or runtime drain execution. It does own trusted export
+and import of the exact immutable Log-owned terminal recovery projection, the
+closed `dependency.audit-terminal.superseded` event, and construction of a fixed
+Log-owned supersession disposition bound to an imported obligation. It is the
+only semantic adapter into the Application Database recovery contract: it
+converts validated projections, bindings, dispositions, and destination
+acknowledgements into private-field opaque database wrappers and validates
+opaque stored rows before destination access. The database contract has no Log
+or logging-authority dependency and cannot parse fields or mint those facts.
+The executable's internal ordinary Log configuration workflow supplies
+authorization, resultant-destination preflight, exact current Audit generation
+resolution, mutation sequencing, and bounded post-commit recovery. Audit does
+not present a user interface, change assignments, or inspect configuration
+state. Authority-gated reauthentication and confirmation proofs plus a
+preflighted replacement remain inputs to future supersession work, whose owning
+Server workflow must retain old binding handles and satisfy the separately
+approved supersession boundary.
+
 `weavelit-server-log-authority` carries the capability that separates
 Server-owned logging authority from an ordinary Log Module. Rust has no
 cross-crate friend visibility, so the log contract cannot make its
@@ -141,6 +213,34 @@ original private constructors, does not reexport the capability, and its
 compile fixtures prove that an external consumer can register a module but
 cannot mint an issuer, trusted context, acknowledgement, dispatch, or the
 capability itself.
+
+`weavelit-server-database-authority` carries the capability that separates
+Server-owned selected-database decoding authority from an ordinary Application
+Database implementor. The dependency-free crate's privately represented
+`ServerDatabaseAuthority` is not reexported by the database contract or
+lifecycle crate. The database contract requires it at the
+`AuditReferencePersistence`, `AuditTerminalRecoveryPersistence`, and
+`LogConfigurationMutationPersistence` issuers;
+the latter gates opaque persisted-row decoding and validated write,
+supersession, and acknowledgement-proof construction without importing any Log
+type. Lifecycle declares the direct production dependency that constructs a
+selected binding only after selection or reopening succeeds, and direct SQLite,
+Audit, or Restore tests declare only reviewable dev dependencies. JSON-diagnostic
+external fixtures prove that an ordinary crate cannot import the authority,
+construct `SelectedDatabase`, issue either persistence capability, forge an
+opaque recovery obligation or validated write, or forge database
+acknowledgement proof.
+
+The executable's operational composition retains the selected database's
+opaque terminal recovery decoder in the same shared operational handle while
+serializing backend access through the database lane. Listing and
+acknowledgement hold that lane briefly; Server Audit import, assignment
+resolution, and Log Module delivery occur after it is released. A separate
+process-local permit serializes each complete bounded activation or
+pre-consequential drain, including active then late-delivery sequencing. This
+keeps database backends field-blind, permits destination delivery to reenter an
+unrelated database read, and prevents concurrent gates from delivering one
+listed obligation twice before either can acknowledge it.
 
 `weavelit-server-lifecycle` is the internal base crate for lifecycle behavior
 shared by **[Init](../glossary.md#states-and-requests)** and
@@ -161,17 +261,21 @@ result to choose which routes may exist. The lifecycle crate does not create
 new application state, interpret backup contents, handle a private recovery
 key, reconcile or seal retained partial state, or implement client presentation.
 
-The initial delivered lifecycle contract depends only on
-`weavelit-server-database`. It reuses that crate's deployment identifier and
-Application Database trait while defining lifecycle record and locator values,
+The initial delivered lifecycle contract depends directly on
+`weavelit-server-database` and `weavelit-server-database-authority`. It reuses
+the contract crate's deployment identifier and Application Database trait and
+uses the authority crate only after successful selection or reopening to bind
+the raw backend and persistence decoder into private-field `SelectedDatabase`,
+while defining lifecycle record and locator values,
 canonical backend and field identifiers, bounded scalar connection values,
 trusted secret classifications, capability classifications, and payload-free
 errors. `BackendCatalog` validates runtime registrations and submitted fields
 before invoking an `ApplicationDatabaseFactory`. The factory receives a trusted
 Server-derived local context separately from canonically ordered validated
-settings and returns only the backend-neutral Application Database contract.
-This initial boundary contains no persistence, serialization, cryptography,
-SQLite implementation, Client Module, or runtime-composition dependency.
+settings and returns only the raw backend-neutral Application Database contract;
+the selected wrapper is lifecycle-owned and has no raw-box or `Deref` escape.
+This initial boundary contains no SQLite implementation, Client Module, or
+runtime-composition dependency.
 
 `weavelit-server-components` owns the neutral compiled-in component inventory
 that **[Init](../glossary.md#states-and-requests)** and
@@ -323,7 +427,8 @@ those routes require.
 ### Operational Composer
 
 One operational composer owns the whole operational surface. It accepts the
-Application Database handle a sealed workflow hands over, mounts the Client
+`SelectedDatabase` a sealed workflow hands over, keeps its backend and
+persistence decoder together behind one exclusive operational lane, mounts the Client
 Module operational declaration over the shared not-found fallback, and attaches
 every operational transport registration to that same mounted value. The
 publisher accepts only what the composer produced, so an operational route
@@ -1089,7 +1194,7 @@ above rather than depending on the `age` crate.
   weavelit-server --test startup` passes all 23 tests; the locked feature graph
   contains only the selected Rustls provider capabilities.
 
-#### HTTPS Runtime Composition
+#### Direct-TLS Runtime Dependencies
 
 The following crates.io packages are direct dependencies of `weavelit-server`
 for the Milestone 1 single direct-TLS listener. The Rust standard library and
@@ -1116,7 +1221,9 @@ every dependency-resolution change.
 #### `getrandom`
 
 - **Source and version:** crates.io `=0.4.3`.
-- **Owner and behavior:** `weavelit-server-lifecycle` obtains operating-system
+- **Owner and behavior:** `weavelit-server-database` obtains operating-system
+  randomness for backend-neutral Audit Reference Identifier construction.
+  `weavelit-server-lifecycle` obtains operating-system
   randomness for the deployment key, deployment identifier, locator generation,
   temporary-file uniqueness, and AEAD nonces. `weavelit-server` obtains the same
   randomness for the Restore-result System Log record identifier and its
@@ -1439,3 +1546,4 @@ impact, and validation performed.
 - [Application Database Design](database/application-database-design.md)
 - [Log Module Design](../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../testing.md)
+- [Audit Terminal Binding Retention And Supersession Decision](../log-modules/audit-terminal-binding-retention-decision.md)

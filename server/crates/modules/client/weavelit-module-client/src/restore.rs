@@ -30,7 +30,7 @@ use crate::{
     ExpectedOrigin, JSON_MEDIA_TYPE, WipedBody, accepts_json, json_response_body, single_header,
     typed_json::{
         OpaqueToken, ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
-        typed_json_response,
+        typed_json_response, typed_json_secret_response,
     },
 };
 
@@ -484,7 +484,7 @@ fn restore_ticket_response(issued: &RestoreTicketIssued) -> Response {
         return RestoreRejection::RestoreFailed.response();
     };
     match ResponseCorrelation::new(&issued.correlation_id) {
-        Some(correlation_id) => typed_json_response(
+        Some(correlation_id) => typed_json_secret_response(
             StatusCode::ACCEPTED,
             TypedJsonEnvelope::Result {
                 result,
@@ -797,6 +797,7 @@ mod tests {
             correlation_id: CORRELATION.to_owned(),
         });
         assert_eq!(issued.status(), StatusCode::ACCEPTED);
+        assert!(crate::typed_json::has_secret_disclosure_effect(&issued));
         assert_eq!(
             envelope(&issued),
             format!(
@@ -808,6 +809,7 @@ mod tests {
             correlation_id: CORRELATION.to_owned(),
         });
         assert_eq!(completed.status(), StatusCode::OK);
+        assert!(!crate::typed_json::has_secret_disclosure_effect(&completed));
         assert_eq!(
             envelope(&completed),
             format!(

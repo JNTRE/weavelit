@@ -249,6 +249,21 @@ self-service or group-scoped access class. An
 **[Administration Plane](glossary.md#applications-and-interfaces)** function
 MUST use the server-administration access class.
 
+Every Group MUST have an independent durable nonzero random 128-bit public
+identifier. A client-facing interface MUST use only its canonical unpadded
+Base64url representation as the Group target and MUST NOT expose or derive it
+from an Application Database state identifier, Audit Reference Identifier,
+name, membership, grant, or generation. Compatible Restore input MAY omit the
+field only under an existing version's documented legacy rule, in which case
+Restore MUST generate a fresh independent value.
+
+An Administrator MAY create an empty Group and update its unique name and
+nullable description. Group deletion MUST require current-session MFA step-up
+for the GrantMutation family and MUST succeed only while the Group has no
+memberships and no direct grants. It MUST NOT implicitly remove memberships or
+grants, disclose association counts through its rejection, or bypass the
+effective-last-Administrator protections on grant mutations.
+
 An **[Administrator](glossary.md#identities-and-access)** who can access a
 Client Module's Administration Plane MAY perform the available local-account
 administration functions for any local Human User, including themselves. These
@@ -256,6 +271,30 @@ functions include initiating a password reset or resetting an MFA enrollment
 and MUST require an authenticated, usable Administrator session and the Server
 Administration Permission. Weavelit MUST NOT provide a host-level, out-of-band,
 or unauthenticated account-recovery interface.
+
+#### Password Reset And MFA Reset (Independent Operations)
+
+An Administrator MAY initiate a **password reset** for any local Human User,
+including themselves. Password reset is a Server-owned operation that generates
+a temporary password and requires the user to change their password at the next
+sign-in. The Server-generated temporary password is not recoverable after the
+originating successful account-create or password-reset workflow, but an
+authorized Administrator MAY receive it once in that originating workflow.
+Password reset does NOT affect MFA enrollment; users retain their MFA factors
+unless an Administrator separately resets their MFA.
+
+An Administrator MAY initiate an **MFA reset** for any local Human User,
+including themselves, to clear and re-enroll an MFA factor. MFA reset does NOT
+affect the user's password and is independent from password reset.
+
+Password reset and MFA reset MUST produce separate Audit Log events; one
+operation MUST NOT be represented as the other.
+
+An Administrator CANNOT remove the **Server Administration Permission** from an
+account if doing so would leave no active accounts with that permission.
+Attempting to do so returns a stable error: "Cannot remove the last Server
+Administration Permission grant." Account disabling is permitted separately
+from grant removal.
 
 ### Automation Identities
 
@@ -339,6 +378,11 @@ actions and results MUST be System Logs and MUST NOT be attributed to an
 authenticated principal or written as Audit Logs. Audit Logs MUST capture the
 caller, Responsible Owner when applicable, action or Operation, target, time,
 result, and correlation identifier.
+A correlated Audit record set for a consequential action MUST include its final
+result. A pre-commit Attempt record MAY omit the result, provided a correlated
+Completion or Correction record records the authoritative outcome. An Attempt
+MUST NOT be the sole accountability evidence, and this exception MUST NOT
+permit an unbounded or unredacted record.
 
 After Init or Restore commits application state, the Server MUST receive a
 durable acknowledgement for that workflow's successful completion through the
@@ -370,6 +414,38 @@ replacement record for rejected input. A workflow that requires logging MUST
 fail when it cannot construct a valid bounded record. Rejection errors MUST be
 stable and payload-free, and every destination, including future Log Modules,
 MUST receive only complete bounded records.
+
+**Consequential operations** (those that modify application state or external
+systems) MUST fail with a stable error if the required Audit Log destination is
+unavailable and cannot accept the record. **Non-consequential operations** (such
+as read-only queries or internal-only tasks) MAY succeed even if the Audit Log
+destination is temporarily unavailable; in such cases, the Server MUST record
+the failure in System Logs for operator visibility.
+
+An initialized deployment does not crash or exit if an Audit Log destination
+becomes unavailable after the Server has begun normal operation. Requests for
+consequential operations fail with a stable error, but the Server remains
+operational for other requests. Operators MUST monitor System Logs for
+`dependency.audit-log-unavailable` events and restore destination connectivity
+to resume consequential operations.
+
+An ordinary Audit destination configuration or assignment change MUST retain
+every old binding identity, version, and resolvable destination handle while a
+pending terminal obligation references it. Exact replay MUST continue only to
+that retained binding. If repair proves the exact oldest valid active
+obligation's destination permanently unavailable, an Administrator MAY
+supersede it only after fresh password reauthentication for the exact current
+session, fresh TOTP verification when enrolled, explicit confirmation, and
+successful replacement Audit preflight. Supersession MUST append a distinct
+Audit action and fixed disposition, atomically establish the replacement
+assignment and its terminal recovery obligation, expose degraded Audit
+completeness, and retain the immutable original for exact late delivery. Before
+the append, storage MUST match the exact Server Audit-validated original
+identity and immutable projection bytes and its retained binding; matching an
+identifier alone is insufficient. Supersession MUST NOT be represented as a
+Correction, acknowledgement, or delivery proof. Restore, System Logs, and
+delivery to the replacement MUST NOT substitute for exact delivery of the
+original to its retained binding.
 
 Administrators MUST be able to view System Logs and Audit Logs through a
 read-only Web UI logging area and configure Log Modules through an
@@ -664,6 +740,8 @@ The Server and CLI MUST communicate through the versioned application interface
 and MAY be packaged and upgraded independently within that interface's
 compatibility policy.
 
+The Weavelit CLI MUST authenticate Human Users through the OAuth 2.0 Device Authorization Grant (RFC 8628). The CLI MUST present the Server-issued verification URI and user code, and the Server MUST complete the authorization and establish the CLI session without exposing session or provider credentials to the CLI.
+
 Host-level administration MUST remain separate from all Weavelit application
 client interfaces.
 
@@ -694,4 +772,6 @@ automation interfaces.
 - [Server Lifecycle Design](server/lifecycle/lifecycle-design.md)
 - [Server Init Design](server/lifecycle/init/init-design.md)
 - [Server Restore Design](server/lifecycle/restore/restore-design.md)
+- [Server Audit Log Design](server/audit/audit-log-design.md)
 - [Testing and Validation Policy](testing.md)
+- [Audit Terminal Binding Retention And Supersession Decision](log-modules/audit-terminal-binding-retention-decision.md)

@@ -7,9 +7,15 @@ Client Module's versioned HTTPS API. It does not contain provider credentials,
 provider integrations, Server authorization policy, or Server administration
 behavior.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns Weavelit CLI application behavior and local client concerns.
 - It does not own the Server-side Weavelit CLI Client Module, Server policy, provider integration, or provider credentials.
@@ -17,30 +23,18 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
+## Working Rules
 
-- `AGENTS.md`: Local routing, inventory, and Weavelit CLI source-boundary rules.
+- MUST follow [Contribution Guidelines](../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../docs/), application documentation MUST comply with the [Documentation Standards](../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../docs/glossary.md), formatting them as bold links on first substantive use.
 
-## Usage Guidance
+- Before editing, agents MUST read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
+- MUST read `../../docs/clients/weavelit-cli/` for application requirements and `../../docs/client-modules/weavelit-cli/` for the Server connection boundary before changing behavior.
+- MUST keep local command workflow and structured result handling here; leave identity derivation, authorization, administration behavior, and provider work with the Server.
+- MUST add focused end-to-end or smoke tests for sign-in, sign-out, permitted and denied User Plane and Administration Plane requests, and expected client failure behavior, following `../../docs/testing.md`.
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
-
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../docs/clients/weavelit-cli/` for application requirements and `../../docs/client-modules/weavelit-cli/` for the Server connection boundary before changing behavior.
-- Keep local command workflow and structured result handling here; leave identity derivation, authorization, administration behavior, and provider work with the Server.
-- Add focused end-to-end or smoke tests for sign-in, sign-out, permitted and denied User Plane and Administration Plane requests, and expected client failure behavior, following `../../docs/testing.md`.
-
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Use the configured Server HTTPS listener and `/api/v1/` routes for supported Operations; do not use Web UI browser routes.
-- Implement commands only for the User Plane and Administration Plane declared by the Weavelit CLI Client Module; command visibility is a usability control rather than authorization.
-- Do not add provider credentials, provider-integration logic, or Server authorization policy to the Weavelit CLI.
-- Preserve Server-owned authorization decisions and canonical API requirements instead of duplicating them locally.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- MUST use the configured Server HTTPS listener and `/api/v1/` routes for supported Operations; do not use Web UI browser routes.
+- MUST implement commands only for the User Plane and Administration Plane declared by the Weavelit CLI Client Module; command visibility is a usability control rather than authorization.
+- Agents MUST NOT add provider credentials, provider-integration logic, or Server authorization policy to the Weavelit CLI.
+- MUST preserve Server-owned authorization decisions and canonical API requirements instead of duplicating them locally.

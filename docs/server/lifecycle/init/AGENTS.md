@@ -2,9 +2,15 @@
 
 This folder documents the Server-owned implementation boundary for **[Init](../../../glossary.md#states-and-requests)**. It applies the shared lifecycle contract to fresh application-state creation, request and secret handling, recovery-key delivery, System Log completion, and finalization.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns the Server Init contract and implementation design.
 - Shared startup classification, database selection, workflow arbitration, and sealing remain in `../lifecycle-design.md`.
@@ -13,43 +19,19 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
-
-- `AGENTS.md`: Local routing, inventory, and documentation-boundary rules for Server Init design.
 - `init-design.md`: Fresh-state Init contract, request and secret handling, initial recovery-key delivery, atomic state creation, System Log completion, and error-boundary design.
 
-## Usage Guidance
+## Working Rules
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
+- MUST read the nearest `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then `../../../AGENTS.md`, then the repository root `AGENTS.md` before editing.
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- Documentation changes under `docs/` MUST comply with the [Documentation Standards](../../../documentation-standards.md).
+- MUST use the exact canonical names in [the glossary](../../../glossary.md) and format a term as a bold glossary link on its first substantive use.
+- MUST update this inventory when local assets or routing directories are added, removed, renamed, or moved.
+- MUST read the [Documentation Standards](../../../documentation-standards.md) and apply its authority, document-type, structure, and writing rules.
+- MUST update `init-design.md` for Server-owned Init behavior.
+- MUST update `../lifecycle-design.md` when a rule is shared with Restore.
+- MUST update the Init user story when a contract change affects the user-visible workflow.
 
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, then `../../AGENTS.md`, then `../../../AGENTS.md`, then the repository-root `AGENTS.md`.
-- Before creating or updating a production document, read the [Documentation Standards](../../../documentation-standards.md) and apply its authority, document-type, lifecycle, structure, and writing rules.
-- Update `init-design.md` for Server-owned Init behavior.
-- Update `../lifecycle-design.md` when a rule is shared with Restore.
-- Update the Init user story when a contract change affects the user-visible workflow.
-- Make minimal, targeted changes to the document that owns the changed behavior.
-- Preserve existing document structure and filenames unless the task requires reorganization.
-
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Preserve the required heading order.
-- Keep this guide under 100 lines.
-- Use exact canonical names from `../../../glossary.md`.
-- On first substantive use in a section, format a canonical term as a bold link to its glossary category.
-- Keep shared lifecycle rules in `../lifecycle-design.md`.
-- Keep Restore-specific behavior in `../restore/`.
-- Any `AGENTS.md` created under `docs/` must keep Related Documents maintenance requirements integrated as bullets in `Standards and Conventions`.
-- Every production document must include a `## Related Documents` section at the end of the document.
-- `Related Documents` entries must use non-numbered Markdown link bullets in this format: `[Description](path)`.
-- Include only valid, repository-relative links to existing canonical documents.
-- Update `Related Documents` in the same change whenever files are added, moved, renamed, replaced, or retired.
-- Remove stale links from `Related Documents`.
-- Add canonical links required to reflect current source-of-truth references.
+- MUST keep shared lifecycle rules in `../lifecycle-design.md`.
+- MUST keep Restore-specific behavior in `../restore/`.

@@ -24,6 +24,9 @@ tokio.workspace = true
 tokio-rustls = { version = "=0.26.4", default-features = false }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+weavelit-server-administration = { path = "../weavelit-server-administration" }
+weavelit-server-administration-authority = { path = "../weavelit-server-administration-authority" }
+weavelit-server-audit = { path = "../weavelit-server-audit" }
 weavelit-server-authentication = { path = "../weavelit-server-authentication" }
 weavelit-server-authorization = { path = "../weavelit-server-authorization" }
 weavelit-server-components = { path = "../weavelit-server-components" }
@@ -46,6 +49,7 @@ rcgen = "=0.14.8"
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
+weavelit-server-database-authority = { path = "../../database/weavelit-server-database-authority" }
 # Enables the TOTP Module's code generator for this crate's tests only, so an
 # enrollment confirmation can be exercised end to end. The generator is absent
 # from the shipped binary because the production edge above does not enable it.

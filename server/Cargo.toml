@@ -2,6 +2,9 @@
 resolver = "2"
 members = [
 	"crates/core/weavelit-server",
+	"crates/core/weavelit-server-administration",
+	"crates/core/weavelit-server-administration-authority",
+	"crates/core/weavelit-server-audit",
 	"crates/core/weavelit-server-authentication",
 	"crates/core/weavelit-server-authorization",
 	"crates/core/weavelit-server-components",
@@ -14,6 +17,7 @@ members = [
 	"crates/core/weavelit-server-recovery-key",
 	"crates/core/weavelit-server-restore",
 	"crates/database/weavelit-server-database",
+	"crates/database/weavelit-server-database-authority",
 	"crates/database/weavelit-server-database-sqlite",
 	"crates/modules/client/weavelit-module-client",
 	"crates/modules/client/weavelit-module-client-webui",
