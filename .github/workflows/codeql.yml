@@ -17,6 +17,9 @@ name: CodeQL
   schedule:
     - cron: "31 17 * * 5"
 
+permissions:
+  contents: read
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
