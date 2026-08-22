@@ -238,75 +238,81 @@ export function GroupAssociations({
     const cursor = data?.memberCursor;
     if (cursor === null || cursor === undefined || membersPending) return;
     setMembersPending(true);
-    void listGroupMembers(groupPublicId, cursor).then(
-      (page) => {
-        if (mounted.current)
-          setData((current) =>
-            current === null
-              ? current
-              : {
-                  ...current,
-                  members: [...current.members, ...page.items],
-                  memberCursor: page.nextCursor,
-                },
-          );
-      },
-      (error: unknown) => {
-        if (mounted.current) readFailed(error);
-      },
-    ).finally(() => {
-      if (mounted.current) setMembersPending(false);
-    });
+    void listGroupMembers(groupPublicId, cursor)
+      .then(
+        (page) => {
+          if (mounted.current)
+            setData((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    members: [...current.members, ...page.items],
+                    memberCursor: page.nextCursor,
+                  },
+            );
+        },
+        (error: unknown) => {
+          if (mounted.current) readFailed(error);
+        },
+      )
+      .finally(() => {
+        if (mounted.current) setMembersPending(false);
+      });
   };
 
   const moreGrants = (): void => {
     const cursor = data?.grantCursor;
     if (cursor === null || cursor === undefined || grantsPending) return;
     setGrantsPending(true);
-    void listGroupGrants(groupPublicId, cursor).then(
-      (page) => {
-        if (mounted.current)
-          setData((current) =>
-            current === null
-              ? current
-              : {
-                  ...current,
-                  grants: [...current.grants, ...page.items],
-                  grantCursor: page.nextCursor,
-                },
-          );
-      },
-      (error: unknown) => {
-        if (mounted.current) readFailed(error);
-      },
-    ).finally(() => {
-      if (mounted.current) setGrantsPending(false);
-    });
+    void listGroupGrants(groupPublicId, cursor)
+      .then(
+        (page) => {
+          if (mounted.current)
+            setData((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    grants: [...current.grants, ...page.items],
+                    grantCursor: page.nextCursor,
+                  },
+            );
+        },
+        (error: unknown) => {
+          if (mounted.current) readFailed(error);
+        },
+      )
+      .finally(() => {
+        if (mounted.current) setGrantsPending(false);
+      });
   };
 
   const moreAccounts = (): void => {
     const cursor = data?.accountCursor;
     if (cursor === null || cursor === undefined || accountsPending) return;
     setAccountsPending(true);
-    void listAccounts(cursor).then(
-      (page) => {
-        if (mounted.current)
-          setData((current) =>
-            current === null
-              ? current
-              : {
-                  ...current,
-                  accounts: [...current.accounts, ...page.items],
-                  accountCursor: page.nextCursor,
-                },
-          );
-      },
-      (error: unknown) => {
-        if (mounted.current) readFailed(error);
-      },
-    ).finally(() => {
-      if (mounted.current) setAccountsPending(false);
-    });
+    void listAccounts(cursor)
+      .then(
+        (page) => {
+          if (mounted.current)
+            setData((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    accounts: [...current.accounts, ...page.items],
+                    accountCursor: page.nextCursor,
+                  },
+            );
+        },
+        (error: unknown) => {
+          if (mounted.current) readFailed(error);
+        },
+      )
+      .finally(() => {
+        if (mounted.current) setAccountsPending(false);
+      });
   };
 
   if (failed) return <p role="alert">Group access is unavailable.</p>;
