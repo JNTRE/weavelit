@@ -19,18 +19,18 @@ const TICKET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const CORRELATION = "group-associations";
 const CODE = "123456";
 
-type AccountFixture = {
+interface AccountFixture {
   public_id: string;
   username: string;
   display_name: string;
   active: boolean;
   mfa_required: boolean;
-};
+}
 
-type GrantFixture = {
+interface GrantFixture {
   type: string;
   value?: string;
-};
+}
 
 type PaginationCase =
   | {
@@ -528,8 +528,9 @@ describe("GroupAssociations", () => {
       csrf();
 
       // Deferred response resolver for cursor-bearing pagination request
-      let resolvePaginationResponse: ((value: Response | PromiseLike<Response>) => void) | null =
-        null;
+      let resolvePaginationResponse: (response: Response) => void = () => {
+        throw new Error("resolver was not assigned");
+      };
       const deferredPaginationPromise = new Promise<Response>((resolve) => {
         resolvePaginationResponse = resolve;
       });
@@ -573,14 +574,12 @@ describe("GroupAssociations", () => {
               }),
             );
           }
-          if (testCase.collection === "accounts") {
-            return Promise.resolve(
-              response({
-                items: initialAccounts,
-                next_cursor: "accounts-cursor",
-              }),
-            );
-          }
+          return Promise.resolve(
+            response({
+              items: initialAccounts,
+              next_cursor: "accounts-cursor",
+            }),
+          );
         }
         if (target === GROUP_MEMBERS_LIST_PATH)
           return Promise.resolve(
@@ -618,7 +617,7 @@ describe("GroupAssociations", () => {
       });
 
       // Verify button is not disabled before clicking
-      expect(paginationButton).not.toHaveAttribute("disabled");
+      expect(paginationButton.hasAttribute("disabled")).toBe(false);
 
       // Double-click the pagination button rapidly
       fireEvent.click(paginationButton);
@@ -626,7 +625,7 @@ describe("GroupAssociations", () => {
 
       // After first click, button should be disabled
       await waitFor(() => {
-        expect(paginationButton).toHaveAttribute("disabled");
+        expect(paginationButton.hasAttribute("disabled")).toBe(true);
       });
 
       // Verify exactly one pagination request with cursor was made
@@ -644,10 +643,7 @@ describe("GroupAssociations", () => {
         cursor: testCase.cursor,
       });
 
-      // Resolve the deferred pagination response with null guard
-      if (resolvePaginationResponse === null) {
-        throw new Error("resolver was not initialized");
-      }
+      // Resolve the deferred pagination response
       resolvePaginationResponse(
         response({
           items: [testCase.pageItem],
@@ -657,7 +653,7 @@ describe("GroupAssociations", () => {
 
       // Wait for button to be re-enabled after response settles
       await waitFor(() => {
-        expect(paginationButton).not.toHaveAttribute("disabled");
+        expect(paginationButton.hasAttribute("disabled")).toBe(false);
       });
 
       // Verify exactly one new item with exact rendered text
