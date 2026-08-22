@@ -13,6 +13,17 @@ BEGIN
     SELECT RAISE(ABORT, 'group public identity association is immutable');
 END;
 
+CREATE TRIGGER weavelit_group_public_identity_reject_direct_delete
+BEFORE DELETE ON weavelit_group_public_identity
+WHEN EXISTS (
+    SELECT 1
+    FROM weavelit_group
+    WHERE group_id = OLD.group_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'group public identity association is immutable');
+END;
+
 WITH RECURSIVE
 backfill_attempt(attempt) AS (
     VALUES (1)

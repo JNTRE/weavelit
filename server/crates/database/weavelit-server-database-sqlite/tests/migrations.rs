@@ -823,7 +823,7 @@ fn populated_0011_database_backfills_immutable_unique_account_public_identities(
 }
 
 #[test]
-fn populated_0013_database_backfills_unique_group_public_identities() {
+fn populated_0013_database_backfills_immutable_unique_group_public_identities() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let path = database_path(&temporary_directory);
     create_0013_database(&path);
@@ -939,6 +939,26 @@ fn populated_0013_database_backfills_unique_group_public_identities() {
             )
             .is_err()
     );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM weavelit_group_public_identity WHERE group_id = ?1",
+                [groups[1].0.as_slice()],
+            )
+            .is_err()
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT \
+                     (SELECT count(*) FROM weavelit_group WHERE group_id = ?1), \
+                     (SELECT count(*) FROM weavelit_group_public_identity WHERE group_id = ?1)",
+                [groups[1].0.as_slice()],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap(),
+        (1, 1)
+    );
     connection
         .execute(
             "DELETE FROM weavelit_group WHERE group_id = ?1",
@@ -948,12 +968,14 @@ fn populated_0013_database_backfills_unique_group_public_identities() {
     assert_eq!(
         connection
             .query_row(
-                "SELECT count(*) FROM weavelit_group_public_identity WHERE group_id = ?1",
+                "SELECT \
+                     (SELECT count(*) FROM weavelit_group WHERE group_id = ?1), \
+                     (SELECT count(*) FROM weavelit_group_public_identity WHERE group_id = ?1)",
                 [groups[1].0.as_slice()],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .unwrap(),
-        0
+        (0, 0)
     );
     drop(connection);
 

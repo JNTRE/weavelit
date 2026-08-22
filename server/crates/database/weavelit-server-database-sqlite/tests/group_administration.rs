@@ -275,7 +275,8 @@ fn group_reads_are_ordered_exact_persistent_and_fail_closed_for_identity_damage(
     let connection = Connection::open(&surface.path).unwrap();
     connection
         .execute_batch(
-            "DELETE FROM weavelit_group_public_identity \
+            "DROP TRIGGER weavelit_group_public_identity_reject_direct_delete; \
+             DELETE FROM weavelit_group_public_identity \
              WHERE group_id = x'11111111111111111111111111111111';",
         )
         .unwrap();
