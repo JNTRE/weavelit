@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ConfigurationAdministrationAccessDeniedError,
   ConfigurationConflictError,
   ConfigurationIndeterminateError,
   ConfigurationSessionInvalidError,
@@ -63,9 +64,9 @@ describe("Configuration workspace", () => {
     sessionStorage.clear();
     setItemSpy.mockClear();
 
-    const onSessionEnded = vi.fn();
+    const onAdministrationEnded = vi.fn();
     vi.mocked(probeSession).mockResolvedValue({ kind: "unauthenticated" });
-    render(<ConfigurationWorkspace onSessionEnded={onSessionEnded} />);
+    render(<ConfigurationWorkspace onAdministrationEnded={onAdministrationEnded} />);
 
     await screen.findByText("primary");
     fireEvent.click(screen.getByRole("button", { name: "Review disablement" }));
@@ -81,7 +82,7 @@ describe("Configuration workspace", () => {
     await waitFor(() => {
       expect(applyTotpEnablement).toHaveBeenCalledWith(false, PREVIEW);
       expect(probeSession).toHaveBeenCalledTimes(1);
-      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+      expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
     });
     expect(applyTotpEnablement).toHaveBeenCalledTimes(1);
     expect(previewTotpEnablement).toHaveBeenCalledTimes(1);
@@ -172,15 +173,18 @@ describe("Configuration workspace", () => {
     });
   });
 
-  it("returns an expired TOTP preview read to sign-in once without an unknown outcome", async () => {
-    vi.mocked(previewTotpEnablement).mockRejectedValue(new ConfigurationSessionInvalidError());
-    const onSessionEnded = vi.fn();
-    render(<ConfigurationWorkspace onSessionEnded={onSessionEnded} />);
+  it.each([
+    ["session invalid", () => new ConfigurationSessionInvalidError()],
+    ["authorization loss", () => new ConfigurationAdministrationAccessDeniedError()],
+  ])("ends administration once when a TOTP preview reports %s", async (_label, error) => {
+    vi.mocked(previewTotpEnablement).mockRejectedValue(error());
+    const onAdministrationEnded = vi.fn();
+    render(<ConfigurationWorkspace onAdministrationEnded={onAdministrationEnded} />);
     await screen.findByText("primary");
 
     fireEvent.click(screen.getByRole("button", { name: "Review disablement" }));
     await waitFor(() => {
-      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+      expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
     });
     expect(screen.queryByText(/outcome is unknown/)).toBeNull();
     expect(
@@ -188,13 +192,39 @@ describe("Configuration workspace", () => {
     ).toBe(false);
 
     const readsBeforeRefresh = vi.mocked(listLogConfigurations).mock.calls.length;
-    vi.mocked(listLogConfigurations).mockRejectedValueOnce(new ConfigurationSessionInvalidError());
+    vi.mocked(listLogConfigurations).mockRejectedValueOnce(error());
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => {
       expect(listLogConfigurations).toHaveBeenCalledTimes(readsBeforeRefresh + 1);
     });
-    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Log configurations are unavailable.")).toBeNull();
+  });
+
+  it.each([
+    ["TOTP apply", () => new ConfigurationAdministrationAccessDeniedError()],
+    ["Log change", () => new ConfigurationSessionInvalidError()],
+  ])("ends administration when %s reports terminal access loss", async (action, error) => {
+    const onAdministrationEnded = vi.fn();
+    if (action === "TOTP apply") vi.mocked(applyTotpEnablement).mockRejectedValue(error());
+    else vi.mocked(changeLogConfiguration).mockRejectedValue(error());
+
+    render(<ConfigurationWorkspace onAdministrationEnded={onAdministrationEnded} />);
+    await screen.findByText("primary");
+    if (action === "TOTP apply") {
+      fireEvent.click(screen.getByRole("button", { name: "Review disablement" }));
+      await screen.findByText(/This change affects 1 enrolled account/);
+      fireEvent.click(screen.getByRole("button", { name: "Apply disablement" }));
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: "View" }));
+      await screen.findByRole("heading", { name: "primary" });
+      fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    }
+
+    await waitFor(() => {
+      expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByText(/outcome is unknown|was not changed/)).toBeNull();
   });
 
   it("keeps TOTP Review controls retryable when preview is unavailable", async () => {
@@ -366,7 +396,7 @@ describe("Configuration workspace", () => {
     expect(screen.queryByRole("heading", { name: "primary" })).toBeNull();
   });
 
-  it("returns a stale session-invalid View response to the shell", async () => {
+  it("returns stale authorization loss from View to the shell", async () => {
     const secondary = { ...configuration, configurationName: "secondary" };
     let rejectPrimary!: (reason?: unknown) => void;
     let resolveSecondary!: (value: LogConfiguration) => void;
@@ -381,19 +411,19 @@ describe("Configuration workspace", () => {
           else resolveSecondary = resolve;
         }),
     );
-    const onSessionEnded = vi.fn();
+    const onAdministrationEnded = vi.fn();
 
-    render(<ConfigurationWorkspace onSessionEnded={onSessionEnded} />);
+    render(<ConfigurationWorkspace onAdministrationEnded={onAdministrationEnded} />);
     await screen.findByText("secondary");
     const viewButtons = screen.getAllByRole("button", { name: "View" });
     fireEvent.click(viewButtons[0]!);
     fireEvent.click(viewButtons[1]!);
 
     await act(async () => {
-      rejectPrimary(new ConfigurationSessionInvalidError());
+      rejectPrimary(new ConfigurationAdministrationAccessDeniedError());
       await Promise.resolve();
     });
-    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       resolveSecondary(secondary);
@@ -408,16 +438,16 @@ describe("Configuration workspace", () => {
         vi.mocked(listLogConfigurations).mockRejectedValue(new ConfigurationSessionInvalidError());
       else
         vi.mocked(viewLogConfiguration).mockRejectedValue(new ConfigurationSessionInvalidError());
-      const onSessionEnded = vi.fn();
+      const onAdministrationEnded = vi.fn();
 
-      render(<ConfigurationWorkspace onSessionEnded={onSessionEnded} />);
+      render(<ConfigurationWorkspace onAdministrationEnded={onAdministrationEnded} />);
       if (read === "view") {
         await screen.findByText("primary");
         fireEvent.click(screen.getByRole("button", { name: "View" }));
       }
 
       await waitFor(() => {
-        expect(onSessionEnded).toHaveBeenCalledTimes(1);
+        expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
       });
       expect(screen.queryByText("Log configurations are unavailable.")).toBeNull();
     },

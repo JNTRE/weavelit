@@ -47,7 +47,7 @@ interface GroupsWorkspaceModule {
 }
 
 interface ConfigurationWorkspaceModule {
-  ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+  ConfigurationWorkspace: ComponentType<{ readonly onAdministrationEnded?: () => void }>;
 }
 
 export interface ApplicationShellProps {
@@ -101,7 +101,7 @@ export function ApplicationShell({
     "idle" | "loading" | "failed"
   >("idle");
   const [ConfigurationWorkspace, setConfigurationWorkspace] = useState<ComponentType<{
-    readonly onSessionEnded?: () => void;
+    readonly onAdministrationEnded?: () => void;
   }> | null>(null);
 
   const chooseInit = useCallback(() => {
@@ -137,7 +137,7 @@ export function ApplicationShell({
     setAuthenticated(false);
   }, []);
 
-  const endGroupsAdministration = useCallback(() => {
+  const endAdministration = useCallback(() => {
     setAdoptExistingSession(false);
     setEndedSessionDisclosure(null);
     setAuthenticatedPublicId(null);
@@ -255,7 +255,7 @@ export function ApplicationShell({
               />
             ) : administrationView === "groups" ? (
               GroupsWorkspace !== null ? (
-                <GroupsWorkspace onAdministrationEnded={endGroupsAdministration} />
+                <GroupsWorkspace onAdministrationEnded={endAdministration} />
               ) : (
                 <section className="groups" aria-labelledby="groups-loading-title">
                   <h2 id="groups-loading-title" className="groups__title">
@@ -276,7 +276,7 @@ export function ApplicationShell({
                 </section>
               )
             ) : ConfigurationWorkspace !== null ? (
-              <ConfigurationWorkspace onSessionEnded={endAuthenticatedSession} />
+              <ConfigurationWorkspace onAdministrationEnded={endAdministration} />
             ) : (
               <section className="configuration" aria-labelledby="configuration-loading-title">
                 <h2 id="configuration-loading-title" className="accounts__title">

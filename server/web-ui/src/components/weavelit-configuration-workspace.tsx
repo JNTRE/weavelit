@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
 
 import {
+  ConfigurationAdministrationAccessDeniedError,
   ConfigurationConflictError,
   ConfigurationRefusedError,
   ConfigurationSessionInvalidError,
@@ -34,11 +35,11 @@ interface TotpReview {
 }
 
 export interface ConfigurationWorkspaceProps {
-  readonly onSessionEnded?: () => void;
+  readonly onAdministrationEnded?: () => void;
 }
 
 export function ConfigurationWorkspace({
-  onSessionEnded,
+  onAdministrationEnded,
 }: ConfigurationWorkspaceProps = {}): JSX.Element {
   const [configurations, setConfigurations] = useState<readonly LogConfiguration[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -57,23 +58,31 @@ export function ConfigurationWorkspace({
   const totpPreview = useRef("");
   const selectionRequest = useRef(0);
   const collectionRequest = useRef(0);
-  const sessionEnded = useRef(false);
+  const administrationEnded = useRef(false);
 
   const assignmentFor = (items: readonly LogConfiguration[], logType: LogType): string =>
     items.find((configuration) => configuration.assignedLogTypes.includes(logType))
       ?.configurationName ?? "";
 
-  const reconcileExpiredReadSession = useCallback(
+  const endAdministration = useCallback((): boolean => {
+    if (onAdministrationEnded === undefined) return false;
+    if (!administrationEnded.current) {
+      administrationEnded.current = true;
+      onAdministrationEnded();
+    }
+    return true;
+  }, [onAdministrationEnded]);
+
+  const reconcileAdministrationLoss = useCallback(
     (error: unknown): boolean => {
-      if (!(error instanceof ConfigurationSessionInvalidError) || onSessionEnded === undefined)
+      if (
+        !(error instanceof ConfigurationSessionInvalidError) &&
+        !(error instanceof ConfigurationAdministrationAccessDeniedError)
+      )
         return false;
-      if (!sessionEnded.current) {
-        sessionEnded.current = true;
-        onSessionEnded();
-      }
-      return true;
+      return endAdministration();
     },
-    [onSessionEnded],
+    [endAdministration],
   );
 
   const adoptCollection = useCallback(
@@ -105,11 +114,11 @@ export function ConfigurationWorkspace({
       },
       (error: unknown) => {
         if (!mounted.current) return;
-        if (reconcileExpiredReadSession(error)) return;
+        if (reconcileAdministrationLoss(error)) return;
         if (request === collectionRequest.current) setCollectionState("failed");
       },
     );
-  }, [adoptCollection, reconcileExpiredReadSession]);
+  }, [adoptCollection, reconcileAdministrationLoss]);
 
   useEffect(() => {
     mounted.current = true;
@@ -143,7 +152,7 @@ export function ConfigurationWorkspace({
         },
         (error: unknown) => {
           if (!mounted.current) return;
-          if (reconcileExpiredReadSession(error)) setTotpState("idle");
+          if (reconcileAdministrationLoss(error)) setTotpState("idle");
           else setTotpState("preview-failed");
         },
       )
@@ -171,7 +180,7 @@ export function ConfigurationWorkspace({
         const probe = await probeSession();
         if (!mounted.current) return;
         if (probe.kind === "unauthenticated") {
-          onSessionEnded?.();
+          endAdministration();
           return;
         }
         if (probe.kind === "authenticated") {
@@ -183,6 +192,7 @@ export function ConfigurationWorkspace({
       })
       .catch((error: unknown) => {
         if (!mounted.current) return;
+        if (reconcileAdministrationLoss(error)) return;
         if (error instanceof ConfigurationConflictError) setTotpState("conflict");
         else if (error instanceof ConfigurationRefusedError) setTotpState("refused");
         else setTotpState("indeterminate");
@@ -205,7 +215,7 @@ export function ConfigurationWorkspace({
       },
       (error: unknown) => {
         if (!mounted.current) return;
-        if (reconcileExpiredReadSession(error)) return;
+        if (reconcileAdministrationLoss(error)) return;
         if (request === collectionRequest.current) setCollectionState("failed");
       },
     );
@@ -225,7 +235,7 @@ export function ConfigurationWorkspace({
       },
       (error: unknown) => {
         if (!mounted.current) return;
-        if (reconcileExpiredReadSession(error)) return;
+        if (reconcileAdministrationLoss(error)) return;
         else if (request === selectionRequest.current) setCollectionState("failed");
       },
     );
@@ -265,6 +275,7 @@ export function ConfigurationWorkspace({
         },
         (error: unknown) => {
           if (!mounted.current) return;
+          if (reconcileAdministrationLoss(error)) return;
           if (error instanceof ConfigurationConflictError) setLogChangeState("conflict");
           else if (error instanceof ConfigurationRefusedError) setLogChangeState("refused");
           else setLogChangeState("indeterminate");

@@ -889,12 +889,14 @@ describe("ApplicationShell sign-in panel gating", () => {
   it("loads Configuration only after authenticated navigation selects it", async () => {
     mockAuthenticatedAdministrationFetch();
     let completeLoad: (module: {
-      ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+      ConfigurationWorkspace: ComponentType<{ readonly onAdministrationEnded?: () => void }>;
     }) => void = () => {};
     const loadConfigurationWorkspace = vi.fn(
       () =>
         new Promise<{
-          ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+          ConfigurationWorkspace: ComponentType<{
+            readonly onAdministrationEnded?: () => void;
+          }>;
         }>((resolve) => {
           completeLoad = resolve;
         }),
@@ -915,12 +917,46 @@ describe("ApplicationShell sign-in panel gating", () => {
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 
+  it("returns Configuration access loss to neutral sign-in without re-adopting the session", async () => {
+    const fetchMock = mockAuthenticatedAdministrationFetch();
+    const ConfigurationWorkspace = ({
+      onAdministrationEnded,
+    }: {
+      readonly onAdministrationEnded?: () => void;
+    }) => (
+      <button type="button" onClick={onAdministrationEnded}>
+        End Configuration administration
+      </button>
+    );
+
+    render(
+      <ApplicationShell
+        loadConfigurationWorkspace={() => Promise.resolve({ ConfigurationWorkspace })}
+      />,
+    );
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "End Configuration administration" }),
+    );
+
+    expect(await screen.findByLabelText("Username")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.queryByText("Administration")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/session"),
+    ).toHaveLength(1);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
   it("offers a redacted retry when the Configuration chunk fails", async () => {
     mockAuthenticatedAdministrationFetch();
     const loadConfigurationWorkspace = vi
       .fn<
         () => Promise<{
-          ConfigurationWorkspace: ComponentType<{ readonly onSessionEnded?: () => void }>;
+          ConfigurationWorkspace: ComponentType<{
+            readonly onAdministrationEnded?: () => void;
+          }>;
         }>
       >()
       .mockRejectedValueOnce(new Error("private Configuration chunk detail"))

@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CSRF_COOKIE_NAME } from "./weavelit-authentication";
 import {
+  ConfigurationAdministrationAccessDeniedError,
   ConfigurationConflictError,
+  ConfigurationIndeterminateError,
+  ConfigurationRefusedError,
   ConfigurationSessionInvalidError,
   LOG_CONFIGURATIONS_CHANGE_PATH,
   LOG_CONFIGURATIONS_LIST_PATH,
@@ -16,6 +19,7 @@ import {
   readLogConfigurationsPage,
   readTotpEnablementApplied,
   readTotpEnablementPreview,
+  viewLogConfiguration,
 } from "./weavelit-administration-configuration";
 
 const CORRELATION = "configuration-correlation";
@@ -222,6 +226,56 @@ describe("Configuration API", () => {
       ConfigurationConflictError,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["TOTP preview", () => previewTotpEnablement(false)],
+    ["TOTP apply", () => applyTotpEnablement(false, PREVIEW)],
+    ["Log list", () => listLogConfigurations()],
+    ["Log view", () => viewLogConfiguration("primary")],
+    [
+      "Log change",
+      () => changeLogConfiguration({ configurationName: "primary", enabled: false }),
+    ],
+  ])("maps exact authorization loss from %s to the terminal error", async (_label, action) => {
+    csrf();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+      );
+
+    await expect(action()).rejects.toBeInstanceOf(ConfigurationAdministrationAccessDeniedError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves refusal and indeterminate mutation classifications", async () => {
+    csrf();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        response({ error: "request_origin_denied", correlation_id: CORRELATION }, 403),
+      )
+      .mockResolvedValueOnce(
+        response(
+          { error: "authorization_denied", correlation_id: CORRELATION, unexpected: true },
+          403,
+        ),
+      )
+      .mockResolvedValueOnce(
+        response({ error: "service_unavailable", correlation_id: CORRELATION }, 503),
+      );
+
+    await expect(applyTotpEnablement(false, PREVIEW)).rejects.toBeInstanceOf(
+      ConfigurationRefusedError,
+    );
+    await expect(applyTotpEnablement(false, PREVIEW)).rejects.toBeInstanceOf(
+      ConfigurationIndeterminateError,
+    );
+    await expect(applyTotpEnablement(false, PREVIEW)).rejects.toBeInstanceOf(
+      ConfigurationIndeterminateError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("reports an exact session-invalid read separately without retrying", async () => {
