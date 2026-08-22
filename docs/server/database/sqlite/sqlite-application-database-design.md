@@ -217,7 +217,8 @@ index, or immutability trigger with `IntegrityFailure` before readiness.
 `weavelit_group_public_identity` table. Its Group owner is the primary key and
 foreign key, its public identifier is an exact nonzero 16-byte BLOB, and a
 unique index prevents reuse. Updates are forbidden. Owner deletion cascades the
-identity only as part of Group deletion. The migration materializes up to eight
+identity only as part of Group deletion; direct deletion of an association is
+rejected while its parent Group exists. The migration materializes up to eight
 SQLite `randomblob` candidates for every existing Group, rejects zero and
 duplicated candidates, and selects the first remaining candidate for each
 Group. Table, index, trigger, complete backfill, and ledger row share one

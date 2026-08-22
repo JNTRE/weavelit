@@ -814,6 +814,15 @@ configuration create or delete, Log Module replacement, destination credential
 or path input, Log record browsing, retention or purge control, or Audit
 terminal supersession control.
 
+When a Configuration request receives the exact `authorization_denied` result
+after the Server's live **[Server Administration Permission](../../glossary.md#identities-and-access)**
+is lost, the application withdraws the complete Administration presentation and
+shows the neutral sign-in control. It does not automatically re-adopt the
+still-valid non-administrative session or mount a User Plane presentation. The
+[Server API Contract](../../server/api/api-contract-design.md) owns that result's
+wire contract, and the [Server Authorization Design](../../server/authorization/authorization-design.md)
+owns its live permission evaluation.
+
 TOTP enablement is preview then apply. Choosing enablement or disablement sends
 one preview request and displays only current and desired state and the affected
 enrolled-account count. The returned `totp_enablement_preview` exists only in a
