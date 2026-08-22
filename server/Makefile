@@ -49,5 +49,6 @@ web-ui-browser-test: web-ui-browser-install
 check-rust:
 	cargo fmt --all -- --check
 	cargo clippy --locked --workspace --all-targets -- -D warnings
+	cargo test --locked --workspace --doc
 	cargo test --locked --workspace --all-targets
 	cargo build --locked --workspace --release
