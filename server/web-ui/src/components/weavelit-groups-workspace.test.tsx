@@ -61,9 +61,14 @@ describe("GroupsWorkspace", () => {
     storageSpy.mockClear();
 
     csrf();
+    let listRequests = 0;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
-      if (target === GROUPS_LIST_PATH)
-        return Promise.resolve(response({ items: [group()], next_cursor: null }));
+      if (target === GROUPS_LIST_PATH) {
+        listRequests += 1;
+        return Promise.resolve(
+          response({ items: listRequests === 1 ? [group()] : [], next_cursor: null }),
+        );
+      }
       if (target === GROUPS_VIEW_PATH) return Promise.resolve(response(group()));
       if (target === MFA_POLICY_STEP_UP_PATH)
         return Promise.resolve(response({ totp_step_up_ticket: TICKET }));
@@ -79,7 +84,8 @@ describe("GroupsWorkspace", () => {
     fireEvent.change(screen.getByLabelText("TOTP code"), { target: { value: CODE } });
     fireEvent.click(screen.getByRole("button", { name: "Delete Group" }));
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([target]) => target === GROUPS_DELETE_PATH)).toBe(true);
+      expect(screen.queryByRole("button", { name: "View" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Verify deletion" })).toBeNull();
     });
     const stepUp = fetchMock.mock.calls.find(([target]) => target === MFA_POLICY_STEP_UP_PATH)!;
     const deletion = fetchMock.mock.calls.find(([target]) => target === GROUPS_DELETE_PATH)!;

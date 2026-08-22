@@ -89,9 +89,7 @@ describe("GroupAssociations", () => {
     fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
 
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([target]) => target === GROUP_MEMBERS_CHANGE_PATH)).toBe(
-        true,
-      );
+      expect(screen.queryByRole("heading", { name: "Verify Group access change" })).toBeNull();
     });
     const stepUp = fetchMock.mock.calls.find(([target]) => target === MFA_POLICY_STEP_UP_PATH)!;
     const change = fetchMock.mock.calls.find(([target]) => target === GROUP_MEMBERS_CHANGE_PATH)!;

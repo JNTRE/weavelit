@@ -495,10 +495,18 @@ describe("openEnrollment", () => {
   it("writes no disclosed value to browser storage or the cookie jar", async () => {
     globalThis.localStorage.clear();
     globalThis.sessionStorage.clear();
+    const storageSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(storageSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    storageSpy.mockClear();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(enrollmentOpenedResponse());
 
     await openEnrollment(CONTINUATION);
 
+    expect(storageSpy).not.toHaveBeenCalled();
     expect(globalThis.localStorage.length).toBe(0);
     expect(globalThis.sessionStorage.length).toBe(0);
     expect(globalThis.document.cookie).not.toContain(SECRET);

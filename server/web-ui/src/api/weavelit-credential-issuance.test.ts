@@ -122,6 +122,13 @@ describe("credential issuance response parsing", () => {
 
 describe("credential issuance requests", () => {
   it("sends assurance secrets only in one no-store same-origin request body", async () => {
+    const storageSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(storageSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    storageSpy.mockClear();
     const cookieWrite = vi.fn();
     withCsrfCookie(cookieWrite);
     const fetchMock = vi
@@ -150,6 +157,7 @@ describe("credential issuance requests", () => {
     expect(JSON.stringify(init.headers)).not.toContain(TOTP);
     expect(requestBody(init)).toEqual({ password: PASSWORD, totp_code: TOTP });
     expect(cookieWrite).not.toHaveBeenCalled();
+    expect(storageSpy).not.toHaveBeenCalled();
     expect(globalThis.localStorage.length).toBe(0);
     expect(globalThis.sessionStorage.length).toBe(0);
   });
