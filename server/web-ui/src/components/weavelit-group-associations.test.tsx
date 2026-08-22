@@ -436,4 +436,148 @@ describe("GroupAssociations", () => {
       expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
     });
   });
+
+  it.each([
+    ["members", "Load more members", GROUP_MEMBERS_LIST_PATH, "member-item"],
+    ["grants", "Load more grants", GROUP_GRANTS_LIST_PATH, "grant-item"],
+    ["accounts", "Load more Accounts", ACCOUNTS_LIST_PATH, "account-item"],
+  ])(
+    "admits one request per %s pagination cursor despite double click and disables during flight",
+    async (collection, buttonLabel, listPath, itemId) => {
+      csrf();
+      const slowListResponse = (cursor?: string) => {
+        if (collection === "members")
+          return response({
+            items: [
+              {
+                public_id: itemId,
+                username: `${itemId}-user`,
+                display_name: `${itemId} Display`,
+                active: true,
+                mfa_required: false,
+              },
+            ],
+            next_cursor: cursor ? null : "next-" + itemId,
+          });
+        if (collection === "grants")
+          return response({
+            items: [{ type: "operation", value: itemId }],
+            next_cursor: cursor ? null : "next-" + itemId,
+          });
+        if (collection === "accounts")
+          return response({
+            items: [
+              {
+                public_id: itemId,
+                username: `${itemId}-user`,
+                display_name: `${itemId} Display`,
+                active: true,
+                mfa_required: false,
+              },
+            ],
+            next_cursor: cursor ? null : "next-" + itemId,
+          });
+        throw new Error("unknown collection");
+      };
+
+      const initialMembers = [];
+      const initialGrants = [];
+      const initialAccounts = [
+        {
+          public_id: ACCOUNT_ID,
+          username: "initial-account",
+          display_name: "Initial Account",
+          active: true,
+          mfa_required: false,
+        },
+      ];
+
+      let requestStarted = false;
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
+        // Introduce a small delay to allow double-click capture
+        if (target === listPath && init?.method !== "POST") {
+          return new Promise((resolve) => {
+            requestStarted = true;
+            setTimeout(() => {
+              resolve(
+                slowListResponse(
+                  (init as RequestInit & { body?: string }).body
+                    ? JSON.parse((init as RequestInit & { body?: string }).body!).cursor
+                    : undefined,
+                ),
+              );
+            }, 10);
+          });
+        }
+        if (target === GROUP_MEMBERS_LIST_PATH)
+          return Promise.resolve(
+            response({
+              items: initialMembers,
+              next_cursor: collection === "members" ? "members-cursor" : null,
+            }),
+          );
+        if (target === GROUP_GRANTS_LIST_PATH)
+          return Promise.resolve(
+            response({
+              items: initialGrants,
+              next_cursor: collection === "grants" ? "grants-cursor" : null,
+            }),
+          );
+        if (target === ACCOUNTS_LIST_PATH)
+          return Promise.resolve(
+            response({
+              items: initialAccounts,
+              next_cursor: collection === "accounts" ? "accounts-cursor" : null,
+            }),
+          );
+        if (target === ADMINISTRATION_CATALOG_PATH)
+          return Promise.resolve(
+            response({ client_modules: [], service_modules: [], operations: ["operation"] }),
+          );
+        return Promise.reject(new Error("unexpected request: " + target));
+      });
+
+      render(<GroupAssociations groupPublicId={GROUP_ID} />);
+
+      // Wait for initial load and find the pagination button
+      const paginationButton = await screen.findByRole("button", { name: buttonLabel });
+
+      // Verify button is not disabled before clicking
+      expect(paginationButton).not.toHaveAttribute("disabled");
+
+      // Double-click the pagination button rapidly
+      fireEvent.click(paginationButton);
+      fireEvent.click(paginationButton);
+
+      // After first click, button should be disabled
+      await waitFor(() => {
+        expect(paginationButton).toHaveAttribute("disabled");
+      });
+
+      // Wait for request to complete
+      await waitFor(() => {
+        expect(requestStarted).toBe(true);
+      });
+
+      // Verify only one request was made to the list endpoint
+      const listRequests = fetchMock.mock.calls.filter(([target]) => target === listPath);
+      const paginationRequests = listRequests.filter((call) => {
+        const init = call[1];
+        return init && typeof init === "object" && "body" in init;
+      });
+
+      // Should have one initial load (no body) and one pagination request
+      expect(paginationRequests.length).toBeLessThanOrEqual(1);
+
+      // Wait for button to be re-enabled after response settles
+      await waitFor(() => {
+        expect(paginationButton).not.toHaveAttribute("disabled");
+      });
+
+      // Verify the new item is rendered
+      expect(await screen.findByText(new RegExp(itemId))).toBeTruthy();
+
+      fetchMock.mockRestore();
+    },
+  );
 });

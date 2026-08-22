@@ -95,6 +95,9 @@ export function GroupAssociations({
   const [action, setAction] = useState<Action | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [code, setCode] = useState("");
+  const [membersPending, setMembersPending] = useState(false);
+  const [grantsPending, setGrantsPending] = useState(false);
+  const [accountsPending, setAccountsPending] = useState(false);
   const mounted = useRef(true);
   const active = useRef(false);
   const administrationEnded = useRef(false);
@@ -136,6 +139,9 @@ export function GroupAssociations({
       mounted.current = false;
       active.current = false;
       ticket.current = "";
+      setMembersPending(false);
+      setGrantsPending(false);
+      setAccountsPending(false);
     };
   }, [groupPublicId, readFailed]);
 
@@ -230,7 +236,8 @@ export function GroupAssociations({
 
   const moreMembers = (): void => {
     const cursor = data?.memberCursor;
-    if (cursor === null || cursor === undefined) return;
+    if (cursor === null || cursor === undefined || membersPending) return;
+    setMembersPending(true);
     void listGroupMembers(groupPublicId, cursor).then(
       (page) => {
         if (mounted.current)
@@ -247,12 +254,15 @@ export function GroupAssociations({
       (error: unknown) => {
         if (mounted.current) readFailed(error);
       },
-    );
+    ).finally(() => {
+      if (mounted.current) setMembersPending(false);
+    });
   };
 
   const moreGrants = (): void => {
     const cursor = data?.grantCursor;
-    if (cursor === null || cursor === undefined) return;
+    if (cursor === null || cursor === undefined || grantsPending) return;
+    setGrantsPending(true);
     void listGroupGrants(groupPublicId, cursor).then(
       (page) => {
         if (mounted.current)
@@ -269,12 +279,15 @@ export function GroupAssociations({
       (error: unknown) => {
         if (mounted.current) readFailed(error);
       },
-    );
+    ).finally(() => {
+      if (mounted.current) setGrantsPending(false);
+    });
   };
 
   const moreAccounts = (): void => {
     const cursor = data?.accountCursor;
-    if (cursor === null || cursor === undefined) return;
+    if (cursor === null || cursor === undefined || accountsPending) return;
+    setAccountsPending(true);
     void listAccounts(cursor).then(
       (page) => {
         if (mounted.current)
@@ -291,7 +304,9 @@ export function GroupAssociations({
       (error: unknown) => {
         if (mounted.current) readFailed(error);
       },
-    );
+    ).finally(() => {
+      if (mounted.current) setAccountsPending(false);
+    });
   };
 
   if (failed) return <p role="alert">Group access is unavailable.</p>;
@@ -336,7 +351,7 @@ export function GroupAssociations({
           </ul>
         )}
         {data.memberCursor === null ? null : (
-          <button type="button" onClick={moreMembers}>
+          <button type="button" disabled={membersPending} onClick={moreMembers}>
             Load more members
           </button>
         )}
@@ -368,7 +383,7 @@ export function GroupAssociations({
           Add member
         </button>
         {data.accountCursor === null ? null : (
-          <button type="button" onClick={moreAccounts}>
+          <button type="button" disabled={accountsPending} onClick={moreAccounts}>
             Load more Accounts
           </button>
         )}
@@ -397,7 +412,7 @@ export function GroupAssociations({
           </ul>
         )}
         {data.grantCursor === null ? null : (
-          <button type="button" onClick={moreGrants}>
+          <button type="button" disabled={grantsPending} onClick={moreGrants}>
             Load more grants
           </button>
         )}
