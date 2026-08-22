@@ -40,6 +40,8 @@ type PaginationCase =
       readonly cursor: string;
       readonly pageItem: AccountFixture;
       readonly renderedText: string;
+      readonly expectedRequestBody: Record<string, unknown>;
+      readonly settledNextCursor: string;
     }
   | {
       readonly collection: "grants";
@@ -48,6 +50,8 @@ type PaginationCase =
       readonly cursor: string;
       readonly pageItem: GrantFixture;
       readonly renderedText: string;
+      readonly expectedRequestBody: Record<string, unknown>;
+      readonly settledNextCursor: string;
     }
   | {
       readonly collection: "accounts";
@@ -56,6 +60,8 @@ type PaginationCase =
       readonly cursor: string;
       readonly pageItem: AccountFixture;
       readonly renderedText: string;
+      readonly expectedRequestBody: Record<string, unknown>;
+      readonly settledNextCursor: string;
     };
 
 const paginationCases = [
@@ -72,6 +78,8 @@ const paginationCases = [
       mfa_required: false,
     },
     renderedText: "member-user",
+    expectedRequestBody: { group_public_id: GROUP_ID, cursor: "members-cursor" },
+    settledNextCursor: "members-follow-on",
   },
   {
     collection: "grants",
@@ -83,6 +91,8 @@ const paginationCases = [
       value: "REdHREdHREdHREdHREdHRg",
     },
     renderedText: "Operation: REdHREdHREdHREdHREdHRg",
+    expectedRequestBody: { group_public_id: GROUP_ID, cursor: "grants-cursor" },
+    settledNextCursor: "grants-follow-on",
   },
   {
     collection: "accounts",
@@ -97,6 +107,8 @@ const paginationCases = [
       mfa_required: false,
     },
     renderedText: "account-user",
+    expectedRequestBody: { cursor: "accounts-cursor" },
+    settledNextCursor: "accounts-follow-on",
   },
 ] satisfies readonly PaginationCase[];
 
@@ -641,21 +653,22 @@ describe("GroupAssociations", () => {
       expect(paginationRequests).toHaveLength(1);
       const paginationRequest = paginationRequests[0];
       if (paginationRequest === undefined) throw new Error("pagination request was not captured");
-      expect(body(paginationRequest[1])).toEqual({
-        cursor: testCase.cursor,
-      });
+      expect(body(paginationRequest[1])).toEqual(testCase.expectedRequestBody);
 
       // Resolve the deferred pagination response
       resolvePaginationResponse(
         response({
           items: [testCase.pageItem],
-          next_cursor: null,
+          next_cursor: testCase.settledNextCursor,
         }),
       );
 
       // Wait for button to be re-enabled after response settles
       await waitFor(() => {
-        expect(paginationButton.hasAttribute("disabled")).toBe(false);
+        const requeriedButton = screen.getByRole("button", {
+          name: testCase.buttonLabel,
+        });
+        expect(requeriedButton.hasAttribute("disabled")).toBe(false);
       });
 
       // Verify exactly one new item with exact rendered text
