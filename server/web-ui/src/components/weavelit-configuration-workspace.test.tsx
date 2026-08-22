@@ -43,6 +43,7 @@ beforeEach(() => {
   vi.mocked(changeLogConfiguration).mockResolvedValue(configuration);
   vi.mocked(probeSession).mockResolvedValue({
     kind: "authenticated",
+    publicId: "QUFBQUFBQUFBQUFBQUFBQQ",
     passwordChangeRequired: false,
   });
   localStorage.clear();

@@ -721,15 +721,27 @@ nor the consuming action. After an indeterminate consuming response it does not
 reissue a ticket, repeat the action, re-fetch the account to infer success, or
 attempt to recover the temporary password.
 
-On a valid create or reset success, the application captures the returned
-temporary password locally before requesting exactly one first-page account
-refresh. It does not use that refresh to retrieve or confirm the password. The
-temporary password appears only in one current disclosure panel as a plain
+On a valid create success or a reset of another account, the application
+captures the returned temporary password locally before requesting exactly one
+first-page account refresh. It does not use that refresh to retrieve or confirm
+the password. For a reset targeting the Account Public Identifier from the
+current Server-validated session identity, it preserves the disclosure and
+probes the existing session instead. An authenticated result causes one
+first-page Accounts refresh. An unauthenticated result transfers the disclosure
+to the shell before withdrawing the privileged workspace, then presents it
+beside blank sign-in controls. An absent or unreadable result keeps the
+disclosure in Accounts, locks further actions, and presents fixed text with a
+manual `Check session again` action; the application neither retries the reset
+nor refreshes Accounts in that state.
+
+The temporary password appears only in one current disclosure panel as a plain
 read-only selectable field, with no copy-to-clipboard control. Starting another
-credential action, viewing or paging accounts, an explicit refresh, navigation
-away from the workspace, or unmount withdraws the panel and releases the value.
-The surrounding create and assurance forms never receive the returned password.
-The credential-assurance and temporary-password responses are required to carry
+credential action, viewing or paging accounts, an explicit refresh, successful
+fresh authentication, navigation away from the workspace, or unmount withdraws
+the panel and releases the value. The surrounding create, assurance, and
+sign-in forms never receive or prefill the returned password. The disclosure is
+never written to a URL, cookie, `localStorage`, or `sessionStorage`. The
+credential-assurance and temporary-password responses are required to carry
 `Cache-Control: no-store`; Server contract coverage asserts the header while
 the application independently keeps `cache: no-store` on every request.
 

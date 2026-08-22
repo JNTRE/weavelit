@@ -29,6 +29,7 @@ import {
 const CORRELATION = "0123456789abcdef0123456789abcdef";
 const CSRF_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyzABC-_";
 const ACCOUNT = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+const PUBLIC_ID = "QUFBQUFBQUFBQUFBQUFBQQ";
 const USERNAME = "administrator";
 const PASSWORD = "fixture-administrator-password";
 const CONTINUATION = "Y29udGludWF0aW9uLXZhbHVlLWZvci10ZXN0aW5n";
@@ -55,6 +56,7 @@ function identityResponse(): Response {
     {
       result: {
         account_id: ACCOUNT,
+        public_id: PUBLIC_ID,
         client_module: "web-ui",
         password_change_required: false,
       },
@@ -142,7 +144,7 @@ describe("isSessionIdentity", () => {
   it("accepts the documented identity envelope", () => {
     expect(
       isSessionIdentity({
-        result: { account_id: ACCOUNT, client_module: "web-ui" },
+        result: { account_id: ACCOUNT, public_id: PUBLIC_ID, client_module: "web-ui" },
         correlation_id: CORRELATION,
       }),
     ).toBe(true);
@@ -151,7 +153,12 @@ describe("isSessionIdentity", () => {
   it("ignores additive fields permitted by the versioned contract", () => {
     expect(
       isSessionIdentity({
-        result: { account_id: ACCOUNT, client_module: "web-ui", future_field: 1 },
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          future_field: 1,
+        },
         correlation_id: CORRELATION,
       }),
     ).toBe(true);
@@ -160,10 +167,21 @@ describe("isSessionIdentity", () => {
   it.each([
     ["null", null],
     ["an array result", { result: [ACCOUNT] }],
-    ["a missing account", { result: { client_module: "web-ui" } }],
-    ["a missing Client Module", { result: { account_id: ACCOUNT } }],
-    ["an empty account", { result: { account_id: "", client_module: "web-ui" } }],
-    ["a non-string account", { result: { account_id: 1, client_module: "web-ui" } }],
+    ["a missing account", { result: { public_id: PUBLIC_ID, client_module: "web-ui" } }],
+    ["a missing public identifier", { result: { account_id: ACCOUNT, client_module: "web-ui" } }],
+    [
+      "a malformed public identifier",
+      { result: { account_id: ACCOUNT, public_id: "internal-account", client_module: "web-ui" } },
+    ],
+    ["a missing Client Module", { result: { account_id: ACCOUNT, public_id: PUBLIC_ID } }],
+    [
+      "an empty account",
+      { result: { account_id: "", public_id: PUBLIC_ID, client_module: "web-ui" } },
+    ],
+    [
+      "a non-string account",
+      { result: { account_id: 1, public_id: PUBLIC_ID, client_module: "web-ui" } },
+    ],
   ])("rejects %s", (_label, payload) => {
     expect(isSessionIdentity(payload)).toBe(false);
   });
@@ -178,6 +196,7 @@ describe("sessionPasswordChangeRequired", () => {
       sessionPasswordChangeRequired({
         result: {
           account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
           client_module: "web-ui",
           password_change_required: passwordChangeRequired,
         },
@@ -186,10 +205,10 @@ describe("sessionPasswordChangeRequired", () => {
     ).toBe(passwordChangeRequired);
   });
 
-  it("keeps an older identity response ordinary", () => {
+  it("keeps an identity response without a posture field ordinary", () => {
     expect(
       sessionPasswordChangeRequired({
-        result: { account_id: ACCOUNT, client_module: "web-ui" },
+        result: { account_id: ACCOUNT, public_id: PUBLIC_ID, client_module: "web-ui" },
         correlation_id: CORRELATION,
       }),
     ).toBe(false);
@@ -198,7 +217,12 @@ describe("sessionPasswordChangeRequired", () => {
   it("rejects a malformed restricted-session posture", () => {
     expect(
       sessionPasswordChangeRequired({
-        result: { account_id: ACCOUNT, client_module: "web-ui", password_change_required: "true" },
+        result: {
+          account_id: ACCOUNT,
+          public_id: PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: "true",
+        },
         correlation_id: CORRELATION,
       }),
     ).toBeNull();
@@ -631,7 +655,11 @@ describe("probeSession", () => {
     withCookies(`${CSRF_COOKIE_NAME}=${CSRF_TOKEN}`);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(identityResponse());
 
-    expect(await probeSession()).toEqual({ kind: "authenticated", passwordChangeRequired: false });
+    expect(await probeSession()).toEqual({
+      kind: "authenticated",
+      publicId: PUBLIC_ID,
+      passwordChangeRequired: false,
+    });
 
     const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(target).toBe(AUTH_SESSION_PATH);

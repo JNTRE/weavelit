@@ -935,6 +935,139 @@ describe("ApplicationShell sign-in panel gating", () => {
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 
+  it("carries a self-reset disclosure to sign-in and clears it after fresh authentication", async () => {
+    const publicId = "QUFBQUFBQUFBQUFBQUFBQQ";
+    const temporaryPassword = "YWJjZGVmZ2hpamtsbW5vcHFy";
+    const currentPassword = "current-administrator-password";
+    const ticket = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    localStorage.clear();
+    sessionStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const originalUrl = location.href;
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    let listRequests = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((target: unknown, init?: RequestInit) => {
+        if (target === "/api/v1/status") {
+          return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+        }
+        if (target === "/api/v1/auth/session") {
+          sessionProbes += 1;
+          if (sessionProbes === 1 || sessionProbes === 4) {
+            return Promise.resolve(
+              jsonResponse({
+                result: {
+                  account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  public_id: publicId,
+                  client_module: "web-ui",
+                  password_change_required: false,
+                },
+              }),
+            );
+          }
+          return Promise.resolve(jsonResponse({ error: "session_invalid" }, 401));
+        }
+        if (target === "/api/v1/administration/accounts/list") {
+          listRequests += 1;
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                items: [
+                  {
+                    public_id: publicId,
+                    username: "administrator",
+                    display_name: "First Administrator",
+                    active: true,
+                    mfa_required: false,
+                  },
+                ],
+                next_cursor: null,
+              },
+            }),
+          );
+        }
+        if (target === "/api/v1/administration/step-up/credential-issuance") {
+          return Promise.resolve(
+            jsonResponse({
+              result: { credential_issuance_ticket: ticket },
+              correlation_id: "credential-issuance-correlation",
+            }),
+          );
+        }
+        if (target === "/api/v1/administration/accounts/reset-password") {
+          return Promise.resolve(
+            jsonResponse({
+              result: { public_id: publicId, temporary_password: temporaryPassword },
+              correlation_id: "credential-issuance-correlation",
+            }),
+          );
+        }
+        if (target === "/api/v1/auth/login") {
+          if (typeof init?.body !== "string") {
+            throw new Error("the login request body must be a JSON string");
+          }
+          expect(JSON.parse(init.body)).toEqual({
+            username: "administrator",
+            password: temporaryPassword,
+            client_module: "web-ui",
+          });
+          return Promise.resolve(
+            jsonResponse({ result: { authenticated: true }, correlation_id: "login-correlation" }),
+          );
+        }
+        return Promise.reject(new Error("unexpected request"));
+      });
+
+    render(<ApplicationShell />);
+    await screen.findByRole("rowheader", { name: "administrator" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset password for administrator" }));
+    fireEvent.change(screen.getByLabelText("Current password"), {
+      target: { value: currentPassword },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(screen.getAllByDisplayValue(temporaryPassword)).toHaveLength(1);
+    expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+    expect(document.body.innerHTML).not.toContain(ticket);
+    expect(document.body.innerHTML).not.toContain(currentPassword);
+    expect(location.href).toBe(originalUrl);
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(listRequests).toBe(1);
+
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "administrator" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: temporaryPassword },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => {
+      expect(listRequests).toBe(2);
+    });
+    expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(temporaryPassword);
+    expect(sessionProbes).toBe(4);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([target]) => target === "/api/v1/administration/accounts/reset-password",
+      ),
+    ).toHaveLength(1);
+    expect(storageWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
   it("withholds the Accounts workspace for a restricted password-change session", async () => {
     Object.defineProperty(globalThis.document, "cookie", {
       configurable: true,

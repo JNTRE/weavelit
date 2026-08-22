@@ -28,7 +28,15 @@ type SelectionState =
   | { readonly kind: "loading"; readonly publicId: string }
   | { readonly kind: "ready"; readonly account: AccountProjection }
   | { readonly kind: "failed"; readonly publicId: string };
-type CredentialState = "idle" | "assurance" | "issuing" | "consuming" | "refused" | "indeterminate";
+type CredentialState =
+  | "idle"
+  | "assurance"
+  | "issuing"
+  | "consuming"
+  | "checking-session"
+  | "session-indeterminate"
+  | "refused"
+  | "indeterminate";
 type PendingCredentialAction =
   | { readonly kind: "create"; readonly username: string; readonly displayName?: string }
   | { readonly kind: "reset"; readonly publicId: string; readonly username: string };
@@ -51,6 +59,9 @@ const FAILURE_MESSAGE = "Accounts are unavailable.";
 const CREDENTIAL_REFUSED_MESSAGE = "Credential issuance was not completed.";
 const CREDENTIAL_INDETERMINATE_MESSAGE =
   "The credential issuance outcome is unknown. Start a new action only if you intend to issue another credential.";
+const SESSION_CHECKING_MESSAGE = "Checking whether your current session is still active.";
+const SESSION_INDETERMINATE_MESSAGE =
+  "The current session state could not be determined. Record this temporary password, then check again before taking another action.";
 const STATUS_REFUSED_MESSAGE = "The account status was not changed.";
 const STATUS_INDETERMINATE_MESSAGE =
   "The account status outcome is unknown. Refresh before taking another status action.";
@@ -60,10 +71,43 @@ const MFA_POLICY_INDETERMINATE_MESSAGE =
 const TOTP_PATTERN = /^[0-9]{6}$/;
 
 export interface AccountsWorkspaceProps {
-  readonly onSessionEnded?: () => void;
+  readonly currentAccountPublicId: string;
+  readonly onSessionEnded?: (disclosure?: CredentialIssued) => void;
 }
 
-export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {}): JSX.Element {
+export interface TemporaryPasswordDisclosureProps {
+  readonly disclosure: CredentialIssued;
+}
+
+export function TemporaryPasswordDisclosure({
+  disclosure,
+}: TemporaryPasswordDisclosureProps): JSX.Element {
+  return (
+    <section className="accounts__credential-disclosure" aria-labelledby="temporary-password-title">
+      <h3 id="temporary-password-title">Temporary password</h3>
+      <p>This password is shown once. Record it before taking another action.</p>
+      <p>
+        Account public ID: <span>{disclosure.publicId}</span>
+      </p>
+      <label className="accounts__label" htmlFor="temporary-password-output">
+        Temporary password
+      </label>
+      <input
+        id="temporary-password-output"
+        className="accounts__temporary-password"
+        type="text"
+        readOnly
+        spellCheck={false}
+        value={disclosure.temporaryPassword}
+      />
+    </section>
+  );
+}
+
+export function AccountsWorkspace({
+  currentAccountPublicId,
+  onSessionEnded,
+}: AccountsWorkspaceProps): JSX.Element {
   const [accounts, setAccounts] = useState<readonly AccountProjection[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [collectionState, setCollectionState] = useState<CollectionState>("loading");
@@ -294,6 +338,41 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
     setCredentialState("idle");
   };
 
+  const reconcileSelfResetSession = async (issued: CredentialIssued): Promise<void> => {
+    setCredentialState("checking-session");
+    const session = await probeSession();
+    if (!workspaceIsMounted()) {
+      return;
+    }
+    if (session.kind === "unauthenticated") {
+      if (onSessionEnded === undefined) {
+        setCredentialState("session-indeterminate");
+        return;
+      }
+      setCredentialState("idle");
+      onSessionEnded(issued);
+    } else if (session.kind === "authenticated") {
+      setCredentialState("idle");
+      loadFirstPage(true);
+    } else {
+      setCredentialState("session-indeterminate");
+    }
+  };
+
+  const recheckSelfResetSession = (): void => {
+    if (
+      credentialAttemptActive.current ||
+      credentialState !== "session-indeterminate" ||
+      disclosure === null
+    ) {
+      return;
+    }
+    credentialAttemptActive.current = true;
+    void reconcileSelfResetSession(disclosure).finally(() => {
+      credentialAttemptActive.current = false;
+    });
+  };
+
   const submitCredentialAction = (event: SyntheticEvent<HTMLFormElement, SubmitEvent>): void => {
     event.preventDefault();
     if (
@@ -339,12 +418,16 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
         }
         setDisclosure(issued);
         setPendingCredentialAction(null);
-        setCredentialState("idle");
         if (action.kind === "create") {
           setCreateUsername("");
           setCreateDisplayName("");
         }
-        loadFirstPage(true);
+        if (action.kind === "reset" && action.publicId === currentAccountPublicId) {
+          await reconcileSelfResetSession(issued);
+        } else {
+          setCredentialState("idle");
+          loadFirstPage(true);
+        }
       } catch (error: unknown) {
         credentialIssuanceTicket.current = "";
         if (!mounted.current) {
@@ -466,8 +549,14 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
     })();
   };
 
-  const credentialBusy = credentialState === "issuing" || credentialState === "consuming";
-  const credentialActionLocked = pendingCredentialAction !== null || credentialBusy;
+  const credentialBusy =
+    credentialState === "issuing" ||
+    credentialState === "consuming" ||
+    credentialState === "checking-session";
+  const credentialActionLocked =
+    pendingCredentialAction !== null ||
+    credentialBusy ||
+    credentialState === "session-indeterminate";
   const statusBusy = statusState === "submitting";
   const mfaPolicyBusy = mfaPolicyState === "issuing" || mfaPolicyState === "mutating";
   const mfaPolicyActionLocked = pendingMfaPolicyAction !== null || mfaPolicyBusy;
@@ -479,6 +568,7 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
     <section
       className="accounts"
       data-accounts-state={collectionState}
+      data-credential-state={credentialState}
       data-account-status-state={statusState}
       data-mfa-policy-state={mfaPolicyState}
     >
@@ -631,28 +721,20 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps = {
         </p>
       ) : null}
 
-      {disclosure !== null ? (
-        <section
-          className="accounts__credential-disclosure"
-          aria-labelledby="temporary-password-title"
-        >
-          <h3 id="temporary-password-title">Temporary password</h3>
-          <p>This password is shown once. Record it before taking another action.</p>
-          <p>
-            Account public ID: <span>{disclosure.publicId}</span>
-          </p>
-          <label className="accounts__label" htmlFor="temporary-password-output">
-            Temporary password
-          </label>
-          <input
-            id="temporary-password-output"
-            className="accounts__temporary-password"
-            type="text"
-            readOnly
-            spellCheck={false}
-            value={disclosure.temporaryPassword}
-          />
-        </section>
+      {disclosure !== null ? <TemporaryPasswordDisclosure disclosure={disclosure} /> : null}
+
+      {credentialState === "checking-session" ? (
+        <p className="accounts__credential-status" role="status">
+          {SESSION_CHECKING_MESSAGE}
+        </p>
+      ) : null}
+      {credentialState === "session-indeterminate" ? (
+        <div className="accounts__credential-status">
+          <p role="status">{SESSION_INDETERMINATE_MESSAGE}</p>
+          <button type="button" className="accounts__action" onClick={recheckSelfResetSession}>
+            Check session again
+          </button>
+        </div>
       ) : null}
 
       {pendingStatusAction !== null ? (

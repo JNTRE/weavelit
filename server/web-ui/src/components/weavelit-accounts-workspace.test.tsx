@@ -18,7 +18,10 @@ import {
   ACCOUNTS_MFA_RESET_PATH,
   MFA_POLICY_STEP_UP_PATH,
 } from "../api/weavelit-mfa-policy";
-import { AccountsWorkspace } from "./weavelit-accounts-workspace";
+import {
+  AccountsWorkspace as AccountsWorkspaceComponent,
+  type AccountsWorkspaceProps,
+} from "./weavelit-accounts-workspace";
 
 const CSRF = "csrf-token";
 const ALICE_ID = "QUFBQUFBQUFBQUFBQUFBQQ";
@@ -90,6 +93,10 @@ function requestBody(init: RequestInit | undefined): Record<string, unknown> {
     throw new Error("the request body must be a JSON string");
   }
   return JSON.parse(init.body) as Record<string, unknown>;
+}
+
+function AccountsWorkspace(props: Omit<AccountsWorkspaceProps, "currentAccountPublicId"> = {}) {
+  return <AccountsWorkspaceComponent currentAccountPublicId={ALICE_ID} {...props} />;
 }
 
 afterEach(() => {
@@ -486,7 +493,7 @@ describe("AccountsWorkspace", () => {
     expect(document.body.textContent).not.toContain("private conflict cause");
   });
 
-  it("resets only the selected account public identifier", async () => {
+  it("resets another account, preserves its disclosure, and refreshes without probing", async () => {
     withCsrfCookie();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
       if (target === ACCOUNTS_LIST_PATH) {
@@ -527,6 +534,117 @@ describe("AccountsWorkspace", () => {
     expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH)).toHaveLength(
       0,
     );
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+        2,
+      );
+    });
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
+  });
+
+  it("probes after self-reset and transfers the disclosure without refreshing or retrying", async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const cookieWrite = vi.fn();
+    withCsrfCookie(cookieWrite);
+    const originalUrl = location.href;
+    const onSessionEnded = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_RESET_PASSWORD_PATH) {
+        return Promise.resolve(credentialResponse(ALICE_ID));
+      }
+      if (target === AUTH_SESSION_PATH) {
+        return Promise.resolve(
+          response({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset password for alice" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    await waitFor(() => {
+      expect(onSessionEnded).toHaveBeenCalledWith({
+        publicId: ALICE_ID,
+        temporaryPassword: TEMPORARY_PASSWORD,
+      });
+    });
+    expect(screen.getAllByDisplayValue(TEMPORARY_PASSWORD)).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(TICKET);
+    expect(document.body.innerHTML).not.toContain(PASSWORD);
+    expect(location.href).toBe(originalUrl);
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(cookieWrite).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_RESET_PASSWORD_PATH),
+    ).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
+    );
+    storageWrite.mockRestore();
+  });
+
+  it("preserves self-reset disclosure and only rechecks an indeterminate session manually", async () => {
+    withCsrfCookie();
+    const onSessionEnded = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_RESET_PASSWORD_PATH) {
+        return Promise.resolve(credentialResponse(ALICE_ID));
+      }
+      if (target === AUTH_SESSION_PATH) {
+        return Promise.resolve(new Response("unreadable", { status: 200 }));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset password for alice" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    expect(
+      await screen.findByText(/The current session state could not be determined\./),
+    ).toBeTruthy();
+    expect(screen.getAllByDisplayValue(TEMPORARY_PASSWORD)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Reset password for alice" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(onSessionEnded).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Check session again" }));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(
+        2,
+      );
+    });
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_RESET_PASSWORD_PATH),
+    ).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
+    );
+    expect(screen.getAllByDisplayValue(TEMPORARY_PASSWORD)).toHaveLength(1);
   });
 
   it("does not consume a ticket returned after the workspace unmounts", async () => {

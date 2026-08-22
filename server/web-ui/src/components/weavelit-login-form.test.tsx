@@ -5,6 +5,7 @@ import { LoginPanel } from "./weavelit-login-form";
 
 const CORRELATION = "0123456789abcdef0123456789abcdef";
 const ACCOUNT = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+const PUBLIC_ID = "QUFBQUFBQUFBQUFBQUFBQQ";
 const USERNAME = "administrator";
 const PASSWORD = "fixture-administrator-password";
 const CONTINUATION = "Y29udGludWF0aW9uLXZhbHVlLWZvci10ZXN0aW5n";
@@ -49,7 +50,10 @@ function initialUnauthenticatedProbeOnly(): () => Promise<Response> {
 function authenticatedProbe(): Promise<Response> {
   return Promise.resolve(
     jsonResponse(
-      { result: { account_id: ACCOUNT, client_module: "web-ui" }, correlation_id: CORRELATION },
+      {
+        result: { account_id: ACCOUNT, public_id: PUBLIC_ID, client_module: "web-ui" },
+        correlation_id: CORRELATION,
+      },
       200,
     ),
   );

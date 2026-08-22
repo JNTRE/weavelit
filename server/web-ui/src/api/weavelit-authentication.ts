@@ -47,6 +47,12 @@ const PRE_SESSION_CSRF_VALUE = "1";
 /** The closed shape of an issued opaque token, matching the cookie contract. */
 const OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,48}$/;
 
+/** The canonical public identifier shape returned by the session route. */
+const PUBLIC_ID_PATTERN = /^[A-Za-z0-9_-]{21}[AQgw]$/;
+
+/** The reserved all-zero value is never an Account Public Identifier. */
+const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
+
 /**
  * The closed shape of a disclosed provisioning URI.
  *
@@ -129,9 +135,18 @@ export class PasswordChangeFailedError extends Error {
  * like. It is never used to explain a denied login.
  */
 export type SessionProbe =
-  | { readonly kind: "authenticated"; readonly passwordChangeRequired: boolean }
+  | {
+      readonly kind: "authenticated";
+      readonly publicId: string;
+      readonly passwordChangeRequired: boolean;
+    }
   | { readonly kind: "unauthenticated" }
   | { readonly kind: "absent" };
+
+interface SessionIdentity {
+  readonly publicId: string;
+  readonly passwordChangeRequired: boolean;
+}
 
 /**
  * What a verified password was admitted to.
@@ -253,25 +268,36 @@ export function readEnrollmentOpened(payload: unknown): EnrollmentOpened | null 
  * any further than this check.
  */
 export function isSessionIdentity(payload: unknown): boolean {
-  return sessionPasswordChangeRequired(payload) !== null;
+  return readSessionIdentity(payload) !== null;
 }
 
 /** Returns the documented restricted-session posture, or `null` for an invalid envelope. */
 export function sessionPasswordChangeRequired(payload: unknown): boolean | null {
+  return readSessionIdentity(payload)?.passwordChangeRequired ?? null;
+}
+
+/** Returns the validated identity fields the browser needs, or `null`. */
+function readSessionIdentity(payload: unknown): SessionIdentity | null {
   const result = typedResult(payload);
   if (result === null) {
     return null;
   }
   const account = result.account_id;
+  const publicId = result.public_id;
   const clientModule = result.client_module;
   if (
     typeof account === "string" &&
     account.length > 0 &&
+    typeof publicId === "string" &&
+    PUBLIC_ID_PATTERN.test(publicId) &&
+    publicId !== ZERO_PUBLIC_ID &&
     typeof clientModule === "string" &&
     clientModule.length > 0
   ) {
     const required = result.password_change_required;
-    return required === undefined ? false : typeof required === "boolean" ? required : null;
+    const passwordChangeRequired =
+      required === undefined ? false : typeof required === "boolean" ? required : null;
+    return passwordChangeRequired === null ? null : { publicId, passwordChangeRequired };
   }
   return null;
 }
@@ -564,8 +590,6 @@ export async function probeSession(): Promise<SessionProbe> {
     return { kind: "absent" };
   }
 
-  const passwordChangeRequired = sessionPasswordChangeRequired(payload);
-  return passwordChangeRequired === null
-    ? { kind: "absent" }
-    : { kind: "authenticated", passwordChangeRequired };
+  const identity = readSessionIdentity(payload);
+  return identity === null ? { kind: "absent" } : { kind: "authenticated", ...identity };
 }

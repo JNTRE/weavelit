@@ -126,7 +126,7 @@ function isCredentialState(state: LoginViewState): boolean {
  * enrollment retains them.
  */
 export interface LoginPanelProps {
-  readonly onAuthenticated?: (passwordChangeRequired: boolean) => void;
+  readonly onAuthenticated?: (passwordChangeRequired: boolean, publicId: string) => void;
 }
 
 export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Element | null {
@@ -137,6 +137,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
   const [provisioning, setProvisioning] = useState<EnrollmentOpened | null>(null);
   const [state, setState] = useState<LoginViewState>("checking");
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
+  const [accountPublicId, setAccountPublicId] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
   const mounted = useRef(true);
   const reconciliationAttempt = useRef(0);
@@ -161,16 +162,17 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
     void probeSession().then((probe) => {
       if (mounted.current) {
         setPasswordChangeRequired(probe.kind === "authenticated" && probe.passwordChangeRequired);
+        setAccountPublicId(probe.kind === "authenticated" ? probe.publicId : null);
         setState(probe.kind === "authenticated" ? "authenticated" : probe.kind);
       }
     });
   }, []);
 
   useEffect(() => {
-    if (state === "authenticated") {
-      onAuthenticated?.(passwordChangeRequired);
+    if (state === "authenticated" && accountPublicId !== null) {
+      onAuthenticated?.(passwordChangeRequired, accountPublicId);
     }
-  }, [onAuthenticated, passwordChangeRequired, state]);
+  }, [accountPublicId, onAuthenticated, passwordChangeRequired, state]);
 
   const changeUsername = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     setUsername(event.target.value);
@@ -219,6 +221,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
           reconciliationTimer.current = null;
           setReconciling(false);
           setPasswordChangeRequired(result.passwordChangeRequired);
+          setAccountPublicId(result.publicId);
           endAttempt("authenticated");
           return;
         }
@@ -244,6 +247,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
     void probeSession().then((probe) => {
       if (probe.kind === "authenticated") {
         setPasswordChangeRequired(probe.passwordChangeRequired);
+        setAccountPublicId(probe.publicId);
         endAttempt("authenticated");
       } else {
         endAttempt("failed");

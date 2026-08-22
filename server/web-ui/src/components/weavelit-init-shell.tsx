@@ -7,8 +7,9 @@ import {
   useDeploymentStatus,
   type StatusViewState,
 } from "../hooks/weavelit-init-deployment-status";
+import type { CredentialIssued } from "../api/weavelit-credential-issuance";
 import { RestoreSubmissionForm } from "./weavelit-init-restore-form";
-import { AccountsWorkspace } from "./weavelit-accounts-workspace";
+import { AccountsWorkspace, TemporaryPasswordDisclosure } from "./weavelit-accounts-workspace";
 import { InitWorkflow } from "./weavelit-init-workflow";
 import { LoginPanel } from "./weavelit-login-form";
 import { PasswordChangeForm } from "./weavelit-password-change-form";
@@ -83,7 +84,11 @@ export function ApplicationShell({
   const [choice, setChoice] = useState<SetupChoice | null>(null);
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [authenticatedPublicId, setAuthenticatedPublicId] = useState<string | null>(null);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
+  const [endedSessionDisclosure, setEndedSessionDisclosure] = useState<CredentialIssued | null>(
+    null,
+  );
   const [administrationView, setAdministrationView] = useState<
     "accounts" | "groups" | "configuration"
   >("accounts");
@@ -109,7 +114,9 @@ export function ApplicationShell({
   const completeSetup = useCallback(() => {
     setInitialized(true);
   }, []);
-  const completeAuthentication = useCallback((required: boolean) => {
+  const completeAuthentication = useCallback((required: boolean, publicId: string) => {
+    setEndedSessionDisclosure(null);
+    setAuthenticatedPublicId(publicId);
     setPasswordChangeRequired(required);
     setAuthenticated(true);
   }, []);
@@ -119,7 +126,9 @@ export function ApplicationShell({
     setAuthenticated(true);
   }, []);
 
-  const endAuthenticatedSession = useCallback(() => {
+  const endAuthenticatedSession = useCallback((disclosure?: CredentialIssued) => {
+    setEndedSessionDisclosure(disclosure ?? null);
+    setAuthenticatedPublicId(null);
     setPasswordChangeRequired(false);
     setAuthenticated(false);
   }, []);
@@ -184,7 +193,7 @@ export function ApplicationShell({
   // not produce a sign-in form that could never succeed.
   const offerLogin = state.kind === "unavailable" || initialized;
 
-  if (authenticated) {
+  if (authenticated && authenticatedPublicId !== null) {
     return (
       <main className="shell shell--administration">
         <h1 className="shell__title">Weavelit Server</h1>
@@ -225,7 +234,10 @@ export function ApplicationShell({
               </button>
             </nav>
             {administrationView === "accounts" ? (
-              <AccountsWorkspace onSessionEnded={endAuthenticatedSession} />
+              <AccountsWorkspace
+                currentAccountPublicId={authenticatedPublicId}
+                onSessionEnded={endAuthenticatedSession}
+              />
             ) : administrationView === "groups" ? (
               GroupsWorkspace !== null ? (
                 <GroupsWorkspace />
@@ -332,6 +344,9 @@ export function ApplicationShell({
       ) : null}
       {offerRestore ? <RestoreSubmissionForm onCompleted={completeSetup} /> : null}
       {offerInit ? <InitWorkflow onCompleted={completeSetup} /> : null}
+      {endedSessionDisclosure !== null ? (
+        <TemporaryPasswordDisclosure disclosure={endedSessionDisclosure} />
+      ) : null}
       {offerLogin ? <LoginPanel onAuthenticated={completeAuthentication} /> : null}
     </main>
   );
