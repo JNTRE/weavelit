@@ -729,6 +729,9 @@ read-only selectable field, with no copy-to-clipboard control. Starting another
 credential action, viewing or paging accounts, an explicit refresh, navigation
 away from the workspace, or unmount withdraws the panel and releases the value.
 The surrounding create and assurance forms never receive the returned password.
+The credential-assurance and temporary-password responses are required to carry
+`Cache-Control: no-store`; Server contract coverage asserts the header while
+the application independently keeps `cache: no-store` on every request.
 
 Each account row and safe detail view also provide an MFA-required switch and a
 Reset MFA action. Choosing either fixes one target and desired action in the
