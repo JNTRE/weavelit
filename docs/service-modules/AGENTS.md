@@ -18,6 +18,7 @@ Apply instructions in this order:
 
 ## Asset Inventory
 
+- `service-connection-design.md`: Shared Service Connection authentication-method design.
 - `zendesk/`: Documentation for the Zendesk Service Module.
 
 ## Working Rules

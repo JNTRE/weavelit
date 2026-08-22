@@ -740,6 +740,8 @@ The Server and CLI MUST communicate through the versioned application interface
 and MAY be packaged and upgraded independently within that interface's
 compatibility policy.
 
+The Weavelit CLI MUST authenticate Human Users through the OAuth 2.0 Device Authorization Grant (RFC 8628). The CLI MUST present the Server-issued verification URI and user code, and the Server MUST complete the authorization and establish the CLI session without exposing session or provider credentials to the CLI.
+
 Host-level administration MUST remain separate from all Weavelit application
 client interfaces.
 
