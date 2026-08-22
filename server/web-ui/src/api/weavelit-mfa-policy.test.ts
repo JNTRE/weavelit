@@ -87,9 +87,18 @@ describe("MFA policy response parsing", () => {
 
 describe("MFA policy requests", () => {
   it("sends the code only in one fixed-family no-store same-origin request", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(storageWrite).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    storageWrite.mockClear();
+
     const cookieWrite = vi.fn();
     withCsrfCookie(cookieWrite);
-    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(success({ totp_step_up_ticket: TICKET }));

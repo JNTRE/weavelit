@@ -805,16 +805,20 @@ describe("InitWorkflow", () => {
     window.sessionStorage.clear();
     setItemSpy.mockClear();
 
+    const completed = vi.fn();
     mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(completionResponse()),
     });
 
-    render(<InitWorkflow onCompleted={() => {}} />);
+    render(<InitWorkflow onCompleted={completed} />);
     await reachReviewStep();
     fireEvent.click(button("Complete setup"));
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
     });
 
     expect(window.localStorage.length).toBe(0);
@@ -836,16 +840,20 @@ describe("InitWorkflow", () => {
     window.sessionStorage.clear();
     setItemSpy.mockClear();
 
+    const completed = vi.fn();
     mockRoutedFetch({
       prepare: () => Promise.resolve(deliveryResponse()),
       finalize: () => Promise.resolve(completionResponse()),
     });
 
-    render(<InitWorkflow onCompleted={() => {}} />);
+    render(<InitWorkflow onCompleted={completed} />);
     await reachReviewStep();
     fireEvent.click(button("Complete setup"));
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(completed).toHaveBeenCalledTimes(1);
     });
 
     // The proof is derived material for the key, so it is held to the same rule

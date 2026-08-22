@@ -321,9 +321,18 @@ describe("AccountsWorkspace", () => {
   });
 
   it("creates through one assurance ticket without persisting secrets and withdraws disclosure", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(storageWrite).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    storageWrite.mockClear();
+
     const cookieWrite = vi.fn();
     withCsrfCookie(cookieWrite);
-    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
     const originalUrl = globalThis.location.href;
     let listRequests = 0;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
@@ -367,11 +376,11 @@ describe("AccountsWorkspace", () => {
     expect(document.body.innerHTML).not.toContain(TICKET);
     expect(document.body.innerHTML).not.toContain(PASSWORD);
     expect(globalThis.location.href).toBe(originalUrl);
-    expect(storageWrite).not.toHaveBeenCalled();
     expect(cookieWrite).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(listRequests).toBe(2);
     });
+    expect(storageWrite).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH)).toHaveLength(
       1,
     );
@@ -557,9 +566,18 @@ describe("AccountsWorkspace", () => {
   });
 
   it("confirms and applies one MFA requirement with a code-only step-up and private ticket", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(storageWrite).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    storageWrite.mockClear();
+
     const cookieWrite = vi.fn();
     withCsrfCookie(cookieWrite);
-    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
     let listRequests = 0;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
       if (target === ACCOUNTS_LIST_PATH) {

@@ -52,8 +52,17 @@ afterEach(() => Reflect.deleteProperty(document, "cookie"));
 
 describe("GroupAssociations", () => {
   it("uses safe selectors and one memory-only ticket to add a member then refresh", async () => {
-    csrf();
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
     const storageSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(storageSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    storageSpy.mockClear();
+
+    csrf();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === GROUP_MEMBERS_LIST_PATH)
         return Promise.resolve(response({ items: [], next_cursor: null }));

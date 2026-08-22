@@ -50,8 +50,17 @@ describe("GroupsWorkspace", () => {
   });
 
   it("requires confirmation and one GrantMutation step-up without storing or retrying secrets", async () => {
-    csrf();
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
     const storageSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(storageSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    storageSpy.mockClear();
+
+    csrf();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === GROUPS_LIST_PATH)
         return Promise.resolve(response({ items: [group()], next_cursor: null }));
