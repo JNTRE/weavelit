@@ -1102,4 +1102,109 @@ describe("ApplicationShell sign-in panel gating", () => {
     ).toHaveLength(0);
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
+
+  it.each([
+    [
+      "completed",
+      () =>
+        jsonResponse({
+          result: {
+            account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+            client_module: "web-ui",
+            password_change_required: false,
+          },
+        }),
+      true,
+    ],
+    ["unauthenticated", () => jsonResponse({ error: "session_invalid" }, 401), false],
+  ] as const)(
+    "locks an indeterminate password change while %s session reconciliation is pending",
+    async (_outcome, reconciliationResponse, completes) => {
+      Object.defineProperty(globalThis.document, "cookie", {
+        configurable: true,
+        get: () => "__Host-weavelit_csrf=csrf-token",
+      });
+      let sessionProbes = 0;
+      let resolveReconciliation: (response: Response) => void = () => {
+        throw new Error("session reconciliation was not started");
+      };
+      const deferredReconciliation = new Promise<Response>((resolve) => {
+        resolveReconciliation = resolve;
+      });
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+        if (target === "/api/v1/status") {
+          return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+        }
+        if (target === "/api/v1/auth/session") {
+          sessionProbes += 1;
+          if (sessionProbes === 1) {
+            return Promise.resolve(
+              jsonResponse({
+                result: {
+                  account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+                  client_module: "web-ui",
+                  password_change_required: true,
+                },
+              }),
+            );
+          }
+          return deferredReconciliation;
+        }
+        if (target === "/api/v1/auth/password/change") {
+          return Promise.resolve(jsonResponse({ error: "gateway_timeout" }, 504));
+        }
+        if (target === "/api/v1/administration/accounts/list") {
+          return Promise.resolve(jsonResponse({ result: { accounts: [], next_cursor: null } }));
+        }
+        return Promise.reject(new Error("unexpected request"));
+      });
+
+      render(<ApplicationShell />);
+      const passwordInput = await screen.findByLabelText("New password");
+      fireEvent.change(passwordInput, { target: { value: "one-time replacement" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save password" }));
+
+      await waitFor(() => {
+        expect(
+          document
+            .querySelector("section.password-change")
+            ?.getAttribute("data-password-change-state"),
+        ).toBe("indeterminate");
+      });
+      const saveButton = screen.getByRole("button", { name: "Save password" });
+      expect(passwordInput).toHaveProperty("disabled", true);
+      expect(saveButton).toHaveProperty("disabled", true);
+      fireEvent.click(screen.getByRole("button", { name: "Check session" }));
+      await waitFor(() => {
+        expect(sessionProbes).toBe(2);
+      });
+
+      fireEvent.change(passwordInput, { target: { value: "second replacement" } });
+      fireEvent.click(saveButton);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/password/change"),
+      ).toHaveLength(1);
+
+      resolveReconciliation(reconciliationResponse());
+      if (completes) {
+        expect(await screen.findByRole("heading", { name: "Accounts" })).toBeTruthy();
+        expect(screen.queryByRole("heading", { name: "Choose a new password" })).toBeNull();
+      } else {
+        await waitFor(() => {
+          expect(screen.getByRole("button", { name: "Check session" })).toBeTruthy();
+        });
+        expect(
+          document
+            .querySelector("section.password-change")
+            ?.getAttribute("data-password-change-state"),
+        ).toBe("indeterminate");
+      }
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/password/change"),
+      ).toHaveLength(1);
+      Reflect.deleteProperty(globalThis.document, "cookie");
+    },
+  );
 });

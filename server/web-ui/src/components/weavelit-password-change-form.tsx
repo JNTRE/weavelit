@@ -15,13 +15,14 @@ export interface PasswordChangeFormProps {
 export function PasswordChangeForm({ onCompleted }: PasswordChangeFormProps): JSX.Element {
   const [password, setPassword] = useState("");
   const [state, setState] = useState<"ready" | "submitting" | "failed" | "indeterminate">("ready");
+  const mutationLocked = state === "submitting" || state === "indeterminate";
 
   const changePassword = (event: ChangeEvent<HTMLInputElement>): void => {
     setPassword(event.target.value);
   };
 
   const submit = (): void => {
-    if (password === "" || state === "submitting") {
+    if (password === "" || mutationLocked) {
       return;
     }
     setState("submitting");
@@ -61,13 +62,13 @@ export function PasswordChangeForm({ onCompleted }: PasswordChangeFormProps): JS
         spellCheck={false}
         value={password}
         onChange={changePassword}
-        disabled={state === "submitting"}
+        disabled={mutationLocked}
       />
       <button
         type="button"
         className="password-change__action"
         onClick={submit}
-        disabled={password === "" || state === "submitting"}
+        disabled={password === "" || mutationLocked}
       >
         Save password
       </button>

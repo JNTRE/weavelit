@@ -233,6 +233,7 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
           200,
           envelope({
             account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
             client_module: "web-ui",
             password_change_required: false,
           }),
@@ -260,6 +261,7 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
   await verify.click();
 
   await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  expect(sessionProbes, "the initial and post-success sessions were probed").toBe(2);
 
   expect(verified, "the code was submitted exactly once").toHaveLength(1);
   const submitted = verified[0] as Request;
@@ -472,6 +474,7 @@ test("an enrollment after a 202 mfa_enrollment_required discloses its key and li
           200,
           envelope({
             account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
             client_module: "web-ui",
             password_change_required: false,
           }),
@@ -502,6 +505,7 @@ test("an enrollment after a 202 mfa_enrollment_required discloses its key and li
   await page.locator(CODE_INPUT).fill(CODE);
   await page.getByRole("button", { name: CONFIRM_ACTION_NAME }).click();
   await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  expect(sessionProbes, "the initial and post-success sessions were probed").toBe(2);
 
   expect(confirmed).toHaveLength(1);
   expect((confirmed[0] as Request).postData()).toBe(
