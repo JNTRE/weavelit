@@ -43,7 +43,7 @@ type SelectionViewState = "idle" | "submitting" | "failed";
 type SetupChoice = "init" | "restore";
 
 interface GroupsWorkspaceModule {
-  GroupsWorkspace: ComponentType;
+  GroupsWorkspace: ComponentType<{ readonly onAdministrationEnded?: () => void }>;
 }
 
 interface ConfigurationWorkspaceModule {
@@ -84,6 +84,7 @@ export function ApplicationShell({
   const [choice, setChoice] = useState<SetupChoice | null>(null);
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [adoptExistingSession, setAdoptExistingSession] = useState(true);
   const [authenticatedPublicId, setAuthenticatedPublicId] = useState<string | null>(null);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [endedSessionDisclosure, setEndedSessionDisclosure] = useState<CredentialIssued | null>(
@@ -93,7 +94,9 @@ export function ApplicationShell({
     "accounts" | "groups" | "configuration"
   >("accounts");
   const [groupsLoadState, setGroupsLoadState] = useState<"idle" | "loading" | "failed">("idle");
-  const [GroupsWorkspace, setGroupsWorkspace] = useState<ComponentType | null>(null);
+  const [GroupsWorkspace, setGroupsWorkspace] = useState<ComponentType<{
+    readonly onAdministrationEnded?: () => void;
+  }> | null>(null);
   const [configurationLoadState, setConfigurationLoadState] = useState<
     "idle" | "loading" | "failed"
   >("idle");
@@ -115,6 +118,7 @@ export function ApplicationShell({
     setInitialized(true);
   }, []);
   const completeAuthentication = useCallback((required: boolean, publicId: string) => {
+    setAdoptExistingSession(true);
     setEndedSessionDisclosure(null);
     setAuthenticatedPublicId(publicId);
     setPasswordChangeRequired(required);
@@ -128,6 +132,14 @@ export function ApplicationShell({
 
   const endAuthenticatedSession = useCallback((disclosure?: CredentialIssued) => {
     setEndedSessionDisclosure(disclosure ?? null);
+    setAuthenticatedPublicId(null);
+    setPasswordChangeRequired(false);
+    setAuthenticated(false);
+  }, []);
+
+  const endGroupsAdministration = useCallback(() => {
+    setAdoptExistingSession(false);
+    setEndedSessionDisclosure(null);
     setAuthenticatedPublicId(null);
     setPasswordChangeRequired(false);
     setAuthenticated(false);
@@ -243,7 +255,7 @@ export function ApplicationShell({
               />
             ) : administrationView === "groups" ? (
               GroupsWorkspace !== null ? (
-                <GroupsWorkspace />
+                <GroupsWorkspace onAdministrationEnded={endGroupsAdministration} />
               ) : (
                 <section className="groups" aria-labelledby="groups-loading-title">
                   <h2 id="groups-loading-title" className="groups__title">
@@ -350,7 +362,12 @@ export function ApplicationShell({
       {endedSessionDisclosure !== null ? (
         <TemporaryPasswordDisclosure disclosure={endedSessionDisclosure} />
       ) : null}
-      {offerLogin ? <LoginPanel onAuthenticated={completeAuthentication} /> : null}
+      {offerLogin ? (
+        <LoginPanel
+          onAuthenticated={completeAuthentication}
+          adoptExistingSession={adoptExistingSession}
+        />
+      ) : null}
     </main>
   );
 }

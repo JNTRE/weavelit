@@ -125,6 +125,7 @@ describe("AccountsWorkspace", () => {
               items: [account(ALICE_ID, "alice", "Alice", true, false)],
               next_cursor: "bmV4dC1wYWdl",
             },
+            correlation_id: CORRELATION,
           }),
         );
       }
@@ -135,6 +136,7 @@ describe("AccountsWorkspace", () => {
             items: [account(BOB_ID, "bob", null, false, true)],
             next_cursor: null,
           },
+          correlation_id: CORRELATION,
         }),
       );
     });
@@ -159,6 +161,144 @@ describe("AccountsWorkspace", () => {
     );
   });
 
+  it("does not let a stale detail response overwrite a later selection", async () => {
+    withCsrfCookie();
+    let resolveAliceDetail!: (value: Response) => void;
+    const aliceDetail = new Promise<Response>((resolve) => {
+      resolveAliceDetail = resolve;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(
+          accountPage([
+            account(ALICE_ID, "alice", "Alice", true, false),
+            account(BOB_ID, "bob", "Bob", false, true),
+          ]),
+        );
+      }
+      if (target === ACCOUNTS_VIEW_PATH) {
+        const publicId = requestBody(init).public_id;
+        if (publicId === ALICE_ID) {
+          return aliceDetail;
+        }
+        if (publicId === BOB_ID) {
+          return Promise.resolve(
+            response({
+              result: account(BOB_ID, "bob", "Bob", false, true),
+              correlation_id: CORRELATION,
+            }),
+          );
+        }
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    const aliceRow = (await screen.findByRole("rowheader", { name: "alice" })).closest("tr")!;
+    const bobRow = screen.getByRole("rowheader", { name: "bob" }).closest("tr")!;
+    fireEvent.click(aliceRow.querySelector<HTMLButtonElement>("button")!);
+    fireEvent.click(bobRow.querySelector<HTMLButtonElement>("button")!);
+    expect(await screen.findByRole("heading", { name: "bob", level: 3 })).toBeTruthy();
+
+    await act(async () => {
+      resolveAliceDetail(
+        response({
+          result: account(ALICE_ID, "alice", "Alice", true, false),
+          correlation_id: CORRELATION,
+        }),
+      );
+      await aliceDetail;
+    });
+
+    expect(screen.getByRole("heading", { name: "bob", level: 3 })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "alice", level: 3 })).toBeNull();
+  });
+
+  it("ignores stale pagination after a status mutation reloads the collection", async () => {
+    withCsrfCookie();
+    let resolveStalePage!: (value: Response) => void;
+    const stalePage = new Promise<Response>((resolve) => {
+      resolveStalePage = resolve;
+    });
+    const seenCursors: unknown[] = [];
+    let firstPageRequests = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((target, init) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        const cursor = requestBody(init).cursor;
+        if (cursor === "c3RhbGU") {
+          seenCursors.push(cursor);
+          return stalePage;
+        }
+        if (cursor === "ZnJlc2g") {
+          seenCursors.push(cursor);
+          return Promise.resolve(accountPage([]));
+        }
+        firstPageRequests += 1;
+        return Promise.resolve(
+          response({
+            result: {
+              items: [account(ALICE_ID, "alice", "Alice", firstPageRequests === 1, false)],
+              next_cursor: firstPageRequests === 1 ? "c3RhbGU" : "ZnJlc2g",
+            },
+            correlation_id: CORRELATION,
+          }),
+        );
+      }
+      if (target === ACCOUNTS_STATUS_PATH) {
+        return Promise.resolve(
+          response({
+            result: account(ALICE_ID, "alice", "Alice", false, false),
+            correlation_id: CORRELATION,
+          }),
+        );
+      }
+      if (target === AUTH_SESSION_PATH) {
+        return Promise.resolve(
+          response({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: BOB_ID,
+              client_module: "web-ui",
+              password_change_required: false,
+            },
+            correlation_id: CORRELATION,
+          }),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disable alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+
+    await waitFor(() => {
+      expect(firstPageRequests).toBe(2);
+    });
+    expect(screen.getByText("Disabled")).toBeTruthy();
+
+    await act(async () => {
+      resolveStalePage(
+        response({
+          result: {
+            items: [account(BOB_ID, "stale-bob", "Stale Bob", true, false)],
+            next_cursor: "c3RhbGUtdGFpbA",
+          },
+          correlation_id: CORRELATION,
+        }),
+      );
+      await stalePage;
+    });
+
+    expect(screen.queryByRole("rowheader", { name: "stale-bob" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => {
+      expect(seenCursors).toEqual(["c3RhbGU", "ZnJlc2g"]);
+    });
+  });
+
   it("renders one fixed failure without response or transport detail", async () => {
     withCsrfCookie();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -170,6 +310,21 @@ describe("AccountsWorkspace", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Accounts are unavailable.");
     expect(document.body.textContent).not.toContain("authorization_denied");
     expect(document.body.textContent).not.toContain("internal secret");
+  });
+
+  it("routes an exact expired-session account read to the shell", async () => {
+    withCsrfCookie();
+    const onSessionEnded = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      response({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+    );
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+
+    await waitFor(() => {
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByText("Accounts are unavailable.")).toBeNull();
   });
 
   it("rejects an additive sensitive projection without rendering its fields", async () => {
@@ -235,7 +390,12 @@ describe("AccountsWorkspace", () => {
         );
       }
       if (target === ACCOUNTS_VIEW_PATH) {
-        return Promise.resolve(response({ result: account(BOB_ID, "bob", "Bob", false, false) }));
+        return Promise.resolve(
+          response({
+            result: account(BOB_ID, "bob", "Bob", false, false),
+            correlation_id: CORRELATION,
+          }),
+        );
       }
       throw new Error("unexpected request");
     });
@@ -303,8 +463,13 @@ describe("AccountsWorkspace", () => {
 
   it("renders one generic indeterminate outcome and never retries the mutation", async () => {
     withCsrfCookie();
+    let listRequests = 0;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === ACCOUNTS_LIST_PATH) {
+        listRequests += 1;
+        if (listRequests === 2) {
+          return Promise.reject(new Error("refresh failed before reconciliation"));
+        }
         return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
       }
       if (target === ACCOUNTS_STATUS_PATH) {
@@ -324,6 +489,22 @@ describe("AccountsWorkspace", () => {
       1,
     );
     expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
+    );
+    expect(screen.getByRole("button", { name: "Disable alice" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Refresh" })).toHaveProperty("disabled", false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(listRequests).toBe(2);
+    expect(screen.getByLabelText("Username")).toHaveProperty("disabled", true);
+    expect(retry).toHaveProperty("disabled", false);
+
+    fireEvent.click(retry);
+    await screen.findByRole("rowheader", { name: "alice" });
+    expect(listRequests).toBe(3);
+    expect(screen.getByRole("button", { name: "Disable alice" })).toHaveProperty("disabled", false);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_STATUS_PATH)).toHaveLength(
       1,
     );
   });
@@ -395,6 +576,57 @@ describe("AccountsWorkspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
+  });
+
+  it("transfers a created credential disclosure when its refresh reports an expired session", async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const cookieWrite = vi.fn();
+    withCsrfCookie(cookieWrite);
+    const onSessionEnded = vi.fn();
+    let listRequests = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        listRequests += 1;
+        return Promise.resolve(
+          listRequests === 1
+            ? accountPage([account(ALICE_ID, "alice", "Alice", true, false)])
+            : response({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+        );
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_CREATE_PATH) {
+        return Promise.resolve(credentialResponse(BOB_ID));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    await waitFor(() => {
+      expect(onSessionEnded).toHaveBeenCalledWith({
+        publicId: BOB_ID,
+        temporaryPassword: TEMPORARY_PASSWORD,
+      });
+    });
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      2,
+    );
+    expect(screen.getAllByDisplayValue(TEMPORARY_PASSWORD)).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(TICKET);
+    expect(document.body.innerHTML).not.toContain(PASSWORD);
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(cookieWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
   });
 
   it("does not retry an assurance request whose outcome is unknown", async () => {
@@ -951,10 +1183,73 @@ describe("AccountsWorkspace", () => {
     ).toHaveLength(0);
   });
 
-  it("does not retry or refresh after an indeterminate MFA mutation", async () => {
+  it("returns an expired MFA step-up session to the shell once without an outcome claim", async () => {
     withCsrfCookie();
+    const onSessionEnded = vi.fn();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === MFA_POLICY_STEP_UP_PATH) {
+        return Promise.resolve(
+          response({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("switch", { name: "Require MFA for alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
+    fireEvent.change(screen.getByLabelText("Authentication code"), { target: { value: TOTP } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
+
+    await waitFor(() => {
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByText("MFA policy was not changed.")).toBeNull();
+    expect(screen.queryByText(/The MFA policy outcome is unknown\./)).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
+    ).toHaveLength(0);
+  });
+
+  it("keeps a normal MFA step-up refusal in Accounts without attempting the mutation", async () => {
+    withCsrfCookie();
+    const onSessionEnded = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === MFA_POLICY_STEP_UP_PATH) {
+        return Promise.resolve(
+          response({ error: "mfa_policy_denied", correlation_id: CORRELATION }, 403),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("switch", { name: "Require MFA for alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
+    fireEvent.change(screen.getByLabelText("Authentication code"), { target: { value: TOTP } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
+
+    expect(await screen.findByText("MFA policy was not changed.")).toBeTruthy();
+    expect(onSessionEnded).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
+    ).toHaveLength(0);
+  });
+
+  it("does not retry or refresh after an indeterminate MFA mutation", async () => {
+    withCsrfCookie();
+    let listRequests = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        listRequests += 1;
         return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
       }
       if (target === MFA_POLICY_STEP_UP_PATH) {
@@ -982,5 +1277,22 @@ describe("AccountsWorkspace", () => {
       1,
     );
     expect(document.body.innerHTML).not.toContain(TICKET);
+    expect(screen.getByRole("button", { name: "Reset MFA for alice" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("button", { name: "Refresh" })).toHaveProperty("disabled", false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(listRequests).toBe(2);
+    });
+    expect(screen.getByRole("button", { name: "Reset MFA for alice" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
+    ).toHaveLength(1);
   });
 });

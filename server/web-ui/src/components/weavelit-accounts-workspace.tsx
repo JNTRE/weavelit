@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
 
 import {
   AccountStatusRefusedError,
+  AccountsSessionExpiredError,
   changeAccountStatus,
   listAccounts,
   viewAccount,
@@ -17,6 +18,7 @@ import {
 } from "../api/weavelit-credential-issuance";
 import {
   MfaPolicyIndeterminateError,
+  MfaPolicySessionInvalidError,
   changeMfaRequirement,
   issueMfaPolicyStepUp,
   resetMfaEnrollment,
@@ -127,31 +129,59 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
   const credentialAttemptActive = useRef(false);
   const statusAttemptActive = useRef(false);
   const mfaPolicyAttemptActive = useRef(false);
+  const collectionRequest = useRef(0);
+  const selectionRequest = useRef(0);
+  const sessionEnded = useRef(false);
   const credentialIssuanceTicket = useRef("");
   const mfaPolicyTicket = useRef("");
   const workspaceIsMounted = (): boolean => mounted.current;
 
-  const loadFirstPage = (preserveDisclosure = false): void => {
-    if (!preserveDisclosure) {
+  const reconcileExpiredSession = useCallback(
+    (error: unknown, preservedDisclosure?: CredentialIssued): boolean => {
+      if (
+        !(error instanceof AccountsSessionExpiredError) &&
+        !(error instanceof MfaPolicySessionInvalidError)
+      ) {
+        return false;
+      }
+      if (onSessionEnded === undefined) {
+        return false;
+      }
+      if (!sessionEnded.current) {
+        sessionEnded.current = true;
+        onSessionEnded(preservedDisclosure);
+      }
+      return true;
+    },
+    [onSessionEnded],
+  );
+
+  const loadFirstPage = (preservedDisclosure?: CredentialIssued): void => {
+    if (preservedDisclosure === undefined) {
       setDisclosure(null);
     }
-    setStatusState("idle");
-    setPendingStatusAction(null);
-    setMfaPolicyState("idle");
-    setPendingMfaPolicyAction(null);
-    setMfaPolicyCode("");
+    const request = ++collectionRequest.current;
+    selectionRequest.current += 1;
     setCollectionState("loading");
     setSelection({ kind: "none" });
     void listAccounts().then(
       (page) => {
-        if (mounted.current) {
+        if (mounted.current && collectionRequest.current === request) {
           setAccounts(page.items);
           setNextCursor(page.nextCursor);
+          setStatusState("idle");
+          setPendingStatusAction(null);
+          setMfaPolicyState("idle");
+          setPendingMfaPolicyAction(null);
+          setMfaPolicyCode("");
           setCollectionState("ready");
         }
       },
-      () => {
-        if (mounted.current) {
+      (error: unknown) => {
+        if (!mounted.current || reconcileExpiredSession(error, preservedDisclosure)) {
+          return;
+        }
+        if (collectionRequest.current === request) {
           setAccounts([]);
           setNextCursor(null);
           setCollectionState("failed");
@@ -162,46 +192,56 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
 
   useEffect(() => {
     mounted.current = true;
+    const request = ++collectionRequest.current;
     void listAccounts().then(
       (page) => {
-        if (mounted.current) {
+        if (mounted.current && collectionRequest.current === request) {
           setAccounts(page.items);
           setNextCursor(page.nextCursor);
           setCollectionState("ready");
         }
       },
-      () => {
-        if (mounted.current) {
+      (error: unknown) => {
+        if (!mounted.current || reconcileExpiredSession(error)) {
+          return;
+        }
+        if (collectionRequest.current === request) {
           setCollectionState("failed");
         }
       },
     );
     return () => {
       mounted.current = false;
+      collectionRequest.current += 1;
+      selectionRequest.current += 1;
       credentialAttemptActive.current = false;
       statusAttemptActive.current = false;
       mfaPolicyAttemptActive.current = false;
       credentialIssuanceTicket.current = "";
       mfaPolicyTicket.current = "";
     };
-  }, []);
+  }, [reconcileExpiredSession]);
 
   const loadMore = (): void => {
     if (nextCursor === null || collectionState !== "ready") {
       return;
     }
+    const request = collectionRequest.current;
     setDisclosure(null);
     setCollectionState("loading-more");
     void listAccounts(nextCursor).then(
       (page) => {
-        if (mounted.current) {
+        if (mounted.current && collectionRequest.current === request) {
           setAccounts((current) => [...current, ...page.items]);
           setNextCursor(page.nextCursor);
           setCollectionState("ready");
         }
       },
-      () => {
-        if (mounted.current) {
+      (error: unknown) => {
+        if (!mounted.current || reconcileExpiredSession(error)) {
+          return;
+        }
+        if (collectionRequest.current === request) {
           setCollectionState("failed");
         }
       },
@@ -210,15 +250,20 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
 
   const selectAccount = (publicId: string): void => {
     setDisclosure(null);
+    const request = selectionRequest.current + 1;
+    selectionRequest.current = request;
     setSelection({ kind: "loading", publicId });
     void viewAccount(publicId).then(
       (account) => {
-        if (mounted.current) {
+        if (mounted.current && selectionRequest.current === request) {
           setSelection({ kind: "ready", account });
         }
       },
-      () => {
-        if (mounted.current) {
+      (error: unknown) => {
+        if (!mounted.current || reconcileExpiredSession(error)) {
+          return;
+        }
+        if (selectionRequest.current === request) {
           setSelection({ kind: "failed", publicId });
         }
       },
@@ -350,7 +395,7 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
       onSessionEnded(issued);
     } else if (session.kind === "authenticated") {
       setCredentialState("idle");
-      loadFirstPage(true);
+      loadFirstPage(issued);
     } else {
       setCredentialState("session-indeterminate");
     }
@@ -423,7 +468,7 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
           await reconcileSelfResetSession(issued);
         } else {
           setCredentialState("idle");
-          loadFirstPage(true);
+          loadFirstPage(issued);
         }
       } catch (error: unknown) {
         credentialIssuanceTicket.current = "";
@@ -535,9 +580,13 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
         mfaPolicyTicket.current = "";
         if (mounted.current) {
           setPendingMfaPolicyAction(null);
-          setMfaPolicyState(
-            error instanceof MfaPolicyIndeterminateError ? "indeterminate" : "refused",
-          );
+          if (reconcileExpiredSession(error)) {
+            setMfaPolicyState("idle");
+          } else {
+            setMfaPolicyState(
+              error instanceof MfaPolicyIndeterminateError ? "indeterminate" : "refused",
+            );
+          }
         }
       } finally {
         mfaPolicyTicket.current = "";
@@ -557,8 +606,15 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
   const statusBusy = statusState === "submitting";
   const mfaPolicyBusy = mfaPolicyState === "issuing" || mfaPolicyState === "mutating";
   const mfaPolicyActionLocked = pendingMfaPolicyAction !== null || mfaPolicyBusy;
+  const mutationReconciliationRequired =
+    statusState === "indeterminate" || mfaPolicyState === "indeterminate";
   const actionLocked =
-    credentialActionLocked || pendingStatusAction !== null || statusBusy || mfaPolicyActionLocked;
+    credentialActionLocked ||
+    pendingStatusAction !== null ||
+    statusBusy ||
+    mfaPolicyActionLocked ||
+    mutationReconciliationRequired;
+  const refreshActionLocked = actionLocked && !mutationReconciliationRequired;
   const validAssuranceTotp = assuranceTotp === "" || TOTP_PATTERN.test(assuranceTotp);
 
   return (
@@ -581,7 +637,9 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
             loadFirstPage();
           }}
           disabled={
-            collectionState === "loading" || collectionState === "loading-more" || actionLocked
+            collectionState === "loading" ||
+            collectionState === "loading-more" ||
+            refreshActionLocked
           }
         >
           Refresh
@@ -596,11 +654,11 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
             type="button"
             className="accounts__action"
             onClick={() => {
-              if (!actionLocked) {
+              if (!refreshActionLocked) {
                 loadFirstPage();
               }
             }}
-            disabled={actionLocked}
+            disabled={refreshActionLocked}
           >
             Retry
           </button>

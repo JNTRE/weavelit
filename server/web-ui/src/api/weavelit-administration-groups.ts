@@ -1,5 +1,8 @@
 import { CSRF_HEADER_NAME, readCsrfToken } from "./weavelit-authentication";
-import { readAccountProjection, type AccountProjection } from "./weavelit-administration-accounts";
+import {
+  readAccountProjectionValue,
+  type AccountProjection,
+} from "./weavelit-administration-accounts";
 
 export const GROUPS_LIST_PATH = "/api/v1/administration/groups/list";
 export const GROUPS_VIEW_PATH = "/api/v1/administration/groups/view";
@@ -64,6 +67,18 @@ export class GroupsUnavailableError extends Error {
   constructor() {
     super("groups_unavailable");
     this.name = "GroupsUnavailableError";
+  }
+}
+export class GroupSessionInvalidError extends GroupsUnavailableError {
+  constructor() {
+    super();
+    this.name = "GroupSessionInvalidError";
+  }
+}
+export class GroupAdministrationAccessDeniedError extends GroupsUnavailableError {
+  constructor() {
+    super();
+    this.name = "GroupAdministrationAccessDeniedError";
   }
 }
 export class GroupMutationRefusedError extends Error {
@@ -179,9 +194,7 @@ function readPage(
 }
 
 export function readGroupMembersPage(payload: unknown): GroupMembersPage | null {
-  const page = readPage(payload, (value) =>
-    readAccountProjection({ result: value, correlation_id: "member-projection" }),
-  );
+  const page = readPage(payload, readAccountProjectionValue);
   return page === null
     ? null
     : { items: page.items as readonly AccountProjection[], nextCursor: page.nextCursor };
@@ -256,8 +269,12 @@ async function request(path: string, body: object, mutation: boolean): Promise<u
     throw mutation ? new GroupMutationIndeterminateError() : new GroupsUnavailableError();
   }
   if (response.status !== 200) {
-    if (!mutation) throw new GroupsUnavailableError();
     const refusal = await reportedRefusal(response);
+    if (!mutation) {
+      if (refusal === "session_invalid") throw new GroupSessionInvalidError();
+      if (refusal === "authorization_denied") throw new GroupAdministrationAccessDeniedError();
+      throw new GroupsUnavailableError();
+    }
     if (refusal === "conflict") throw new LastAdministratorRefusedError();
     if (refusal !== null) throw new GroupMutationRefusedError();
     throw new GroupMutationIndeterminateError();
@@ -385,7 +402,7 @@ export async function changeGroupMember(
   );
   if (result === null || !exact(result, MEMBER_CHANGE_FIELDS) || result.present !== present)
     throw new GroupMutationIndeterminateError();
-  const account = readAccountProjection({ result: result.account });
+  const account = readAccountProjectionValue(result.account);
   if (account?.publicId !== accountPublicId) throw new GroupMutationIndeterminateError();
   return account;
 }

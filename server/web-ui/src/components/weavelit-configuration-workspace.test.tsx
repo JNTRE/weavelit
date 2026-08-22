@@ -1,13 +1,17 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ConfigurationConflictError,
+  ConfigurationIndeterminateError,
+  ConfigurationSessionInvalidError,
   applyTotpEnablement,
   changeLogConfiguration,
   listLogConfigurations,
   previewTotpEnablement,
   viewLogConfiguration,
   type LogConfiguration,
+  type LogConfigurationsPage,
 } from "../api/weavelit-administration-configuration";
 import { probeSession } from "../api/weavelit-authentication";
 import { ConfigurationWorkspace } from "./weavelit-configuration-workspace";
@@ -108,4 +112,314 @@ describe("Configuration workspace", () => {
     });
     expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
   });
+
+  it("ignores a stale Load more page after Refresh replaces the collection", async () => {
+    const refreshed = { ...configuration, configurationName: "refreshed" };
+    const stale = { ...configuration, configurationName: "stale" };
+    let resolveStalePage!: (page: LogConfigurationsPage) => void;
+    const pendingStalePage = new Promise<LogConfigurationsPage>((resolve) => {
+      resolveStalePage = resolve;
+    });
+    let firstPageReads = 0;
+    vi.mocked(listLogConfigurations).mockImplementation((cursor) => {
+      if (cursor === "stale-cursor") return pendingStalePage;
+      if (cursor === "refreshed-cursor") return Promise.resolve({ items: [], nextCursor: null });
+      firstPageReads += 1;
+      return Promise.resolve(
+        firstPageReads === 1
+          ? { items: [configuration], nextCursor: "stale-cursor" }
+          : { items: [refreshed], nextCursor: "refreshed-cursor" },
+      );
+    });
+    vi.mocked(viewLogConfiguration).mockResolvedValue(refreshed);
+    vi.mocked(changeLogConfiguration).mockResolvedValue(refreshed);
+
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("primary");
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => {
+      expect(listLogConfigurations).toHaveBeenCalledWith("stale-cursor");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await screen.findByText("refreshed");
+
+    await act(async () => {
+      resolveStalePage({ items: [stale], nextCursor: "wrong-cursor" });
+      await pendingStalePage;
+    });
+
+    expect(screen.queryByText("primary")).toBeNull();
+    expect(screen.queryByText("stale")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => {
+      expect(listLogConfigurations).toHaveBeenCalledWith("refreshed-cursor");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    await screen.findByRole("heading", { name: "refreshed" });
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => {
+      expect(changeLogConfiguration).toHaveBeenCalledWith({
+        configurationName: "refreshed",
+        enabled: true,
+        settings: [],
+        assignments: [
+          { logType: "system", configurationName: "refreshed" },
+          { logType: "audit", configurationName: "refreshed" },
+        ],
+      });
+    });
+  });
+
+  it("returns an expired TOTP preview read to sign-in once without an unknown outcome", async () => {
+    vi.mocked(previewTotpEnablement).mockRejectedValue(new ConfigurationSessionInvalidError());
+    const onSessionEnded = vi.fn();
+    render(<ConfigurationWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByText("primary");
+
+    fireEvent.click(screen.getByRole("button", { name: "Review disablement" }));
+    await waitFor(() => {
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByText(/outcome is unknown/)).toBeNull();
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Review disablement" }).disabled,
+    ).toBe(false);
+
+    const readsBeforeRefresh = vi.mocked(listLogConfigurations).mock.calls.length;
+    vi.mocked(listLogConfigurations).mockRejectedValueOnce(new ConfigurationSessionInvalidError());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(listLogConfigurations).toHaveBeenCalledTimes(readsBeforeRefresh + 1);
+    });
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Log configurations are unavailable.")).toBeNull();
+  });
+
+  it("keeps TOTP Review controls retryable when preview is unavailable", async () => {
+    vi.mocked(previewTotpEnablement).mockRejectedValueOnce(new Error("preview failed"));
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("primary");
+
+    const previewCallsBefore = vi.mocked(previewTotpEnablement).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Review disablement" }));
+    await screen.findByText("TOTP preview is unavailable. Try again.");
+
+    expect(screen.queryByText(/outcome is unknown/)).toBeNull();
+    const reviewEnablement = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Review enablement",
+    });
+    const reviewDisablement = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Review disablement",
+    });
+    expect(reviewEnablement.disabled).toBe(false);
+    expect(reviewDisablement.disabled).toBe(false);
+
+    fireEvent.click(reviewEnablement);
+    await waitFor(() => {
+      expect(previewTotpEnablement).toHaveBeenCalledTimes(previewCallsBefore + 2);
+    });
+    expect(previewTotpEnablement).toHaveBeenLastCalledWith(true);
+  });
+
+  it.each([
+    ["stale topology", () => new ConfigurationConflictError()],
+    ["indeterminate outcome", () => new ConfigurationIndeterminateError()],
+  ])("locks the Log form after a %s until Configuration is refreshed", async (_label, error) => {
+    vi.mocked(changeLogConfiguration).mockRejectedValue(error());
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("primary");
+
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    await screen.findByRole("heading", { name: "primary" });
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await screen.findByText(/Refresh before another change/);
+
+    const form = screen.getByRole("heading", { name: "primary" }).closest("form");
+    expect(form).not.toBeNull();
+    for (const control of form!.querySelectorAll<
+      HTMLInputElement | HTMLSelectElement | HTMLButtonElement
+    >("input, select, button"))
+      expect(control.disabled).toBe(true);
+
+    const readsBeforeRefresh = vi.mocked(listLogConfigurations).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(listLogConfigurations).toHaveBeenCalledTimes(readsBeforeRefresh + 1);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    await screen.findByRole("heading", { name: "primary" });
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Save configuration" }).disabled,
+    ).toBe(false);
+  });
+
+  it("keeps the Log form locked when Refresh fails after a conflict", async () => {
+    vi.mocked(changeLogConfiguration).mockRejectedValue(new ConfigurationConflictError());
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("primary");
+
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    await screen.findByRole("heading", { name: "primary" });
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await screen.findByText(/Log configuration changed/);
+
+    vi.mocked(listLogConfigurations).mockRejectedValueOnce(new Error("refresh failed"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await screen.findByText("Log configurations are unavailable.");
+    expect(screen.getByText(/Log configuration changed/)).toBeTruthy();
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Save configuration" }).disabled,
+    ).toBe(true);
+  });
+
+  it.each(["apply", "session reconciliation"])(
+    "locks TOTP Review controls after indeterminate %s until Configuration is refreshed",
+    async (outcome) => {
+      if (outcome === "apply")
+        vi.mocked(applyTotpEnablement).mockRejectedValue(new ConfigurationIndeterminateError());
+      else vi.mocked(probeSession).mockResolvedValue({ kind: "absent" });
+
+      render(<ConfigurationWorkspace />);
+      await screen.findByText("primary");
+      fireEvent.click(screen.getByRole("button", { name: "Review disablement" }));
+      await screen.findByText(/This change affects 1 enrolled account/);
+      fireEvent.click(screen.getByRole("button", { name: "Apply disablement" }));
+      await screen.findByText(/outcome is unknown/);
+
+      const reviewEnablement = screen.getByRole<HTMLButtonElement>("button", {
+        name: "Review enablement",
+      });
+      const reviewDisablement = screen.getByRole<HTMLButtonElement>("button", {
+        name: "Review disablement",
+      });
+      expect(reviewEnablement.disabled).toBe(true);
+      expect(reviewDisablement.disabled).toBe(true);
+
+      const readsBeforeRefresh = vi.mocked(listLogConfigurations).mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      await waitFor(() => {
+        expect(listLogConfigurations).toHaveBeenCalledTimes(readsBeforeRefresh + 1);
+      });
+      expect(reviewEnablement.disabled).toBe(false);
+      expect(reviewDisablement.disabled).toBe(false);
+    },
+  );
+
+  it("keeps TOTP Review controls locked when Refresh fails after an indeterminate outcome", async () => {
+    vi.mocked(applyTotpEnablement).mockRejectedValue(new ConfigurationIndeterminateError());
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("primary");
+
+    fireEvent.click(screen.getByRole("button", { name: "Review disablement" }));
+    await screen.findByText(/This change affects 1 enrolled account/);
+    fireEvent.click(screen.getByRole("button", { name: "Apply disablement" }));
+    await screen.findByText(/outcome is unknown/);
+
+    vi.mocked(listLogConfigurations).mockRejectedValueOnce(new Error("refresh failed"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await screen.findByText("Log configurations are unavailable.");
+    expect(screen.getByText(/TOTP enablement outcome is unknown/)).toBeTruthy();
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Review enablement" }).disabled,
+    ).toBe(true);
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Review disablement" }).disabled,
+    ).toBe(true);
+  });
+
+  it("ignores a stale View response after a later configuration is selected", async () => {
+    const secondary = { ...configuration, configurationName: "secondary" };
+    let resolvePrimary!: (value: LogConfiguration) => void;
+    let resolveSecondary!: (value: LogConfiguration) => void;
+    vi.mocked(listLogConfigurations).mockResolvedValue({
+      items: [configuration, secondary],
+      nextCursor: null,
+    });
+    vi.mocked(viewLogConfiguration).mockImplementation(
+      (configurationName) =>
+        new Promise((resolve) => {
+          if (configurationName === "primary") resolvePrimary = resolve;
+          else resolveSecondary = resolve;
+        }),
+    );
+
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("secondary");
+    const viewButtons = screen.getAllByRole("button", { name: "View" });
+    fireEvent.click(viewButtons[0]!);
+    fireEvent.click(viewButtons[1]!);
+
+    await act(async () => {
+      resolveSecondary(secondary);
+      await Promise.resolve();
+    });
+    await screen.findByRole("heading", { name: "secondary" });
+    await act(async () => {
+      resolvePrimary(configuration);
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("heading", { name: "secondary" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "primary" })).toBeNull();
+  });
+
+  it("returns a stale session-invalid View response to the shell", async () => {
+    const secondary = { ...configuration, configurationName: "secondary" };
+    let rejectPrimary!: (reason?: unknown) => void;
+    let resolveSecondary!: (value: LogConfiguration) => void;
+    vi.mocked(listLogConfigurations).mockResolvedValue({
+      items: [configuration, secondary],
+      nextCursor: null,
+    });
+    vi.mocked(viewLogConfiguration).mockImplementation(
+      (configurationName) =>
+        new Promise((resolve, reject) => {
+          if (configurationName === "primary") rejectPrimary = reject;
+          else resolveSecondary = resolve;
+        }),
+    );
+    const onSessionEnded = vi.fn();
+
+    render(<ConfigurationWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByText("secondary");
+    const viewButtons = screen.getAllByRole("button", { name: "View" });
+    fireEvent.click(viewButtons[0]!);
+    fireEvent.click(viewButtons[1]!);
+
+    await act(async () => {
+      rejectPrimary(new ConfigurationSessionInvalidError());
+      await Promise.resolve();
+    });
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSecondary(secondary);
+      await Promise.resolve();
+    });
+  });
+
+  it.each(["list", "view"])(
+    "returns a session-invalid %s read to the shell instead of showing unavailable Configuration",
+    async (read) => {
+      if (read === "list")
+        vi.mocked(listLogConfigurations).mockRejectedValue(new ConfigurationSessionInvalidError());
+      else
+        vi.mocked(viewLogConfiguration).mockRejectedValue(new ConfigurationSessionInvalidError());
+      const onSessionEnded = vi.fn();
+
+      render(<ConfigurationWorkspace onSessionEnded={onSessionEnded} />);
+      if (read === "view") {
+        await screen.findByText("primary");
+        fireEvent.click(screen.getByRole("button", { name: "View" }));
+      }
+
+      await waitFor(() => {
+        expect(onSessionEnded).toHaveBeenCalledTimes(1);
+      });
+      expect(screen.queryByText("Log configurations are unavailable.")).toBeNull();
+    },
+  );
 });

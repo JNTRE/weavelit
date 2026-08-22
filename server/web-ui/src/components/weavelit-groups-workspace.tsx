@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
 
 import {
+  GroupAdministrationAccessDeniedError,
   GroupMutationRefusedError,
+  GroupSessionInvalidError,
   createGroup,
   deleteGroup,
   listGroups,
@@ -9,7 +11,11 @@ import {
   viewGroup,
   type GroupProjection,
 } from "../api/weavelit-administration-groups";
-import { issueGrantMutationStepUp } from "../api/weavelit-mfa-policy";
+import {
+  MfaPolicyRefusedError,
+  MfaPolicySessionInvalidError,
+  issueGrantMutationStepUp,
+} from "../api/weavelit-mfa-policy";
 import { GroupAssociations } from "./weavelit-group-associations";
 
 type CollectionState = "loading" | "ready" | "loading-more" | "failed";
@@ -18,7 +24,11 @@ type DeleteState = "idle" | "confirming" | "step-up" | "deleting" | "refused" | 
 
 const TOTP_PATTERN = /^[0-9]{6}$/;
 
-export function GroupsWorkspace(): JSX.Element {
+export interface GroupsWorkspaceProps {
+  readonly onAdministrationEnded?: () => void;
+}
+
+export function GroupsWorkspace({ onAdministrationEnded }: GroupsWorkspaceProps = {}): JSX.Element {
   const [groups, setGroups] = useState<readonly GroupProjection[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [collectionState, setCollectionState] = useState<CollectionState>("loading");
@@ -28,6 +38,7 @@ export function GroupsWorkspace(): JSX.Element {
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [mutationState, setMutationState] = useState<MutationState>("idle");
+  const [refreshRequired, setRefreshRequired] = useState(false);
   const [deleteState, setDeleteState] = useState<DeleteState>("idle");
   const [deleteTarget, setDeleteTarget] = useState<GroupProjection | null>(null);
   const [deleteSubmissionActive, setDeleteSubmissionActive] = useState(false);
@@ -35,72 +46,129 @@ export function GroupsWorkspace(): JSX.Element {
   const mounted = useRef(true);
   const mutationActive = useRef(false);
   const deleteActive = useRef(false);
+  const collectionRequest = useRef(0);
+  const selectionRequest = useRef(0);
+  const administrationEnded = useRef(false);
   const grantMutationTicket = useRef("");
   const workspaceIsMounted = (): boolean => mounted.current;
 
-  const load = (): void => {
-    setCollectionState("loading");
-    setSelected(null);
-    void listGroups().then(
-      (page) => {
-        if (mounted.current) {
-          setGroups(page.items);
-          setNextCursor(page.nextCursor);
-          setCollectionState("ready");
+  const readFailed = useCallback(
+    (error: unknown): void => {
+      if (
+        (error instanceof GroupSessionInvalidError ||
+          error instanceof GroupAdministrationAccessDeniedError ||
+          error instanceof MfaPolicySessionInvalidError) &&
+        onAdministrationEnded !== undefined
+      ) {
+        if (!administrationEnded.current) {
+          administrationEnded.current = true;
+          onAdministrationEnded();
         }
-      },
-      () => {
-        if (mounted.current) setCollectionState("failed");
-      },
-    );
-  };
+      } else {
+        setCollectionState("failed");
+      }
+    },
+    [onAdministrationEnded],
+  );
+
+  const load = useCallback(
+    (reconcile = false): void => {
+      const request = collectionRequest.current + 1;
+      collectionRequest.current = request;
+      selectionRequest.current += 1;
+      setCollectionState("loading");
+      setSelected(null);
+      void listGroups().then(
+        (page) => {
+          if (mounted.current && collectionRequest.current === request) {
+            setGroups(page.items);
+            setNextCursor(page.nextCursor);
+            setCollectionState("ready");
+            if (reconcile) {
+              setRefreshRequired(false);
+              setMutationState("idle");
+              setDeleteState("idle");
+              setDeleteTarget(null);
+            }
+          }
+        },
+        (error: unknown) => {
+          if (
+            mounted.current &&
+            (collectionRequest.current === request ||
+              error instanceof GroupSessionInvalidError ||
+              error instanceof GroupAdministrationAccessDeniedError)
+          )
+            readFailed(error);
+        },
+      );
+    },
+    [readFailed],
+  );
 
   useEffect(() => {
     mounted.current = true;
-    void Promise.resolve().then(load);
+    void Promise.resolve().then(() => {
+      load();
+    });
     return () => {
       mounted.current = false;
       mutationActive.current = false;
       deleteActive.current = false;
       grantMutationTicket.current = "";
     };
-  }, []);
+  }, [load]);
 
   const select = (publicId: string): void => {
+    const request = selectionRequest.current + 1;
+    selectionRequest.current = request;
     void viewGroup(publicId).then(
       (group) => {
-        if (mounted.current) {
+        if (mounted.current && selectionRequest.current === request) {
           setSelected(group);
           setEditName(group.name);
           setEditDescription(group.description ?? "");
         }
       },
-      () => {
-        if (mounted.current) setCollectionState("failed");
+      (error: unknown) => {
+        if (
+          mounted.current &&
+          (selectionRequest.current === request ||
+            error instanceof GroupSessionInvalidError ||
+            error instanceof GroupAdministrationAccessDeniedError)
+        )
+          readFailed(error);
       },
     );
   };
 
   const loadMore = (): void => {
     if (nextCursor === null || collectionState !== "ready") return;
+    const request = collectionRequest.current;
     setCollectionState("loading-more");
     void listGroups(nextCursor).then(
       (page) => {
-        if (mounted.current) {
+        if (mounted.current && collectionRequest.current === request) {
           setGroups((current) => [...current, ...page.items]);
           setNextCursor(page.nextCursor);
           setCollectionState("ready");
         }
       },
-      () => {
-        if (mounted.current) setCollectionState("failed");
+      (error: unknown) => {
+        if (
+          mounted.current &&
+          (collectionRequest.current === request ||
+            error instanceof GroupSessionInvalidError ||
+            error instanceof GroupAdministrationAccessDeniedError)
+        )
+          readFailed(error);
       },
     );
   };
 
   const submitCreate = (event: SyntheticEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (mutationActive.current || createName === "") return;
+    if (mutationActive.current || refreshRequired || createName === "") return;
     mutationActive.current = true;
     setMutationState("submitting");
     const description = createDescription === "" ? null : createDescription;
@@ -115,10 +183,11 @@ export function GroupsWorkspace(): JSX.Element {
           }
         },
         (error: unknown) => {
-          if (mounted.current)
-            setMutationState(
-              error instanceof GroupMutationRefusedError ? "refused" : "indeterminate",
-            );
+          if (mounted.current) {
+            const refused = error instanceof GroupMutationRefusedError;
+            setMutationState(refused ? "refused" : "indeterminate");
+            if (!refused) setRefreshRequired(true);
+          }
         },
       )
       .finally(() => {
@@ -128,7 +197,7 @@ export function GroupsWorkspace(): JSX.Element {
 
   const submitUpdate = (event: SyntheticEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (mutationActive.current || selected === null || editName === "") return;
+    if (mutationActive.current || refreshRequired || selected === null || editName === "") return;
     mutationActive.current = true;
     setMutationState("submitting");
     const description = editDescription === "" ? null : editDescription;
@@ -142,10 +211,11 @@ export function GroupsWorkspace(): JSX.Element {
           }
         },
         (error: unknown) => {
-          if (mounted.current)
-            setMutationState(
-              error instanceof GroupMutationRefusedError ? "refused" : "indeterminate",
-            );
+          if (mounted.current) {
+            const refused = error instanceof GroupMutationRefusedError;
+            setMutationState(refused ? "refused" : "indeterminate");
+            if (!refused) setRefreshRequired(true);
+          }
         },
       )
       .finally(() => {
@@ -154,7 +224,7 @@ export function GroupsWorkspace(): JSX.Element {
   };
 
   const beginDelete = (group: GroupProjection): void => {
-    if (deleteActive.current || mutationActive.current) return;
+    if (deleteActive.current || mutationActive.current || refreshRequired) return;
     setDeleteTarget(group);
     setDeleteState("confirming");
     setTotpCode("");
@@ -172,7 +242,13 @@ export function GroupsWorkspace(): JSX.Element {
   };
   const submitDelete = (event: SyntheticEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (deleteActive.current || deleteTarget === null || !TOTP_PATTERN.test(totpCode)) return;
+    if (
+      deleteActive.current ||
+      refreshRequired ||
+      deleteTarget === null ||
+      !TOTP_PATTERN.test(totpCode)
+    )
+      return;
     deleteActive.current = true;
     setDeleteSubmissionActive(true);
     const target = deleteTarget;
@@ -194,8 +270,18 @@ export function GroupsWorkspace(): JSX.Element {
         }
       } catch (error: unknown) {
         grantMutationTicket.current = "";
-        if (mounted.current)
-          setDeleteState(error instanceof GroupMutationRefusedError ? "refused" : "indeterminate");
+        if (mounted.current) {
+          if (error instanceof MfaPolicySessionInvalidError) {
+            setDeleteTarget(null);
+            setDeleteState("idle");
+            readFailed(error);
+          } else {
+            const refused =
+              error instanceof GroupMutationRefusedError || error instanceof MfaPolicyRefusedError;
+            setDeleteState(refused ? "refused" : "indeterminate");
+            if (!refused) setRefreshRequired(true);
+          }
+        }
       } finally {
         deleteActive.current = false;
         if (workspaceIsMounted()) setDeleteSubmissionActive(false);
@@ -212,7 +298,17 @@ export function GroupsWorkspace(): JSX.Element {
           </h2>
           <p className="accounts__summary">Administration groups</p>
         </div>
-        <button type="button" onClick={load} disabled={collectionState === "loading"}>
+        <button
+          type="button"
+          onClick={() => {
+            load(true);
+          }}
+          disabled={
+            collectionState === "loading" ||
+            mutationState === "submitting" ||
+            deleteSubmissionActive
+          }
+        >
           Refresh
         </button>
       </header>
@@ -283,7 +379,7 @@ export function GroupsWorkspace(): JSX.Element {
                     maxLength={1024}
                   />
                 </label>
-                <button type="submit" disabled={mutationState === "submitting"}>
+                <button type="submit" disabled={mutationState === "submitting" || refreshRequired}>
                   Update
                 </button>
                 <button
@@ -291,11 +387,20 @@ export function GroupsWorkspace(): JSX.Element {
                   onClick={() => {
                     beginDelete(selected);
                   }}
+                  disabled={refreshRequired}
                 >
                   Delete
                 </button>
               </form>
-              <GroupAssociations key={selected.publicId} groupPublicId={selected.publicId} />
+              <GroupAssociations
+                key={selected.publicId}
+                groupPublicId={selected.publicId}
+                mutationsLocked={refreshRequired}
+                {...(onAdministrationEnded === undefined ? {} : { onAdministrationEnded })}
+                onMutationIndeterminate={() => {
+                  setRefreshRequired(true);
+                }}
+              />
             </>
           )}
         </aside>
@@ -324,7 +429,7 @@ export function GroupsWorkspace(): JSX.Element {
             maxLength={1024}
           />
         </label>
-        <button type="submit" disabled={mutationState === "submitting"}>
+        <button type="submit" disabled={mutationState === "submitting" || refreshRequired}>
           Create
         </button>
       </form>

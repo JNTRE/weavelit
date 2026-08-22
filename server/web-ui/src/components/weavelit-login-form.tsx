@@ -127,15 +127,21 @@ function isCredentialState(state: LoginViewState): boolean {
  */
 export interface LoginPanelProps {
   readonly onAuthenticated?: (passwordChangeRequired: boolean, publicId: string) => void;
+  readonly adoptExistingSession?: boolean;
 }
 
-export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Element | null {
+export function LoginPanel({
+  onAuthenticated,
+  adoptExistingSession = true,
+}: LoginPanelProps = {}): JSX.Element | null {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [continuation, setContinuation] = useState("");
   const [provisioning, setProvisioning] = useState<EnrollmentOpened | null>(null);
-  const [state, setState] = useState<LoginViewState>("checking");
+  const [state, setState] = useState<LoginViewState>(
+    adoptExistingSession ? "checking" : "unauthenticated",
+  );
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [accountPublicId, setAccountPublicId] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
@@ -159,6 +165,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
   // cookies this browser holds still authenticate, so the panel asks it rather
   // than remembering an earlier answer.
   useEffect(() => {
+    if (!adoptExistingSession) return;
     void probeSession().then((probe) => {
       if (mounted.current) {
         setPasswordChangeRequired(probe.kind === "authenticated" && probe.passwordChangeRequired);
@@ -166,7 +173,7 @@ export function LoginPanel({ onAuthenticated }: LoginPanelProps = {}): JSX.Eleme
         setState(probe.kind === "authenticated" ? "authenticated" : probe.kind);
       }
     });
-  }, []);
+  }, [adoptExistingSession]);
 
   useEffect(() => {
     if (state === "authenticated" && accountPublicId !== null) {

@@ -10,8 +10,10 @@ import {
   GROUPS_CREATE_PATH,
   GROUPS_DELETE_PATH,
   GROUPS_LIST_PATH,
+  GroupAdministrationAccessDeniedError,
   GroupMutationIndeterminateError,
   GroupMutationRefusedError,
+  GroupSessionInvalidError,
   LastAdministratorRefusedError,
   changeGroupGrant,
   changeGroupMember,
@@ -26,6 +28,7 @@ import {
   readGroupMembersPage,
   readGroupProjection,
   readGroupsPage,
+  viewGroup,
 } from "./weavelit-administration-groups";
 
 const ID = "QUFBQUFBQUFBQUFBQUFBQQ";
@@ -274,5 +277,28 @@ describe("Group API", () => {
       changeGroupGrant(ID, { type: "server_administration" }, false, TICKET),
     ).rejects.toBeInstanceOf(LastAdministratorRefusedError);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["list", () => listGroups()],
+    ["view", () => viewGroup(ID)],
+    ["members", () => listGroupMembers(ID)],
+    ["grants", () => listGroupGrants(ID)],
+  ])("preserves session-invalid from Group %s reads", async (_name, read) => {
+    csrf();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      response({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+    );
+
+    await expect(read()).rejects.toBeInstanceOf(GroupSessionInvalidError);
+  });
+
+  it("preserves authorization loss from a Group read", async () => {
+    csrf();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+    );
+
+    await expect(listGroupMembers(ID)).rejects.toBeInstanceOf(GroupAdministrationAccessDeniedError);
   });
 });

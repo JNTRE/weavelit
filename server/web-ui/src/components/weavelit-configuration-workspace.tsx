@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type JSX, type SyntheticEvent
 import {
   ConfigurationConflictError,
   ConfigurationRefusedError,
+  ConfigurationSessionInvalidError,
   applyTotpEnablement,
   changeLogConfiguration,
   listLogConfigurations,
@@ -16,7 +17,14 @@ import { probeSession } from "../api/weavelit-authentication";
 
 type CollectionState = "loading" | "ready" | "loading-more" | "failed";
 type TotpState =
-  "idle" | "previewing" | "review" | "applying" | "refused" | "conflict" | "indeterminate";
+  | "idle"
+  | "previewing"
+  | "preview-failed"
+  | "review"
+  | "applying"
+  | "refused"
+  | "conflict"
+  | "indeterminate";
 type LogChangeState = "idle" | "submitting" | "refused" | "conflict" | "indeterminate";
 
 interface TotpReview {
@@ -47,10 +55,26 @@ export function ConfigurationWorkspace({
   const logChangeActive = useRef(false);
   const totpActive = useRef(false);
   const totpPreview = useRef("");
+  const selectionRequest = useRef(0);
+  const collectionRequest = useRef(0);
+  const sessionEnded = useRef(false);
 
   const assignmentFor = (items: readonly LogConfiguration[], logType: LogType): string =>
     items.find((configuration) => configuration.assignedLogTypes.includes(logType))
       ?.configurationName ?? "";
+
+  const reconcileExpiredReadSession = useCallback(
+    (error: unknown): boolean => {
+      if (!(error instanceof ConfigurationSessionInvalidError) || onSessionEnded === undefined)
+        return false;
+      if (!sessionEnded.current) {
+        sessionEnded.current = true;
+        onSessionEnded();
+      }
+      return true;
+    },
+    [onSessionEnded],
+  );
 
   const adoptCollection = useCallback(
     (items: readonly LogConfiguration[], cursor: string | null): void => {
@@ -64,18 +88,28 @@ export function ConfigurationWorkspace({
   );
 
   const load = useCallback((): void => {
+    if (logChangeActive.current || totpActive.current) return;
+    const request = ++collectionRequest.current;
+    selectionRequest.current += 1;
     setCollectionState("loading");
-    setSelected(null);
-    setLogChangeState("idle");
     void listLogConfigurations().then(
       (page) => {
-        if (mounted.current) adoptCollection(page.items, page.nextCursor);
+        if (mounted.current && request === collectionRequest.current) {
+          totpPreview.current = "";
+          setSelected(null);
+          setLogChangeState("idle");
+          setTotpReview(null);
+          setTotpState("idle");
+          adoptCollection(page.items, page.nextCursor);
+        }
       },
-      () => {
-        if (mounted.current) setCollectionState("failed");
+      (error: unknown) => {
+        if (!mounted.current) return;
+        if (reconcileExpiredReadSession(error)) return;
+        if (request === collectionRequest.current) setCollectionState("failed");
       },
     );
-  }, [adoptCollection]);
+  }, [adoptCollection, reconcileExpiredReadSession]);
 
   useEffect(() => {
     mounted.current = true;
@@ -107,8 +141,10 @@ export function ConfigurationWorkspace({
             setTotpState("review");
           }
         },
-        () => {
-          if (mounted.current) setTotpState("indeterminate");
+        (error: unknown) => {
+          if (!mounted.current) return;
+          if (reconcileExpiredReadSession(error)) setTotpState("idle");
+          else setTotpState("preview-failed");
         },
       )
       .finally(() => {
@@ -158,32 +194,39 @@ export function ConfigurationWorkspace({
 
   const loadMore = (): void => {
     if (nextCursor === null || collectionState !== "ready") return;
+    const request = collectionRequest.current;
     setCollectionState("loading-more");
     void listLogConfigurations(nextCursor).then(
       (page) => {
-        if (mounted.current) {
+        if (mounted.current && request === collectionRequest.current) {
           const items = [...configurations, ...page.items];
           adoptCollection(items, page.nextCursor);
         }
       },
-      () => {
-        if (mounted.current) setCollectionState("failed");
+      (error: unknown) => {
+        if (!mounted.current) return;
+        if (reconcileExpiredReadSession(error)) return;
+        if (request === collectionRequest.current) setCollectionState("failed");
       },
     );
   };
 
   const selectConfiguration = (configurationName: string): void => {
+    if (logChangeState === "conflict" || logChangeState === "indeterminate") return;
+    const request = ++selectionRequest.current;
     void viewLogConfiguration(configurationName).then(
       (configuration) => {
-        if (mounted.current) {
+        if (mounted.current && request === selectionRequest.current) {
           setSelected(configuration);
           setEnabled(configuration.enabled);
           setSettings(configuration.settings);
           setLogChangeState("idle");
         }
       },
-      () => {
-        if (mounted.current) setCollectionState("failed");
+      (error: unknown) => {
+        if (!mounted.current) return;
+        if (reconcileExpiredReadSession(error)) return;
+        else if (request === selectionRequest.current) setCollectionState("failed");
       },
     );
   };
@@ -233,6 +276,8 @@ export function ConfigurationWorkspace({
   };
 
   const totpSubmissionActive = totpState === "previewing" || totpState === "applying";
+  const totpChangeLocked = totpState === "indeterminate";
+  const logChangeLocked = logChangeState === "conflict" || logChangeState === "indeterminate";
 
   return (
     <section className="accounts configuration" aria-labelledby="configuration-title">
@@ -243,7 +288,13 @@ export function ConfigurationWorkspace({
           </h2>
           <p className="accounts__summary">MFA and Log Modules</p>
         </div>
-        <button type="button" onClick={load} disabled={collectionState === "loading"}>
+        <button
+          type="button"
+          onClick={load}
+          disabled={
+            collectionState === "loading" || logChangeState === "submitting" || totpSubmissionActive
+          }
+        >
           Refresh
         </button>
       </header>
@@ -256,7 +307,7 @@ export function ConfigurationWorkspace({
             onClick={() => {
               beginTotpChange(true);
             }}
-            disabled={totpSubmissionActive}
+            disabled={totpSubmissionActive || totpChangeLocked}
           >
             Review enablement
           </button>
@@ -265,12 +316,15 @@ export function ConfigurationWorkspace({
             onClick={() => {
               beginTotpChange(false);
             }}
-            disabled={totpSubmissionActive}
+            disabled={totpSubmissionActive || totpChangeLocked}
           >
             Review disablement
           </button>
         </div>
         {totpState === "previewing" ? <p role="status">Loading TOTP preview.</p> : null}
+        {totpState === "preview-failed" ? (
+          <p role="alert">TOTP preview is unavailable. Try again.</p>
+        ) : null}
         {totpState === "review" && totpReview !== null ? (
           <div className="configuration__review">
             <p>
@@ -325,6 +379,7 @@ export function ConfigurationWorkspace({
                       onClick={() => {
                         selectConfiguration(configuration.configurationName);
                       }}
+                      disabled={logChangeLocked}
                     >
                       View
                     </button>
@@ -334,7 +389,11 @@ export function ConfigurationWorkspace({
             </tbody>
           </table>
           {nextCursor !== null ? (
-            <button type="button" onClick={loadMore} disabled={collectionState !== "ready"}>
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={collectionState !== "ready" || logChangeLocked}
+            >
               Load more
             </button>
           ) : null}
@@ -354,6 +413,7 @@ export function ConfigurationWorkspace({
                   onChange={(event) => {
                     setEnabled(event.currentTarget.checked);
                   }}
+                  disabled={logChangeLocked}
                 />
                 Enabled
               </label>
@@ -372,6 +432,7 @@ export function ConfigurationWorkspace({
                     }}
                     maxLength={4096}
                     required
+                    disabled={logChangeLocked}
                   />
                 </label>
               ))}
@@ -383,6 +444,7 @@ export function ConfigurationWorkspace({
                     setSystemAssignment(event.currentTarget.value);
                   }}
                   required
+                  disabled={logChangeLocked}
                 >
                   <option value="">Select configuration</option>
                   {configurations.map((configuration) => (
@@ -403,6 +465,7 @@ export function ConfigurationWorkspace({
                     setAuditAssignment(event.currentTarget.value);
                   }}
                   required
+                  disabled={logChangeLocked}
                 >
                   <option value="">Select configuration</option>
                   {configurations.map((configuration) => (
@@ -415,7 +478,7 @@ export function ConfigurationWorkspace({
                   ))}
                 </select>
               </label>
-              <button type="submit" disabled={logChangeState === "submitting"}>
+              <button type="submit" disabled={logChangeState === "submitting" || logChangeLocked}>
                 Save configuration
               </button>
               {logChangeState === "refused" ? (

@@ -85,6 +85,13 @@ export class ConfigurationUnavailableError extends Error {
   }
 }
 
+export class ConfigurationSessionInvalidError extends ConfigurationUnavailableError {
+  constructor() {
+    super();
+    this.name = "ConfigurationSessionInvalidError";
+  }
+}
+
 export class ConfigurationRefusedError extends Error {
   constructor() {
     super("configuration_refused");
@@ -309,7 +316,10 @@ async function request(path: string, body: object, mutation: boolean): Promise<u
   }
   if (response.status !== 200) {
     const error = await reportedError(response);
-    if (!mutation) throw new ConfigurationUnavailableError();
+    if (!mutation)
+      throw error === "session_invalid"
+        ? new ConfigurationSessionInvalidError()
+        : new ConfigurationUnavailableError();
     if (error === "conflict") throw new ConfigurationConflictError();
     if (error !== null && error !== "service_unavailable") throw new ConfigurationRefusedError();
     throw new ConfigurationIndeterminateError();

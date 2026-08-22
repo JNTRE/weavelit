@@ -7,6 +7,7 @@ import {
   ACCOUNTS_VIEW_PATH,
   AccountStatusIndeterminateError,
   AccountStatusRefusedError,
+  AccountsSessionExpiredError,
   AccountsUnavailableError,
   changeAccountStatus,
   listAccounts,
@@ -90,7 +91,7 @@ describe("account response parsing", () => {
     ["an overlong name", projection({ username: "a".repeat(257) })],
     ["a wrong active type", projection({ active: 1 })],
   ])("rejects %s without carrying response detail", (_label, item) => {
-    expect(readAccountProjection({ result: item })).toBeNull();
+    expect(readAccountProjection({ result: item, correlation_id: CORRELATION })).toBeNull();
   });
 
   it("accepts public ids with canonical base64url final characters", () => {
@@ -107,10 +108,41 @@ describe("account response parsing", () => {
   });
 
   it("rejects malformed and oversized collection results", () => {
-    expect(readAccountsPage({ result: { items: [], next_cursor: "not*base64" } })).toBeNull();
+    expect(
+      readAccountsPage({
+        result: { items: [], next_cursor: "not*base64" },
+        correlation_id: CORRELATION,
+      }),
+    ).toBeNull();
     expect(
       readAccountsPage({
         result: { items: Array.from({ length: 101 }, () => projection()), next_cursor: null },
+        correlation_id: CORRELATION,
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects non-canonical result envelopes and page shapes", () => {
+    const page = { items: [projection()], next_cursor: null };
+    expect(readAccountsPage({ result: page })).toBeNull();
+    expect(readAccountsPage({ result: page, correlation_id: "UPPERCASE" })).toBeNull();
+    expect(
+      readAccountsPage({ result: page, correlation_id: CORRELATION, unexpected: true }),
+    ).toBeNull();
+    expect(
+      readAccountsPage({
+        result: { ...page, unexpected: true },
+        correlation_id: CORRELATION,
+      }),
+    ).toBeNull();
+
+    expect(readAccountProjection({ result: projection() })).toBeNull();
+    expect(readAccountProjection({ result: projection(), correlation_id: "UPPERCASE" })).toBeNull();
+    expect(
+      readAccountProjection({
+        result: projection(),
+        correlation_id: CORRELATION,
+        unexpected: true,
       }),
     ).toBeNull();
   });
@@ -119,11 +151,12 @@ describe("account response parsing", () => {
 describe("account requests", () => {
   it("lists through a same-origin session-bearing PUT", async () => {
     withCsrfCookie();
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        jsonResponse({ result: { items: [projection()], next_cursor: "bmV4dA" } }),
-      );
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        result: { items: [projection()], next_cursor: "bmV4dA" },
+        correlation_id: CORRELATION,
+      }),
+    );
 
     await expect(listAccounts("cHJldmlvdXM")).resolves.toMatchObject({ nextCursor: "bmV4dA" });
     const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -153,6 +186,19 @@ describe("account requests", () => {
     expect(requestBody(fetchMock.mock.calls[0]![1])).toEqual({ public_id: PUBLIC_ID });
   });
 
+  it("rejects a non-canonical view result envelope", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        result: projection(),
+        correlation_id: CORRELATION,
+        unexpected: true,
+      }),
+    );
+
+    await expect(viewAccount(PUBLIC_ID)).rejects.toBeInstanceOf(AccountsUnavailableError);
+  });
+
   it("rejects account view request with non-canonical public identifier", async () => {
     withCsrfCookie();
     const fetchMock = vi.spyOn(globalThis, "fetch");
@@ -178,6 +224,23 @@ describe("account requests", () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(
       jsonResponse({ result: { items: "secret" } }),
     );
+    await expect(listAccounts()).rejects.toBeInstanceOf(AccountsUnavailableError);
+  });
+
+  it("distinguishes only an exact expired-session read response", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: "session_invalid", correlation_id: CORRELATION, unexpected: true },
+          401,
+        ),
+      );
+
+    await expect(listAccounts()).rejects.toBeInstanceOf(AccountsSessionExpiredError);
     await expect(listAccounts()).rejects.toBeInstanceOf(AccountsUnavailableError);
   });
 

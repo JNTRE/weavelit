@@ -261,17 +261,13 @@ mod tests {
         );
         assert!(!format!("{disclosure:?} {disclosure}").contains(&secret));
 
-        let prepared = PreparedTemporaryPassword {
-            verifier: PasswordVerifierFactory::approved()
-                .create(b"not the temporary password")
-                .expect("verifier creation must succeed"),
-            disclosure,
-        };
+        let prepared = PreparedTemporaryPassword::generate(&PasswordVerifierFactory::approved())
+            .expect("temporary password preparation must succeed");
         assert_eq!(
             format!("{prepared:?}"),
             "PreparedTemporaryPassword(redacted)"
         );
-        assert!(!format!("{prepared:?}").contains(&secret));
+        assert!(!format!("{prepared:?}").contains(prepared.disclosure.secret.as_str()));
     }
 
     #[test]

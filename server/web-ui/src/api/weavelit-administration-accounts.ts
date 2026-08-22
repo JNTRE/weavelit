@@ -11,6 +11,9 @@ const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,416}$/;
 const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
 const MAX_NAME_BYTES = 256;
 const MAX_PAGE_ITEMS = 100;
+const RESULT_ENVELOPE_FIELDS = new Set(["result", "correlation_id"]);
+const ERROR_ENVELOPE_FIELDS = new Set(["error", "correlation_id"]);
+const PAGE_FIELDS = new Set(["items", "next_cursor"]);
 const PROJECTION_FIELDS = new Set([
   "public_id",
   "username",
@@ -47,6 +50,13 @@ export class AccountsUnavailableError extends Error {
   }
 }
 
+export class AccountsSessionExpiredError extends Error {
+  constructor() {
+    super("accounts_session_expired");
+    this.name = "AccountsSessionExpiredError";
+  }
+}
+
 export class AccountStatusRefusedError extends Error {
   constructor() {
     super("account_status_refused");
@@ -66,6 +76,21 @@ function objectPayload(payload: unknown): Record<string, unknown> | null {
     return null;
   }
   return payload as Record<string, unknown>;
+}
+
+function hasExactFields(value: Record<string, unknown>, fields: ReadonlySet<string>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === fields.size && keys.every((key) => fields.has(key));
+}
+
+function resultPayload(payload: unknown): Record<string, unknown> | null {
+  const envelope = objectPayload(payload);
+  return envelope !== null &&
+    hasExactFields(envelope, RESULT_ENVELOPE_FIELDS) &&
+    typeof envelope.correlation_id === "string" &&
+    CORRELATION_PATTERN.test(envelope.correlation_id)
+    ? objectPayload(envelope.result)
+    : null;
 }
 
 function safeName(value: unknown): string | null {
@@ -108,8 +133,13 @@ function accountProjection(payload: unknown): AccountProjection | null {
 }
 
 export function readAccountsPage(payload: unknown): AccountsPage | null {
-  const result = objectPayload(objectPayload(payload)?.result);
-  if (result === null || !Array.isArray(result.items) || result.items.length > MAX_PAGE_ITEMS) {
+  const result = resultPayload(payload);
+  if (
+    result === null ||
+    !hasExactFields(result, PAGE_FIELDS) ||
+    !Array.isArray(result.items) ||
+    result.items.length > MAX_PAGE_ITEMS
+  ) {
     return null;
   }
   const items: AccountProjection[] = [];
@@ -127,8 +157,30 @@ export function readAccountsPage(payload: unknown): AccountsPage | null {
   return { items, nextCursor };
 }
 
+export function readAccountProjectionValue(payload: unknown): AccountProjection | null {
+  return accountProjection(payload);
+}
+
 export function readAccountProjection(payload: unknown): AccountProjection | null {
-  return accountProjection(objectPayload(payload)?.result);
+  return accountProjection(resultPayload(payload));
+}
+
+async function isExpiredSession(response: Response): Promise<boolean> {
+  if (response.status !== 401) {
+    return false;
+  }
+  try {
+    const envelope = objectPayload(await response.json());
+    return (
+      envelope !== null &&
+      hasExactFields(envelope, ERROR_ENVELOPE_FIELDS) &&
+      envelope.error === "session_invalid" &&
+      typeof envelope.correlation_id === "string" &&
+      CORRELATION_PATTERN.test(envelope.correlation_id)
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function accountRequest(path: string, body: object): Promise<unknown> {
@@ -154,6 +206,9 @@ async function accountRequest(path: string, body: object): Promise<unknown> {
     throw new AccountsUnavailableError();
   }
   if (response.status !== 200) {
+    if (await isExpiredSession(response)) {
+      throw new AccountsSessionExpiredError();
+    }
     throw new AccountsUnavailableError();
   }
   try {
@@ -177,7 +232,7 @@ export async function viewAccount(publicId: string): Promise<AccountProjection> 
     throw new AccountsUnavailableError();
   }
   const payload = await accountRequest(ACCOUNTS_VIEW_PATH, { public_id: publicId });
-  const account = readAccountProjection(payload);
+  const account = accountProjection(resultPayload(payload));
   if (account?.publicId !== publicId) {
     throw new AccountsUnavailableError();
   }
@@ -247,7 +302,7 @@ export async function changeAccountStatus(
   } catch {
     throw new AccountStatusIndeterminateError();
   }
-  const account = readAccountProjection(payload);
+  const account = accountProjection(resultPayload(payload));
   if (account?.publicId !== publicId || account.active !== active) {
     throw new AccountStatusIndeterminateError();
   }

@@ -32,6 +32,13 @@ export class MfaPolicyRefusedError extends Error {
   }
 }
 
+export class MfaPolicySessionInvalidError extends MfaPolicyRefusedError {
+  constructor() {
+    super();
+    this.name = "MfaPolicySessionInvalidError";
+  }
+}
+
 export class MfaPolicyIndeterminateError extends Error {
   constructor() {
     super("mfa_policy_indeterminate");
@@ -77,23 +84,26 @@ function readPolicyAccount(payload: unknown): AccountProjection | null {
   return strictEnvelope(payload) === null ? null : readAccountProjection(payload);
 }
 
-async function isReportedRefusal(response: Response): Promise<boolean> {
+async function reportedRefusal(response: Response): Promise<string | null> {
   const allowedCodes = REPORTED_REFUSALS.get(response.status);
   if (allowedCodes === undefined) {
-    return false;
+    return null;
   }
   try {
     const envelope = objectPayload(await response.json());
-    return (
+    if (
       envelope !== null &&
       Object.keys(envelope).length === 2 &&
       typeof envelope.error === "string" &&
       allowedCodes.has(envelope.error) &&
       typeof envelope.correlation_id === "string" &&
       CORRELATION_PATTERN.test(envelope.correlation_id)
-    );
+    ) {
+      return envelope.error;
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -120,7 +130,11 @@ async function mfaPolicyRequest(path: string, body: object): Promise<unknown> {
     throw new MfaPolicyIndeterminateError();
   }
   if (response.status !== 200) {
-    if (await isReportedRefusal(response)) {
+    const refusal = await reportedRefusal(response);
+    if (refusal === "session_invalid") {
+      throw new MfaPolicySessionInvalidError();
+    }
+    if (refusal !== null) {
       throw new MfaPolicyRefusedError();
     }
     throw new MfaPolicyIndeterminateError();

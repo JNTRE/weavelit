@@ -1585,9 +1585,12 @@ impl<E: Argon2Engine + Send + Sync + 'static> AuthenticationRuntime<E> {
         let presented = SessionCsrfHash::from_bytes(*CsrfTokenDigest::of(csrf_token).as_bytes())
             .map_err(|_| invalid)?;
 
-        let now = self.now()?;
-        let SessionValidation::Valid(session) = self
-            .with_sessions(|sessions| sessions.validate_and_touch(&token_hash, &presented, now))?
+        let SessionValidation::Valid(session) = self.with_sessions(|sessions| {
+            let now = (self.clock)()
+                .and_then(|milliseconds| SessionInstant::from_unix_milliseconds(milliseconds).ok())
+                .ok_or(DatabaseError::Unavailable)?;
+            sessions.validate_and_touch(&token_hash, &presented, now)
+        })?
         else {
             return Err(invalid);
         };
@@ -2321,6 +2324,7 @@ pub(crate) mod tests {
         sync::{
             Condvar, Mutex,
             atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
+            mpsc,
         },
         time::Duration,
     };
@@ -2591,6 +2595,71 @@ pub(crate) mod tests {
         }
     }
 
+    /// Parks the first armed wall-clock read while later reads remain observable.
+    #[derive(Debug, Default)]
+    struct ClockGate {
+        state: Mutex<ClockGateState>,
+        changed: Condvar,
+    }
+
+    #[derive(Debug, Default)]
+    struct ClockGateState {
+        armed: bool,
+        arrivals: usize,
+        first_released: bool,
+    }
+
+    impl ClockGate {
+        fn read(&self, reading: i64) -> i64 {
+            let mut state = self.state.lock().expect("the clock gate must not poison");
+            if !state.armed {
+                return reading;
+            }
+
+            state.arrivals += 1;
+            let arrival = state.arrivals;
+            self.changed.notify_all();
+            while arrival == 1 && !state.first_released {
+                state = self
+                    .changed
+                    .wait(state)
+                    .expect("the clock gate must not poison");
+            }
+            reading
+        }
+
+        fn arm(&self) {
+            let mut state = self.state.lock().expect("the clock gate must not poison");
+            assert!(!state.armed, "the clock gate may be armed only once");
+            state.armed = true;
+        }
+
+        fn await_arrivals(&self, count: usize) {
+            let mut state = self.state.lock().expect("the clock gate must not poison");
+            while state.arrivals < count {
+                state = self
+                    .changed
+                    .wait(state)
+                    .expect("the clock gate must not poison");
+            }
+        }
+
+        fn await_arrivals_for(&self, count: usize, duration: Duration) -> bool {
+            let state = self.state.lock().expect("the clock gate must not poison");
+            let (state, _) = self
+                .changed
+                .wait_timeout_while(state, duration, |state| state.arrivals < count)
+                .expect("the clock gate must not poison");
+            state.arrivals >= count
+        }
+
+        fn release_first(&self) {
+            let mut state = self.state.lock().expect("the clock gate must not poison");
+            state.first_released = true;
+            self.changed.notify_all();
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Injected System Log destination
     // -----------------------------------------------------------------------
@@ -2736,6 +2805,7 @@ pub(crate) mod tests {
         runtime: Arc<AuthenticationRuntime<CountingEngine>>,
         engine: Arc<EngineState>,
         clock: Arc<AtomicI64>,
+        clock_gate: Arc<ClockGate>,
         /// The monotonic time a continuation's own lifetime is measured
         /// against, in milliseconds since this surface was built.
         elapsed: Arc<AtomicU64>,
@@ -2783,6 +2853,8 @@ pub(crate) mod tests {
             let engine = EngineState::new(open_engine);
             let clock = Arc::new(AtomicI64::new(ISSUED_AT));
             let reading = Arc::clone(&clock);
+            let clock_gate = Arc::new(ClockGate::default());
+            let gated_clock = Arc::clone(&clock_gate);
             let elapsed = Arc::new(AtomicU64::new(0));
             let elapsing = Arc::clone(&elapsed);
             let runtime = AuthenticationRuntime::with_engine(
@@ -2798,7 +2870,7 @@ pub(crate) mod tests {
                     .expect("a sealed startup hands over its loaded state"),
                 client_modules(),
                 AuthenticationClocks {
-                    wall: Arc::new(move || Some(reading.load(Ordering::SeqCst))),
+                    wall: Arc::new(move || Some(gated_clock.read(reading.load(Ordering::SeqCst)))),
                     elapsed: Arc::new(move || {
                         Duration::from_millis(elapsing.load(Ordering::SeqCst))
                     }),
@@ -2815,6 +2887,7 @@ pub(crate) mod tests {
                 runtime,
                 engine,
                 clock,
+                clock_gate,
                 elapsed,
                 username,
             }
@@ -4989,6 +5062,72 @@ pub(crate) mod tests {
             "alice",
         ] {
             assert!(!body_text(&response).contains(absent), "{absent}");
+        }
+    }
+
+    /// Concurrent session validation samples time in durable touch order.
+    ///
+    /// The first clock read is parked while a second validation starts at a
+    /// later instant. Sampling outside the serialized database lane lets the
+    /// second request touch first and makes the earlier request look like a
+    /// clock rollback. Sampling inside the lane keeps both valid without
+    /// weakening the store's real rollback rejection.
+    #[tokio::test]
+    async fn concurrent_session_validation_orders_clock_sampling_with_session_touches() {
+        let surface = AuthSurface::new();
+        let (session, csrf) = established_session(&surface).await;
+
+        surface.set_clock(ISSUED_AT + 1);
+        surface.clock_gate.arm();
+
+        let earlier_runtime = Arc::clone(&surface.runtime);
+        let earlier_session = session.clone();
+        let earlier_csrf = csrf.clone();
+        let earlier = task::spawn_blocking(move || {
+            earlier_runtime.validated_session(&earlier_session, &earlier_csrf)
+        });
+        surface.clock_gate.await_arrivals(1);
+
+        surface.set_clock(ISSUED_AT + 2);
+        let later_runtime = Arc::clone(&surface.runtime);
+        let (later_started, observe_later_start) = mpsc::sync_channel(0);
+        let mut later = task::spawn_blocking(move || {
+            later_started
+                .send(())
+                .expect("the test must observe the later validation start");
+            later_runtime.validated_session(&session, &csrf)
+        });
+        observe_later_start
+            .recv()
+            .expect("the later validation worker must start");
+
+        // With the old pre-lane clock read, the later validation reaches the
+        // clock and can finish while the earlier read is parked. Waiting for
+        // that completion before release deterministically recreates the
+        // later-touch-then-earlier-touch rollback order. With the fixed order,
+        // the later read remains behind the database lane until release.
+        let later_sampled_before_release = surface
+            .clock_gate
+            .await_arrivals_for(2, Duration::from_secs(1));
+        let completed_later = if later_sampled_before_release {
+            Some((&mut later).await)
+        } else {
+            None
+        };
+        surface.clock_gate.release_first();
+
+        let earlier = earlier.await.expect("the earlier validation must join");
+        let later = match completed_later {
+            Some(later) => later,
+            None => later.await,
+        }
+        .expect("the later validation must join");
+
+        if let Err(rejection) = earlier {
+            panic!("the earlier valid session was rejected: {rejection:?}");
+        }
+        if let Err(rejection) = later {
+            panic!("the later valid session was rejected: {rejection:?}");
         }
     }
 

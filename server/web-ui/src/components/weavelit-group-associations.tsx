@@ -1,8 +1,14 @@
-import { useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
 
-import { listAccounts, type AccountProjection } from "../api/weavelit-administration-accounts";
 import {
+  AccountsSessionExpiredError,
+  listAccounts,
+  type AccountProjection,
+} from "../api/weavelit-administration-accounts";
+import {
+  GroupAdministrationAccessDeniedError,
   GroupMutationRefusedError,
+  GroupSessionInvalidError,
   LastAdministratorRefusedError,
   changeGroupGrant,
   changeGroupMember,
@@ -12,7 +18,11 @@ import {
   type AdministrationCatalog,
   type GroupGrant,
 } from "../api/weavelit-administration-groups";
-import { issueGrantMutationStepUp } from "../api/weavelit-mfa-policy";
+import {
+  MfaPolicyRefusedError,
+  MfaPolicySessionInvalidError,
+  issueGrantMutationStepUp,
+} from "../api/weavelit-mfa-policy";
 
 type Phase = "idle" | "confirm" | "verify" | "busy" | "refused" | "last" | "unknown";
 type Action =
@@ -68,8 +78,14 @@ async function loadData(group: string): Promise<Data> {
 
 export function GroupAssociations({
   groupPublicId,
+  mutationsLocked = false,
+  onAdministrationEnded,
+  onMutationIndeterminate,
 }: {
   readonly groupPublicId: string;
+  readonly mutationsLocked?: boolean;
+  readonly onAdministrationEnded?: () => void;
+  readonly onMutationIndeterminate?: () => void;
 }): JSX.Element {
   const [data, setData] = useState<Data | null>(null);
   const [failed, setFailed] = useState(false);
@@ -81,7 +97,30 @@ export function GroupAssociations({
   const [code, setCode] = useState("");
   const mounted = useRef(true);
   const active = useRef(false);
+  const administrationEnded = useRef(false);
   const ticket = useRef("");
+  const mutationLocked = mutationsLocked || phase === "unknown";
+  const workspaceIsMounted = (): boolean => mounted.current;
+
+  const readFailed = useCallback(
+    (error: unknown): void => {
+      if (
+        (error instanceof GroupSessionInvalidError ||
+          error instanceof GroupAdministrationAccessDeniedError ||
+          error instanceof AccountsSessionExpiredError ||
+          error instanceof MfaPolicySessionInvalidError) &&
+        onAdministrationEnded !== undefined
+      ) {
+        if (!administrationEnded.current) {
+          administrationEnded.current = true;
+          onAdministrationEnded();
+        }
+      } else {
+        setFailed(true);
+      }
+    },
+    [onAdministrationEnded],
+  );
 
   useEffect(() => {
     mounted.current = true;
@@ -89,8 +128,8 @@ export function GroupAssociations({
       (loaded) => {
         if (mounted.current) setData(loaded);
       },
-      () => {
-        if (mounted.current) setFailed(true);
+      (error: unknown) => {
+        if (mounted.current) readFailed(error);
       },
     );
     return () => {
@@ -98,10 +137,10 @@ export function GroupAssociations({
       active.current = false;
       ticket.current = "";
     };
-  }, [groupPublicId]);
+  }, [groupPublicId, readFailed]);
 
   const begin = (next: Action): void => {
-    if (active.current || action !== null) return;
+    if (active.current || mutationLocked || action !== null) return;
     setAction(next);
     setCode("");
     setPhase(next.present ? "verify" : "confirm");
@@ -117,7 +156,7 @@ export function GroupAssociations({
 
   const submit = (event: SyntheticEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (active.current || action === null || !CODE.test(code)) return;
+    if (active.current || mutationLocked || action === null || !CODE.test(code)) return;
     active.current = true;
     const requested = action;
     const submittedCode = code;
@@ -138,6 +177,33 @@ export function GroupAssociations({
         } else {
           await changeGroupGrant(groupPublicId, requested.grant, requested.present, proof);
         }
+        if (!workspaceIsMounted()) return;
+        setAction(null);
+        setAccountId("");
+        setGrantValue("");
+        setPhase("idle");
+      } catch (error: unknown) {
+        ticket.current = "";
+        if (!mounted.current) return;
+        setAction(null);
+        if (error instanceof MfaPolicySessionInvalidError) {
+          setPhase("idle");
+          readFailed(error);
+        } else if (error instanceof LastAdministratorRefusedError) setPhase("last");
+        else if (
+          error instanceof GroupMutationRefusedError ||
+          error instanceof MfaPolicyRefusedError
+        )
+          setPhase("refused");
+        else {
+          setPhase("unknown");
+          onMutationIndeterminate?.();
+        }
+        active.current = false;
+        return;
+      }
+
+      try {
         const [members, grants] = await Promise.all([
           listGroupMembers(groupPublicId),
           listGroupGrants(groupPublicId),
@@ -154,21 +220,8 @@ export function GroupAssociations({
                 grantCursor: grants.nextCursor,
               },
         );
-        setAction(null);
-        setAccountId("");
-        setGrantValue("");
-        setPhase("idle");
       } catch (error: unknown) {
-        ticket.current = "";
-        if (!mounted.current) return;
-        setAction(null);
-        setPhase(
-          error instanceof LastAdministratorRefusedError
-            ? "last"
-            : error instanceof GroupMutationRefusedError
-              ? "refused"
-              : "unknown",
-        );
+        if (workspaceIsMounted()) readFailed(error);
       } finally {
         active.current = false;
       }
@@ -191,8 +244,8 @@ export function GroupAssociations({
                 },
           );
       },
-      () => {
-        if (mounted.current) setFailed(true);
+      (error: unknown) => {
+        if (mounted.current) readFailed(error);
       },
     );
   };
@@ -213,8 +266,8 @@ export function GroupAssociations({
                 },
           );
       },
-      () => {
-        if (mounted.current) setFailed(true);
+      (error: unknown) => {
+        if (mounted.current) readFailed(error);
       },
     );
   };
@@ -235,8 +288,8 @@ export function GroupAssociations({
                 },
           );
       },
-      () => {
-        if (mounted.current) setFailed(true);
+      (error: unknown) => {
+        if (mounted.current) readFailed(error);
       },
     );
   };
@@ -271,6 +324,7 @@ export function GroupAssociations({
                 </span>
                 <button
                   type="button"
+                  disabled={mutationLocked}
                   onClick={() => {
                     begin({ member: account, present: false });
                   }}
@@ -306,7 +360,7 @@ export function GroupAssociations({
         </label>
         <button
           type="button"
-          disabled={member === null}
+          disabled={member === null || mutationLocked}
           onClick={() => {
             if (member !== null) begin({ member, present: true });
           }}
@@ -331,6 +385,7 @@ export function GroupAssociations({
                 <span>{grantLabel(current)}</span>
                 <button
                   type="button"
+                  disabled={mutationLocked}
                   onClick={() => {
                     begin({ grant: current, present: false });
                   }}
@@ -387,7 +442,7 @@ export function GroupAssociations({
         )}
         <button
           type="button"
-          disabled={grant === null || granted}
+          disabled={grant === null || granted || mutationLocked}
           onClick={() => {
             if (grant !== null) begin({ grant, present: true });
           }}
@@ -402,6 +457,7 @@ export function GroupAssociations({
           <p>Remove {"member" in action ? action.member.username : grantLabel(action.grant)}?</p>
           <button
             type="button"
+            disabled={mutationLocked}
             onClick={() => {
               setPhase("verify");
             }}
@@ -430,7 +486,7 @@ export function GroupAssociations({
               disabled={phase === "busy"}
             />
           </label>
-          <button type="submit" disabled={!CODE.test(code) || phase === "busy"}>
+          <button type="submit" disabled={!CODE.test(code) || phase === "busy" || mutationLocked}>
             Apply change
           </button>
           <button type="button" onClick={cancel} disabled={phase === "busy"}>

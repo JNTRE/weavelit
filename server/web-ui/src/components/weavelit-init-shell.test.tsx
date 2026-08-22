@@ -641,7 +641,12 @@ describe("ApplicationShell sign-in panel gating", () => {
         );
       }
       if (target === "/api/v1/administration/accounts/list") {
-        return Promise.resolve(jsonResponse({ result: { items: [], next_cursor: null } }));
+        return Promise.resolve(
+          jsonResponse({
+            result: { items: [], next_cursor: null },
+            correlation_id: "accounts-list-correlation",
+          }),
+        );
       }
       return Promise.reject(new Error("unexpected request"));
     });
@@ -735,6 +740,7 @@ describe("ApplicationShell sign-in panel gating", () => {
               ],
               next_cursor: null,
             },
+            correlation_id: "accounts-list-correlation",
           }),
         );
       }
@@ -747,6 +753,59 @@ describe("ApplicationShell sign-in panel gating", () => {
     expect(await screen.findByRole("rowheader", { name: "administrator" })).toBeTruthy();
     expect(screen.getByText("Administration")).toBeTruthy();
     expect(loginSection()).toBeNull();
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("returns to neutral sign-in when an Accounts read reports an expired session", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    let listRequests = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        sessionProbes += 1;
+        if (sessionProbes === 1) {
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+                client_module: "web-ui",
+                password_change_required: false,
+              },
+              correlation_id: AUTH_CORRELATION,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        listRequests += 1;
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+
+    render(<ApplicationShell />);
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(screen.queryByText("Accounts are unavailable.")).toBeNull();
+    expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+    expect(listRequests).toBe(1);
+    expect(sessionProbes).toBe(2);
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 
@@ -777,6 +836,32 @@ describe("ApplicationShell sign-in panel gating", () => {
     expect(screen.getByRole("button", { name: "Groups" }).getAttribute("aria-current")).toBe(
       "page",
     );
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
+  it("returns Groups access loss to neutral sign-in without re-adopting the session", async () => {
+    const fetchMock = mockAuthenticatedAdministrationFetch();
+    const GroupsWorkspace = ({
+      onAdministrationEnded,
+    }: {
+      readonly onAdministrationEnded?: () => void;
+    }) => (
+      <button type="button" onClick={onAdministrationEnded}>
+        End Groups administration
+      </button>
+    );
+
+    render(<ApplicationShell loadGroupsWorkspace={() => Promise.resolve({ GroupsWorkspace })} />);
+    await screen.findByRole("heading", { name: "Accounts" });
+    fireEvent.click(screen.getByRole("button", { name: "Groups" }));
+    fireEvent.click(await screen.findByRole("button", { name: "End Groups administration" }));
+
+    expect(await screen.findByLabelText("Username")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.queryByText("Administration")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/session"),
+    ).toHaveLength(1);
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 
@@ -905,6 +990,7 @@ describe("ApplicationShell sign-in panel gating", () => {
                 ],
                 next_cursor: null,
               },
+              correlation_id: "accounts-list-correlation",
             }),
           );
         }
@@ -1006,6 +1092,7 @@ describe("ApplicationShell sign-in panel gating", () => {
                 ],
                 next_cursor: null,
               },
+              correlation_id: "accounts-list-correlation",
             }),
           );
         }

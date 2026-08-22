@@ -7,7 +7,9 @@ import {
   MFA_POLICY_STEP_UP_PATH,
   MfaPolicyIndeterminateError,
   MfaPolicyRefusedError,
+  MfaPolicySessionInvalidError,
   changeMfaRequirement,
+  issueGrantMutationStepUp,
   issueMfaPolicyStepUp,
   readMfaPolicyTicket,
   resetMfaEnrollment,
@@ -161,7 +163,6 @@ describe("MFA policy requests", () => {
 
   it.each([
     [400, "bad_request"],
-    [401, "session_invalid"],
     [403, "mfa_policy_denied"],
     [404, "not_found"],
     [405, "method_not_allowed"],
@@ -176,6 +177,19 @@ describe("MFA policy requests", () => {
 
     expect(error).toBeInstanceOf(MfaPolicyRefusedError);
     expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyRefusedError"}');
+  });
+
+  it("preserves an exact session-invalid GrantMutation step-up response", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+    );
+
+    const error = await issueGrantMutationStepUp(CODE).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(MfaPolicySessionInvalidError);
+    expect(error).toBeInstanceOf(MfaPolicyRefusedError);
+    expect(JSON.stringify(error)).toBe('{"name":"MfaPolicySessionInvalidError"}');
   });
 
   it.each([

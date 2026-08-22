@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CSRF_COOKIE_NAME } from "./weavelit-authentication";
 import {
   ConfigurationConflictError,
+  ConfigurationSessionInvalidError,
   LOG_CONFIGURATIONS_CHANGE_PATH,
   LOG_CONFIGURATIONS_LIST_PATH,
   TOTP_ENABLEMENT_APPLY_PATH,
@@ -220,6 +221,16 @@ describe("Configuration API", () => {
     await expect(applyTotpEnablement(false, PREVIEW)).rejects.toBeInstanceOf(
       ConfigurationConflictError,
     );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an exact session-invalid read separately without retrying", async () => {
+    csrf();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(response({ error: "session_invalid", correlation_id: CORRELATION }, 401));
+
+    await expect(listLogConfigurations()).rejects.toBeInstanceOf(ConfigurationSessionInvalidError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
