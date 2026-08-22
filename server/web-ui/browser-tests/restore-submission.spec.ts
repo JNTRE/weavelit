@@ -169,9 +169,12 @@ test("a submitted backup and recovery key restore the deployment through the Web
       (response) => new URL(response.url()).pathname === RESTORE_ARTIFACT_PATH,
     );
     await page.getByRole("button", { name: RESTORE_ACTION_NAME }).click();
-    expect((await rejectedKey).status()).toBe(202);
+    const rejectedTicket = await rejectedKey;
+    expect(rejectedTicket.status()).toBe(202);
+    expect(rejectedTicket.headers()["cache-control"]).toBe("no-store");
     const rejection = await rejectedUpload;
     expect(rejection.status()).toBe(400);
+    expect(rejection.headers()["cache-control"]).toBeUndefined();
 
     await expect(restore).toHaveAttribute("data-restore-state", "failed");
     const failure = page.locator("p.shell__restore-failure");
@@ -194,6 +197,7 @@ test("a submitted backup and recovery key restore the deployment through the Web
     expect(ticketResponse.request().method()).toBe("PUT");
     expect(ticketResponse.status()).toBe(202);
     expect(ticketResponse.headers()["content-type"]).toBe("application/json; charset=utf-8");
+    expect(ticketResponse.headers()["cache-control"]).toBe("no-store");
 
     const completion = await completedUpload;
     expect(completion.request().method()).toBe("PUT");
@@ -205,6 +209,7 @@ test("a submitted backup and recovery key restore the deployment through the Web
       );
     }
     expect(completion.headers()["content-type"]).toBe("application/json; charset=utf-8");
+    expect(completion.headers()["cache-control"]).toBeUndefined();
 
     // The artifact is uploaded as the request body with the ticket in its one
     // permitted header, and with the exact media type the route accepts. The

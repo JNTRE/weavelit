@@ -144,7 +144,8 @@ initialized before the requesting client proves possession of the private key:
    capability itself is returned once, in the same response as the private
    key, and is held only by the requesting browser; the crate retains only
    the digest, in memory with the pending delivery, until finalization
-   persists it.
+   persists it. This secret-bearing response emits
+   `Cache-Control: no-store` through the closed typed response effect.
 2. The client saves the private key outside Weavelit and computes the same
    HMAC-SHA-256 over the delivery nonce, keyed by the private key's raw bytes
    it retained. It submits that proof, but not the private key, with the

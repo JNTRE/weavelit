@@ -107,7 +107,8 @@ Route groups:
     `mfa` carries `mfa_required` when an enrolled factor must verify a code, or
     `mfa_enrollment_required` when the account must enroll one first. Both
     codes are defined by the shared `weavelit-module-client` crate; only their
-    values differ.
+    values differ. This continuation-bearing response emits
+    `Cache-Control: no-store`.
   - `/api/v1/auth/session` validates the session cookie already presented and
     reports whether it is still active, issuing no new cookie. Its successful
     result carries the existing lowercase-hexadecimal `account_id` for
@@ -150,7 +151,8 @@ Route groups:
 
     `secret` and `provisioning_uri` are returned in this one response and are
     never retrievable again; `enrollment` is a second, separate continuation
-    that confirms this exact enrollment.
+    that confirms this exact enrollment. This provisioning response emits
+    `Cache-Control: no-store`.
   - `/api/v1/auth/mfa/enrollment/confirm` submits a `code` against the
     `enrollment` value the enrollment-opening response carried. Success returns
     `200` and the session-issuing cookie effect. Refusal is the same `401`
@@ -429,6 +431,8 @@ rotates no session. Success returns:
  "correlation_id":"<opaque-server-value>"}
 ```
 
+This ticket-bearing response emits `Cache-Control: no-store`.
+
 The ticket contains 256 bits of operating-system randomness. The process
 retains only its domain-separated digest and the private `MfaStepUpProof` in a
 bounded 64-entry memory store. The ticket is reusable for matching actions in
@@ -529,6 +533,9 @@ Success returns:
  "totp_enablement_preview":"<43-character canonical Base64url>"},
  "correlation_id":"<opaque-server-value>"}
 ```
+
+This preview-credential response emits `Cache-Control: no-store`; the applied
+result and every rejection do not.
 
 The credential contains 256 bits of operating-system randomness. The process
 retains only its domain-separated SHA-256 digest in a bounded 64-entry memory
@@ -731,13 +738,16 @@ no cookie and creates no redirect or URL. The Server prepares the bounded
 secret-bearing typed result before mutation and transfers the plaintext into
 the response only after the final writer commits.
 
-The typed response profile currently has no arbitrary response-header channel,
-so these responses do not assert or emit `Cache-Control: no-store`. That
-constraint MUST NOT be bypassed with another response profile or an untyped
-header path. The Server persists neither ticket plaintext nor temporary-password
-plaintext, and clients MUST treat both responses as sensitive, use no-store
-request behavior, and keep their values out of URLs, cookies, browser storage,
-logs, and later view state.
+The credential-issuance ticket response and the originating create or reset
+response each emit `Cache-Control: no-store`. The typed response profile still
+has no arbitrary response-header channel: a closed internal secret-disclosure
+effect selects only that fixed directive, and no route supplies a header name
+or value. The full approved effect inventory and its exclusions are owned by
+the [Security Model](../../security-model.md#secret-disclosure-cache-control).
+The Server persists neither ticket plaintext nor temporary-password plaintext,
+and clients MUST treat both responses as sensitive, use no-store request
+behavior, and keep their values out of URLs, cookies, browser storage, logs,
+and later view state.
 
 The stable rejection contract is:
 

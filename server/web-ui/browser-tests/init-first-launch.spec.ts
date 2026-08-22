@@ -205,6 +205,7 @@ test("a first launch initializes the deployment and signs the new Administrator 
     const deliveryResponse = await delivery;
     expect(deliveryResponse.request().method()).toBe("PUT");
     expect(deliveryResponse.status(), `rendered Init state: ${await init.innerText()}`).toBe(200);
+    expect(deliveryResponse.headers()["cache-control"]).toBe("no-store");
 
     const delivered = (await deliveryResponse.json()) as {
       result: { recovery_key: string; delivery_nonce: string };
@@ -254,6 +255,7 @@ test("a first launch initializes the deployment and signs the new Administrator 
         `finalization returned ${finalizationResponse.status()}, rendered Init state: ${await init.innerText()}`,
       );
     }
+    expect(finalizationResponse.headers()["cache-control"]).toBeUndefined();
     expect(await finalizationResponse.json()).toEqual({
       result: { lifecycle: "initialized" },
       correlation_id: expect.stringMatching(/^[0-9a-f]{32}$/),

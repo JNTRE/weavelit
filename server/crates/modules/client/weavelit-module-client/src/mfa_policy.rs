@@ -28,7 +28,7 @@ use crate::{
     single_header,
     typed_json::{
         OpaqueToken, ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
-        typed_json_response,
+        typed_json_response, typed_json_secret_response,
     },
 };
 
@@ -551,7 +551,7 @@ fn ticket_success(result: MfaPolicyTicketIssued, correlation_id: String) -> Resp
     let Some(correlation_id) = ResponseCorrelation::new(&correlation_id) else {
         return unrenderable_response();
     };
-    typed_json_response(
+    typed_json_secret_response(
         StatusCode::OK,
         TypedJsonEnvelope::Result {
             result,
@@ -746,6 +746,7 @@ mod tests {
             )
         );
         assert_no_sensitive_headers(&step_up);
+        assert!(crate::typed_json::has_secret_disclosure_effect(&step_up));
 
         let requirement = router
             .clone()
@@ -758,6 +759,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(requirement.status(), StatusCode::OK);
+        assert!(!crate::typed_json::has_secret_disclosure_effect(
+            &requirement
+        ));
         let requirement_body = account(&requirement);
         assert!(requirement_body.contains("\"mfa_required\":true"));
         assert!(!requirement_body.contains(TICKET));

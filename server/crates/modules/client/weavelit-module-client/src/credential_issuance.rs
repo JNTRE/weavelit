@@ -24,7 +24,7 @@ use crate::{
     single_header,
     typed_json::{
         OpaqueToken, ResponseCorrelation, StableCode, TypedJsonEnvelope, TypedResult, TypedValue,
-        typed_json_response,
+        typed_json_response, typed_json_secret_response,
     },
 };
 
@@ -611,7 +611,7 @@ fn success(result: TypedResult, correlation_id: String) -> Response {
     let Some(correlation_id) = ResponseCorrelation::new(&correlation_id) else {
         return unrenderable_response();
     };
-    typed_json_response(
+    typed_json_secret_response(
         StatusCode::OK,
         TypedJsonEnvelope::Result {
             result,
@@ -845,6 +845,10 @@ mod tests {
 
             assert_eq!(response.status(), StatusCode::OK, "{target}");
             assert_no_secret_transport(&response);
+            assert!(
+                crate::typed_json::has_secret_disclosure_effect(&response),
+                "{target}"
+            );
             assert_eq!(envelope(&response), expected, "{target}");
         }
         assert_eq!(harness.recorder.step_up.load(Ordering::Relaxed), 1);

@@ -268,6 +268,9 @@ originating success response may disclose their respective values. A reported
 denial and an indeterminate transport outcome carry no reason. Neither causes
 automatic assurance, action, or disclosure retry; an explicit later reset
 creates a new credential rather than recovering the earlier plaintext.
+Both secret-bearing success responses emit `Cache-Control: no-store` through
+the closed response effect defined by the
+[Security Model](../../security-model.md#secret-disclosure-cache-control).
 
 ### Administration Step-Up Ticket
 
@@ -292,6 +295,7 @@ actor, session, family, clock-rollback, and expiry checks.
 The policy ticket is not persisted and never enters a cookie, URL, log, Audit
 record, account projection, or credential-issuance workflow. It is distinct
 from credential issuance's single-use password-plus-conditional-TOTP ticket.
+Its originating response emits `Cache-Control: no-store`.
 The route accepts the closed `MfaPolicy` and `GrantMutation` families. Ticket
 digests are domain-separated by family and each retained private proof carries
 that same family. A cross-family, cross-session, expired, rolled-back,
@@ -559,7 +563,8 @@ provisioning URI construction are defined in the
 
 Provisioning data is generated exactly once, when an enrollment is opened, and
 is returned in that one response only; the Server never returns it again for
-the same or a later enrollment. It is also never stored in a retrievable form:
+the same or a later enrollment. That response emits
+`Cache-Control: no-store`. It is also never stored in a retrievable form:
 the secret and its `otpauth://` URI exist only in memory, held by the
 continuation ticket described below, until a code proves the caller holds
 them. Only then is the factor written, and what is written is the sealed
@@ -657,6 +662,7 @@ deliberate: the user must sign in again to obtain a fresh continuation and a
 fresh attempt, rather than being allowed unlimited retries against one verified
 password. A continuation also expires five minutes after it is issued, so a
 verified password that is never followed up cannot be resumed indefinitely.
+Its originating response emits `Cache-Control: no-store`.
 
 That five-minute lifetime is measured against a monotonic clock rather than
 against the wall clock. Continuations are held only in the Server's memory and
@@ -834,6 +840,8 @@ bound credential. A public apply whose business change committed while terminal
 delivery remains pending returns the ordinary safe committed `200` result. It
 does not expose Audit delivery state or invite an automatic retry; Audit
 recovery remains internal.
+The preview response emits `Cache-Control: no-store`; the applied result does
+not carry the secret-disclosure effect.
 
 ## Related Documents
 

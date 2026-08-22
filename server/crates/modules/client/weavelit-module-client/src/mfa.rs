@@ -40,7 +40,7 @@ use crate::{
     single_header,
     typed_json::{
         OpaqueToken, ProvisioningUri, ResponseCorrelation, StableCode, TypedJsonEnvelope,
-        TypedResult, TypedValue, typed_json_response,
+        TypedResult, TypedValue, typed_json_secret_response,
     },
 };
 
@@ -687,7 +687,7 @@ pub fn continuation_response(stage: &str, continuation: &str, correlation_id: &s
     }) else {
         return unavailable.response(correlation_id);
     };
-    typed_json_response(
+    typed_json_secret_response(
         StatusCode::ACCEPTED,
         TypedJsonEnvelope::Result {
             result,
@@ -726,7 +726,7 @@ fn enrollment_opened_response(opened: &MfaEnrollmentOpened, correlation_id: &str
     else {
         return unavailable.response(correlation_id);
     };
-    typed_json_response(
+    typed_json_secret_response(
         StatusCode::OK,
         TypedJsonEnvelope::Result {
             result,
@@ -1167,6 +1167,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.extensions().get::<CookieEffect>().is_none());
+        assert!(crate::typed_json::has_secret_disclosure_effect(&response));
     }
 
     #[test]
@@ -1176,6 +1177,7 @@ mod tests {
 
             assert_eq!(response.status(), StatusCode::ACCEPTED);
             assert!(response.extensions().get::<CookieEffect>().is_none());
+            assert!(crate::typed_json::has_secret_disclosure_effect(&response));
             assert_eq!(
                 envelope(&response),
                 format!(

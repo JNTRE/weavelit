@@ -22,7 +22,10 @@ use crate::{
         CorrelationSource, submitted_csrf_token, submitted_session_token, unrenderable_response,
     },
     deserialize_present_optional, has_request_body, single_header,
-    typed_json::{ResponseCorrelation, StableCode, TypedJsonEnvelope, typed_json_response},
+    typed_json::{
+        ResponseCorrelation, StableCode, TypedJsonEnvelope, mark_secret_disclosure,
+        typed_json_response,
+    },
 };
 
 pub const TOTP_ENABLEMENT_PREVIEW_ROUTE: &str =
@@ -789,6 +792,7 @@ fn success(result: ConfigurationAdministrationResult, correlation_id: String) ->
     if ResponseCorrelation::new(&correlation_id).is_none() {
         return unrenderable_response();
     }
+    let discloses_secret = matches!(&result, ConfigurationAdministrationResult::TotpPreview(_));
     let mut response = Response::new(Body::empty());
     *response.status_mut() = StatusCode::OK;
     response
@@ -797,6 +801,9 @@ fn success(result: ConfigurationAdministrationResult, correlation_id: String) ->
             result,
             correlation_id,
         });
+    if discloses_secret {
+        mark_secret_disclosure(&mut response);
+    }
     response
 }
 
@@ -1274,6 +1281,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(accepted.status(), StatusCode::OK);
+        assert!(crate::typed_json::has_secret_disclosure_effect(&accepted));
         assert!(rendered(accepted).await.contains("totp_enablement_preview"));
 
         let missing = declaration

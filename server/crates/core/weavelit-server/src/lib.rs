@@ -87,7 +87,7 @@ use operational::{
     ActiveDatabase, OperationalComposer, OperationalDatabase, OperationalMount, OperationalRuntime,
 };
 use transport::{HeadRead, MountedSurface, ProcessingDeadline, TransportCapability};
-use typed_json::{MAX_TYPED_JSON_BODY_BYTES, TypedJsonEnvelope};
+use typed_json::{MAX_TYPED_JSON_BODY_BYTES, TypedJsonEnvelope, has_secret_disclosure_effect};
 
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
 const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
@@ -154,6 +154,7 @@ const ASSET_SECURITY_HEADERS: &str = concat!(
     "X-Content-Type-Options: nosniff\r\n",
     "Cache-Control: no-store\r\n",
 );
+const SECRET_DISCLOSURE_HEADERS: &str = "Cache-Control: no-store\r\n";
 
 #[derive(Clone, Copy)]
 struct ConnectionTimeouts {
@@ -265,9 +266,10 @@ impl RateLimiter {
 
 /// Closed set of response shapes the restricted listener may emit.
 ///
-/// The profile alone selects the media type, the security header block, and the
-/// body bound. Nothing is taken from the request, a file extension, or the body
-/// contents.
+/// The profile selects the media type, the profile security-header block, and
+/// the body bound. A separately typed secret-disclosure effect can add only its
+/// fixed no-store line. Nothing is taken from the request, a file extension,
+/// or the body contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResponseProfile {
     /// Compile-time bodies drawn from the fixed allowlist, used by the frozen
@@ -450,6 +452,8 @@ struct BoundedResponse {
     /// [`redacted_response`] leaves it absent, so a response that redacts
     /// emits no cookie at all.
     cookies: Option<CookieLines>,
+    /// Whether the listener emits its fixed one-time-secret cache directive.
+    secret_disclosure: bool,
     /// Action the listener runs only after this response is written.
     ///
     /// Only the typed profile can carry one, and [`redacted_response`] leaves
@@ -465,6 +469,7 @@ impl BoundedResponse {
             body: Bytes::from_static(body.as_bytes()),
             allow: None,
             cookies: None,
+            secret_disclosure: false,
             acknowledgement: None,
         }
     }
@@ -2109,7 +2114,8 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
     // A cookie effect is a value, not header text. It is read here and
     // rendered by the listener, so the only cookies that can reach the wire
     // are the two the closed effect names.
-    let effect = response.extensions().get::<CookieEffect>().cloned();
+    let cookie_effect = response.extensions().get::<CookieEffect>().cloned();
+    let secret_disclosure = has_secret_disclosure_effect(&response);
     // The post-write action is read here and run by the listener, so a route
     // cannot run it itself and cannot run it before its response is written.
     let acknowledgement = response
@@ -2124,7 +2130,8 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             return redacted_response(status, allow);
         };
         if body.len() > ResponseProfile::AccountAdministrationJson.max_body_bytes()
-            || effect.is_some()
+            || cookie_effect.is_some()
+            || secret_disclosure
             || acknowledgement.is_some()
         {
             return redacted_response(status, allow);
@@ -2135,6 +2142,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             body: Bytes::from_owner(WipedResponseBytes::from_text(body)),
             allow,
             cookies: None,
+            secret_disclosure: false,
             acknowledgement: None,
         };
     }
@@ -2143,7 +2151,8 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             return redacted_response(status, allow);
         };
         if body.len() > ResponseProfile::GroupAdministrationJson.max_body_bytes()
-            || effect.is_some()
+            || cookie_effect.is_some()
+            || secret_disclosure
             || acknowledgement.is_some()
         {
             return redacted_response(status, allow);
@@ -2154,6 +2163,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             body: Bytes::from_owner(WipedResponseBytes::from_text(body)),
             allow,
             cookies: None,
+            secret_disclosure: false,
             acknowledgement: None,
         };
     }
@@ -2165,7 +2175,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             return redacted_response(status, allow);
         };
         if body.len() > ResponseProfile::ConfigurationAdministrationJson.max_body_bytes()
-            || effect.is_some()
+            || cookie_effect.is_some()
             || acknowledgement.is_some()
         {
             return redacted_response(status, allow);
@@ -2176,6 +2186,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             body: Bytes::from_owner(WipedResponseBytes::from_text(body)),
             allow,
             cookies: None,
+            secret_disclosure,
             acknowledgement: None,
         };
     }
@@ -2186,7 +2197,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         }
         // An effect that does not render is not emitted partially: the whole
         // response redacts to the fixed failure and carries no cookie.
-        let cookies = match effect {
+        let cookies = match cookie_effect {
             Some(effect) => match effect.render() {
                 Some(cookies) => Some(cookies),
                 None => return redacted_response(status, allow),
@@ -2199,14 +2210,15 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             body: Bytes::from_owner(WipedResponseBytes::from_text(body)),
             allow,
             cookies,
+            secret_disclosure,
             acknowledgement,
         };
     }
-    // Only the typed profile may carry a cookie effect or a post-write action.
-    // Either on any other response is an invalid composition, so it redacts
-    // rather than silently dropping the effect and returning the route's body,
-    // or acknowledging a write of a response the listener did not compose.
-    if effect.is_some() || acknowledgement.is_some() {
+    // Only an approved typed profile may carry an effect or post-write action.
+    // One on any other response is an invalid composition, so it redacts rather
+    // than silently dropping the effect and returning the route's body, or
+    // acknowledging a write of a response the listener did not compose.
+    if cookie_effect.is_some() || secret_disclosure || acknowledgement.is_some() {
         return redacted_response(status, allow);
     }
     let Some(profile) = response
@@ -2229,6 +2241,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
             body: Bytes::from_static(body.as_bytes()),
             allow,
             cookies: None,
+            secret_disclosure: false,
             acknowledgement: None,
         };
     }
@@ -2238,6 +2251,7 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         body,
         allow,
         cookies: None,
+        secret_disclosure: false,
         acknowledgement: None,
     }
 }
@@ -2316,6 +2330,11 @@ where
 {
     let allow = response.allow.map_or("", AllowedMethod::allow_header);
     let cookies = response.cookies.as_ref().map_or("", CookieLines::as_str);
+    let secret_disclosure = if response.secret_disclosure {
+        SECRET_DISCLOSURE_HEADERS
+    } else {
+        ""
+    };
     let status = response.status.as_str();
     let media_type = response.profile.media_type();
     let security_headers = response.profile.security_headers();
@@ -2326,6 +2345,7 @@ where
         + "\r\n".len()
         + allow.len()
         + cookies.len()
+        + secret_disclosure.len()
         + security_headers.len()
         + "\r\n".len();
     let mut rendered_head = Zeroizing::new(String::with_capacity(head_length));
@@ -2336,6 +2356,7 @@ where
     rendered_head.push_str("\r\n");
     rendered_head.push_str(allow);
     rendered_head.push_str(cookies);
+    rendered_head.push_str(secret_disclosure);
     rendered_head.push_str(security_headers);
     rendered_head.push_str("\r\n");
     debug_assert_eq!(rendered_head.len(), head_length);
@@ -3108,7 +3129,7 @@ pub(crate) mod tests {
         MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
         RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
         RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
-        RestrictedStartup, SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
+        RestrictedStartup, SECRET_DISCLOSURE_HEADERS, SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
         SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode, ServingModeSwitch, ShutdownBudget,
         ShutdownSignal, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedRequestHead,
         WipedRequestHeadDropObserver, WipedResponseBytes, WipedResponseBytesDropObserver,
@@ -11670,6 +11691,7 @@ pub(crate) mod tests {
             body: Bytes::from_owner(body),
             allow: None,
             cookies: None,
+            secret_disclosure: false,
             acknowledgement: None,
         }
     }
@@ -11687,6 +11709,10 @@ pub(crate) mod tests {
         response
             .headers_mut()
             .insert("set-cookie", HeaderValue::from_static("session=1"));
+        response.headers_mut().insert(
+            "cache-control",
+            HeaderValue::from_static("public, max-age=31536000"),
+        );
 
         let bounded = bounded_response_from_axum(response).await;
         assert_eq!(bounded.status, StatusCode::ACCEPTED);
@@ -11737,6 +11763,76 @@ pub(crate) mod tests {
                 "typed response must not disclose {forbidden}: {rendered}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_named_secret_response_emits_exactly_one_fixed_no_store_header() {
+        let (server_config, client_config) = tls_configs();
+        let router = fallback_router().route(
+            "/api/v1/typed-secret",
+            any(|| async {
+                weavelit_module_client::mfa::continuation_response(
+                    "mfa_required",
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "correlation-0123456789",
+                )
+            }),
+        );
+
+        let response = direct_tls_response(
+            router,
+            server_config,
+            client_config,
+            b"GET /api/v1/typed-secret HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            response,
+            b"HTTP/1.1 202 \r\nContent-Type: application/json; charset=utf-8\r\n\
+              Cache-Control: no-store\r\n\
+              \r\n{\"result\":{\"mfa\":\"mfa_required\",\"continuation\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"},\"correlation_id\":\"correlation-0123456789\"}"
+        );
+        assert_eq!(
+            response
+                .windows(SECRET_DISCLOSURE_HEADERS.len())
+                .filter(|window| *window == SECRET_DISCLOSURE_HEADERS.as_bytes())
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_typed_error_emits_no_cache_control_header() {
+        let (server_config, client_config) = tls_configs();
+        let router = fallback_router().route(
+            "/api/v1/typed-error",
+            any(|| async {
+                typed_json_response(
+                    StatusCode::BAD_REQUEST,
+                    TypedJsonEnvelope::Error {
+                        error: StableCode::new("bad_request").unwrap(),
+                        correlation_id: ResponseCorrelation::new("correlation-0123456789").unwrap(),
+                    },
+                )
+            }),
+        );
+
+        let response = direct_tls_response(
+            router,
+            server_config,
+            client_config,
+            b"GET /api/v1/typed-error HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            REQUEST_READ_TIMEOUT,
+            REQUEST_PROCESSING_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            response,
+            b"HTTP/1.1 400 \r\nContent-Type: application/json; charset=utf-8\r\n\
+              \r\n{\"error\":\"bad_request\",\"correlation_id\":\"correlation-0123456789\"}"
+        );
     }
 
     /// A typed envelope larger than the derived bound is redacted rather than
@@ -11930,6 +12026,19 @@ pub(crate) mod tests {
             body: Bytes::from_static(b"{\"error\":\"not_found\"}"),
             allow: None,
             cookies: Some(cookies),
+            secret_disclosure: false,
+            acknowledgement: None,
+        }
+    }
+
+    fn secret_disclosure_response() -> BoundedResponse {
+        BoundedResponse {
+            status: StatusCode::OK,
+            profile: ResponseProfile::TypedJson,
+            body: Bytes::from_static(b"{\"result\":{}}"),
+            allow: None,
+            cookies: None,
+            secret_disclosure: true,
             acknowledgement: None,
         }
     }
@@ -11982,6 +12091,21 @@ pub(crate) mod tests {
         write_bounded_response_with_head_wipe_observer(
             &mut AcceptingWriter,
             cookie_response(),
+            head_wipe_observer(observer),
+        )
+        .await
+        .unwrap();
+
+        assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_successful_secret_response_write_wipes_its_head() {
+        let (observer, observed) = std::sync::mpsc::channel();
+
+        write_bounded_response_with_head_wipe_observer(
+            &mut AcceptingWriter,
+            secret_disclosure_response(),
             head_wipe_observer(observer),
         )
         .await

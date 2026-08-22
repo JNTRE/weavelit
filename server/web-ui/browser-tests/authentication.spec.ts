@@ -538,6 +538,7 @@ test("an operator signs in to a restored deployment and the session survives a r
     expect((await configurationChunk).status()).toBe(200);
     const configurationsResponse = await configurationsLoaded;
     expect(configurationsResponse.status()).toBe(200);
+    expect(configurationsResponse.headers()["cache-control"]).toBeUndefined();
     await expect(page.getByRole("heading", { name: "Configuration" })).toBeVisible();
     const configurationsBody = JSON.stringify(await configurationsResponse.json());
     for (const forbidden of [
@@ -567,6 +568,7 @@ test("an operator signs in to a restored deployment and the session survives a r
     await page.getByRole("button", { name: "Review enablement" }).click();
     const previewResponse = await preview;
     expect(previewResponse.status()).toBe(200);
+    expect(previewResponse.headers()["cache-control"]).toBe("no-store");
     const previewBody = (await previewResponse.json()) as {
       result: { totp_enablement_preview: string };
     };

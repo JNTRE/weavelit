@@ -391,6 +391,28 @@ display and diagnostic representations must not include rejected values, and a
 logging-required workflow must fail closed when a pre-redacted bounded record
 cannot be constructed.
 
+### Secret Disclosure Cache Control
+
+Every successful HTTP response that discloses newly issued plaintext
+authentication or recovery material, or an opaque bearer capability outside a
+`Set-Cookie` header, must emit exactly `Cache-Control: no-store`. The current
+approved response shapes are:
+
+- credential-issuance assurance tickets and originating account-create or
+  password-reset results carrying a temporary password;
+- password-verified MFA continuations, TOTP enrollment secrets, provisioning
+  URIs, enrollment-confirmation continuations, Administration MFA step-up
+  tickets, and TOTP enablement preview credentials;
+- the Init recovery key, delivery nonce, and reconciliation capability; and
+- the Restore ticket and reconciliation capability.
+
+The response profile must represent this as a closed internal effect whose
+only wire rendering is the fixed directive above. A route must not supply a
+header name, header value, or generic response-header collection. Ordinary
+typed results, errors, fixed JSON responses, and cookie-only session responses
+do not carry this effect. Embedded Web UI assets retain their independently
+approved `Cache-Control: no-store` security profile.
+
 Normal-operation Audit terminal projections and supersession dispositions are
 integrity metadata, not authentication or destination-configuration storage.
 They must not contain raw destination errors, paths, settings, credentials,

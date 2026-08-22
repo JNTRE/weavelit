@@ -567,7 +567,8 @@ digest a prior completed workflow left in that same singleton record. It is the
 only value the submission-bound lifecycle reconciliation route the
 [API Contract Design](../../../server/api/api-contract-design.md#lifecycle-reconciliation)
 defines ever compares a submitted capability against; the capability itself is
-never persisted.
+never persisted. This ticket-bearing response emits
+`Cache-Control: no-store` through the closed typed response effect.
 
 The runtime owns the ticket store and nothing about the wire format. It retains
 only a domain-separated digest of the ticket and compares a submitted ticket
