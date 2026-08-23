@@ -10,8 +10,17 @@ import {
   GROUP_MEMBERS_LIST_PATH,
 } from "../api/weavelit-administration-groups";
 import { CSRF_COOKIE_NAME } from "../api/weavelit-authentication";
-import { MFA_POLICY_STEP_UP_PATH } from "../api/weavelit-mfa-policy";
+import {
+  issueGrantMutationStepUp,
+  MFA_POLICY_STEP_UP_PATH,
+  MfaPolicyGrantMutationAccessDeniedError,
+} from "../api/weavelit-mfa-policy";
 import { GroupAssociations } from "./weavelit-group-associations";
+
+vi.mock("../api/weavelit-mfa-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/weavelit-mfa-policy")>();
+  return { ...actual, issueGrantMutationStepUp: vi.fn(actual.issueGrantMutationStepUp) };
+});
 
 const GROUP_ID = "QUFBQUFBQUFBQUFBQUFBQQ";
 const ACCOUNT_ID = "QkJCQkJCQkJCQkJCQkJCQg";
@@ -339,6 +348,9 @@ describe("GroupAssociations", () => {
       csrf();
       const onAdministrationEnded = vi.fn();
       const onMutationIndeterminate = vi.fn();
+      vi.mocked(issueGrantMutationStepUp).mockRejectedValueOnce(
+        new MfaPolicyGrantMutationAccessDeniedError(),
+      );
       const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
         if (target === GROUP_MEMBERS_LIST_PATH || target === GROUP_GRANTS_LIST_PATH)
           return Promise.resolve(response({ items: [], next_cursor: null }));
@@ -347,10 +359,6 @@ describe("GroupAssociations", () => {
         if (target === ADMINISTRATION_CATALOG_PATH)
           return Promise.resolve(
             response({ client_modules: ["web-ui"], service_modules: [], operations: [] }),
-          );
-        if (target === MFA_POLICY_STEP_UP_PATH)
-          return Promise.resolve(
-            response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
           );
         throw new Error("unexpected request");
       });
@@ -380,6 +388,8 @@ describe("GroupAssociations", () => {
       expect(screen.queryByText("Group access was not changed.")).toBeNull();
       expect(screen.queryByText(/Group access outcome is unknown/)).toBeNull();
       expect(screen.queryByRole("heading", { name: "Verify Group access change" })).toBeNull();
+      expect(issueGrantMutationStepUp).toHaveBeenCalledOnce();
+      expect(issueGrantMutationStepUp).toHaveBeenCalledWith(CODE);
       expect(
         fetchMock.mock.calls.filter(
           ([target]) => target === GROUP_MEMBERS_CHANGE_PATH || target === GROUP_GRANTS_CHANGE_PATH,

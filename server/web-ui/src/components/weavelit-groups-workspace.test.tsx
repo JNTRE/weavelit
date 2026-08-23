@@ -13,8 +13,17 @@ import {
   GROUPS_UPDATE_PATH,
   GROUPS_VIEW_PATH,
 } from "../api/weavelit-administration-groups";
-import { MFA_POLICY_STEP_UP_PATH } from "../api/weavelit-mfa-policy";
+import {
+  issueGrantMutationStepUp,
+  MFA_POLICY_STEP_UP_PATH,
+  MfaPolicyGrantMutationAccessDeniedError,
+} from "../api/weavelit-mfa-policy";
 import { GroupsWorkspace } from "./weavelit-groups-workspace";
+
+vi.mock("../api/weavelit-mfa-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/weavelit-mfa-policy")>();
+  return { ...actual, issueGrantMutationStepUp: vi.fn(actual.issueGrantMutationStepUp) };
+});
 
 const ID = "QUFBQUFBQUFBQUFBQUFBQQ";
 const OTHER_ID = "QkJCQkJCQkJCQkJCQkJCQg";
@@ -431,12 +440,13 @@ describe("GroupsWorkspace", () => {
   it("ends administration when Group deletion step-up reports grant-mutation access denial", async () => {
     csrf();
     const onAdministrationEnded = vi.fn();
+    vi.mocked(issueGrantMutationStepUp).mockRejectedValueOnce(
+      new MfaPolicyGrantMutationAccessDeniedError(),
+    );
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === GROUPS_LIST_PATH)
         return Promise.resolve(response({ items: [group()], next_cursor: null }));
       if (target === GROUPS_VIEW_PATH) return Promise.resolve(response(group()));
-      if (target === MFA_POLICY_STEP_UP_PATH)
-        return Promise.resolve(rejection("authorization_denied", 403));
       if (target === GROUP_MEMBERS_LIST_PATH || target === GROUP_GRANTS_LIST_PATH)
         return Promise.resolve(response({ items: [], next_cursor: null }));
       if (target === ACCOUNTS_LIST_PATH)
@@ -462,6 +472,8 @@ describe("GroupsWorkspace", () => {
     expect(screen.queryByText("The Group was not deleted.")).toBeNull();
     expect(screen.queryByText(/Group deletion outcome is unknown/)).toBeNull();
     expect(screen.queryByRole("heading", { name: "Verify deletion" })).toBeNull();
+    expect(issueGrantMutationStepUp).toHaveBeenCalledOnce();
+    expect(issueGrantMutationStepUp).toHaveBeenCalledWith(CODE);
     expect(fetchMock.mock.calls.filter(([target]) => target === GROUPS_DELETE_PATH)).toHaveLength(
       0,
     );
