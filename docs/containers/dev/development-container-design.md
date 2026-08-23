@@ -1,5 +1,16 @@
 # Development Container Design
 
+This document defines the development OCI image contract for the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**. It is authoritative for the development image's local build, test, launch, and validation boundaries, while the production OCI image remains a separate contract.
+
+## Represented Areas
+
+| Type | Link |
+| --- | --- |
+| Folder | [Development container implementation](../../../server/containers/dev/) |
+| Containerfile | [Development Containerfile](../../../server/containers/dev/Containerfile) |
+| Launcher lifecycle preflight | [Lifecycle harness](../../../server/containers/dev/run-local-server-lifecycle-test.sh) |
+| Validation policy | [Testing and Validation Policy](../../testing.md) |
+
 ## Purpose
 
 The development container provides a reproducible OCI-compatible environment to
@@ -7,6 +18,12 @@ build, run, test, and restart the **[Weavelit Server](../../glossary.md#applicat
 without requiring Rust or Node.js on the host. Docker is a supported local
 client for this image contract; the image and runtime contract must not depend
 on Docker-only behavior.
+
+## Scope And Exclusions
+
+This document owns the development image and its local validation contract. It
+does not define the Server application lifecycle, the production OCI image, or
+deployment behavior.
 
 ## Image Contract
 
@@ -102,8 +119,15 @@ The implemented image must be built and exercised with the documented Docker
 targets for Milestone 1 local validation. Before image or container build,
 `container-check` must run the launcher lifecycle preflight on the host through
 `sh`; this preflight assumes the host provides the standard POSIX shell and
-coreutils. It must then build the disposable development image, run `make check`
-inside it, and confirm that source and build-cache mounts follow this design.
+coreutils. Each controlled launcher case has a five-second watchdog. On timeout,
+the harness returns status `124`, sends `SIGTERM` to the launcher, waits one
+second for launcher-owned cleanup, sends `SIGKILL` to any remaining recorded
+relay or Server child so the launcher can reap it, then sends `SIGKILL` to the
+launcher only when it still remains alive. The timeout regression keeps a fake
+Server in its wait mode and proves that launcher cleanup terminates the relay
+and Server while removing its temporary TLS material. The preflight must then
+build the disposable development image, run `make check` inside it, and confirm
+that source and build-cache mounts follow this design.
 `container-run` must confirm that the named state-root volume persists across
 container stop and restart boundaries and that the Web UI is reachable only
 through the host-loopback published port.

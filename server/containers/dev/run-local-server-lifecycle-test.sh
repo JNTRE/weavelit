@@ -5,6 +5,9 @@ launcher_path="$(CDPATH= cd "$(dirname "$0")" && pwd)/run-local-server.sh"
 test_directory="$(mktemp -d "${TMPDIR:-/tmp}/weavelit-launcher-test.XXXXXX")"
 fake_bin="$test_directory/fake-bin"
 fake_server="$test_directory/fake-server"
+case_timeout_attempts=100
+case_termination_grace_attempts=60
+case_poll_interval=0.05
 
 cleanup_test() {
   exit_status=$?
@@ -208,7 +211,46 @@ prepare_case() {
   ln -s "$fake_server" "$case_directory/target/release/weavelit-server"
 }
 
-run_foreground_case() {
+wait_for_case_exit() {
+  case_pid=$1
+  maximum_attempts=$2
+  attempt=0
+
+  while kill -0 "$case_pid" 2>/dev/null; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -gt "$maximum_attempts" ]; then
+      return 1
+    fi
+    sleep "$case_poll_interval"
+  done
+}
+
+wait_for_case_pid() {
+  pid_file=$1
+  maximum_attempts=$2
+  attempt=0
+
+  until [ -f "$pid_file" ]; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -gt "$maximum_attempts" ]; then
+      return 1
+    fi
+    sleep "$case_poll_interval"
+  done
+  cat "$pid_file"
+}
+
+kill_remaining_case_children() {
+  for pid_file in "$case_directory"/state/relay.pid \
+    "$case_directory"/state/server.pid; do
+    if [ -f "$pid_file" ]; then
+      process_pid="$(cat "$pid_file")"
+      kill -KILL "$process_pid" 2>/dev/null || true
+    fi
+  done
+}
+
+run_foreground_launcher() {
   foreground_case_directory=$1
   openssl_status=$2
   server_status=$3
@@ -216,7 +258,7 @@ run_foreground_case() {
   server_mode=$5
   termination_signal=$6
 
-  if (
+  (
     cd "$foreground_case_directory"
     exec env \
       PATH="$fake_bin:$PATH" \
@@ -228,10 +270,47 @@ run_foreground_case() {
       FAKE_PROBE_STATUS="$probe_status" \
       FAKE_TERMINATION_SIGNAL="$termination_signal" \
       "$fake_bin/foreground-launcher" sh "$launcher_path"
-  ); then
+  )
+}
+
+run_foreground_case() {
+  foreground_case_directory=$1
+  openssl_status=$2
+  server_status=$3
+  probe_status=$4
+  server_mode=$5
+  termination_signal=$6
+  timeout_path="$foreground_case_directory/state/watchdog.timed-out"
+
+  (
+    trap - 0 HUP INT TERM
+    if ! launcher_pid="$(wait_for_case_pid "$foreground_case_directory/state/launcher.pid" "$case_timeout_attempts")"; then
+      exit 0
+    fi
+    if wait_for_case_exit "$launcher_pid" "$case_timeout_attempts"; then
+      exit 0
+    fi
+
+    : >"$timeout_path"
+    kill -TERM "$launcher_pid" 2>/dev/null || true
+    if ! wait_for_case_exit "$launcher_pid" "$case_termination_grace_attempts"; then
+      kill_remaining_case_children
+      if ! wait_for_case_exit "$launcher_pid" "$case_termination_grace_attempts"; then
+        kill -KILL "$launcher_pid" 2>/dev/null || true
+      fi
+    fi
+  ) &
+  watchdog_pid=$!
+
+  if run_foreground_launcher "$foreground_case_directory" "$openssl_status" "$server_status" "$probe_status" "$server_mode" "$termination_signal"; then
     launcher_status=0
   else
     launcher_status=$?
+  fi
+  kill -TERM "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  if [ -e "$timeout_path" ]; then
+    launcher_status=124
   fi
 }
 
@@ -260,6 +339,16 @@ assert_absent "$server_failure_directory/tls" "failed Server exit"
 assert_exists "$server_failure_directory/state/relay.terminated" "failed Server exit"
 assert_process_stopped "$server_failure_directory/state/relay.pid" "failed Server exit"
 assert_process_stopped "$server_failure_directory/state/server.pid" "failed Server exit"
+
+prepare_case server-timeout
+server_timeout_directory=$case_directory
+run_foreground_case "$server_timeout_directory" 0 0 0 wait ''
+assert_status 124 "$launcher_status" "timed out Server wait"
+assert_absent "$server_timeout_directory/tls" "timed out Server wait"
+assert_exists "$server_timeout_directory/state/relay.terminated" "timed out Server wait"
+assert_exists "$server_timeout_directory/state/server.terminated" "timed out Server wait"
+assert_process_stopped "$server_timeout_directory/state/relay.pid" "timed out Server wait"
+assert_process_stopped "$server_timeout_directory/state/server.pid" "timed out Server wait"
 
 for termination_case in HUP:129 INT:130 TERM:143; do
   termination_signal=${termination_case%%:*}
