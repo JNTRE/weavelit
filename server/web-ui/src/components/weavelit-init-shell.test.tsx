@@ -2,10 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  ACCOUNTS_MFA_REQUIREMENT_PATH,
-  MFA_POLICY_STEP_UP_PATH,
-} from "../api/weavelit-mfa-policy";
+import { ACCOUNTS_MFA_REQUIREMENT_PATH, MFA_POLICY_STEP_UP_PATH } from "../api/weavelit-mfa-policy";
 import { ApplicationShell } from "./weavelit-init-shell";
 
 const AUTH_CORRELATION = "authentication-correlation";
@@ -870,7 +867,10 @@ describe("ApplicationShell sign-in panel gating", () => {
       }
       if (target === ACCOUNTS_MFA_REQUIREMENT_PATH) {
         return Promise.resolve(
-          jsonResponse({ error: "authorization_denied", correlation_id: "mfa-policy-correlation" }, 403),
+          jsonResponse(
+            { error: "authorization_denied", correlation_id: "mfa-policy-correlation" },
+            403,
+          ),
         );
       }
       return Promise.reject(new Error("unexpected request"));
@@ -895,7 +895,9 @@ describe("ApplicationShell sign-in panel gating", () => {
     expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
     expect(sessionProbes).toBe(1);
     expect(listRequests).toBe(1);
-    expect(fetchMock.mock.calls.filter(([target]) => target === MFA_POLICY_STEP_UP_PATH)).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === MFA_POLICY_STEP_UP_PATH),
+    ).toHaveLength(1);
     expect(
       fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
     ).toHaveLength(1);
