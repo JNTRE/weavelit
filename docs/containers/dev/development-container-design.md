@@ -81,6 +81,16 @@ port to the local network. The persistent state volume survives
 `docker volume rm weavelit-server-local-state` only when a fresh local
 deployment is intended.
 
+### Local TLS Material
+
+The `run-local-server` launcher creates its self-signed certificate and private
+key in an owner-only temporary directory. That directory is ephemeral: the
+launcher removes it when OpenSSL certificate generation fails, when the Server
+exits, and when the launcher receives a termination signal. It MUST NOT emit
+the temporary-directory path, certificate path, private-key path, or private
+key material in diagnostics. Cleanup MUST retain the exit status that caused
+it to run.
+
 The Docker commands use no host networking. This keeps the workflow portable
 to Docker Desktop on macOS, where Linux-style host networking is unavailable,
 and lets the Server retain its loopback-only listener policy.
