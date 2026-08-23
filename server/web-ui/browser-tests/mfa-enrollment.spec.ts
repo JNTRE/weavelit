@@ -403,11 +403,26 @@ test("an MFA-policy authorization denial returns to neutral sign-in without retr
   const stepUps: Request[] = [];
   const requirements: Request[] = [];
   let accountReads = 0;
+  let sessionProbes = 0;
 
   await page.route(`${baseUrl}${LOGIN_PATH}`, (route) =>
     fulfilJson(route, 200, envelope({ authenticated: true })),
   );
-  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => route.continue());
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    return sessionProbes === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
   await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
     accountReads += 1;
     return fulfilJson(
@@ -465,6 +480,7 @@ test("an MFA-policy authorization denial returns to neutral sign-in without retr
   await expect(page.getByText("MFA policy was not changed.")).toHaveCount(0);
   await expect(page.getByText(/The MFA policy outcome is unknown\./)).toHaveCount(0);
 
+  expect(sessionProbes, "the initial and post-login sessions were probed").toBe(2);
   expect(stepUps).toHaveLength(1);
   expect(requirements).toHaveLength(1);
   expect(accountReads).toBe(1);
