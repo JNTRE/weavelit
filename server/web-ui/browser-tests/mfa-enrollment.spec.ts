@@ -395,6 +395,78 @@ test("an MFA requirement confirms before code-only step-up and stores no proof",
   }
 });
 
+test("an MFA-policy authorization denial returns to neutral sign-in without retrying", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const stepUps: Request[] = [];
+  const requirements: Request[] = [];
+  let accountReads = 0;
+
+  await page.route(`${baseUrl}${LOGIN_PATH}`, (route) =>
+    fulfilJson(route, 200, envelope({ authenticated: true })),
+  );
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => route.continue());
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads += 1;
+    return fulfilJson(
+      route,
+      200,
+      envelope({
+        items: [
+          {
+            public_id: ACCOUNT_PUBLIC_ID,
+            username: FIXTURE_USERNAME,
+            display_name: "Administrator",
+            active: true,
+            mfa_required: false,
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+  });
+  await page.route(`${baseUrl}${MFA_POLICY_STEP_UP_PATH}`, (route) => {
+    stepUps.push(route.request());
+    return fulfilJson(route, 200, envelope({ totp_step_up_ticket: MFA_POLICY_TICKET }));
+  });
+  await page.route(`${baseUrl}${MFA_REQUIREMENT_PATH}`, (route) => {
+    requirements.push(route.request());
+    return fulfilJson(
+      route,
+      403,
+      JSON.stringify({ error: "authorization_denied", correlation_id: CORRELATION }),
+    );
+  });
+
+  await page.goto(baseUrl, { waitUntil: "load" });
+  await page.evaluate(() => {
+    document.cookie = "__Host-weavelit_csrf=browser-csrf; Path=/; Secure; SameSite=Strict";
+  });
+  await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
+  await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+
+  await page.getByRole("switch", { name: `Require MFA for ${FIXTURE_USERNAME}` }).click();
+  await page.getByRole("button", { name: "Confirm policy action" }).click();
+  await page.getByLabel("Authentication code").fill(CODE);
+  await page.getByRole("button", { name: "Verify and apply" }).click();
+
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute("data-authentication-state", "unauthenticated");
+  await expect(page.locator(USERNAME_INPUT)).toHaveValue("");
+  await expect(page.locator(PASSWORD_INPUT)).toHaveValue("");
+  await expect(page.getByRole("heading", { name: "Accounts" })).toHaveCount(0);
+  await expect(page.getByText("Administration", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("MFA policy was not changed.")).toHaveCount(0);
+  await expect(page.getByText(/The MFA policy outcome is unknown\./)).toHaveCount(0);
+
+  expect(stepUps).toHaveLength(1);
+  expect(requirements).toHaveLength(1);
+  expect(accountReads).toBe(1);
+});
+
 test("a rejected code after a 202 mfa_required ends the attempt", async ({ page }) => {
   test.setTimeout(60_000);
 

@@ -1157,6 +1157,103 @@ describe("ApplicationShell sign-in panel gating", () => {
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 
+  it("returns an MFA-policy authorization denial to neutral sign-in without a follow-on mutation", async () => {
+    const publicId = "QUFBQUFBQUFBQUFBQUFBQQ";
+    const ticket = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    let listRequests = 0;
+    let stepUpRequests = 0;
+    let requirementRequests = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        sessionProbes += 1;
+        if (sessionProbes === 1) {
+          return Promise.resolve(
+            jsonResponse({
+              result: {
+                account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                public_id: publicId,
+                client_module: "web-ui",
+                password_change_required: false,
+              },
+              correlation_id: AUTH_CORRELATION,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/list") {
+        listRequests += 1;
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              items: [
+                {
+                  public_id: publicId,
+                  username: "administrator",
+                  display_name: "First Administrator",
+                  active: true,
+                  mfa_required: false,
+                },
+              ],
+              next_cursor: null,
+            },
+            correlation_id: "accounts-list-correlation",
+          }),
+        );
+      }
+      if (target === "/api/v1/administration/step-up/totp") {
+        stepUpRequests += 1;
+        return Promise.resolve(
+          jsonResponse({ result: { totp_step_up_ticket: ticket }, correlation_id: AUTH_CORRELATION }),
+        );
+      }
+      if (target === "/api/v1/administration/accounts/mfa-requirement") {
+        requirementRequests += 1;
+        return Promise.resolve(
+          jsonResponse({ error: "authorization_denied", correlation_id: AUTH_CORRELATION }, 403),
+        );
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+
+    render(<ApplicationShell />);
+    await screen.findByRole("rowheader", { name: "administrator" });
+    fireEvent.click(screen.getByRole("switch", { name: "Require MFA for administrator" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
+    fireEvent.change(screen.getByLabelText("Authentication code"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
+
+    await waitFor(() => {
+      expect(loginSection()?.dataset.authenticationState).toBe("unauthenticated");
+    });
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+    expect(screen.queryByText("Administration")).toBeNull();
+    expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+    expect(screen.queryByText("MFA policy was not changed.")).toBeNull();
+    expect(screen.queryByText(/The MFA policy outcome is unknown\./)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(listRequests).toBe(1);
+    expect(stepUpRequests).toBe(1);
+    expect(requirementRequests).toBe(1);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([target]) => target === "/api/v1/administration/accounts/mfa-requirement",
+      ),
+    ).toHaveLength(1);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
   it("carries a self-reset disclosure to sign-in and clears it after fresh authentication", async () => {
     const publicId = "QUFBQUFBQUFBQUFBQUFBQQ";
     const temporaryPassword = "YWJjZGVmZ2hpamtsbW5vcHFy";

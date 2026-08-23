@@ -18,6 +18,7 @@ import {
   type CredentialIssued,
 } from "../api/weavelit-credential-issuance";
 import {
+  MfaPolicyAccessDeniedError,
   MfaPolicyIndeterminateError,
   MfaPolicySessionInvalidError,
   changeMfaRequirement,
@@ -142,7 +143,8 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
       if (
         !(error instanceof AccountsSessionExpiredError) &&
         !(error instanceof CredentialIssuanceSessionInvalidError) &&
-        !(error instanceof MfaPolicySessionInvalidError)
+        !(error instanceof MfaPolicySessionInvalidError) &&
+        !(error instanceof MfaPolicyAccessDeniedError)
       ) {
         return false;
       }

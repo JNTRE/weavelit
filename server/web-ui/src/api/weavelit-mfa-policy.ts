@@ -39,6 +39,13 @@ export class MfaPolicySessionInvalidError extends MfaPolicyRefusedError {
   }
 }
 
+export class MfaPolicyAccessDeniedError extends MfaPolicyRefusedError {
+  constructor() {
+    super();
+    this.name = "MfaPolicyAccessDeniedError";
+  }
+}
+
 export class MfaPolicyGrantMutationAccessDeniedError extends MfaPolicyRefusedError {
   constructor() {
     super();
@@ -117,7 +124,7 @@ async function reportedRefusal(response: Response): Promise<string | null> {
 async function mfaPolicyRequest(
   path: string,
   body: object,
-  stepUpFamily?: "mfa_policy" | "grant_mutation",
+  terminalAccessFamily?: "mfa_policy" | "grant_mutation",
 ): Promise<unknown> {
   const csrf = readCsrfToken();
   if (csrf === null) {
@@ -145,8 +152,13 @@ async function mfaPolicyRequest(
     if (refusal === "session_invalid") {
       throw new MfaPolicySessionInvalidError();
     }
-    if (refusal === "authorization_denied" && stepUpFamily === "grant_mutation") {
-      throw new MfaPolicyGrantMutationAccessDeniedError();
+    if (refusal === "authorization_denied") {
+      if (terminalAccessFamily === "mfa_policy") {
+        throw new MfaPolicyAccessDeniedError();
+      }
+      if (terminalAccessFamily === "grant_mutation") {
+        throw new MfaPolicyGrantMutationAccessDeniedError();
+      }
     }
     if (refusal !== null) {
       throw new MfaPolicyRefusedError();
@@ -189,7 +201,7 @@ export async function changeMfaRequirement(
     public_id: publicId,
     required,
     totp_step_up_ticket: ticket,
-  });
+  }, "mfa_policy");
   const account = readPolicyAccount(payload);
   if (account?.publicId !== publicId || account.mfaRequired !== required) {
     throw new MfaPolicyIndeterminateError();
@@ -207,7 +219,7 @@ export async function resetMfaEnrollment(
   const payload = await mfaPolicyRequest(ACCOUNTS_MFA_RESET_PATH, {
     public_id: publicId,
     totp_step_up_ticket: ticket,
-  });
+  }, "mfa_policy");
   const account = readPolicyAccount(payload);
   if (account?.publicId !== publicId) {
     throw new MfaPolicyIndeterminateError();

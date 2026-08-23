@@ -1340,6 +1340,43 @@ describe("AccountsWorkspace", () => {
     ).toHaveLength(0);
   });
 
+  it("returns an exact MFA-policy authorization denial to the shell without probing or refreshing", async () => {
+    withCsrfCookie();
+    const onSessionEnded = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === MFA_POLICY_STEP_UP_PATH) {
+        return Promise.resolve(mfaPolicyTicketResponse());
+      }
+      if (target === ACCOUNTS_MFA_REQUIREMENT_PATH) {
+        return Promise.resolve(
+          response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("switch", { name: "Require MFA for alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
+    fireEvent.change(screen.getByLabelText("Authentication code"), { target: { value: TOTP } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
+
+    await waitFor(() => {
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByText("MFA policy was not changed.")).toBeNull();
+    expect(screen.queryByText(/The MFA policy outcome is unknown\./)).toBeNull();
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
+    ).toHaveLength(1);
+  });
+
   it("keeps a normal MFA step-up refusal in Accounts without attempting the mutation", async () => {
     withCsrfCookie();
     const onSessionEnded = vi.fn();

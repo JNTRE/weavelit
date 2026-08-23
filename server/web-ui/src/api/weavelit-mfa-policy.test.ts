@@ -5,6 +5,7 @@ import {
   ACCOUNTS_MFA_REQUIREMENT_PATH,
   ACCOUNTS_MFA_RESET_PATH,
   MFA_POLICY_STEP_UP_PATH,
+  MfaPolicyAccessDeniedError,
   MfaPolicyGrantMutationAccessDeniedError,
   MfaPolicyIndeterminateError,
   MfaPolicyRefusedError,
@@ -206,17 +207,21 @@ describe("MFA policy requests", () => {
     expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyGrantMutationAccessDeniedError"}');
   });
 
-  it("keeps MFA-policy authorization denial as a generic refusal", async () => {
+  it.each([
+    ["step-up", () => issueMfaPolicyStepUp(CODE)],
+    ["requirement", () => changeMfaRequirement(PUBLIC_ID, true, TICKET)],
+    ["reset", () => resetMfaEnrollment(PUBLIC_ID, TICKET)],
+  ])("maps exact MFA-policy authorization denial on %s to a terminal access error", async (_path, request) => {
     withCsrfCookie();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
     );
 
-    const error = await issueMfaPolicyStepUp(CODE).catch((reason: unknown) => reason);
+    const error = await request().catch((reason: unknown) => reason);
 
-    expect(error).toBeInstanceOf(MfaPolicyRefusedError);
+    expect(error).toBeInstanceOf(MfaPolicyAccessDeniedError);
     expect(error).not.toBeInstanceOf(MfaPolicyGrantMutationAccessDeniedError);
-    expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyRefusedError"}');
+    expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyAccessDeniedError"}');
   });
 
   it.each([
@@ -229,7 +234,7 @@ describe("MFA policy requests", () => {
     ],
     ["an unknown rejection", () => Promise.resolve(jsonResponse({ error: "future" }, 503))],
     [
-      "a malformed authorization denial",
+      "a malformed MFA-policy authorization denial",
       () =>
         Promise.resolve(
           jsonResponse(
@@ -242,7 +247,7 @@ describe("MFA policy requests", () => {
     withCsrfCookie();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(outcome);
 
-    const error = await issueGrantMutationStepUp(CODE).catch((reason: unknown) => reason);
+    const error = await issueMfaPolicyStepUp(CODE).catch((reason: unknown) => reason);
 
     expect(error).toBeInstanceOf(MfaPolicyIndeterminateError);
     expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyIndeterminateError"}');
