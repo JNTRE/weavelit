@@ -10,6 +10,7 @@ import {
   GROUPS_CREATE_PATH,
   GROUPS_DELETE_PATH,
   GROUPS_LIST_PATH,
+  GROUPS_UPDATE_PATH,
   GroupAdministrationAccessDeniedError,
   GroupMutationIndeterminateError,
   GroupMutationRefusedError,
@@ -28,6 +29,7 @@ import {
   readGroupMembersPage,
   readGroupProjection,
   readGroupsPage,
+  updateGroup,
   viewGroup,
 } from "./weavelit-administration-groups";
 
@@ -65,6 +67,34 @@ function body(init?: RequestInit): Record<string, unknown> {
   if (typeof value !== "string") throw new TypeError("expected a string request body");
   return JSON.parse(value) as Record<string, unknown>;
 }
+
+const mutationCases = [
+  {
+    name: "create",
+    path: GROUPS_CREATE_PATH,
+    mutate: () => createGroup("Operators", null),
+  },
+  {
+    name: "update",
+    path: GROUPS_UPDATE_PATH,
+    mutate: () => updateGroup(ID, "Operators", null),
+  },
+  {
+    name: "delete",
+    path: GROUPS_DELETE_PATH,
+    mutate: () => deleteGroup(ID, TICKET),
+  },
+  {
+    name: "member change",
+    path: GROUP_MEMBERS_CHANGE_PATH,
+    mutate: () => changeGroupMember(ID, ACCOUNT_ID, true, TICKET),
+  },
+  {
+    name: "grant change",
+    path: GROUP_GRANTS_CHANGE_PATH,
+    mutate: () => changeGroupGrant(ID, { type: "server_administration" }, true, TICKET),
+  },
+] as const;
 afterEach(() => Reflect.deleteProperty(document, "cookie"));
 
 describe("Group API", () => {
@@ -276,8 +306,46 @@ describe("Group API", () => {
     await expect(
       changeGroupGrant(ID, { type: "server_administration" }, false, TICKET),
     ).rejects.toBeInstanceOf(LastAdministratorRefusedError);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    fetchMock.mockResolvedValueOnce(
+      response(
+        { error: "session_invalid", correlation_id: CORRELATION, detail: "unexpected" },
+        401,
+      ),
+    );
+    await expect(updateGroup(ID, "Operators", null)).rejects.toBeInstanceOf(
+      GroupMutationIndeterminateError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
+
+  it.each(mutationCases)(
+    "preserves exact terminal refusals from Group $name mutations without retrying",
+    async ({ path, mutate }) => {
+      csrf();
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const refusals = [
+        {
+          error: "session_invalid",
+          status: 401,
+          expected: GroupSessionInvalidError,
+        },
+        {
+          error: "authorization_denied",
+          status: 403,
+          expected: GroupAdministrationAccessDeniedError,
+        },
+      ] as const;
+
+      for (const refusal of refusals) {
+        fetchMock.mockResolvedValueOnce(
+          response({ error: refusal.error, correlation_id: CORRELATION }, refusal.status),
+        );
+        await expect(mutate()).rejects.toBeInstanceOf(refusal.expected);
+      }
+
+      expect(fetchMock.mock.calls.map(([target]) => target)).toEqual([path, path]);
+    },
+  );
 
   it.each([
     ["list", () => listGroups()],

@@ -184,6 +184,14 @@ export function GroupsWorkspace({ onAdministrationEnded }: GroupsWorkspaceProps 
         },
         (error: unknown) => {
           if (mounted.current) {
+            if (
+              error instanceof GroupSessionInvalidError ||
+              error instanceof GroupAdministrationAccessDeniedError
+            ) {
+              setMutationState("idle");
+              readFailed(error);
+              return;
+            }
             const refused = error instanceof GroupMutationRefusedError;
             setMutationState(refused ? "refused" : "indeterminate");
             if (!refused) setRefreshRequired(true);
@@ -212,6 +220,14 @@ export function GroupsWorkspace({ onAdministrationEnded }: GroupsWorkspaceProps 
         },
         (error: unknown) => {
           if (mounted.current) {
+            if (
+              error instanceof GroupSessionInvalidError ||
+              error instanceof GroupAdministrationAccessDeniedError
+            ) {
+              setMutationState("idle");
+              readFailed(error);
+              return;
+            }
             const refused = error instanceof GroupMutationRefusedError;
             setMutationState(refused ? "refused" : "indeterminate");
             if (!refused) setRefreshRequired(true);
@@ -271,7 +287,11 @@ export function GroupsWorkspace({ onAdministrationEnded }: GroupsWorkspaceProps 
       } catch (error: unknown) {
         grantMutationTicket.current = "";
         if (mounted.current) {
-          if (error instanceof MfaPolicySessionInvalidError) {
+          if (
+            error instanceof MfaPolicySessionInvalidError ||
+            error instanceof GroupSessionInvalidError ||
+            error instanceof GroupAdministrationAccessDeniedError
+          ) {
             setDeleteTarget(null);
             setDeleteState("idle");
             readFailed(error);

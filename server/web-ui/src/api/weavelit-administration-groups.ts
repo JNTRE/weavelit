@@ -270,9 +270,9 @@ async function request(path: string, body: object, mutation: boolean): Promise<u
   }
   if (response.status !== 200) {
     const refusal = await reportedRefusal(response);
+    if (refusal === "session_invalid") throw new GroupSessionInvalidError();
+    if (refusal === "authorization_denied") throw new GroupAdministrationAccessDeniedError();
     if (!mutation) {
-      if (refusal === "session_invalid") throw new GroupSessionInvalidError();
-      if (refusal === "authorization_denied") throw new GroupAdministrationAccessDeniedError();
       throw new GroupsUnavailableError();
     }
     if (refusal === "conflict") throw new LastAdministratorRefusedError();

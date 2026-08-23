@@ -192,7 +192,11 @@ export function GroupAssociations({
         ticket.current = "";
         if (!mounted.current) return;
         setAction(null);
-        if (error instanceof MfaPolicySessionInvalidError) {
+        if (
+          error instanceof MfaPolicySessionInvalidError ||
+          error instanceof GroupSessionInvalidError ||
+          error instanceof GroupAdministrationAccessDeniedError
+        ) {
           setPhase("idle");
           readFailed(error);
         } else if (error instanceof LastAdministratorRefusedError) setPhase("last");

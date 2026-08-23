@@ -7,8 +7,10 @@ import {
   ADMINISTRATION_CATALOG_PATH,
   GROUP_GRANTS_LIST_PATH,
   GROUP_MEMBERS_LIST_PATH,
+  GROUPS_CREATE_PATH,
   GROUPS_DELETE_PATH,
   GROUPS_LIST_PATH,
+  GROUPS_UPDATE_PATH,
   GROUPS_VIEW_PATH,
 } from "../api/weavelit-administration-groups";
 import { MFA_POLICY_STEP_UP_PATH } from "../api/weavelit-mfa-policy";
@@ -143,6 +145,69 @@ describe("GroupsWorkspace", () => {
       expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
     });
   });
+
+  it.each([
+    ["create", GROUPS_CREATE_PATH, "session_invalid", 401],
+    ["update", GROUPS_UPDATE_PATH, "authorization_denied", 403],
+    ["delete", GROUPS_DELETE_PATH, "session_invalid", 401],
+  ] as const)(
+    "ends administration once when Group %s reports a terminal mutation outcome",
+    async (family, mutationPath, error, status) => {
+      csrf();
+      const onAdministrationEnded = vi.fn();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+        if (target === mutationPath) return Promise.resolve(rejection(error, status));
+        if (target === GROUPS_LIST_PATH)
+          return Promise.resolve(response({ items: [group()], next_cursor: null }));
+        if (target === GROUPS_VIEW_PATH) return Promise.resolve(response(group()));
+        if (target === MFA_POLICY_STEP_UP_PATH)
+          return Promise.resolve(response({ totp_step_up_ticket: TICKET }));
+        if (target === GROUP_MEMBERS_LIST_PATH || target === GROUP_GRANTS_LIST_PATH)
+          return Promise.resolve(response({ items: [], next_cursor: null }));
+        if (target === ACCOUNTS_LIST_PATH)
+          return Promise.resolve(response({ items: [], next_cursor: null }));
+        if (target === ADMINISTRATION_CATALOG_PATH)
+          return Promise.resolve(
+            response({ client_modules: ["web-ui"], service_modules: [], operations: [] }),
+          );
+        throw new Error("unexpected request");
+      });
+
+      render(<GroupsWorkspace onAdministrationEnded={onAdministrationEnded} />);
+      if (family === "create") {
+        await screen.findByRole("button", { name: "View" });
+        fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New Group" } });
+        fireEvent.click(screen.getByRole("button", { name: "Create" }));
+      } else {
+        fireEvent.click(await screen.findByRole("button", { name: "View" }));
+        await screen.findByText(ID);
+        if (family === "update") {
+          fireEvent.change(screen.getByDisplayValue("Operators"), {
+            target: { value: "Updated Operators" },
+          });
+          fireEvent.click(screen.getByRole("button", { name: "Update" }));
+        } else {
+          fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+          fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+          fireEvent.change(screen.getByLabelText("TOTP code"), { target: { value: CODE } });
+          fireEvent.click(screen.getByRole("button", { name: "Delete Group" }));
+        }
+      }
+
+      await waitFor(() => {
+        expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+      });
+      expect(screen.queryByText("The Group was not changed.")).toBeNull();
+      expect(screen.queryByText(/The Group outcome is unknown/)).toBeNull();
+      expect(screen.queryByText("The Group was not deleted.")).toBeNull();
+      expect(screen.queryByText(/Group deletion outcome is unknown/)).toBeNull();
+      expect(fetchMock.mock.calls.filter(([target]) => target === mutationPath)).toHaveLength(1);
+      expect(fetchMock.mock.calls.filter(([target]) => target === GROUPS_LIST_PATH)).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === MFA_POLICY_STEP_UP_PATH),
+      ).toHaveLength(family === "delete" ? 1 : 0);
+    },
+  );
 
   it("ignores a stale page after Refresh replaces the Group collection", async () => {
     csrf();

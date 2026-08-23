@@ -388,6 +388,68 @@ describe("GroupAssociations", () => {
     },
   );
 
+  it.each([
+    ["member", GROUP_MEMBERS_CHANGE_PATH, "session_invalid", 401],
+    ["grant", GROUP_GRANTS_CHANGE_PATH, "authorization_denied", 403],
+  ] as const)(
+    "ends administration once when a %s change reports a terminal mutation outcome",
+    async (kind, mutationPath, error, status) => {
+      csrf();
+      const onAdministrationEnded = vi.fn();
+      const onMutationIndeterminate = vi.fn();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+        if (target === GROUP_MEMBERS_LIST_PATH || target === GROUP_GRANTS_LIST_PATH)
+          return Promise.resolve(response({ items: [], next_cursor: null }));
+        if (target === ACCOUNTS_LIST_PATH)
+          return Promise.resolve(response({ items: [account()], next_cursor: null }));
+        if (target === ADMINISTRATION_CATALOG_PATH)
+          return Promise.resolve(
+            response({ client_modules: ["web-ui"], service_modules: [], operations: [] }),
+          );
+        if (target === MFA_POLICY_STEP_UP_PATH)
+          return Promise.resolve(response({ totp_step_up_ticket: TICKET }));
+        if (target === mutationPath)
+          return Promise.resolve(response({ error, correlation_id: CORRELATION }, status));
+        throw new Error("unexpected request");
+      });
+
+      render(
+        <GroupAssociations
+          groupPublicId={GROUP_ID}
+          onAdministrationEnded={onAdministrationEnded}
+          onMutationIndeterminate={onMutationIndeterminate}
+        />,
+      );
+      if (kind === "member") {
+        fireEvent.change(await screen.findByLabelText("Add member"), {
+          target: { value: ACCOUNT_ID },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+      } else {
+        fireEvent.click(await screen.findByRole("button", { name: "Add grant" }));
+      }
+      fireEvent.change(screen.getByLabelText("TOTP code"), { target: { value: CODE } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
+
+      await waitFor(() => {
+        expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+      });
+      expect(onMutationIndeterminate).not.toHaveBeenCalled();
+      expect(screen.queryByText("Group access was not changed.")).toBeNull();
+      expect(screen.queryByText(/Group access outcome is unknown/)).toBeNull();
+      expect(fetchMock.mock.calls.filter(([target]) => target === mutationPath)).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === MFA_POLICY_STEP_UP_PATH),
+      ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === GROUP_MEMBERS_LIST_PATH),
+      ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === GROUP_GRANTS_LIST_PATH),
+      ).toHaveLength(1);
+    },
+  );
+
   it("exits administration when a committed change removes the actor's access", async () => {
     csrf();
     const onAdministrationEnded = vi.fn();
