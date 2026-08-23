@@ -115,7 +115,7 @@ describe("Configuration workspace", () => {
     expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
   });
 
-  it("retains committed assignments after loading another page and submits them again", async () => {
+  it("keeps the authoritative changed projection while paging reconciles other assignments", async () => {
     const secondary = {
       ...configuration,
       configurationName: "secondary",
@@ -133,7 +133,7 @@ describe("Configuration workspace", () => {
     );
     vi.mocked(changeLogConfiguration).mockResolvedValue({
       ...configuration,
-      assignedLogTypes: [],
+      assignedLogTypes: ["audit"],
     });
 
     render(<ConfigurationWorkspace />);
@@ -165,7 +165,7 @@ describe("Configuration workspace", () => {
     expect(listLogConfigurations).toHaveBeenCalledWith("later-cursor");
     await screen.findByRole("cell", { name: "later" });
     expect(screen.getByLabelText<HTMLSelectElement>("System Logs").value).toBe("secondary");
-    expect(screen.getByLabelText<HTMLSelectElement>("Audit Logs").value).toBe("secondary");
+    expect(screen.getByLabelText<HTMLSelectElement>("Audit Logs").value).toBe("primary");
 
     fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
     await waitFor(() => {
@@ -175,7 +175,7 @@ describe("Configuration workspace", () => {
         settings: [],
         assignments: [
           { logType: "system", configurationName: "secondary" },
-          { logType: "audit", configurationName: "secondary" },
+          { logType: "audit", configurationName: "primary" },
         ],
       });
       expect(changeLogConfiguration).toHaveBeenCalledTimes(2);

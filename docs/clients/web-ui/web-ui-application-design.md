@@ -884,9 +884,12 @@ requires refresh; a reported refusal and an indeterminate outcome use distinct
 fixed text without Server code, status, response detail, field path, Audit
 state, or dependency diagnostic. Every exact safe `200` change projection is a
 committed success; the client neither receives nor retains internal Audit
-recovery state. Collection reads and saves are mutually exclusive: controls
-cannot save from assignments a read may replace, and a stale read cannot
-replace a committed change projection.
+recovery state. The changed row and open detail retain that authoritative
+projection, including its canonically ordered assigned Log Types. The submitted
+complete System and Audit mapping reconciles only every other already loaded
+row; a later cursor page preserves its own returned projections. Collection
+reads and saves are mutually exclusive: controls cannot save from assignments a
+read may replace, and a stale read cannot replace a committed change projection.
 
 ## Same-Origin Requests
 

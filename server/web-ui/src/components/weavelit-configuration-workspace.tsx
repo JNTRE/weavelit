@@ -283,12 +283,7 @@ export function ConfigurationWorkspace({
             setConfigurations((current) =>
               current.map((item) =>
                 item.configurationName === configuration.configurationName
-                  ? {
-                      ...configuration,
-                      assignedLogTypes: (["system", "audit"] as const).filter(
-                        (logType) => committedAssignments[logType] === item.configurationName,
-                      ),
-                    }
+                  ? configuration
                   : {
                       ...item,
                       assignedLogTypes: (["system", "audit"] as const).filter(
