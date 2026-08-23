@@ -203,7 +203,12 @@ export function ConfigurationWorkspace({
   };
 
   const loadMore = (): void => {
-    if (nextCursor === null || collectionState !== "ready") return;
+    if (
+      logChangeActive.current ||
+      nextCursor === null ||
+      collectionState !== "ready"
+    )
+      return;
     const request = collectionRequest.current;
     setCollectionState("loading-more");
     void listLogConfigurations(nextCursor).then(
@@ -245,6 +250,7 @@ export function ConfigurationWorkspace({
     event.preventDefault();
     if (
       logChangeActive.current ||
+      collectionState !== "ready" ||
       selected === null ||
       systemAssignment === "" ||
       auditAssignment === ""
@@ -264,6 +270,8 @@ export function ConfigurationWorkspace({
       .then(
         (configuration) => {
           if (mounted.current) {
+            collectionRequest.current += 1;
+            setCollectionState("ready");
             setSelected(configuration);
             setConfigurations((current) =>
               current.map((item) =>
@@ -289,6 +297,8 @@ export function ConfigurationWorkspace({
   const totpSubmissionActive = totpState === "previewing" || totpState === "applying";
   const totpChangeLocked = totpState === "indeterminate";
   const logChangeLocked = logChangeState === "conflict" || logChangeState === "indeterminate";
+  const logChangeControlsLocked =
+    collectionState !== "ready" || logChangeState === "submitting" || logChangeLocked;
 
   return (
     <section className="accounts configuration" aria-labelledby="configuration-title">
@@ -403,7 +413,11 @@ export function ConfigurationWorkspace({
             <button
               type="button"
               onClick={loadMore}
-              disabled={collectionState !== "ready" || logChangeLocked}
+              disabled={
+                collectionState !== "ready" ||
+                logChangeState === "submitting" ||
+                logChangeLocked
+              }
             >
               Load more
             </button>
@@ -424,7 +438,7 @@ export function ConfigurationWorkspace({
                   onChange={(event) => {
                     setEnabled(event.currentTarget.checked);
                   }}
-                  disabled={logChangeLocked}
+                  disabled={logChangeControlsLocked}
                 />
                 Enabled
               </label>
@@ -443,7 +457,7 @@ export function ConfigurationWorkspace({
                     }}
                     maxLength={4096}
                     required
-                    disabled={logChangeLocked}
+                    disabled={logChangeControlsLocked}
                   />
                 </label>
               ))}
@@ -455,7 +469,7 @@ export function ConfigurationWorkspace({
                     setSystemAssignment(event.currentTarget.value);
                   }}
                   required
-                  disabled={logChangeLocked}
+                  disabled={logChangeControlsLocked}
                 >
                   <option value="">Select configuration</option>
                   {configurations.map((configuration) => (
@@ -476,7 +490,7 @@ export function ConfigurationWorkspace({
                     setAuditAssignment(event.currentTarget.value);
                   }}
                   required
-                  disabled={logChangeLocked}
+                  disabled={logChangeControlsLocked}
                 >
                   <option value="">Select configuration</option>
                   {configurations.map((configuration) => (
@@ -489,7 +503,7 @@ export function ConfigurationWorkspace({
                   ))}
                 </select>
               </label>
-              <button type="submit" disabled={logChangeState === "submitting" || logChangeLocked}>
+              <button type="submit" disabled={logChangeControlsLocked}>
                 Save configuration
               </button>
               {logChangeState === "refused" ? (

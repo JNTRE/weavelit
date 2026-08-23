@@ -114,6 +114,89 @@ describe("Configuration workspace", () => {
     expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks Log submission while Refresh is pending", async () => {
+    let resolveRefresh!: (page: LogConfigurationsPage) => void;
+    const pendingRefresh = new Promise<LogConfigurationsPage>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    let reads = 0;
+    vi.mocked(listLogConfigurations).mockImplementation(() => {
+      reads += 1;
+      return reads === 1
+        ? Promise.resolve({ items: [configuration], nextCursor: null })
+        : pendingRefresh;
+    });
+
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("primary");
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    const heading = await screen.findByRole("heading", { name: "primary" });
+    const form = heading.closest("form");
+    expect(form).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(listLogConfigurations).toHaveBeenCalledTimes(2);
+    });
+    for (const control of form!.querySelectorAll<
+      HTMLInputElement | HTMLSelectElement | HTMLButtonElement
+    >("input, select, button"))
+      expect(control.disabled).toBe(true);
+
+    fireEvent.submit(form!);
+    expect(changeLogConfiguration).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveRefresh({ items: [configuration], nextCursor: null });
+      await pendingRefresh;
+    });
+  });
+
+  it(
+    "keeps the committed Log projection and blocks Load more during an active save",
+    async () => {
+      const stale = { ...configuration, configurationName: "stale" };
+      vi.mocked(listLogConfigurations).mockImplementation((cursor) =>
+        cursor === "next-cursor"
+          ? Promise.resolve({ items: [stale], nextCursor: null })
+          : Promise.resolve({ items: [configuration], nextCursor: "next-cursor" }),
+      );
+      const changed = { ...configuration, enabled: false };
+      let resolveChange!: (value: LogConfiguration) => void;
+      const pendingChange = new Promise<LogConfiguration>((resolve) => {
+        resolveChange = resolve;
+      });
+      vi.mocked(changeLogConfiguration).mockReturnValue(pendingChange);
+
+      render(<ConfigurationWorkspace />);
+      await screen.findByText("primary");
+      fireEvent.click(screen.getByRole("button", { name: "View" }));
+      const heading = await screen.findByRole("heading", { name: "primary" });
+      fireEvent.click(screen.getByRole("checkbox", { name: "Enabled" }));
+      const form = heading.closest("form");
+      const loadMore = screen.getByRole<HTMLButtonElement>("button", { name: "Load more" });
+      expect(form).not.toBeNull();
+
+      act(() => {
+        form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        loadMore.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+
+      expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
+      expect(listLogConfigurations).toHaveBeenCalledTimes(1);
+      expect(loadMore.disabled).toBe(true);
+
+      await act(async () => {
+        resolveChange(changed);
+        await pendingChange;
+      });
+
+      expect(screen.getByText("Disabled")).toBeTruthy();
+      expect(screen.queryByText("stale")).toBeNull();
+      expect(listLogConfigurations).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("ignores a stale Load more page after Refresh replaces the collection", async () => {
     const refreshed = { ...configuration, configurationName: "refreshed" };
     const stale = { ...configuration, configurationName: "stale" };
