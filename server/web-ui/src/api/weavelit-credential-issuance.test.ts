@@ -269,9 +269,7 @@ describe("credential issuance requests", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(refusal("session_invalid", 401));
 
-    const error = await issueCredentialIssuanceTicket(PASSWORD).catch(
-      (reason: unknown) => reason,
-    );
+    const error = await issueCredentialIssuanceTicket(PASSWORD).catch((reason: unknown) => reason);
 
     expect(error).toBeInstanceOf(CredentialIssuanceSessionInvalidError);
     expect(error).toBeInstanceOf(CredentialIssuanceRefusedError);
@@ -306,10 +304,7 @@ describe("credential issuance requests", () => {
       "an additive error envelope",
       () =>
         Promise.resolve(
-          jsonResponse(
-            { error: "session_invalid", correlation_id: CORRELATION, extra: true },
-            401,
-          ),
+          jsonResponse({ error: "session_invalid", correlation_id: CORRELATION, extra: true }, 401),
         ),
     ],
     ["an unknown rejection", () => Promise.resolve(refusal("future_error", 503))],
@@ -326,9 +321,11 @@ describe("credential issuance requests", () => {
 
   it("reports an additive credential result as indeterminate without retrying", async () => {
     withCsrfCookie();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      success({ public_id: PUBLIC_ID, temporary_password: TEMPORARY_PASSWORD, extra: true }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        success({ public_id: PUBLIC_ID, temporary_password: TEMPORARY_PASSWORD, extra: true }),
+      );
 
     await expect(createAccount("alice", undefined, TICKET)).rejects.toBeInstanceOf(
       CredentialIssuanceIndeterminateError,
