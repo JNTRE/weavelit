@@ -57,13 +57,17 @@ test that fails before the fix and passes after it.
 
 All Rust code uses the repository's Rust 1.97 stable toolchain. Once the Cargo
 workspace is introduced, it must commit a `rust-toolchain.toml` that pins the
-toolchain and required components. Run the complete Server Rust quality-gate
-suite in the documented development container before integration into `dev` and
-in CI before integration into `main` with:
+toolchain and required components. The `dev` branch has no GitHub quality gate.
+Before integration into `dev`, the author MUST run the complete Server
+quality-gate suite locally in the documented development container with:
 
 ```sh
-make -C server check
+make -C server container-check
 ```
+
+For every non-draft pull request targeting `main`, including each subsequent
+update, the Rust Quality workflow runs the same suite from the `server`
+directory of a clean Ubuntu checkout with `make check`.
 
 The Server `Makefile` runs the following required commands without warnings or
 failures. Add a required default Rust quality gate there so development-container
@@ -99,6 +103,10 @@ the release Server binary over its real direct-TLS listener. That suite covers
 the pre-operational status page load, the complete Application Database
 selection outcome, the complete Restore submission outcome, and a sign-in that
 survives a Server restart.
+
+After the browser suite, `make check` executes the launcher lifecycle harness.
+Rust Quality therefore runs that harness on its Ubuntu host as part of the
+required `main` gate.
 
 The selection scenario has an operator select SQLite through the Web UI control,
 the displayed status change to selected within the same process, the Server
@@ -170,17 +178,18 @@ CI evidence.
 
 Before a feature pull request is merged into `dev`, its author MUST run
 `make -C server container-check` against the commit to be merged. This is the
-required integration evidence for `dev`.
+required local integration evidence for `dev`; no GitHub gate runs for that
+branch.
 
-The Rust Quality workflow MUST run the same gate from a clean Ubuntu checkout
-for every non-draft pull request targeting `main`, including each subsequent
-update to that pull request. A passing result for the current pull-request head
-is required before merging into `main`. It must also run affected integration,
-contract, and end-to-end suites. A later change may add coverage reporting
-after its report format, exclusions, and ratchet policy are documented. A
-global line-coverage percentage is not a merge criterion: coverage is useful
-as a trend and gap signal but cannot prove that the security and failure
-behavior above was exercised.
+The Rust Quality workflow MUST run `make check` from the `server` directory of
+a clean Ubuntu checkout for every non-draft pull request targeting `main`,
+including each subsequent update to that pull request. A passing result for the
+current pull-request head is required before merging into `main`. It must also
+run affected integration, contract, and end-to-end suites. A later change may
+add coverage reporting after its report format, exclusions, and ratchet policy
+are documented. A global line-coverage percentage is not a merge criterion:
+coverage is useful as a trend and gap signal but cannot prove that the security
+and failure behavior above was exercised.
 
 ## Deployment Confidence
 

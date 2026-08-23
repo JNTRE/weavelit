@@ -813,6 +813,12 @@ MFA policy outcome is unknown. Refresh before taking another MFA action.` It
 does not refresh automatically in that state or infer success from an account
 read.
 
+An exact `authorization_denied` result from the `mfa_policy` step-up request,
+the Account MFA-requirement request, or the Account MFA-reset request is
+terminal. The application withdraws the authenticated Administration shell and
+presents neutral sign-in with blank fields. It bypasses the generic refusal and
+unknown-outcome presentations, renders no response detail, and offers no retry.
+
 After a valid policy result, the application probes the existing session. An
 authenticated result triggers one first-page Accounts refresh from the safe
 projection. An unauthenticated result, including a successful self-require or

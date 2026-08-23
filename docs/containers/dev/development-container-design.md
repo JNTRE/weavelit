@@ -55,7 +55,7 @@ and Server commands run in the development image through these targets:
 
 | Target | Purpose |
 | --- | --- |
-| `make -C server container-check` | Runs the host-side launcher lifecycle preflight through `sh`, then builds the disposable development image and runs the complete `make check` gate in it. The preflight assumes the standard host POSIX shell and coreutils. |
+| `make -C server container-check` | Runs the launcher lifecycle preflight on the host through `sh`, then builds the disposable development image and runs the complete `make check` gate in it. The host preflight requires the standard POSIX shell and coreutils. |
 | `make -C server container-shell` | Opens an interactive shell in the development image for targeted Linux commands. |
 | `make -C server container-run` | Builds the Web UI and release Server, then starts a named local Server container for browser testing. |
 | `make -C server container-stop` | Stops the named local Server container. |
@@ -69,7 +69,8 @@ tooling must not write build outputs directly.
 
 `container-check` uses only the source and build-cache volumes. It creates no
 retained Server state, so it cannot change the state used by manual browser
-testing. Contributors use this target for the required `dev` integration gate.
+testing. Contributors use this target for the required local `dev` integration
+gate. `dev` has no GitHub gate.
 
 `container-run` additionally uses a named, owner-only Server state volume. It
 starts the Server on its required container-loopback listener and publishes an
@@ -101,11 +102,11 @@ The implemented image must be built and exercised with the documented Docker
 targets for Milestone 1 local validation. Before image or container build,
 `container-check` must run the launcher lifecycle preflight on the host through
 `sh`; this preflight assumes the host provides the standard POSIX shell and
-coreutils. It must then build the disposable development image, run `make
-check` inside it, and confirm that source and build-cache mounts follow this
-design. `container-run` must confirm that the named state-root volume persists
-across container stop and restart boundaries and that the Web UI is reachable
-only through the host-loopback published port.
+coreutils. It must then build the disposable development image, run `make check`
+inside it, and confirm that source and build-cache mounts follow this design.
+`container-run` must confirm that the named state-root volume persists across
+container stop and restart boundaries and that the Web UI is reachable only
+through the host-loopback published port.
 
 Browser-based end-to-end validation is part of the image contract. The image
 installs the pinned Chromium build as the non-root development user, so
