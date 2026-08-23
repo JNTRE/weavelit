@@ -1342,6 +1342,7 @@ describe("AccountsWorkspace", () => {
 
   it("returns an exact MFA-policy authorization denial to the shell without probing or refreshing", async () => {
     withCsrfCookie();
+    const onAdministrationEnded = vi.fn();
     const onSessionEnded = vi.fn();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === ACCOUNTS_LIST_PATH) {
@@ -1358,7 +1359,12 @@ describe("AccountsWorkspace", () => {
       throw new Error("unexpected request");
     });
 
-    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    render(
+      <AccountsWorkspace
+        onAdministrationEnded={onAdministrationEnded}
+        onSessionEnded={onSessionEnded}
+      />,
+    );
     await screen.findByRole("rowheader", { name: "alice" });
     fireEvent.click(screen.getByRole("switch", { name: "Require MFA for alice" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm policy action" }));
@@ -1366,10 +1372,13 @@ describe("AccountsWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
 
     await waitFor(() => {
-      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+      expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
     });
+    expect(onSessionEnded).not.toHaveBeenCalled();
+    expect(screen.queryByText("Accounts are unavailable.")).toBeNull();
     expect(screen.queryByText("MFA policy was not changed.")).toBeNull();
     expect(screen.queryByText(/The MFA policy outcome is unknown\./)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
     expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
       1,
