@@ -334,6 +334,16 @@ describe("Group API", () => {
           status: 403,
           expected: GroupAdministrationAccessDeniedError,
         },
+        {
+          error: "request_origin_denied",
+          status: 403,
+          expected: GroupMutationRefusedError,
+        },
+        {
+          error: "grant_mutation_denied",
+          status: 403,
+          expected: GroupMutationRefusedError,
+        },
       ] as const;
 
       for (const refusal of refusals) {
@@ -343,7 +353,7 @@ describe("Group API", () => {
         await expect(mutate()).rejects.toBeInstanceOf(refusal.expected);
       }
 
-      expect(fetchMock.mock.calls.map(([target]) => target)).toEqual([path, path]);
+      expect(fetchMock.mock.calls.map(([target]) => target)).toEqual([path, path, path, path]);
     },
   );
 
