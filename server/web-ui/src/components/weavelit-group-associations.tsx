@@ -112,7 +112,8 @@ export function GroupAssociations({
         (error instanceof GroupSessionInvalidError ||
           error instanceof GroupAdministrationAccessDeniedError ||
           error instanceof AccountsSessionExpiredError ||
-          error instanceof MfaPolicySessionInvalidError) &&
+          error instanceof MfaPolicySessionInvalidError ||
+          error instanceof MfaPolicyGrantMutationAccessDeniedError) &&
         onAdministrationEnded !== undefined
       ) {
         if (!administrationEnded.current) {
