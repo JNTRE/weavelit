@@ -23,7 +23,7 @@ CONTAINER_WORKSPACE_ARGS := $(CONTAINER_WORKSPACE_MOUNT) $(CONTAINER_CACHE_MOUNT
 # the stages of this gate must not be reordered or run concurrently.
 .NOTPARALLEL:
 
-check: check-web-ui check-rust web-ui-browser-test
+check: check-web-ui check-rust web-ui-browser-test container-launcher-test
 
 check-web-ui: web-ui-install web-ui-format web-ui-lint web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify
 

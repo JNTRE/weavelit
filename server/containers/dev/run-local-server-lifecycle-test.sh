@@ -130,6 +130,27 @@ EOF
 cat >"$fake_bin/touch" <<'EOF'
 #!/bin/sh
 set -eu
+
+wait_for_started() {
+  started_path=$1
+  attempt=0
+  until [ -e "$started_path" ]; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -eq 100 ]; then
+      printf 'timed out waiting for %s\n' "$started_path" >&2
+      exit 1
+    fi
+    sleep 0.05
+  done
+}
+
+case "${FAKE_TERMINATION_SIGNAL:-}" in
+  HUP|INT|TERM)
+    wait_for_started "$FAKE_STATE/relay.started"
+    wait_for_started "$FAKE_STATE/server.started"
+    ;;
+esac
+
 : >"$FAKE_STATE/ready"
 
 case "${FAKE_TERMINATION_SIGNAL:-}" in
