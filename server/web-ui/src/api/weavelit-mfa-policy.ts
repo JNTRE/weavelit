@@ -169,11 +169,7 @@ export async function issueGrantMutationStepUp(code: string): Promise<string> {
 }
 
 async function issueStepUp(family: "mfa_policy" | "grant_mutation", code: string): Promise<string> {
-  const payload = await mfaPolicyRequest(
-    MFA_POLICY_STEP_UP_PATH,
-    { family, code },
-    family,
-  );
+  const payload = await mfaPolicyRequest(MFA_POLICY_STEP_UP_PATH, { family, code }, family);
   const ticket = readMfaPolicyTicket(payload);
   if (ticket === null) {
     throw new MfaPolicyIndeterminateError();

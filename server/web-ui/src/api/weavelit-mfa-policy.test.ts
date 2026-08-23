@@ -203,9 +203,7 @@ describe("MFA policy requests", () => {
 
     expect(error).toBeInstanceOf(MfaPolicyGrantMutationAccessDeniedError);
     expect(error).toBeInstanceOf(MfaPolicyRefusedError);
-    expect(JSON.stringify(error)).toBe(
-      '{"name":"MfaPolicyGrantMutationAccessDeniedError"}',
-    );
+    expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyGrantMutationAccessDeniedError"}');
   });
 
   it("keeps MFA-policy authorization denial as a generic refusal", async () => {

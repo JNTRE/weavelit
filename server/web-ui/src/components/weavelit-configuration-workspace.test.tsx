@@ -223,9 +223,7 @@ describe("Configuration workspace", () => {
       resolveChange(committed);
       await pendingChange;
     });
-    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Enabled" }).checked).toBe(
-      false,
-    );
+    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Enabled" }).checked).toBe(false);
     expect(screen.getByLabelText<HTMLInputElement>("destination").value).toBe("committed");
     expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
   });
