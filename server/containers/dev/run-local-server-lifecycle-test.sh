@@ -5,17 +5,13 @@ launcher_path="$(CDPATH= cd "$(dirname "$0")" && pwd)/run-local-server.sh"
 test_directory="$(mktemp -d "${TMPDIR:-/tmp}/weavelit-launcher-test.XXXXXX")"
 fake_bin="$test_directory/fake-bin"
 fake_server="$test_directory/fake-server"
-active_launcher_pid=
 
 cleanup_test() {
   exit_status=$?
   trap - 0 HUP INT TERM
 
-  if [ -n "$active_launcher_pid" ]; then
-    kill -TERM "$active_launcher_pid" 2>/dev/null || true
-    wait "$active_launcher_pid" 2>/dev/null || true
-  fi
-  for pid_file in "$test_directory"/cases/*/state/*.pid; do
+  for pid_file in "$test_directory"/cases/*/state/relay.pid \
+    "$test_directory"/cases/*/state/server.pid; do
     if [ -f "$pid_file" ]; then
       process_pid="$(cat "$pid_file")"
       kill -TERM "$process_pid" 2>/dev/null || true
@@ -70,19 +66,6 @@ assert_process_stopped() {
     fail "$context left process $process_pid running"
   fi
   rm -f "$pid_file"
-}
-
-wait_for_file() {
-  awaited_path=$1
-  context=$2
-  attempt=0
-  while [ ! -e "$awaited_path" ]; do
-    attempt=$((attempt + 1))
-    if [ "$attempt" -eq 100 ]; then
-      fail "$context did not create $awaited_path"
-    fi
-    sleep 0.05
-  done
 }
 
 mkdir -p "$fake_bin" "$test_directory/cases"
@@ -148,6 +131,25 @@ cat >"$fake_bin/touch" <<'EOF'
 #!/bin/sh
 set -eu
 : >"$FAKE_STATE/ready"
+
+case "${FAKE_TERMINATION_SIGNAL:-}" in
+  '')
+    ;;
+  HUP|INT|TERM)
+    kill "-$FAKE_TERMINATION_SIGNAL" "$(cat "$FAKE_STATE/launcher.pid")"
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+EOF
+
+cat >"$fake_bin/foreground-launcher" <<'EOF'
+#!/bin/sh
+set -eu
+trap - HUP INT TERM
+printf '%s\n' "$$" >"$FAKE_STATE/launcher.pid"
+exec "$@"
 EOF
 
 cat >"$fake_server" <<'EOF'
@@ -176,7 +178,7 @@ done
 EOF
 
 chmod +x "$fake_bin/mktemp" "$fake_bin/openssl" "$fake_bin/socat" \
-  "$fake_bin/touch" "$fake_server"
+  "$fake_bin/touch" "$fake_bin/foreground-launcher" "$fake_server"
 
 prepare_case() {
   case_name=$1
@@ -190,6 +192,8 @@ run_foreground_case() {
   openssl_status=$2
   server_status=$3
   probe_status=$4
+  server_mode=$5
+  termination_signal=$6
 
   if (
     cd "$foreground_case_directory"
@@ -198,10 +202,11 @@ run_foreground_case() {
       FAKE_STATE="$foreground_case_directory/state" \
       FAKE_TLS_DIRECTORY="$foreground_case_directory/tls" \
       FAKE_OPENSSL_STATUS="$openssl_status" \
-      FAKE_SERVER_MODE=exit \
+      FAKE_SERVER_MODE="$server_mode" \
       FAKE_SERVER_STATUS="$server_status" \
       FAKE_PROBE_STATUS="$probe_status" \
-      sh "$launcher_path"
+      FAKE_TERMINATION_SIGNAL="$termination_signal" \
+      "$fake_bin/foreground-launcher" sh "$launcher_path"
   ); then
     launcher_status=0
   else
@@ -211,7 +216,7 @@ run_foreground_case() {
 
 prepare_case openssl-failure
 openssl_failure_directory=$case_directory
-run_foreground_case "$openssl_failure_directory" 23 0 0
+run_foreground_case "$openssl_failure_directory" 23 0 0 exit ''
 assert_status 23 "$launcher_status" "OpenSSL failure"
 assert_absent "$openssl_failure_directory/tls" "OpenSSL failure"
 assert_absent "$openssl_failure_directory/state/relay.started" "OpenSSL failure"
@@ -219,7 +224,7 @@ assert_absent "$openssl_failure_directory/state/server.started" "OpenSSL failure
 
 prepare_case server-success
 server_success_directory=$case_directory
-run_foreground_case "$server_success_directory" 0 0 0
+run_foreground_case "$server_success_directory" 0 0 0 exit ''
 assert_status 0 "$launcher_status" "successful Server exit"
 assert_absent "$server_success_directory/tls" "successful Server exit"
 assert_exists "$server_success_directory/state/relay.terminated" "successful Server exit"
@@ -228,7 +233,7 @@ assert_process_stopped "$server_success_directory/state/server.pid" "successful 
 
 prepare_case server-failure
 server_failure_directory=$case_directory
-run_foreground_case "$server_failure_directory" 0 42 1
+run_foreground_case "$server_failure_directory" 0 42 1 exit ''
 assert_status 42 "$launcher_status" "failed Server exit"
 assert_absent "$server_failure_directory/tls" "failed Server exit"
 assert_exists "$server_failure_directory/state/relay.terminated" "failed Server exit"
@@ -240,29 +245,10 @@ for termination_case in HUP:129 INT:130 TERM:143; do
   termination_status=${termination_case#*:}
   prepare_case "termination-$termination_signal"
   termination_directory=$case_directory
-  (
-    cd "$termination_directory"
-    exec env \
-      PATH="$fake_bin:$PATH" \
-      FAKE_STATE="$termination_directory/state" \
-      FAKE_TLS_DIRECTORY="$termination_directory/tls" \
-      FAKE_OPENSSL_STATUS=0 \
-      FAKE_SERVER_MODE=wait \
-      FAKE_SERVER_STATUS=0 \
-      sh "$launcher_path"
-  ) &
-  active_launcher_pid=$!
-
-  wait_for_file "$termination_directory/state/ready" "$termination_signal termination case"
-  kill "-$termination_signal" "$active_launcher_pid"
-  if wait "$active_launcher_pid"; then
-    launcher_status=0
-  else
-    launcher_status=$?
-  fi
-  active_launcher_pid=
+  run_foreground_case "$termination_directory" 0 0 0 wait "$termination_signal"
 
   assert_status "$termination_status" "$launcher_status" "$termination_signal-terminated launcher"
+  assert_exists "$termination_directory/state/ready" "$termination_signal-terminated launcher"
   assert_absent "$termination_directory/tls" "$termination_signal-terminated launcher"
   assert_exists "$termination_directory/state/relay.terminated" "$termination_signal-terminated launcher"
   assert_exists "$termination_directory/state/server.terminated" "$termination_signal-terminated launcher"
