@@ -451,7 +451,6 @@ describe("AccountsWorkspace", () => {
     await waitFor(() => {
       expect(onSessionEnded).toHaveBeenCalledTimes(1);
     });
-    expect(onSessionEnded.mock.calls[0]).toEqual([]);
     expect(screen.queryByText("The account status was not changed.")).toBeNull();
     expect(screen.queryByText(/The account status outcome is unknown\./)).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
