@@ -152,50 +152,47 @@ describe("Configuration workspace", () => {
     });
   });
 
-  it(
-    "keeps the committed Log projection and blocks Load more during an active save",
-    async () => {
-      const stale = { ...configuration, configurationName: "stale" };
-      vi.mocked(listLogConfigurations).mockImplementation((cursor) =>
-        cursor === "next-cursor"
-          ? Promise.resolve({ items: [stale], nextCursor: null })
-          : Promise.resolve({ items: [configuration], nextCursor: "next-cursor" }),
-      );
-      const changed = { ...configuration, enabled: false };
-      let resolveChange!: (value: LogConfiguration) => void;
-      const pendingChange = new Promise<LogConfiguration>((resolve) => {
-        resolveChange = resolve;
-      });
-      vi.mocked(changeLogConfiguration).mockReturnValue(pendingChange);
+  it("keeps the committed Log projection and blocks Load more during an active save", async () => {
+    const stale = { ...configuration, configurationName: "stale" };
+    vi.mocked(listLogConfigurations).mockImplementation((cursor) =>
+      cursor === "next-cursor"
+        ? Promise.resolve({ items: [stale], nextCursor: null })
+        : Promise.resolve({ items: [configuration], nextCursor: "next-cursor" }),
+    );
+    const changed = { ...configuration, enabled: false };
+    let resolveChange!: (value: LogConfiguration) => void;
+    const pendingChange = new Promise<LogConfiguration>((resolve) => {
+      resolveChange = resolve;
+    });
+    vi.mocked(changeLogConfiguration).mockReturnValue(pendingChange);
 
-      render(<ConfigurationWorkspace />);
-      await screen.findByText("primary");
-      fireEvent.click(screen.getByRole("button", { name: "View" }));
-      const heading = await screen.findByRole("heading", { name: "primary" });
-      fireEvent.click(screen.getByRole("checkbox", { name: "Enabled" }));
-      const form = heading.closest("form");
-      const loadMore = screen.getByRole<HTMLButtonElement>("button", { name: "Load more" });
-      expect(form).not.toBeNull();
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("primary");
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    const heading = await screen.findByRole("heading", { name: "primary" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enabled" }));
+    const form = heading.closest("form");
+    const loadMore = screen.getByRole<HTMLButtonElement>("button", { name: "Load more" });
+    expect(form).not.toBeNull();
 
-      act(() => {
-        form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-        loadMore.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      });
+    act(() => {
+      form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      loadMore.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
 
-      expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
-      expect(listLogConfigurations).toHaveBeenCalledTimes(1);
-      expect(loadMore.disabled).toBe(true);
+    expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
+    expect(listLogConfigurations).toHaveBeenCalledTimes(1);
+    expect(loadMore.disabled).toBe(true);
 
-      await act(async () => {
-        resolveChange(changed);
-        await pendingChange;
-      });
+    await act(async () => {
+      resolveChange(changed);
+      await pendingChange;
+    });
 
-      expect(screen.getByText("Disabled")).toBeTruthy();
-      expect(screen.queryByText("stale")).toBeNull();
-      expect(listLogConfigurations).toHaveBeenCalledTimes(1);
-    },
-  );
+    expect(screen.getByText("Disabled")).toBeTruthy();
+    expect(screen.queryByText("stale")).toBeNull();
+    expect(listLogConfigurations).toHaveBeenCalledTimes(1);
+  });
 
   it("ignores a stale Load more page after Refresh replaces the collection", async () => {
     const refreshed = { ...configuration, configurationName: "refreshed" };

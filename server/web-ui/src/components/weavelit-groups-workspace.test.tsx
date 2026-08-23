@@ -202,7 +202,9 @@ describe("GroupsWorkspace", () => {
       expect(screen.queryByText("The Group was not deleted.")).toBeNull();
       expect(screen.queryByText(/Group deletion outcome is unknown/)).toBeNull();
       expect(fetchMock.mock.calls.filter(([target]) => target === mutationPath)).toHaveLength(1);
-      expect(fetchMock.mock.calls.filter(([target]) => target === GROUPS_LIST_PATH)).toHaveLength(1);
+      expect(fetchMock.mock.calls.filter(([target]) => target === GROUPS_LIST_PATH)).toHaveLength(
+        1,
+      );
       expect(
         fetchMock.mock.calls.filter(([target]) => target === MFA_POLICY_STEP_UP_PATH),
       ).toHaveLength(family === "delete" ? 1 : 0);

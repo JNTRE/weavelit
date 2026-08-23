@@ -203,12 +203,7 @@ export function ConfigurationWorkspace({
   };
 
   const loadMore = (): void => {
-    if (
-      logChangeActive.current ||
-      nextCursor === null ||
-      collectionState !== "ready"
-    )
-      return;
+    if (logChangeActive.current || nextCursor === null || collectionState !== "ready") return;
     const request = collectionRequest.current;
     setCollectionState("loading-more");
     void listLogConfigurations(nextCursor).then(
@@ -414,9 +409,7 @@ export function ConfigurationWorkspace({
               type="button"
               onClick={loadMore}
               disabled={
-                collectionState !== "ready" ||
-                logChangeState === "submitting" ||
-                logChangeLocked
+                collectionState !== "ready" || logChangeState === "submitting" || logChangeLocked
               }
             >
               Load more
