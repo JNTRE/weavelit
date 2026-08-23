@@ -76,6 +76,7 @@ const TOTP_PATTERN = /^[0-9]{6}$/;
 
 export interface AccountsWorkspaceProps {
   readonly currentAccountPublicId: string;
+  readonly onAdministrationEnded?: () => void;
   readonly onSessionEnded?: (disclosure?: CredentialIssued) => void;
 }
 
@@ -108,7 +109,10 @@ export function TemporaryPasswordDisclosure({
   );
 }
 
-export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): JSX.Element {
+export function AccountsWorkspace({
+  onAdministrationEnded,
+  onSessionEnded,
+}: AccountsWorkspaceProps): JSX.Element {
   const [accounts, setAccounts] = useState<readonly AccountProjection[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [collectionState, setCollectionState] = useState<CollectionState>("loading");
@@ -134,17 +138,28 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
   const collectionRequest = useRef(0);
   const selectionRequest = useRef(0);
   const sessionEnded = useRef(false);
+  const administrationEnded = useRef(false);
   const credentialIssuanceTicket = useRef("");
   const mfaPolicyTicket = useRef("");
   const workspaceIsMounted = (): boolean => mounted.current;
+
+  const endAdministration = useCallback((): boolean => {
+    if (onAdministrationEnded === undefined) {
+      return false;
+    }
+    if (!administrationEnded.current) {
+      administrationEnded.current = true;
+      onAdministrationEnded();
+    }
+    return true;
+  }, [onAdministrationEnded]);
 
   const reconcileExpiredSession = useCallback(
     (error: unknown, preservedDisclosure?: CredentialIssued): boolean => {
       if (
         !(error instanceof AccountsSessionExpiredError) &&
         !(error instanceof CredentialIssuanceSessionInvalidError) &&
-        !(error instanceof MfaPolicySessionInvalidError) &&
-        !(error instanceof MfaPolicyAccessDeniedError)
+        !(error instanceof MfaPolicySessionInvalidError)
       ) {
         return false;
       }
@@ -593,7 +608,9 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
         mfaPolicyTicket.current = "";
         if (mounted.current) {
           setPendingMfaPolicyAction(null);
-          if (reconcileExpiredSession(error)) {
+          if (error instanceof MfaPolicyAccessDeniedError && endAdministration()) {
+            setMfaPolicyState("idle");
+          } else if (reconcileExpiredSession(error)) {
             setMfaPolicyState("idle");
           } else {
             setMfaPolicyState(
