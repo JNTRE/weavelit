@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ACCOUNTS_LIST_PATH } from "../api/weavelit-administration-accounts";
 import {
@@ -157,6 +157,8 @@ function safeRequestLabel(target: unknown): string {
 afterEach(() => Reflect.deleteProperty(document, "cookie"));
 
 describe("GroupAssociations", () => {
+  beforeEach(() => vi.mocked(issueGrantMutationStepUp).mockClear());
+
   it("uses safe selectors and one memory-only ticket to add a member then refresh", async () => {
     globalThis.localStorage.clear();
     globalThis.sessionStorage.clear();
