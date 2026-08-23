@@ -685,7 +685,9 @@ An exact Group `grant_mutation` step-up authorization denial is terminal access
 loss. Before the application begins the selected Group mutation, it withdraws
 the complete Administration presentation and shows neutral sign-in with blank
 fields. An exact Group-mutation session-invalidation result has the same
-terminal presentation. Both bypass generic refusal and retry presentation.
+terminal presentation. An exact Group-mutation `authorization_denied` result
+also has the same terminal presentation. All three bypass generic refusal and
+retry presentation.
 
 Delete first opens a client-only confirmation and sends no confirmation field
 or text. After confirmation, one form accepts exactly one six-digit TOTP code
