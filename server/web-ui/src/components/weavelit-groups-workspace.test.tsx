@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CSRF_COOKIE_NAME } from "../api/weavelit-authentication";
 import { ACCOUNTS_LIST_PATH } from "../api/weavelit-administration-accounts";
@@ -52,7 +52,6 @@ function csrf(): void {
   });
 }
 afterEach(() => Reflect.deleteProperty(document, "cookie"));
-beforeEach(() => vi.mocked(issueGrantMutationStepUp).mockClear());
 
 describe("GroupsWorkspace", () => {
   it("loads and views only public Group projections", async () => {
@@ -465,6 +464,7 @@ describe("GroupsWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     fireEvent.change(screen.getByLabelText("TOTP code"), { target: { value: CODE } });
+    const stepUpCallsBeforeAction = vi.mocked(issueGrantMutationStepUp).mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Delete Group" }));
 
     await waitFor(() => {
@@ -473,8 +473,8 @@ describe("GroupsWorkspace", () => {
     expect(screen.queryByText("The Group was not deleted.")).toBeNull();
     expect(screen.queryByText(/Group deletion outcome is unknown/)).toBeNull();
     expect(screen.queryByRole("heading", { name: "Verify deletion" })).toBeNull();
-    expect(issueGrantMutationStepUp).toHaveBeenCalledOnce();
-    expect(issueGrantMutationStepUp).toHaveBeenCalledWith(CODE);
+    expect(issueGrantMutationStepUp).toHaveBeenCalledTimes(stepUpCallsBeforeAction + 1);
+    expect(issueGrantMutationStepUp).toHaveBeenLastCalledWith(CODE);
     expect(fetchMock.mock.calls.filter(([target]) => target === GROUPS_DELETE_PATH)).toHaveLength(
       0,
     );
