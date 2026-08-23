@@ -786,12 +786,7 @@ describe("AccountsWorkspace", () => {
         return Promise.resolve(ticketResponse());
       }
       if (target === ACCOUNTS_CREATE_PATH) {
-        return Promise.resolve(
-          response(
-            { error: "conflict", correlation_id: CORRELATION },
-            409,
-          ),
-        );
+        return Promise.resolve(response({ error: "conflict", correlation_id: CORRELATION }, 409));
       }
       throw new Error("unexpected request");
     });
