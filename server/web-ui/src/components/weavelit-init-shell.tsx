@@ -251,6 +251,7 @@ export function ApplicationShell({
             {administrationView === "accounts" ? (
               <AccountsWorkspace
                 currentAccountPublicId={authenticatedPublicId}
+                onAdministrationEnded={endAdministration}
                 onSessionEnded={endAuthenticatedSession}
               />
             ) : administrationView === "groups" ? (
