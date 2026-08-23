@@ -428,6 +428,45 @@ describe("GroupsWorkspace", () => {
     );
   });
 
+  it("ends administration when Group deletion step-up reports grant-mutation access denial", async () => {
+    csrf();
+    const onAdministrationEnded = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === GROUPS_LIST_PATH)
+        return Promise.resolve(response({ items: [group()], next_cursor: null }));
+      if (target === GROUPS_VIEW_PATH) return Promise.resolve(response(group()));
+      if (target === MFA_POLICY_STEP_UP_PATH)
+        return Promise.resolve(rejection("authorization_denied", 403));
+      if (target === GROUP_MEMBERS_LIST_PATH || target === GROUP_GRANTS_LIST_PATH)
+        return Promise.resolve(response({ items: [], next_cursor: null }));
+      if (target === ACCOUNTS_LIST_PATH)
+        return Promise.resolve(response({ items: [], next_cursor: null }));
+      if (target === ADMINISTRATION_CATALOG_PATH)
+        return Promise.resolve(
+          response({ client_modules: ["web-ui"], service_modules: [], operations: [] }),
+        );
+      throw new Error("unexpected request");
+    });
+
+    render(<GroupsWorkspace onAdministrationEnded={onAdministrationEnded} />);
+    fireEvent.click(await screen.findByRole("button", { name: "View" }));
+    await screen.findByText(ID);
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.change(screen.getByLabelText("TOTP code"), { target: { value: CODE } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete Group" }));
+
+    await waitFor(() => {
+      expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByText("The Group was not deleted.")).toBeNull();
+    expect(screen.queryByText(/Group deletion outcome is unknown/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Verify deletion" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([target]) => target === GROUPS_DELETE_PATH)).toHaveLength(
+      0,
+    );
+  });
+
   it("ends administration when Group deletion step-up reports session-invalid", async () => {
     csrf();
     const onAdministrationEnded = vi.fn();

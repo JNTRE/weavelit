@@ -19,6 +19,7 @@ import {
   type GroupGrant,
 } from "../api/weavelit-administration-groups";
 import {
+  MfaPolicyGrantMutationAccessDeniedError,
   MfaPolicyRefusedError,
   MfaPolicySessionInvalidError,
   issueGrantMutationStepUp,
@@ -193,6 +194,7 @@ export function GroupAssociations({
         if (!mounted.current) return;
         setAction(null);
         if (
+          error instanceof MfaPolicyGrantMutationAccessDeniedError ||
           error instanceof MfaPolicySessionInvalidError ||
           error instanceof GroupSessionInvalidError ||
           error instanceof GroupAdministrationAccessDeniedError

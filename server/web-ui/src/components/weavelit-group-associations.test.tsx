@@ -334,6 +334,61 @@ describe("GroupAssociations", () => {
   });
 
   it.each(["member", "grant"] as const)(
+    "ends administration when a %s step-up reports grant-mutation access denial",
+    async (kind) => {
+      csrf();
+      const onAdministrationEnded = vi.fn();
+      const onMutationIndeterminate = vi.fn();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+        if (target === GROUP_MEMBERS_LIST_PATH || target === GROUP_GRANTS_LIST_PATH)
+          return Promise.resolve(response({ items: [], next_cursor: null }));
+        if (target === ACCOUNTS_LIST_PATH)
+          return Promise.resolve(response({ items: [account()], next_cursor: null }));
+        if (target === ADMINISTRATION_CATALOG_PATH)
+          return Promise.resolve(
+            response({ client_modules: ["web-ui"], service_modules: [], operations: [] }),
+          );
+        if (target === MFA_POLICY_STEP_UP_PATH)
+          return Promise.resolve(
+            response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+          );
+        throw new Error("unexpected request");
+      });
+
+      render(
+        <GroupAssociations
+          groupPublicId={GROUP_ID}
+          onAdministrationEnded={onAdministrationEnded}
+          onMutationIndeterminate={onMutationIndeterminate}
+        />,
+      );
+      if (kind === "member") {
+        fireEvent.change(await screen.findByLabelText("Add member"), {
+          target: { value: ACCOUNT_ID },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+      } else {
+        fireEvent.click(await screen.findByRole("button", { name: "Add grant" }));
+      }
+      fireEvent.change(screen.getByLabelText("TOTP code"), { target: { value: CODE } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
+
+      await waitFor(() => {
+        expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+      });
+      expect(onMutationIndeterminate).not.toHaveBeenCalled();
+      expect(screen.queryByText("Group access was not changed.")).toBeNull();
+      expect(screen.queryByText(/Group access outcome is unknown/)).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Verify Group access change" })).toBeNull();
+      expect(
+        fetchMock.mock.calls.filter(
+          ([target]) => target === GROUP_MEMBERS_CHANGE_PATH || target === GROUP_GRANTS_CHANGE_PATH,
+        ),
+      ).toHaveLength(0);
+    },
+  );
+
+  it.each(["member", "grant"] as const)(
     "ends administration when a %s step-up reports session-invalid",
     async (kind) => {
       csrf();

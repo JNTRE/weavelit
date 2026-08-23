@@ -12,6 +12,7 @@ import {
   type GroupProjection,
 } from "../api/weavelit-administration-groups";
 import {
+  MfaPolicyGrantMutationAccessDeniedError,
   MfaPolicyRefusedError,
   MfaPolicySessionInvalidError,
   issueGrantMutationStepUp,
@@ -288,6 +289,7 @@ export function GroupsWorkspace({ onAdministrationEnded }: GroupsWorkspaceProps 
         grantMutationTicket.current = "";
         if (mounted.current) {
           if (
+            error instanceof MfaPolicyGrantMutationAccessDeniedError ||
             error instanceof MfaPolicySessionInvalidError ||
             error instanceof GroupSessionInvalidError ||
             error instanceof GroupAdministrationAccessDeniedError
