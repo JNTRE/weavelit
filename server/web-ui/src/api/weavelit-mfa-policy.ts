@@ -15,6 +15,7 @@ const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
 const TICKET_RESULT_FIELDS = new Set(["totp_step_up_ticket"]);
 const ENVELOPE_FIELDS = new Set(["result", "correlation_id"]);
+type TerminalAccessFamily = "mfa_policy" | "grant_mutation";
 
 const REPORTED_REFUSALS = new Map<number, ReadonlySet<string>>([
   [400, new Set(["bad_request"])],
@@ -124,7 +125,7 @@ async function reportedRefusal(response: Response): Promise<string | null> {
 async function mfaPolicyRequest(
   path: string,
   body: object,
-  terminalAccessFamily?: "mfa_policy" | "grant_mutation",
+  terminalAccessFamily: TerminalAccessFamily,
 ): Promise<unknown> {
   const csrf = readCsrfToken();
   if (csrf === null) {
