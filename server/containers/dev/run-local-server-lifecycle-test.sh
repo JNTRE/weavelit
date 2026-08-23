@@ -235,35 +235,39 @@ assert_exists "$server_failure_directory/state/relay.terminated" "failed Server 
 assert_process_stopped "$server_failure_directory/state/relay.pid" "failed Server exit"
 assert_process_stopped "$server_failure_directory/state/server.pid" "failed Server exit"
 
-prepare_case termination
-termination_directory=$case_directory
-(
-  cd "$termination_directory"
-  exec env \
-    PATH="$fake_bin:$PATH" \
-    FAKE_STATE="$termination_directory/state" \
-    FAKE_TLS_DIRECTORY="$termination_directory/tls" \
-    FAKE_OPENSSL_STATUS=0 \
-    FAKE_SERVER_MODE=wait \
-    FAKE_SERVER_STATUS=0 \
-    sh "$launcher_path"
-) &
-active_launcher_pid=$!
+for termination_case in HUP:129 INT:130 TERM:143; do
+  termination_signal=${termination_case%%:*}
+  termination_status=${termination_case#*:}
+  prepare_case "termination-$termination_signal"
+  termination_directory=$case_directory
+  (
+    cd "$termination_directory"
+    exec env \
+      PATH="$fake_bin:$PATH" \
+      FAKE_STATE="$termination_directory/state" \
+      FAKE_TLS_DIRECTORY="$termination_directory/tls" \
+      FAKE_OPENSSL_STATUS=0 \
+      FAKE_SERVER_MODE=wait \
+      FAKE_SERVER_STATUS=0 \
+      sh "$launcher_path"
+  ) &
+  active_launcher_pid=$!
 
-wait_for_file "$termination_directory/state/ready" "termination case"
-kill -TERM "$active_launcher_pid"
-if wait "$active_launcher_pid"; then
-  launcher_status=0
-else
-  launcher_status=$?
-fi
-active_launcher_pid=
+  wait_for_file "$termination_directory/state/ready" "$termination_signal termination case"
+  kill "-$termination_signal" "$active_launcher_pid"
+  if wait "$active_launcher_pid"; then
+    launcher_status=0
+  else
+    launcher_status=$?
+  fi
+  active_launcher_pid=
 
-assert_status 143 "$launcher_status" "terminated launcher"
-assert_absent "$termination_directory/tls" "terminated launcher"
-assert_exists "$termination_directory/state/relay.terminated" "terminated launcher"
-assert_exists "$termination_directory/state/server.terminated" "terminated launcher"
-assert_process_stopped "$termination_directory/state/relay.pid" "terminated launcher"
-assert_process_stopped "$termination_directory/state/server.pid" "terminated launcher"
+  assert_status "$termination_status" "$launcher_status" "$termination_signal-terminated launcher"
+  assert_absent "$termination_directory/tls" "$termination_signal-terminated launcher"
+  assert_exists "$termination_directory/state/relay.terminated" "$termination_signal-terminated launcher"
+  assert_exists "$termination_directory/state/server.terminated" "$termination_signal-terminated launcher"
+  assert_process_stopped "$termination_directory/state/relay.pid" "$termination_signal-terminated launcher"
+  assert_process_stopped "$termination_directory/state/server.pid" "$termination_signal-terminated launcher"
+done
 
 printf 'run-local-server lifecycle tests passed\n'
