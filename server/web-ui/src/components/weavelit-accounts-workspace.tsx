@@ -332,7 +332,13 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
       } catch (error: unknown) {
         if (mounted.current) {
           setPendingStatusAction(null);
-          setStatusState(error instanceof AccountStatusRefusedError ? "refused" : "indeterminate");
+          if (reconcileExpiredSession(error)) {
+            setStatusState("idle");
+          } else {
+            setStatusState(
+              error instanceof AccountStatusRefusedError ? "refused" : "indeterminate",
+            );
+          }
         }
       } finally {
         statusAttemptActive.current = false;

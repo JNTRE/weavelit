@@ -239,23 +239,26 @@ export async function viewAccount(publicId: string): Promise<AccountProjection> 
   return account;
 }
 
-async function isReportedStatusRefusal(response: Response): Promise<boolean> {
+async function reportedStatusRefusal(response: Response): Promise<string | null> {
   const allowedCodes = REPORTED_STATUS_REFUSALS.get(response.status);
   if (allowedCodes === undefined) {
-    return false;
+    return null;
   }
   try {
     const envelope = objectPayload(await response.json());
+    const code = envelope?.error;
     return (
       envelope !== null &&
       Object.keys(envelope).length === 2 &&
-      typeof envelope.error === "string" &&
-      allowedCodes.has(envelope.error) &&
+      typeof code === "string" &&
+      allowedCodes.has(code) &&
       typeof envelope.correlation_id === "string" &&
       CORRELATION_PATTERN.test(envelope.correlation_id)
+        ? code
+        : null
     );
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -290,7 +293,11 @@ export async function changeAccountStatus(
   }
 
   if (response.status !== 200) {
-    if (await isReportedStatusRefusal(response)) {
+    const refusal = await reportedStatusRefusal(response);
+    if (response.status === 401 && refusal === "session_invalid") {
+      throw new AccountsSessionExpiredError();
+    }
+    if (refusal !== null) {
       throw new AccountStatusRefusedError();
     }
     throw new AccountStatusIndeterminateError();

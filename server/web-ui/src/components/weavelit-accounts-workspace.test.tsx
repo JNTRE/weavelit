@@ -428,6 +428,40 @@ describe("AccountsWorkspace", () => {
     ).toBeTruthy();
   });
 
+  it("routes exact status session invalidation to the shell without probing or refreshing", async () => {
+    withCsrfCookie();
+    const onSessionEnded = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === ACCOUNTS_STATUS_PATH) {
+        return Promise.resolve(
+          response({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Disable alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+
+    await waitFor(() => {
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(onSessionEnded.mock.calls[0]).toEqual([]);
+    expect(screen.queryByText("The account status was not changed.")).toBeNull();
+    expect(screen.queryByText(/The account status outcome is unknown\./)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_STATUS_PATH)).toHaveLength(
+      1,
+    );
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(1);
+  });
+
   it("renders a reported status refusal without detail or automatic retry", async () => {
     withCsrfCookie();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {

@@ -284,6 +284,39 @@ describe("account requests", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("maps only exact canonical status session invalidation to an expired session", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: "session_invalid", correlation_id: CORRELATION, unexpected: true },
+          401,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "unknown_refusal", correlation_id: CORRELATION }, 401),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "session_invalid", correlation_id: CORRELATION }, 403),
+      );
+
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountsSessionExpiredError,
+    );
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusIndeterminateError,
+    );
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusIndeterminateError,
+    );
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusIndeterminateError,
+    );
+  });
+
   it("distinguishes exact reported refusals from indeterminate outcomes without retrying", async () => {
     withCsrfCookie();
     const fetchMock = vi
