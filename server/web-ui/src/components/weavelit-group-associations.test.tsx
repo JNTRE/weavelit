@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ACCOUNTS_LIST_PATH } from "../api/weavelit-administration-accounts";
 import {
@@ -157,8 +157,6 @@ function safeRequestLabel(target: unknown): string {
 afterEach(() => Reflect.deleteProperty(document, "cookie"));
 
 describe("GroupAssociations", () => {
-  beforeEach(() => vi.mocked(issueGrantMutationStepUp).mockClear());
-
   it("uses safe selectors and one memory-only ticket to add a member then refresh", async () => {
     globalThis.localStorage.clear();
     globalThis.sessionStorage.clear();
@@ -381,6 +379,7 @@ describe("GroupAssociations", () => {
         fireEvent.click(await screen.findByRole("button", { name: "Add grant" }));
       }
       fireEvent.change(screen.getByLabelText("TOTP code"), { target: { value: CODE } });
+      const stepUpCallsBeforeAction = vi.mocked(issueGrantMutationStepUp).mock.calls.length;
       fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
 
       await waitFor(() => {
@@ -390,8 +389,8 @@ describe("GroupAssociations", () => {
       expect(screen.queryByText("Group access was not changed.")).toBeNull();
       expect(screen.queryByText(/Group access outcome is unknown/)).toBeNull();
       expect(screen.queryByRole("heading", { name: "Verify Group access change" })).toBeNull();
-      expect(issueGrantMutationStepUp).toHaveBeenCalledOnce();
-      expect(issueGrantMutationStepUp).toHaveBeenCalledWith(CODE);
+      expect(issueGrantMutationStepUp).toHaveBeenCalledTimes(stepUpCallsBeforeAction + 1);
+      expect(issueGrantMutationStepUp).toHaveBeenLastCalledWith(CODE);
       expect(
         fetchMock.mock.calls.filter(
           ([target]) => target === GROUP_MEMBERS_CHANGE_PATH || target === GROUP_GRANTS_CHANGE_PATH,
