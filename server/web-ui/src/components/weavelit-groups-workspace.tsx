@@ -58,7 +58,8 @@ export function GroupsWorkspace({ onAdministrationEnded }: GroupsWorkspaceProps 
       if (
         (error instanceof GroupSessionInvalidError ||
           error instanceof GroupAdministrationAccessDeniedError ||
-          error instanceof MfaPolicySessionInvalidError) &&
+          error instanceof MfaPolicySessionInvalidError ||
+          error instanceof MfaPolicyGrantMutationAccessDeniedError) &&
         onAdministrationEnded !== undefined
       ) {
         if (!administrationEnded.current) {
