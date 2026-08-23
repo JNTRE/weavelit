@@ -22,6 +22,7 @@ Apply instructions in this order:
 ## Asset Inventory
 
 - `Containerfile`: Implemented Ubuntu 26.04 LTS development image for the Weavelit Server.
+- `run-local-server.sh`: Container-local launcher for the host-loopback Web UI testing route.
 
 ## Working Rules
 
@@ -32,8 +33,8 @@ Apply instructions in this order:
   and the repository-root `AGENTS.md`.
 - MUST read the canonical documentation in `../../../docs/containers/dev/` before changing
   the Containerfile and update it in the same change when its contract changes.
-- MUST validate changes using `make check` within the mounted source tree and preserve
-  its documented Docker and OCI-compatible validation.
+- MUST validate changes using `make container-check` and preserve its documented
+  Docker and OCI-compatible validation.
 
 - MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
 - MUST keep the required heading order and keep this guide under 100 lines.

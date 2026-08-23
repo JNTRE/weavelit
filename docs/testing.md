@@ -58,15 +58,16 @@ test that fails before the fix and passes after it.
 All Rust code uses the repository's Rust 1.97 stable toolchain. Once the Cargo
 workspace is introduced, it must commit a `rust-toolchain.toml` that pins the
 toolchain and required components. Run the complete Server Rust quality-gate
-suite locally and in CI with:
+suite in the documented development container before integration into `dev` and
+in CI before integration into `main` with:
 
 ```sh
 make -C server check
 ```
 
 The Server `Makefile` runs the following required commands without warnings or
-failures. Add a required default Rust quality gate there so local and CI
-validation remain identical:
+failures. Add a required default Rust quality gate there so development-container
+and CI validation remain identical:
 
 ```sh
 cargo fmt --all -- --check
@@ -167,13 +168,19 @@ rust-analyzer to run Clippy diagnostics during editing. Contributors still run
 the relevant commands before requesting review because editor feedback is not
 CI evidence.
 
-CI must run these gates on every pull request and protected branch. It must
-also run affected integration, contract, and end-to-end suites. The first Rust
-workspace change must add a CI workflow implementing these requirements; a
-later change may add coverage reporting after its report format, exclusions,
-and ratchet policy are documented. A global line-coverage percentage is not a
-merge criterion: coverage is useful as a trend and gap signal but cannot prove
-that the security and failure behavior above was exercised.
+Before a feature pull request is merged into `dev`, its author MUST run
+`make -C server container-check` against the commit to be merged. This is the
+required integration evidence for `dev`.
+
+The Rust Quality workflow MUST run the same gate from a clean Ubuntu checkout
+for every non-draft pull request targeting `main`, including each subsequent
+update to that pull request. A passing result for the current pull-request head
+is required before merging into `main`. It must also run affected integration,
+contract, and end-to-end suites. A later change may add coverage reporting
+after its report format, exclusions, and ratchet policy are documented. A
+global line-coverage percentage is not a merge criterion: coverage is useful
+as a trend and gap signal but cannot prove that the security and failure
+behavior above was exercised.
 
 ## Deployment Confidence
 
@@ -200,11 +207,13 @@ An agent or contributor implementing a change must:
    behavior before editing implementation code.
 2. Add or update focused tests in the same change, including a regression test
    for a bug fix and security tests for any changed trust boundary.
-3. Run the narrowest relevant test during development, then run all required
-   Rust quality gates that the current workspace supports before handoff.
-4. Report the commands actually run, their results, and any validation that
-   could not be performed. Do not claim unrun tests or deployment checks
-   passed.
+3. Run the narrowest relevant test during development. Before merging a change
+  into `dev`, run `make -C server container-check`. Before merging into `main`,
+  obtain a passing Rust Quality result for the current non-draft pull-request
+  head.
+4. Report the commands actually run, their results, the tested commit SHA, and
+  any validation that could not be performed. Do not claim unrun tests or
+  deployment checks passed.
 
 Reviewers verify that the tests exercise the stated behavior, negative cases,
 and observable contract rather than only raising coverage. A pull request is

@@ -4,9 +4,9 @@
 
 The development container provides a reproducible OCI-compatible environment to
 build, run, test, and restart the **[Weavelit Server](../../glossary.md#applications-and-interfaces)**
-without requiring Rust on the host. Docker is a supported local client for this
-image contract; the image and runtime contract must not depend on Docker-only
-behavior.
+without requiring Rust or Node.js on the host. Docker is a supported local
+client for this image contract; the image and runtime contract must not depend
+on Docker-only behavior.
 
 ## Image Contract
 
@@ -47,30 +47,52 @@ The development image must:
 - use explicitly managed volumes for future persistent Server state and any
   optional build-cache data.
 
-The repository-level `.devcontainer/devcontainer.json` must reference this
-Containerfile, mount the source tree at `/workspace`, declare named Docker
-volumes for the state root path exposed through `WEAVELIT_STATE_ROOT` and the
-GitHub CLI configuration path `/home/weavelit/.config/gh`, and require
-`rust-lang.rust-analyzer` as the minimum VS Code extension. It must use host
-networking (`--network=host`) so the Server's configured HTTPS port is directly
-reachable from the development host's browser and other applications. On Linux
-hosts, this works seamlessly with VS Code Dev Containers. It does not expose
-the listener to other devices on the local network; the Server's
-trusted-listener policy permits only loopback addresses. The named GitHub CLI
-configuration volume preserves runtime-only authentication across Dev Container
-rebuilds and restarts; credentials must not appear in the repository, image,
-build arguments, or environment files. Both volume roots must be initialized
-with mode `0700` and use the host UID and GID on Linux, where Dev Containers
-synchronizes the `weavelit` account to keep bind mounts writable; on
-non-Linux hosts they must retain the image account ownership of `10001:10001`.
+## Local Docker Workflow
+
+The host editor remains outside the container. Source edits, repository tooling,
+and editor extensions therefore run on the host, while Rust, Node.js, browser,
+and Server commands run in the development image through these targets:
+
+| Target | Purpose |
+| --- | --- |
+| `make -C server container-check` | Runs the complete `make check` gate in a disposable container. |
+| `make -C server container-shell` | Opens an interactive shell in the development image for targeted Linux commands. |
+| `make -C server container-run` | Builds the Web UI and release Server, then starts a named local Server container for browser testing. |
+| `make -C server container-stop` | Stops the named local Server container. |
+| `make -C server container-logs` | Follows the named local Server container's output. |
+
+The targets mount the repository at `/workspace` and create named Docker
+volumes for the Rust registry, Rust Git dependencies, npm cache, Server target
+directory, and Web UI dependencies. The containers run as the image's
+non-root `weavelit` user. Docker initializes these volumes for that user; host
+tooling must not write build outputs directly.
+
+`container-check` uses only the source and build-cache volumes. It creates no
+retained Server state, so it cannot change the state used by manual browser
+testing. Contributors use this target for the required `dev` integration gate.
+
+`container-run` additionally uses a named, owner-only Server state volume. It
+starts the Server on its required container-loopback listener and publishes an
+internal relay only as `127.0.0.1:8443` on the host. An operator can open
+`https://localhost:8443` in a host browser; the self-signed local certificate
+will require the normal browser warning. Docker does not expose that published
+port to the local network. The persistent state volume survives
+`container-stop` and a later `container-run`; remove it deliberately with
+`docker volume rm weavelit-server-local-state` only when a fresh local
+deployment is intended.
+
+The Docker commands use no host networking. This keeps the workflow portable
+to Docker Desktop on macOS, where Linux-style host networking is unavailable,
+and lets the Server retain its loopback-only listener policy.
 
 ## Validation
 
-The implemented image must be built and exercised with Docker commands for
-Milestone 1 local validation. Its validation must run `make check` inside the
-container and confirm that source, state, and secret mounts follow this design.
-Validation must also confirm that the named state-root volume persists across
-container stop, rebuild, and restart boundaries.
+The implemented image must be built and exercised with the documented Docker
+targets for Milestone 1 local validation. `container-check` must run `make
+check` inside the container and confirm that source and build-cache mounts
+follow this design. `container-run` must confirm that the named state-root
+volume persists across container stop and restart boundaries and that the Web
+UI is reachable only through the host-loopback published port.
 
 Browser-based end-to-end validation is part of the image contract. The image
 installs the pinned Chromium build as the non-root development user, so
