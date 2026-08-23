@@ -5,8 +5,10 @@ import {
   ACCOUNTS_LIST_PATH,
   ACCOUNTS_STATUS_PATH,
   ACCOUNTS_VIEW_PATH,
+  AccountStatusAdministrationAccessDeniedError,
   AccountStatusIndeterminateError,
   AccountStatusRefusedError,
+  AccountsAdministrationAccessDeniedError,
   AccountsSessionExpiredError,
   AccountsUnavailableError,
   changeAccountStatus,
@@ -244,6 +246,32 @@ describe("account requests", () => {
     await expect(listAccounts()).rejects.toBeInstanceOf(AccountsUnavailableError);
   });
 
+  it.each([ACCOUNTS_LIST_PATH, ACCOUNTS_VIEW_PATH])(
+    "maps only an exact canonical administration denial from %s to terminal access loss",
+    async (path) => {
+      withCsrfCookie();
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(
+            { error: "authorization_denied", correlation_id: CORRELATION, extra: true },
+            403,
+          ),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 401),
+        );
+
+      const request = () => (path === ACCOUNTS_LIST_PATH ? listAccounts() : viewAccount(PUBLIC_ID));
+
+      await expect(request()).rejects.toBeInstanceOf(AccountsAdministrationAccessDeniedError);
+      await expect(request()).rejects.toBeInstanceOf(AccountsUnavailableError);
+      await expect(request()).rejects.toBeInstanceOf(AccountsUnavailableError);
+    },
+  );
+
   it("changes status through one exact same-origin request and accepts only the requested result", async () => {
     withCsrfCookie();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -322,7 +350,7 @@ describe("account requests", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+        jsonResponse({ error: "request_origin_denied", correlation_id: CORRELATION }, 403),
       )
       .mockRejectedValueOnce(new Error("connection closed after request"))
       .mockResolvedValueOnce(
@@ -342,5 +370,32 @@ describe("account requests", () => {
       AccountStatusIndeterminateError,
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("maps only an exact canonical status denial to terminal access loss", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: "authorization_denied", correlation_id: CORRELATION, extra: true },
+          403,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 401),
+      );
+
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusAdministrationAccessDeniedError,
+    );
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusIndeterminateError,
+    );
+    await expect(changeAccountStatus(PUBLIC_ID, false)).rejects.toBeInstanceOf(
+      AccountStatusIndeterminateError,
+    );
   });
 });

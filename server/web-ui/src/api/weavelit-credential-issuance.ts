@@ -14,6 +14,7 @@ const PUBLIC_ID_PATTERN = new RegExp(
 const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 const TEMPORARY_PASSWORD_PATTERN = /^[A-Za-z0-9_-]{24}$/;
 const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
+const ERROR_ENVELOPE_FIELDS = new Set(["error", "correlation_id"]);
 
 const REPORTED_REFUSALS = new Map<number, ReadonlySet<string>>([
   [400, new Set(["bad_request"])],
@@ -44,6 +45,13 @@ export class CredentialIssuanceSessionInvalidError extends CredentialIssuanceRef
   }
 }
 
+export class CredentialIssuanceAdministrationAccessDeniedError extends Error {
+  constructor() {
+    super("credential_issuance_administration_access_denied");
+    this.name = "CredentialIssuanceAdministrationAccessDeniedError";
+  }
+}
+
 export class CredentialIssuanceIndeterminateError extends Error {
   constructor() {
     super("credential_issuance_indeterminate");
@@ -56,6 +64,11 @@ function objectPayload(payload: unknown): Record<string, unknown> | null {
     return null;
   }
   return payload as Record<string, unknown>;
+}
+
+function hasExactFields(value: Record<string, unknown>, fields: ReadonlySet<string>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === fields.size && keys.every((key) => fields.has(key));
 }
 
 function typedResult(payload: unknown): Record<string, unknown> | null {
@@ -98,7 +111,12 @@ export function readCredentialIssued(payload: unknown): CredentialIssued | null 
   return { publicId, temporaryPassword };
 }
 
-async function reportedRefusal(response: Response): Promise<string | null> {
+interface ReportedRefusal {
+  readonly code: string;
+  readonly isAdministrationAccessDenied: boolean;
+}
+
+async function reportedRefusal(response: Response): Promise<ReportedRefusal | null> {
   const allowedCodes = REPORTED_REFUSALS.get(response.status);
   if (allowedCodes === undefined) {
     return null;
@@ -112,7 +130,13 @@ async function reportedRefusal(response: Response): Promise<string | null> {
       typeof envelope.correlation_id === "string" &&
       CORRELATION_PATTERN.test(envelope.correlation_id)
     ) {
-      return envelope.error;
+      return {
+        code: envelope.error,
+        isAdministrationAccessDenied:
+          response.status === 403 &&
+          envelope.error === "authorization_denied" &&
+          hasExactFields(envelope, ERROR_ENVELOPE_FIELDS),
+      };
     }
     return null;
   } catch {
@@ -146,8 +170,11 @@ async function credentialIssuanceRequest(path: string, body: object): Promise<un
 
   if (response.status !== 200) {
     const refusal = await reportedRefusal(response);
-    if (refusal === "session_invalid") {
+    if (refusal?.code === "session_invalid") {
       throw new CredentialIssuanceSessionInvalidError();
+    }
+    if (refusal?.isAdministrationAccessDenied) {
+      throw new CredentialIssuanceAdministrationAccessDeniedError();
     }
     if (refusal !== null) {
       throw new CredentialIssuanceRefusedError();

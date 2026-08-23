@@ -5,6 +5,7 @@ import {
   ACCOUNTS_CREATE_PATH,
   ACCOUNTS_RESET_PASSWORD_PATH,
   CREDENTIAL_ISSUANCE_STEP_UP_PATH,
+  CredentialIssuanceAdministrationAccessDeniedError,
   CredentialIssuanceIndeterminateError,
   CredentialIssuanceRefusedError,
   CredentialIssuanceSessionInvalidError,
@@ -317,6 +318,42 @@ describe("credential issuance requests", () => {
     expect(JSON.stringify(error)).toBe('{"name":"CredentialIssuanceSessionInvalidError"}');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["assurance", () => issueCredentialIssuanceTicket(PASSWORD)],
+    ["create", () => createAccount("alice", undefined, TICKET)],
+    ["reset", () => resetAccountPassword(PUBLIC_ID, TICKET)],
+  ])(
+    "maps only an exact canonical administration denial from %s to terminal access loss",
+    async (_operation, request) => {
+      withCsrfCookie();
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(
+            { error: "authorization_denied", correlation_id: CORRELATION, extra: true },
+            403,
+          ),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "authorization_denied", correlation_id: "UPPERCASE" }, 403),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 401),
+        );
+
+      await expect(request()).rejects.toBeInstanceOf(
+        CredentialIssuanceAdministrationAccessDeniedError,
+      );
+      await expect(request()).rejects.toBeInstanceOf(CredentialIssuanceRefusedError);
+      await expect(request()).rejects.toBeInstanceOf(CredentialIssuanceIndeterminateError);
+      await expect(request()).rejects.toBeInstanceOf(CredentialIssuanceIndeterminateError);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    },
+  );
 
   it.each([
     ["a transport failure", () => Promise.reject(new Error("ECONNRESET secret"))],

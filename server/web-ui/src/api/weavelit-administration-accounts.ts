@@ -57,10 +57,24 @@ export class AccountsSessionExpiredError extends Error {
   }
 }
 
+export class AccountsAdministrationAccessDeniedError extends Error {
+  constructor() {
+    super("accounts_administration_access_denied");
+    this.name = "AccountsAdministrationAccessDeniedError";
+  }
+}
+
 export class AccountStatusRefusedError extends Error {
   constructor() {
     super("account_status_refused");
     this.name = "AccountStatusRefusedError";
+  }
+}
+
+export class AccountStatusAdministrationAccessDeniedError extends Error {
+  constructor() {
+    super("account_status_administration_access_denied");
+    this.name = "AccountStatusAdministrationAccessDeniedError";
   }
 }
 
@@ -183,6 +197,24 @@ async function isExpiredSession(response: Response): Promise<boolean> {
   }
 }
 
+async function isAdministrationAccessDenied(response: Response): Promise<boolean> {
+  if (response.status !== 403) {
+    return false;
+  }
+  try {
+    const envelope = objectPayload(await response.json());
+    return (
+      envelope !== null &&
+      hasExactFields(envelope, ERROR_ENVELOPE_FIELDS) &&
+      envelope.error === "authorization_denied" &&
+      typeof envelope.correlation_id === "string" &&
+      CORRELATION_PATTERN.test(envelope.correlation_id)
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function accountRequest(path: string, body: object): Promise<unknown> {
   const csrf = readCsrfToken();
   if (csrf === null) {
@@ -208,6 +240,9 @@ async function accountRequest(path: string, body: object): Promise<unknown> {
   if (response.status !== 200) {
     if (await isExpiredSession(response)) {
       throw new AccountsSessionExpiredError();
+    }
+    if (await isAdministrationAccessDenied(response)) {
+      throw new AccountsAdministrationAccessDeniedError();
     }
     throw new AccountsUnavailableError();
   }
@@ -239,7 +274,12 @@ export async function viewAccount(publicId: string): Promise<AccountProjection> 
   return account;
 }
 
-async function reportedStatusRefusal(response: Response): Promise<string | null> {
+interface ReportedStatusRefusal {
+  readonly code: string;
+  readonly isAdministrationAccessDenied: boolean;
+}
+
+async function reportedStatusRefusal(response: Response): Promise<ReportedStatusRefusal | null> {
   const allowedCodes = REPORTED_STATUS_REFUSALS.get(response.status);
   if (allowedCodes === undefined) {
     return null;
@@ -248,12 +288,18 @@ async function reportedStatusRefusal(response: Response): Promise<string | null>
     const envelope = objectPayload(await response.json());
     const code = envelope?.error;
     return envelope !== null &&
-      Object.keys(envelope).length === 2 &&
+      hasExactFields(envelope, ERROR_ENVELOPE_FIELDS) &&
       typeof code === "string" &&
       allowedCodes.has(code) &&
       typeof envelope.correlation_id === "string" &&
       CORRELATION_PATTERN.test(envelope.correlation_id)
-      ? code
+      ? {
+          code,
+          isAdministrationAccessDenied:
+            response.status === 403 &&
+            code === "authorization_denied" &&
+            hasExactFields(envelope, ERROR_ENVELOPE_FIELDS),
+        }
       : null;
   } catch {
     return null;
@@ -292,8 +338,11 @@ export async function changeAccountStatus(
 
   if (response.status !== 200) {
     const refusal = await reportedStatusRefusal(response);
-    if (response.status === 401 && refusal === "session_invalid") {
+    if (response.status === 401 && refusal?.code === "session_invalid") {
       throw new AccountsSessionExpiredError();
+    }
+    if (refusal?.isAdministrationAccessDenied) {
+      throw new AccountStatusAdministrationAccessDeniedError();
     }
     if (refusal !== null) {
       throw new AccountStatusRefusedError();
