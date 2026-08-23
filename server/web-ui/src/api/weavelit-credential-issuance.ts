@@ -14,10 +14,6 @@ const PUBLIC_ID_PATTERN = new RegExp(
 const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 const TEMPORARY_PASSWORD_PATTERN = /^[A-Za-z0-9_-]{24}$/;
 const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
-const TICKET_RESULT_FIELDS = new Set(["credential_issuance_ticket"]);
-const CREDENTIAL_RESULT_FIELDS = new Set(["public_id", "temporary_password"]);
-const SUCCESS_ENVELOPE_FIELDS = new Set(["result", "correlation_id"]);
-const ERROR_ENVELOPE_FIELDS = new Set(["error", "correlation_id"]);
 
 const REPORTED_REFUSALS = new Map<number, ReadonlySet<string>>([
   [400, new Set(["bad_request"])],
@@ -62,16 +58,10 @@ function objectPayload(payload: unknown): Record<string, unknown> | null {
   return payload as Record<string, unknown>;
 }
 
-function hasExactFields(value: Record<string, unknown>, fields: ReadonlySet<string>): boolean {
-  const keys = Object.keys(value);
-  return keys.length === fields.size && keys.every((key) => fields.has(key));
-}
-
 function typedResult(payload: unknown): Record<string, unknown> | null {
   const envelope = objectPayload(payload);
   if (
     envelope === null ||
-    !hasExactFields(envelope, SUCCESS_ENVELOPE_FIELDS) ||
     typeof envelope.correlation_id !== "string" ||
     !CORRELATION_PATTERN.test(envelope.correlation_id)
   ) {
@@ -82,7 +72,7 @@ function typedResult(payload: unknown): Record<string, unknown> | null {
 
 export function readCredentialIssuanceTicket(payload: unknown): string | null {
   const result = typedResult(payload);
-  if (result === null || !hasExactFields(result, TICKET_RESULT_FIELDS)) {
+  if (result === null) {
     return null;
   }
   const ticket = result.credential_issuance_ticket;
@@ -91,7 +81,7 @@ export function readCredentialIssuanceTicket(payload: unknown): string | null {
 
 export function readCredentialIssued(payload: unknown): CredentialIssued | null {
   const result = typedResult(payload);
-  if (result === null || !hasExactFields(result, CREDENTIAL_RESULT_FIELDS)) {
+  if (result === null) {
     return null;
   }
   const publicId = result.public_id;
@@ -117,7 +107,6 @@ async function reportedRefusal(response: Response): Promise<string | null> {
     const envelope = objectPayload(await response.json());
     if (
       envelope !== null &&
-      hasExactFields(envelope, ERROR_ENVELOPE_FIELDS) &&
       typeof envelope.error === "string" &&
       allowedCodes.has(envelope.error) &&
       typeof envelope.correlation_id === "string" &&

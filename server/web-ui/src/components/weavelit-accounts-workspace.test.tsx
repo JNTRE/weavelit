@@ -786,7 +786,16 @@ describe("AccountsWorkspace", () => {
         return Promise.resolve(ticketResponse());
       }
       if (target === ACCOUNTS_CREATE_PATH) {
-        return Promise.resolve(response({ error: "conflict", correlation_id: CORRELATION }, 409));
+        return Promise.resolve(
+          response(
+            {
+              error: "conflict",
+              correlation_id: CORRELATION,
+              detail: "internal credential refusal detail",
+            },
+            409,
+          ),
+        );
       }
       throw new Error("unexpected request");
     });
@@ -803,7 +812,8 @@ describe("AccountsWorkspace", () => {
       "Credential issuance was not completed.",
     );
     expect(document.body.textContent).not.toContain("conflict");
-    expect(onSessionEnded).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("internal credential refusal detail");
+    expect(onSessionEnded).toHaveBeenCalledTimes(0);
   });
 
   it("probes the authenticated session after another-account reset and refreshes once", async () => {

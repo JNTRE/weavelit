@@ -75,20 +75,20 @@ describe("credential issuance response parsing", () => {
     ).toEqual({ publicId: PUBLIC_ID, temporaryPassword: TEMPORARY_PASSWORD });
   });
 
-  it("rejects additive success envelope and result fields", () => {
+  it("accepts additive success envelope and result fields", () => {
     expect(
       readCredentialIssuanceTicket({
         result: { credential_issuance_ticket: TICKET, extra: true },
         correlation_id: CORRELATION,
       }),
-    ).toBeNull();
+    ).toBe(TICKET);
     expect(
       readCredentialIssuanceTicket({
         result: { credential_issuance_ticket: TICKET },
         correlation_id: CORRELATION,
         extra: true,
       }),
-    ).toBeNull();
+    ).toBe(TICKET);
     expect(
       readCredentialIssued({
         result: {
@@ -98,17 +98,25 @@ describe("credential issuance response parsing", () => {
         },
         correlation_id: CORRELATION,
       }),
-    ).toBeNull();
+    ).toEqual({ publicId: PUBLIC_ID, temporaryPassword: TEMPORARY_PASSWORD });
     expect(
       readCredentialIssued({
         result: { public_id: PUBLIC_ID, temporary_password: TEMPORARY_PASSWORD },
         correlation_id: CORRELATION,
         extra: true,
       }),
-    ).toBeNull();
+    ).toEqual({ publicId: PUBLIC_ID, temporaryPassword: TEMPORARY_PASSWORD });
   });
 
   it.each([
+    ["a non-object envelope", null],
+    ["a missing result", { correlation_id: CORRELATION }],
+    ["a non-object result", { result: [], correlation_id: CORRELATION }],
+    ["a missing ticket", { result: {}, correlation_id: CORRELATION }],
+    [
+      "a non-string ticket",
+      { result: { credential_issuance_ticket: 7 }, correlation_id: CORRELATION },
+    ],
     [
       "a noncanonical ticket",
       { result: { credential_issuance_ticket: `${"A".repeat(42)}B` }, correlation_id: CORRELATION },
@@ -138,6 +146,15 @@ describe("credential issuance response parsing", () => {
         correlation_id: CORRELATION,
       }),
     ).toBeNull();
+  });
+
+  it.each([
+    ["a missing public identifier", { temporary_password: TEMPORARY_PASSWORD }],
+    ["a non-string public identifier", { public_id: 7, temporary_password: TEMPORARY_PASSWORD }],
+    ["a missing temporary password", { public_id: PUBLIC_ID }],
+    ["a non-string temporary password", { public_id: PUBLIC_ID, temporary_password: null }],
+  ])("rejects %s", (_label, result) => {
+    expect(readCredentialIssued({ result, correlation_id: CORRELATION })).toBeNull();
   });
 
   it("accepts public ids with canonical base64url final characters", () => {
@@ -207,6 +224,20 @@ describe("credential issuance requests", () => {
     expect(requestBody(fetchMock.mock.calls[0]![1])).toEqual({ password: PASSWORD });
   });
 
+  it("accepts additive ticket result and envelope fields without retrying", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        result: { credential_issuance_ticket: TICKET, extra: true },
+        correlation_id: CORRELATION,
+        extra: true,
+      }),
+    );
+
+    await expect(issueCredentialIssuanceTicket(PASSWORD)).resolves.toBe(TICKET);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("submits create and reset with a body-only ticket and validates the reset target", async () => {
     withCsrfCookie();
     const fetchMock = vi
@@ -255,7 +286,12 @@ describe("credential issuance requests", () => {
     [503, "service_unavailable"],
   ])("maps the reported %i %s response to one reason-free refusal", async (status, code) => {
     withCsrfCookie();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(refusal(code, status));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(
+        { error: code, correlation_id: CORRELATION, detail: "future-compatible detail" },
+        status,
+      ),
+    );
 
     const error = await issueCredentialIssuanceTicket(PASSWORD).catch((reason: unknown) => reason);
 
@@ -267,7 +303,12 @@ describe("credential issuance requests", () => {
     withCsrfCookie();
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(refusal("session_invalid", 401));
+      .mockResolvedValue(
+        jsonResponse(
+          { error: "session_invalid", correlation_id: CORRELATION, detail: "ignored detail" },
+          401,
+        ),
+      );
 
     const error = await issueCredentialIssuanceTicket(PASSWORD).catch((reason: unknown) => reason);
 
@@ -286,27 +327,45 @@ describe("credential issuance requests", () => {
       () => Promise.resolve(success({ credential_issuance_ticket: "short" })),
     ],
     [
-      "an additive success envelope",
+      "a success missing its result",
       () =>
         Promise.resolve(
           jsonResponse({
-            result: { credential_issuance_ticket: TICKET },
             correlation_id: CORRELATION,
-            extra: true,
           }),
         ),
     ],
     [
-      "an additive ticket result",
-      () => Promise.resolve(success({ credential_issuance_ticket: TICKET, extra: true })),
-    ],
-    [
-      "an additive error envelope",
+      "a success with malformed correlation",
       () =>
         Promise.resolve(
-          jsonResponse({ error: "session_invalid", correlation_id: CORRELATION, extra: true }, 401),
+          jsonResponse({
+            result: { credential_issuance_ticket: TICKET },
+            correlation_id: "UPPERCASE",
+          }),
         ),
     ],
+    [
+      "an error missing its correlation",
+      () => Promise.resolve(jsonResponse({ error: "session_invalid" }, 401)),
+    ],
+    [
+      "an error missing its code",
+      () => Promise.resolve(jsonResponse({ correlation_id: CORRELATION }, 401)),
+    ],
+    [
+      "an error with a non-string code",
+      () =>
+        Promise.resolve(jsonResponse({ error: 7, correlation_id: CORRELATION }, 401)),
+    ],
+    [
+      "an error with malformed correlation",
+      () =>
+        Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: "UPPERCASE" }, 401),
+        ),
+    ],
+    ["a known error under the wrong status", () => Promise.resolve(refusal("conflict", 403))],
     ["an unknown rejection", () => Promise.resolve(refusal("future_error", 503))],
   ])("reports %s as indeterminate without retrying", async (_label, outcome) => {
     withCsrfCookie();
@@ -319,17 +378,26 @@ describe("credential issuance requests", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("reports an additive credential result as indeterminate without retrying", async () => {
+  it("accepts additive credential result and envelope fields without retrying", async () => {
     withCsrfCookie();
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
-        success({ public_id: PUBLIC_ID, temporary_password: TEMPORARY_PASSWORD, extra: true }),
+        jsonResponse({
+          result: {
+            public_id: PUBLIC_ID,
+            temporary_password: TEMPORARY_PASSWORD,
+            extra: true,
+          },
+          correlation_id: CORRELATION,
+          extra: true,
+        }),
       );
 
-    await expect(createAccount("alice", undefined, TICKET)).rejects.toBeInstanceOf(
-      CredentialIssuanceIndeterminateError,
-    );
+    await expect(createAccount("alice", undefined, TICKET)).resolves.toEqual({
+      publicId: PUBLIC_ID,
+      temporaryPassword: TEMPORARY_PASSWORD,
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
