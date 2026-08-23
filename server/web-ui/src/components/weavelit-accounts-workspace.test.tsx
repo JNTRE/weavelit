@@ -459,7 +459,9 @@ describe("AccountsWorkspace", () => {
       1,
     );
     expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
-    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
+    );
   });
 
   it("renders a reported status refusal without detail or automatic retry", async () => {

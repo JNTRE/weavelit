@@ -355,8 +355,7 @@ describe("credential issuance requests", () => {
     ],
     [
       "an error with a non-string code",
-      () =>
-        Promise.resolve(jsonResponse({ error: 7, correlation_id: CORRELATION }, 401)),
+      () => Promise.resolve(jsonResponse({ error: 7, correlation_id: CORRELATION }, 401)),
     ],
     [
       "an error with malformed correlation",
@@ -380,19 +379,17 @@ describe("credential issuance requests", () => {
 
   it("accepts additive credential result and envelope fields without retrying", async () => {
     withCsrfCookie();
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        jsonResponse({
-          result: {
-            public_id: PUBLIC_ID,
-            temporary_password: TEMPORARY_PASSWORD,
-            extra: true,
-          },
-          correlation_id: CORRELATION,
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        result: {
+          public_id: PUBLIC_ID,
+          temporary_password: TEMPORARY_PASSWORD,
           extra: true,
-        }),
-      );
+        },
+        correlation_id: CORRELATION,
+        extra: true,
+      }),
+    );
 
     await expect(createAccount("alice", undefined, TICKET)).resolves.toEqual({
       publicId: PUBLIC_ID,

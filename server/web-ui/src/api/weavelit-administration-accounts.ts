@@ -247,16 +247,14 @@ async function reportedStatusRefusal(response: Response): Promise<string | null>
   try {
     const envelope = objectPayload(await response.json());
     const code = envelope?.error;
-    return (
-      envelope !== null &&
+    return envelope !== null &&
       Object.keys(envelope).length === 2 &&
       typeof code === "string" &&
       allowedCodes.has(code) &&
       typeof envelope.correlation_id === "string" &&
       CORRELATION_PATTERN.test(envelope.correlation_id)
-        ? code
-        : null
-    );
+      ? code
+      : null;
   } catch {
     return null;
   }
