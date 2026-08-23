@@ -11,6 +11,7 @@ import {
 import { probeSession } from "../api/weavelit-authentication";
 import {
   CredentialIssuanceIndeterminateError,
+  CredentialIssuanceSessionInvalidError,
   createAccount,
   issueCredentialIssuanceTicket,
   resetAccountPassword,
@@ -140,6 +141,7 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
     (error: unknown, preservedDisclosure?: CredentialIssued): boolean => {
       if (
         !(error instanceof AccountsSessionExpiredError) &&
+        !(error instanceof CredentialIssuanceSessionInvalidError) &&
         !(error instanceof MfaPolicySessionInvalidError)
       ) {
         return false;
@@ -473,6 +475,9 @@ export function AccountsWorkspace({ onSessionEnded }: AccountsWorkspaceProps): J
       } catch (error: unknown) {
         credentialIssuanceTicket.current = "";
         if (!mounted.current) {
+          return;
+        }
+        if (reconcileExpiredSession(error)) {
           return;
         }
         if (consuming) {

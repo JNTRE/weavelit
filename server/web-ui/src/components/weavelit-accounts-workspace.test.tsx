@@ -629,6 +629,90 @@ describe("AccountsWorkspace", () => {
     storageWrite.mockRestore();
   });
 
+  it.each([
+    {
+      phase: "assurance ticket",
+      action: "create",
+      invalidPath: CREDENTIAL_ISSUANCE_STEP_UP_PATH,
+      expectedCreateRequests: 0,
+      expectedResetRequests: 0,
+    },
+    {
+      phase: "create",
+      action: "create",
+      invalidPath: ACCOUNTS_CREATE_PATH,
+      expectedCreateRequests: 1,
+      expectedResetRequests: 0,
+    },
+    {
+      phase: "reset",
+      action: "reset",
+      invalidPath: ACCOUNTS_RESET_PASSWORD_PATH,
+      expectedCreateRequests: 0,
+      expectedResetRequests: 1,
+    },
+  ])(
+    "ends the session neutrally when the $phase phase reports canonical session invalidation",
+    async ({ action, invalidPath, expectedCreateRequests, expectedResetRequests }) => {
+      withCsrfCookie();
+      const onSessionEnded = vi.fn();
+      let listRequests = 0;
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+        if (target === ACCOUNTS_LIST_PATH) {
+          listRequests += 1;
+          return Promise.resolve(
+            accountPage([
+              account(ALICE_ID, "alice", "Alice", true, false),
+              account(BOB_ID, "bob", "Bob", true, false),
+            ]),
+          );
+        }
+        if (target === invalidPath) {
+          return Promise.resolve(
+            response({ error: "session_invalid", correlation_id: CORRELATION }, 401),
+          );
+        }
+        if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+          return Promise.resolve(ticketResponse());
+        }
+        throw new Error("unexpected request");
+      });
+
+      render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
+      await screen.findByRole("rowheader", { name: action === "create" ? "alice" : "bob" });
+      if (action === "create") {
+        fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+        fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Reset password for bob" }));
+      }
+      fireEvent.change(screen.getByLabelText("Current password"), {
+        target: { value: PASSWORD },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+      await waitFor(() => {
+        expect(onSessionEnded.mock.calls).toEqual([[]]);
+      });
+      expect(listRequests).toBe(1);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === CREDENTIAL_ISSUANCE_STEP_UP_PATH),
+      ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH),
+      ).toHaveLength(expectedCreateRequests);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_RESET_PASSWORD_PATH),
+      ).toHaveLength(expectedResetRequests);
+      expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(
+        0,
+      );
+      expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
+      expect(screen.queryByText("Credential issuance was not completed.")).toBeNull();
+      expect(screen.queryByText(/The credential issuance outcome is unknown\./)).toBeNull();
+    },
+  );
+
   it("does not retry an assurance request whose outcome is unknown", async () => {
     withCsrfCookie();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
