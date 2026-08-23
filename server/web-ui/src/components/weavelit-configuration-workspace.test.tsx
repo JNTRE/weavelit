@@ -160,8 +160,10 @@ describe("Configuration workspace", () => {
       });
     });
 
+    await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    await screen.findByText("later");
+    expect(listLogConfigurations).toHaveBeenCalledWith("later-cursor");
+    await screen.findByRole("cell", { name: "later" });
     expect(screen.getByLabelText<HTMLSelectElement>("System Logs").value).toBe("secondary");
     expect(screen.getByLabelText<HTMLSelectElement>("Audit Logs").value).toBe("secondary");
 
