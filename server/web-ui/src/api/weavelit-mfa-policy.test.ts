@@ -5,6 +5,7 @@ import {
   ACCOUNTS_MFA_REQUIREMENT_PATH,
   ACCOUNTS_MFA_RESET_PATH,
   MFA_POLICY_STEP_UP_PATH,
+  MfaPolicyGrantMutationAccessDeniedError,
   MfaPolicyIndeterminateError,
   MfaPolicyRefusedError,
   MfaPolicySessionInvalidError,
@@ -192,6 +193,34 @@ describe("MFA policy requests", () => {
     expect(JSON.stringify(error)).toBe('{"name":"MfaPolicySessionInvalidError"}');
   });
 
+  it("maps exact GrantMutation authorization denial to a terminal access error", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+    );
+
+    const error = await issueGrantMutationStepUp(CODE).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(MfaPolicyGrantMutationAccessDeniedError);
+    expect(error).toBeInstanceOf(MfaPolicyRefusedError);
+    expect(JSON.stringify(error)).toBe(
+      '{"name":"MfaPolicyGrantMutationAccessDeniedError"}',
+    );
+  });
+
+  it("keeps MFA-policy authorization denial as a generic refusal", async () => {
+    withCsrfCookie();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+    );
+
+    const error = await issueMfaPolicyStepUp(CODE).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(MfaPolicyRefusedError);
+    expect(error).not.toBeInstanceOf(MfaPolicyGrantMutationAccessDeniedError);
+    expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyRefusedError"}');
+  });
+
   it.each([
     ["a transport failure", () => Promise.reject(new Error("ECONNRESET secret"))],
     ["a gateway timeout", () => Promise.resolve(jsonResponse({ error: "gateway_timeout" }, 504))],
@@ -201,11 +230,21 @@ describe("MFA policy requests", () => {
       () => Promise.resolve(success({ totp_step_up_ticket: TICKET, extra: true })),
     ],
     ["an unknown rejection", () => Promise.resolve(jsonResponse({ error: "future" }, 503))],
+    [
+      "a malformed authorization denial",
+      () =>
+        Promise.resolve(
+          jsonResponse(
+            { error: "authorization_denied", correlation_id: CORRELATION, unexpected: true },
+            403,
+          ),
+        ),
+    ],
   ])("reports %s as indeterminate without retrying", async (_label, outcome) => {
     withCsrfCookie();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(outcome);
 
-    const error = await issueMfaPolicyStepUp(CODE).catch((reason: unknown) => reason);
+    const error = await issueGrantMutationStepUp(CODE).catch((reason: unknown) => reason);
 
     expect(error).toBeInstanceOf(MfaPolicyIndeterminateError);
     expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyIndeterminateError"}');

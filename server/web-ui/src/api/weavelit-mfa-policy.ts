@@ -39,6 +39,13 @@ export class MfaPolicySessionInvalidError extends MfaPolicyRefusedError {
   }
 }
 
+export class MfaPolicyGrantMutationAccessDeniedError extends MfaPolicyRefusedError {
+  constructor() {
+    super();
+    this.name = "MfaPolicyGrantMutationAccessDeniedError";
+  }
+}
+
 export class MfaPolicyIndeterminateError extends Error {
   constructor() {
     super("mfa_policy_indeterminate");
@@ -107,7 +114,11 @@ async function reportedRefusal(response: Response): Promise<string | null> {
   }
 }
 
-async function mfaPolicyRequest(path: string, body: object): Promise<unknown> {
+async function mfaPolicyRequest(
+  path: string,
+  body: object,
+  stepUpFamily?: "mfa_policy" | "grant_mutation",
+): Promise<unknown> {
   const csrf = readCsrfToken();
   if (csrf === null) {
     throw new MfaPolicyRefusedError();
@@ -134,6 +145,9 @@ async function mfaPolicyRequest(path: string, body: object): Promise<unknown> {
     if (refusal === "session_invalid") {
       throw new MfaPolicySessionInvalidError();
     }
+    if (refusal === "authorization_denied" && stepUpFamily === "grant_mutation") {
+      throw new MfaPolicyGrantMutationAccessDeniedError();
+    }
     if (refusal !== null) {
       throw new MfaPolicyRefusedError();
     }
@@ -155,10 +169,11 @@ export async function issueGrantMutationStepUp(code: string): Promise<string> {
 }
 
 async function issueStepUp(family: "mfa_policy" | "grant_mutation", code: string): Promise<string> {
-  const payload = await mfaPolicyRequest(MFA_POLICY_STEP_UP_PATH, {
+  const payload = await mfaPolicyRequest(
+    MFA_POLICY_STEP_UP_PATH,
+    { family, code },
     family,
-    code,
-  });
+  );
   const ticket = readMfaPolicyTicket(payload);
   if (ticket === null) {
     throw new MfaPolicyIndeterminateError();
