@@ -115,6 +115,71 @@ describe("Configuration workspace", () => {
     expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
   });
 
+  it("retains committed assignments after loading another page and submits them again", async () => {
+    const secondary = {
+      ...configuration,
+      configurationName: "secondary",
+      assignedLogTypes: [],
+    };
+    const later = {
+      ...configuration,
+      configurationName: "later",
+      assignedLogTypes: [],
+    };
+    vi.mocked(listLogConfigurations).mockImplementation((cursor) =>
+      cursor === "later-cursor"
+        ? Promise.resolve({ items: [later], nextCursor: null })
+        : Promise.resolve({ items: [configuration, secondary], nextCursor: "later-cursor" }),
+    );
+    vi.mocked(changeLogConfiguration).mockResolvedValue({
+      ...configuration,
+      assignedLogTypes: [],
+    });
+
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("secondary");
+    fireEvent.click(screen.getAllByRole("button", { name: "View" })[0]!);
+    await screen.findByRole("heading", { name: "primary" });
+    fireEvent.change(screen.getByLabelText("System Logs"), {
+      target: { value: "secondary" },
+    });
+    fireEvent.change(screen.getByLabelText("Audit Logs"), {
+      target: { value: "secondary" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+
+    await waitFor(() => {
+      expect(changeLogConfiguration).toHaveBeenCalledWith({
+        configurationName: "primary",
+        enabled: true,
+        settings: [],
+        assignments: [
+          { logType: "system", configurationName: "secondary" },
+          { logType: "audit", configurationName: "secondary" },
+        ],
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await screen.findByText("later");
+    expect(screen.getByLabelText<HTMLSelectElement>("System Logs").value).toBe("secondary");
+    expect(screen.getByLabelText<HTMLSelectElement>("Audit Logs").value).toBe("secondary");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => {
+      expect(changeLogConfiguration).toHaveBeenLastCalledWith({
+        configurationName: "primary",
+        enabled: true,
+        settings: [],
+        assignments: [
+          { logType: "system", configurationName: "secondary" },
+          { logType: "audit", configurationName: "secondary" },
+        ],
+      });
+      expect(changeLogConfiguration).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("blocks Log submission while Refresh is pending", async () => {
     let resolveRefresh!: (page: LogConfigurationsPage) => void;
     const pendingRefresh = new Promise<LogConfigurationsPage>((resolve) => {

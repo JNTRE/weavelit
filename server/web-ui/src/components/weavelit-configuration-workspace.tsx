@@ -256,6 +256,10 @@ export function ConfigurationWorkspace({
       auditAssignment === ""
     )
       return;
+    const committedAssignments = {
+      system: systemAssignment,
+      audit: auditAssignment,
+    };
     logChangeActive.current = true;
     selectionRequest.current += 1;
     setLogChangeState("submitting");
@@ -264,8 +268,8 @@ export function ConfigurationWorkspace({
       enabled,
       settings,
       assignments: [
-        { logType: "system", configurationName: systemAssignment },
-        { logType: "audit", configurationName: auditAssignment },
+        { logType: "system", configurationName: committedAssignments.system },
+        { logType: "audit", configurationName: committedAssignments.audit },
       ],
     })
       .then(
@@ -278,9 +282,23 @@ export function ConfigurationWorkspace({
             setSettings(configuration.settings);
             setConfigurations((current) =>
               current.map((item) =>
-                item.configurationName === configuration.configurationName ? configuration : item,
+                item.configurationName === configuration.configurationName
+                  ? {
+                      ...configuration,
+                      assignedLogTypes: (["system", "audit"] as const).filter(
+                        (logType) => committedAssignments[logType] === item.configurationName,
+                      ),
+                    }
+                  : {
+                      ...item,
+                      assignedLogTypes: (["system", "audit"] as const).filter(
+                        (logType) => committedAssignments[logType] === item.configurationName,
+                      ),
+                    },
               ),
             );
+            setSystemAssignment(committedAssignments.system);
+            setAuditAssignment(committedAssignments.audit);
             setLogChangeState("idle");
           }
         },
