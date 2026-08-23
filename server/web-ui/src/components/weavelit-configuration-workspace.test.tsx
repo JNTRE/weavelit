@@ -30,6 +30,7 @@ const configuration: LogConfiguration = {
 };
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(listLogConfigurations).mockResolvedValue({
     items: [configuration],
     nextCursor: null,
@@ -134,6 +135,11 @@ describe("Configuration workspace", () => {
     const form = heading.closest("form");
     expect(form).not.toBeNull();
 
+    for (const control of form!.querySelectorAll<
+      HTMLInputElement | HTMLSelectElement | HTMLButtonElement
+    >("input, select, button"))
+      expect(control.disabled).toBe(false);
+
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => {
       expect(listLogConfigurations).toHaveBeenCalledTimes(2);
@@ -175,12 +181,13 @@ describe("Configuration workspace", () => {
     const loadMore = screen.getByRole<HTMLButtonElement>("button", { name: "Load more" });
     expect(form).not.toBeNull();
 
-    act(() => {
-      form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-      loadMore.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => {
+      expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
+      expect(loadMore.disabled).toBe(true);
     });
 
-    expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
+    fireEvent.click(loadMore);
     expect(listLogConfigurations).toHaveBeenCalledTimes(1);
     expect(loadMore.disabled).toBe(true);
 
@@ -213,7 +220,8 @@ describe("Configuration workspace", () => {
       );
     });
     vi.mocked(viewLogConfiguration).mockResolvedValue(refreshed);
-    vi.mocked(changeLogConfiguration).mockResolvedValue(refreshed);
+    const changedRefreshed = { ...refreshed, enabled: false };
+    vi.mocked(changeLogConfiguration).mockResolvedValue(changedRefreshed);
 
     render(<ConfigurationWorkspace />);
     await screen.findByText("primary");
@@ -239,11 +247,12 @@ describe("Configuration workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "View" }));
     await screen.findByRole("heading", { name: "refreshed" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enabled" }));
     fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
     await waitFor(() => {
       expect(changeLogConfiguration).toHaveBeenCalledWith({
         configurationName: "refreshed",
-        enabled: true,
+        enabled: false,
         settings: [],
         assignments: [
           { logType: "system", configurationName: "refreshed" },
