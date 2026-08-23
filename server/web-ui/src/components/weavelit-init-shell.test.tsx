@@ -1214,7 +1214,10 @@ describe("ApplicationShell sign-in panel gating", () => {
       if (target === "/api/v1/administration/step-up/totp") {
         stepUpRequests += 1;
         return Promise.resolve(
-          jsonResponse({ result: { totp_step_up_ticket: ticket }, correlation_id: AUTH_CORRELATION }),
+          jsonResponse({
+            result: { totp_step_up_ticket: ticket },
+            correlation_id: AUTH_CORRELATION,
+          }),
         );
       }
       if (target === "/api/v1/administration/accounts/mfa-requirement") {

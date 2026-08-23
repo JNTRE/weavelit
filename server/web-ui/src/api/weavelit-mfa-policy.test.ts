@@ -211,18 +211,21 @@ describe("MFA policy requests", () => {
     ["step-up", () => issueMfaPolicyStepUp(CODE)],
     ["requirement", () => changeMfaRequirement(PUBLIC_ID, true, TICKET)],
     ["reset", () => resetMfaEnrollment(PUBLIC_ID, TICKET)],
-  ])("maps exact MFA-policy authorization denial on %s to a terminal access error", async (_path, request) => {
-    withCsrfCookie();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
-    );
+  ])(
+    "maps exact MFA-policy authorization denial on %s to a terminal access error",
+    async (_path, request) => {
+      withCsrfCookie();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        jsonResponse({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+      );
 
-    const error = await request().catch((reason: unknown) => reason);
+      const error = await request().catch((reason: unknown) => reason);
 
-    expect(error).toBeInstanceOf(MfaPolicyAccessDeniedError);
-    expect(error).not.toBeInstanceOf(MfaPolicyGrantMutationAccessDeniedError);
-    expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyAccessDeniedError"}');
-  });
+      expect(error).toBeInstanceOf(MfaPolicyAccessDeniedError);
+      expect(error).not.toBeInstanceOf(MfaPolicyGrantMutationAccessDeniedError);
+      expect(JSON.stringify(error)).toBe('{"name":"MfaPolicyAccessDeniedError"}');
+    },
+  );
 
   it.each([
     ["a transport failure", () => Promise.reject(new Error("ECONNRESET secret"))],

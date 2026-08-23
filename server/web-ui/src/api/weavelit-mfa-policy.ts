@@ -197,11 +197,15 @@ export async function changeMfaRequirement(
   if (!validPublicId(publicId) || !TICKET_PATTERN.test(ticket)) {
     throw new MfaPolicyRefusedError();
   }
-  const payload = await mfaPolicyRequest(ACCOUNTS_MFA_REQUIREMENT_PATH, {
-    public_id: publicId,
-    required,
-    totp_step_up_ticket: ticket,
-  }, "mfa_policy");
+  const payload = await mfaPolicyRequest(
+    ACCOUNTS_MFA_REQUIREMENT_PATH,
+    {
+      public_id: publicId,
+      required,
+      totp_step_up_ticket: ticket,
+    },
+    "mfa_policy",
+  );
   const account = readPolicyAccount(payload);
   if (account?.publicId !== publicId || account.mfaRequired !== required) {
     throw new MfaPolicyIndeterminateError();
@@ -216,10 +220,14 @@ export async function resetMfaEnrollment(
   if (!validPublicId(publicId) || !TICKET_PATTERN.test(ticket)) {
     throw new MfaPolicyRefusedError();
   }
-  const payload = await mfaPolicyRequest(ACCOUNTS_MFA_RESET_PATH, {
-    public_id: publicId,
-    totp_step_up_ticket: ticket,
-  }, "mfa_policy");
+  const payload = await mfaPolicyRequest(
+    ACCOUNTS_MFA_RESET_PATH,
+    {
+      public_id: publicId,
+      totp_step_up_ticket: ticket,
+    },
+    "mfa_policy",
+  );
   const account = readPolicyAccount(payload);
   if (account?.publicId !== publicId) {
     throw new MfaPolicyIndeterminateError();

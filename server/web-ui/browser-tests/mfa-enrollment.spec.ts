@@ -454,7 +454,10 @@ test("an MFA-policy authorization denial returns to neutral sign-in without retr
   await page.getByLabel("Authentication code").fill(CODE);
   await page.getByRole("button", { name: "Verify and apply" }).click();
 
-  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute("data-authentication-state", "unauthenticated");
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute(
+    "data-authentication-state",
+    "unauthenticated",
+  );
   await expect(page.locator(USERNAME_INPUT)).toHaveValue("");
   await expect(page.locator(PASSWORD_INPUT)).toHaveValue("");
   await expect(page.getByRole("heading", { name: "Accounts" })).toHaveCount(0);

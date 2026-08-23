@@ -1371,7 +1371,9 @@ describe("AccountsWorkspace", () => {
     expect(screen.queryByText("MFA policy was not changed.")).toBeNull();
     expect(screen.queryByText(/The MFA policy outcome is unknown\./)).toBeNull();
     expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
-    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
+    );
     expect(
       fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_MFA_REQUIREMENT_PATH),
     ).toHaveLength(1);
