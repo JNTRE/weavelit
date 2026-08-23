@@ -7,6 +7,7 @@ import {
   CREDENTIAL_ISSUANCE_STEP_UP_PATH,
   CredentialIssuanceIndeterminateError,
   CredentialIssuanceRefusedError,
+  CredentialIssuanceSessionInvalidError,
   createAccount,
   issueCredentialIssuanceTicket,
   readCredentialIssued,
@@ -72,6 +73,39 @@ describe("credential issuance response parsing", () => {
         correlation_id: CORRELATION,
       }),
     ).toEqual({ publicId: PUBLIC_ID, temporaryPassword: TEMPORARY_PASSWORD });
+  });
+
+  it("rejects additive success envelope and result fields", () => {
+    expect(
+      readCredentialIssuanceTicket({
+        result: { credential_issuance_ticket: TICKET, extra: true },
+        correlation_id: CORRELATION,
+      }),
+    ).toBeNull();
+    expect(
+      readCredentialIssuanceTicket({
+        result: { credential_issuance_ticket: TICKET },
+        correlation_id: CORRELATION,
+        extra: true,
+      }),
+    ).toBeNull();
+    expect(
+      readCredentialIssued({
+        result: {
+          public_id: PUBLIC_ID,
+          temporary_password: TEMPORARY_PASSWORD,
+          extra: true,
+        },
+        correlation_id: CORRELATION,
+      }),
+    ).toBeNull();
+    expect(
+      readCredentialIssued({
+        result: { public_id: PUBLIC_ID, temporary_password: TEMPORARY_PASSWORD },
+        correlation_id: CORRELATION,
+        extra: true,
+      }),
+    ).toBeNull();
   });
 
   it.each([
@@ -212,7 +246,8 @@ describe("credential issuance requests", () => {
 
   it.each([
     [400, "bad_request"],
-    [401, "session_invalid"],
+    [403, "request_origin_denied"],
+    [403, "authorization_denied"],
     [403, "credential_issuance_denied"],
     [404, "not_found"],
     [405, "method_not_allowed"],
@@ -228,6 +263,22 @@ describe("credential issuance requests", () => {
     expect(JSON.stringify(error)).toBe('{"name":"CredentialIssuanceRefusedError"}');
   });
 
+  it("preserves an exact session-invalid response without retrying", async () => {
+    withCsrfCookie();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(refusal("session_invalid", 401));
+
+    const error = await issueCredentialIssuanceTicket(PASSWORD).catch(
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(CredentialIssuanceSessionInvalidError);
+    expect(error).toBeInstanceOf(CredentialIssuanceRefusedError);
+    expect(JSON.stringify(error)).toBe('{"name":"CredentialIssuanceSessionInvalidError"}');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["a transport failure", () => Promise.reject(new Error("ECONNRESET secret"))],
     ["a gateway timeout", () => Promise.resolve(refusal("gateway_timeout", 504))],
@@ -235,6 +286,31 @@ describe("credential issuance requests", () => {
     [
       "a malformed success",
       () => Promise.resolve(success({ credential_issuance_ticket: "short" })),
+    ],
+    [
+      "an additive success envelope",
+      () =>
+        Promise.resolve(
+          jsonResponse({
+            result: { credential_issuance_ticket: TICKET },
+            correlation_id: CORRELATION,
+            extra: true,
+          }),
+        ),
+    ],
+    [
+      "an additive ticket result",
+      () => Promise.resolve(success({ credential_issuance_ticket: TICKET, extra: true })),
+    ],
+    [
+      "an additive error envelope",
+      () =>
+        Promise.resolve(
+          jsonResponse(
+            { error: "session_invalid", correlation_id: CORRELATION, extra: true },
+            401,
+          ),
+        ),
     ],
     ["an unknown rejection", () => Promise.resolve(refusal("future_error", 503))],
   ])("reports %s as indeterminate without retrying", async (_label, outcome) => {
@@ -245,6 +321,18 @@ describe("credential issuance requests", () => {
 
     expect(error).toBeInstanceOf(CredentialIssuanceIndeterminateError);
     expect(JSON.stringify(error)).toBe('{"name":"CredentialIssuanceIndeterminateError"}');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an additive credential result as indeterminate without retrying", async () => {
+    withCsrfCookie();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      success({ public_id: PUBLIC_ID, temporary_password: TEMPORARY_PASSWORD, extra: true }),
+    );
+
+    await expect(createAccount("alice", undefined, TICKET)).rejects.toBeInstanceOf(
+      CredentialIssuanceIndeterminateError,
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

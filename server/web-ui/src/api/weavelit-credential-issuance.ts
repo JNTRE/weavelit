@@ -14,6 +14,10 @@ const PUBLIC_ID_PATTERN = new RegExp(
 const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 const TEMPORARY_PASSWORD_PATTERN = /^[A-Za-z0-9_-]{24}$/;
 const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
+const TICKET_RESULT_FIELDS = new Set(["credential_issuance_ticket"]);
+const CREDENTIAL_RESULT_FIELDS = new Set(["public_id", "temporary_password"]);
+const SUCCESS_ENVELOPE_FIELDS = new Set(["result", "correlation_id"]);
+const ERROR_ENVELOPE_FIELDS = new Set(["error", "correlation_id"]);
 
 const REPORTED_REFUSALS = new Map<number, ReadonlySet<string>>([
   [400, new Set(["bad_request"])],
@@ -37,6 +41,13 @@ export class CredentialIssuanceRefusedError extends Error {
   }
 }
 
+export class CredentialIssuanceSessionInvalidError extends CredentialIssuanceRefusedError {
+  constructor() {
+    super();
+    this.name = "CredentialIssuanceSessionInvalidError";
+  }
+}
+
 export class CredentialIssuanceIndeterminateError extends Error {
   constructor() {
     super("credential_issuance_indeterminate");
@@ -51,10 +62,16 @@ function objectPayload(payload: unknown): Record<string, unknown> | null {
   return payload as Record<string, unknown>;
 }
 
+function hasExactFields(value: Record<string, unknown>, fields: ReadonlySet<string>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === fields.size && keys.every((key) => fields.has(key));
+}
+
 function typedResult(payload: unknown): Record<string, unknown> | null {
   const envelope = objectPayload(payload);
   if (
     envelope === null ||
+    !hasExactFields(envelope, SUCCESS_ENVELOPE_FIELDS) ||
     typeof envelope.correlation_id !== "string" ||
     !CORRELATION_PATTERN.test(envelope.correlation_id)
   ) {
@@ -64,13 +81,17 @@ function typedResult(payload: unknown): Record<string, unknown> | null {
 }
 
 export function readCredentialIssuanceTicket(payload: unknown): string | null {
-  const ticket = typedResult(payload)?.credential_issuance_ticket;
+  const result = typedResult(payload);
+  if (result === null || !hasExactFields(result, TICKET_RESULT_FIELDS)) {
+    return null;
+  }
+  const ticket = result.credential_issuance_ticket;
   return typeof ticket === "string" && TICKET_PATTERN.test(ticket) ? ticket : null;
 }
 
 export function readCredentialIssued(payload: unknown): CredentialIssued | null {
   const result = typedResult(payload);
-  if (result === null) {
+  if (result === null || !hasExactFields(result, CREDENTIAL_RESULT_FIELDS)) {
     return null;
   }
   const publicId = result.public_id;
@@ -87,22 +108,26 @@ export function readCredentialIssued(payload: unknown): CredentialIssued | null 
   return { publicId, temporaryPassword };
 }
 
-async function isReportedRefusal(response: Response): Promise<boolean> {
+async function reportedRefusal(response: Response): Promise<string | null> {
   const allowedCodes = REPORTED_REFUSALS.get(response.status);
   if (allowedCodes === undefined) {
-    return false;
+    return null;
   }
   try {
     const envelope = objectPayload(await response.json());
-    return (
+    if (
       envelope !== null &&
+      hasExactFields(envelope, ERROR_ENVELOPE_FIELDS) &&
       typeof envelope.error === "string" &&
       allowedCodes.has(envelope.error) &&
       typeof envelope.correlation_id === "string" &&
       CORRELATION_PATTERN.test(envelope.correlation_id)
-    );
+    ) {
+      return envelope.error;
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -131,7 +156,11 @@ async function credentialIssuanceRequest(path: string, body: object): Promise<un
   }
 
   if (response.status !== 200) {
-    if (await isReportedRefusal(response)) {
+    const refusal = await reportedRefusal(response);
+    if (refusal === "session_invalid") {
+      throw new CredentialIssuanceSessionInvalidError();
+    }
+    if (refusal !== null) {
       throw new CredentialIssuanceRefusedError();
     }
     throw new CredentialIssuanceIndeterminateError();
