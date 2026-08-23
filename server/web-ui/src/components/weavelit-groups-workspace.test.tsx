@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CSRF_COOKIE_NAME } from "../api/weavelit-authentication";
 import { ACCOUNTS_LIST_PATH } from "../api/weavelit-administration-accounts";
@@ -52,6 +52,7 @@ function csrf(): void {
   });
 }
 afterEach(() => Reflect.deleteProperty(document, "cookie"));
+beforeEach(() => vi.mocked(issueGrantMutationStepUp).mockClear());
 
 describe("GroupsWorkspace", () => {
   it("loads and views only public Group projections", async () => {
