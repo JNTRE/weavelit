@@ -681,6 +681,10 @@ rendered as `Cannot remove the last Server Administration Permission grant.`
 without account, Group, grant, membership, or policy detail. Other reported
 refusals and indeterminate outcomes use fixed reason-free text.
 
+An exact Group-mutation session invalidation or authorization-loss result
+withdraws the complete Administration presentation and shows neutral sign-in
+with blank fields. It bypasses generic refusal and retry presentation.
+
 Delete first opens a client-only confirmation and sends no confirmation field
 or text. After confirmation, one form accepts exactly one six-digit TOTP code
 for the `grant_mutation` family. The code is cleared when step-up starts; the
@@ -870,7 +874,9 @@ requires refresh; a reported refusal and an indeterminate outcome use distinct
 fixed text without Server code, status, response detail, field path, Audit
 state, or dependency diagnostic. Every exact safe `200` change projection is a
 committed success; the client neither receives nor retains internal Audit
-recovery state.
+recovery state. Collection reads and saves are mutually exclusive: controls
+cannot save from assignments a read may replace, and a stale read cannot
+replace a committed change projection.
 
 ## Same-Origin Requests
 
