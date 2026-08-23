@@ -17,7 +17,7 @@ CONTAINER_WORKSPACE_MOUNT := --mount type=bind,source="$(REPOSITORY_ROOT)",targe
 CONTAINER_CACHE_MOUNTS := --mount type=volume,source=$(CONTAINER_CARGO_REGISTRY_VOLUME),target=/home/weavelit/.cargo/registry --mount type=volume,source=$(CONTAINER_CARGO_GIT_VOLUME),target=/home/weavelit/.cargo/git --mount type=volume,source=$(CONTAINER_NPM_CACHE_VOLUME),target=/home/weavelit/.npm --mount type=volume,source=$(CONTAINER_TARGET_VOLUME),target=/workspace/server/target --mount type=volume,source=$(CONTAINER_NODE_MODULES_VOLUME),target=/workspace/server/web-ui/node_modules
 CONTAINER_WORKSPACE_ARGS := $(CONTAINER_WORKSPACE_MOUNT) $(CONTAINER_CACHE_MOUNTS)
 
-.PHONY: check check-web-ui check-rust web-ui-install web-ui-format web-ui-lint web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify web-ui-browser-install web-ui-browser-test container-build container-volumes container-check container-shell container-prepare container-run container-stop container-logs
+.PHONY: check check-web-ui check-rust web-ui-install web-ui-format web-ui-lint web-ui-typecheck web-ui-test web-ui-script-test web-ui-build web-ui-verify web-ui-browser-install web-ui-browser-test container-build container-volumes container-launcher-test container-check container-shell container-prepare container-run container-stop container-logs
 
 # The browser smoke test drives the release binary produced by `check-rust`, so
 # the stages of this gate must not be reordered or run concurrently.
@@ -83,7 +83,10 @@ container-volumes: container-build
 	$(DOCKER) volume create "$(CONTAINER_STATE_VOLUME)" >/dev/null
 	$(DOCKER) run --rm --user root --mount type=volume,source=$(CONTAINER_CARGO_REGISTRY_VOLUME),target=/cargo-registry --mount type=volume,source=$(CONTAINER_CARGO_GIT_VOLUME),target=/cargo-git --mount type=volume,source=$(CONTAINER_NPM_CACHE_VOLUME),target=/npm-cache --mount type=volume,source=$(CONTAINER_TARGET_VOLUME),target=/target --mount type=volume,source=$(CONTAINER_NODE_MODULES_VOLUME),target=/node-modules --mount type=volume,source=$(CONTAINER_STATE_VOLUME),target=/state "$(CONTAINER_IMAGE)" sh -ec 'chown 10001:10001 /cargo-registry /cargo-git /npm-cache /target /node-modules /state; chmod 700 /cargo-registry /cargo-git /npm-cache /state; chmod 755 /target /node-modules'
 
-container-check: container-volumes
+container-launcher-test:
+	sh containers/dev/run-local-server-lifecycle-test.sh
+
+container-check: container-launcher-test container-volumes
 	$(DOCKER) run --rm $(CONTAINER_WORKSPACE_ARGS) --workdir /workspace/server "$(CONTAINER_IMAGE)" make check
 
 container-shell: container-volumes

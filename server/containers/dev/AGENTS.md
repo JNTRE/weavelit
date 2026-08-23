@@ -22,6 +22,7 @@ Apply instructions in this order:
 ## Asset Inventory
 
 - `Containerfile`: Implemented Ubuntu 26.04 LTS development image for the Weavelit Server.
+- `run-local-server-lifecycle-test.sh`: Controlled launcher cleanup and process-lifecycle regression test.
 - `run-local-server.sh`: Container-local launcher for the host-loopback Web UI testing route.
 
 ## Working Rules
