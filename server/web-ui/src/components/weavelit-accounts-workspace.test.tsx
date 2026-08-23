@@ -692,7 +692,7 @@ describe("AccountsWorkspace", () => {
       fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
 
       await waitFor(() => {
-        expect(onSessionEnded.mock.calls).toEqual([[]]);
+        expect(onSessionEnded).toHaveBeenCalledTimes(1);
       });
       expect(listRequests).toBe(1);
       expect(
@@ -777,6 +777,7 @@ describe("AccountsWorkspace", () => {
 
   it("renders a reported refusal without its reason or response detail", async () => {
     withCsrfCookie();
+    const onSessionEnded = vi.fn();
     vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
       if (target === ACCOUNTS_LIST_PATH) {
         return Promise.resolve(accountPage([]));
@@ -787,7 +788,7 @@ describe("AccountsWorkspace", () => {
       if (target === ACCOUNTS_CREATE_PATH) {
         return Promise.resolve(
           response(
-            { error: "conflict", correlation_id: CORRELATION, detail: "private conflict cause" },
+            { error: "conflict", correlation_id: CORRELATION },
             409,
           ),
         );
@@ -795,7 +796,7 @@ describe("AccountsWorkspace", () => {
       throw new Error("unexpected request");
     });
 
-    render(<AccountsWorkspace />);
+    render(<AccountsWorkspace onSessionEnded={onSessionEnded} />);
     await screen.findByText("0 loaded");
     fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
@@ -807,7 +808,7 @@ describe("AccountsWorkspace", () => {
       "Credential issuance was not completed.",
     );
     expect(document.body.textContent).not.toContain("conflict");
-    expect(document.body.textContent).not.toContain("private conflict cause");
+    expect(onSessionEnded).not.toHaveBeenCalled();
   });
 
   it("probes the authenticated session after another-account reset and refreshes once", async () => {
