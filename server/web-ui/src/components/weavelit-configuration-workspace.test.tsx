@@ -158,6 +158,78 @@ describe("Configuration workspace", () => {
     });
   });
 
+  it("freezes View during an active Log save and ignores a stale selection response", async () => {
+    const secondary = { ...configuration, configurationName: "secondary", module: "file" };
+    let resolveSecondaryView!: (value: LogConfiguration) => void;
+    const pendingSecondaryView = new Promise<LogConfiguration>((resolve) => {
+      resolveSecondaryView = resolve;
+    });
+    vi.mocked(listLogConfigurations).mockResolvedValue({
+      items: [configuration, secondary],
+      nextCursor: null,
+    });
+    vi.mocked(viewLogConfiguration).mockImplementation((configurationName) =>
+      configurationName === "secondary" ? pendingSecondaryView : Promise.resolve(configuration),
+    );
+    const committed = {
+      ...configuration,
+      enabled: false,
+      settings: [{ key: "destination", value: "committed" }],
+    };
+    let resolveChange!: (value: LogConfiguration) => void;
+    const pendingChange = new Promise<LogConfiguration>((resolve) => {
+      resolveChange = resolve;
+    });
+    vi.mocked(changeLogConfiguration).mockReturnValue(pendingChange);
+
+    render(<ConfigurationWorkspace />);
+    await screen.findByText("secondary");
+    const viewButtons = screen.getAllByRole<HTMLButtonElement>("button", { name: "View" });
+    fireEvent.click(viewButtons[0]!);
+    const heading = await screen.findByRole("heading", { name: "primary" });
+    fireEvent.click(viewButtons[1]!);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enabled" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => {
+      expect(changeLogConfiguration).toHaveBeenCalledWith({
+        configurationName: "primary",
+        enabled: false,
+        settings: [],
+        assignments: [
+          { logType: "system", configurationName: "primary" },
+          { logType: "audit", configurationName: "primary" },
+        ],
+      });
+    });
+
+    const form = heading.closest("form");
+    expect(form).not.toBeNull();
+    for (const control of form!.querySelectorAll<
+      HTMLInputElement | HTMLSelectElement | HTMLButtonElement
+    >("input, select, button"))
+      expect(control.disabled).toBe(true);
+    for (const viewButton of viewButtons) expect(viewButton.disabled).toBe(true);
+
+    await act(async () => {
+      resolveSecondaryView(secondary);
+      await pendingSecondaryView;
+    });
+    expect(screen.getByRole("heading", { name: "primary" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "secondary" })).toBeNull();
+    expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveChange(committed);
+      await pendingChange;
+    });
+    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Enabled" }).checked).toBe(
+      false,
+    );
+    expect(screen.getByLabelText<HTMLInputElement>("destination").value).toBe("committed");
+    expect(changeLogConfiguration).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the committed Log projection and blocks Load more during an active save", async () => {
     const stale = { ...configuration, configurationName: "stale" };
     vi.mocked(listLogConfigurations).mockImplementation((cursor) =>

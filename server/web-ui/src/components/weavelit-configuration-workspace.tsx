@@ -222,7 +222,12 @@ export function ConfigurationWorkspace({
   };
 
   const selectConfiguration = (configurationName: string): void => {
-    if (logChangeState === "conflict" || logChangeState === "indeterminate") return;
+    if (
+      logChangeActive.current ||
+      logChangeState === "conflict" ||
+      logChangeState === "indeterminate"
+    )
+      return;
     const request = ++selectionRequest.current;
     void viewLogConfiguration(configurationName).then(
       (configuration) => {
@@ -252,6 +257,7 @@ export function ConfigurationWorkspace({
     )
       return;
     logChangeActive.current = true;
+    selectionRequest.current += 1;
     setLogChangeState("submitting");
     void changeLogConfiguration({
       configurationName: selected.configurationName,
@@ -268,6 +274,8 @@ export function ConfigurationWorkspace({
             collectionRequest.current += 1;
             setCollectionState("ready");
             setSelected(configuration);
+            setEnabled(configuration.enabled);
+            setSettings(configuration.settings);
             setConfigurations((current) =>
               current.map((item) =>
                 item.configurationName === configuration.configurationName ? configuration : item,
@@ -395,7 +403,7 @@ export function ConfigurationWorkspace({
                       onClick={() => {
                         selectConfiguration(configuration.configurationName);
                       }}
-                      disabled={logChangeLocked}
+                      disabled={logChangeControlsLocked}
                     >
                       View
                     </button>
