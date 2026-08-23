@@ -744,6 +744,12 @@ nor the consuming action. After an indeterminate consuming response it does not
 reissue a ticket, repeat the action, re-fetch the account to infer success, or
 attempt to recover the temporary password.
 
+An exact canonical session-invalidation result is not a generic credential-
+issuance refusal. The application withdraws authenticated Administration
+presentation and uses its existing session handling to present neutral sign-in.
+It does not automatically retry, enter a later issuance phase, or disclose a
+temporary password.
+
 On a valid create success, the application captures the returned temporary
 password locally before requesting exactly one first-page account refresh. It
 does not use that refresh to retrieve or confirm the password. After every
