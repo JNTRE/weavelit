@@ -157,9 +157,7 @@ async function mfaPolicyRequest(
       if (terminalAccessFamily === "mfa_policy") {
         throw new MfaPolicyAccessDeniedError();
       }
-      if (terminalAccessFamily === "grant_mutation") {
-        throw new MfaPolicyGrantMutationAccessDeniedError();
-      }
+      throw new MfaPolicyGrantMutationAccessDeniedError();
     }
     if (refusal !== null) {
       throw new MfaPolicyRefusedError();
