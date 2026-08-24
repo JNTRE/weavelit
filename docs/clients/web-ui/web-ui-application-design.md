@@ -665,10 +665,13 @@ does not retry the request, probe or reconcile the session, reload Accounts,
 or preserve a temporary-password disclosure. These are terminal-loss behaviors
 only; they do not apply to any near-match.
 
-An exact canonical `session_invalid` result instead continues session
-reconciliation and does not enter the terminal authorization-denial path. A
-malformed or additive error envelope, a wrong HTTP status, or any other error
-code is not a canonical authorization denial: account reads retain their
+An exact canonical `session_invalid` result instead continues the existing
+session reconciliation, which withdraws to the neutral sign-in control with
+blank username and password inputs. It is distinct from authorization
+terminal-loss classification and does not enter the terminal
+authorization-denial path. A malformed or additive error envelope, a wrong
+HTTP status, or any other error code is not a canonical authorization denial:
+account reads retain their
 unavailable presentation; account-status results retain their existing refusal
 or indeterminate presentation; and credential assurance, create, and reset
 retain their existing refusal or indeterminate presentation. As elsewhere in

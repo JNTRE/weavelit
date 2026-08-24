@@ -120,8 +120,8 @@ targets for Milestone 1 local validation. Before image or container build,
 `container-check` must run the launcher lifecycle preflight on the host through
 `sh`; this preflight assumes the host provides the standard POSIX shell and
 coreutils. Each controlled launcher case has a five-second watchdog. On timeout,
-the harness returns status `124`, sends `SIGTERM` to the launcher, waits one
-second for launcher-owned cleanup, sends `SIGKILL` to any remaining recorded
+the harness returns status `124`, sends `SIGTERM` to the launcher, waits three
+seconds (60 0.05-second intervals) for launcher-owned cleanup, sends `SIGKILL` to any remaining recorded
 relay or Server child so the launcher can reap it, then sends `SIGKILL` to the
 launcher only when it still remains alive. The timeout regression keeps a fake
 Server in its wait mode and proves that launcher cleanup terminates the relay
