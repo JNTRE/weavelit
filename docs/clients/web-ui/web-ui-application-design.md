@@ -640,11 +640,40 @@ application never requests or presents password verifiers, credential or
 temporary-password state, MFA factors, session values, internal state
 identifiers, or Audit Reference Identifiers.
 
-Collection, paging, view, transport, authorization, session, and malformed
-response failures all render the same fixed `Accounts are unavailable.` text.
+Except for the exact session and authorization results in
+[Administration Access Loss](#administration-access-loss), collection, paging,
+view, transport, and malformed-response failures all render the same fixed
+`Accounts are unavailable.` text.
 The workspace renders no Server code, status number, response detail, field
 path, or transport diagnostic. It stores no account result or cursor in a URL,
 cookie, `localStorage`, or `sessionStorage`.
+
+### Administration Access Loss
+
+This rule applies to the Accounts read routes, the account-status route, and
+the credential-assurance, create, and reset-password routes. An authorization
+denial ends the authenticated Administration presentation only when its result
+is HTTP `403` with exactly this envelope and no additional members:
+
+```json
+{"error":"authorization_denied","correlation_id":"<opaque-server-value>"}
+```
+
+On that exact canonical result, the application withdraws the complete
+Administration presentation and renders neutral sign-in with blank fields. It
+does not retry the request, probe or reconcile the session, reload Accounts,
+or preserve a temporary-password disclosure. These are terminal-loss behaviors
+only; they do not apply to any near-match.
+
+An exact canonical `session_invalid` result instead continues session
+reconciliation and does not enter the terminal authorization-denial path. A
+malformed or additive error envelope, a wrong HTTP status, or any other error
+code is not a canonical authorization denial: account reads retain their
+unavailable presentation; account-status results retain their existing refusal
+or indeterminate presentation; and credential assurance, create, and reset
+retain their existing refusal or indeterminate presentation. As elsewhere in
+this document, additive members on otherwise valid success responses are
+ignored and required response members remain strictly validated.
 
 ### Groups Workspace
 
@@ -715,10 +744,6 @@ renders only `The account status outcome is unknown. Refresh before taking
 another status action.` Neither state renders a Server code, target detail,
 status number, response content, or transport diagnostic.
 
-An exact canonical session-invalidation result bypasses the generic refusal
-presentation: the application withdraws the authenticated Administration shell
-and presents neutral sign-in with blank fields.
-
 After a valid status result, the application probes the existing session. An
 authenticated result causes one first-page Accounts refresh. An unauthenticated
 result, including successful self-disable, withdraws the Accounts workspace and
@@ -760,12 +785,6 @@ The application ignores additive response data and never renders it. Every
 documented required response member remains strictly validated; a missing or
 wrongly typed member is an invalid response and follows the unknown-outcome
 presentation.
-
-An exact canonical session-invalidation result bypasses the generic
-credential-issuance refusal presentation: the application withdraws the
-authenticated Administration shell and presents neutral sign-in with blank
-fields. It does not automatically retry, enter a later issuance phase, or
-disclose a temporary password.
 
 On a valid create success, the application captures the returned temporary
 password locally before requesting exactly one first-page account refresh. It
