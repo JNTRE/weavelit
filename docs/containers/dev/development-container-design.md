@@ -92,9 +92,11 @@ gate. `dev` has no GitHub gate.
 `container-run` additionally uses a named, owner-only Server state volume. It
 starts the Server on its required container-loopback listener and publishes an
 internal relay only as `127.0.0.1:8443` on the host. An operator can open
-`https://localhost:8443` in a host browser; the self-signed local certificate
+`https://127.0.0.1:8443` in a host browser; the self-signed local certificate
 will require the normal browser warning. Docker does not expose that published
-port to the local network. The persistent state volume survives
+port to the local network. The IP-literal host port is fixed to the Server's
+loopback listener origin, so same-origin mutation requests retain the exact
+host and port the Server expects. The persistent state volume survives
 `container-stop` and a later `container-run`; remove it deliberately with
 `docker volume rm weavelit-server-local-state` only when a fresh local
 deployment is intended.
@@ -118,8 +120,9 @@ and lets the Server retain its loopback-only listener policy.
 The implemented image must be built and exercised with the documented Docker
 targets for Milestone 1 local validation. Before image or container build,
 `container-check` must run the launcher lifecycle preflight on the host through
-`sh`; this preflight assumes the host provides the standard POSIX shell and
-coreutils. Each controlled launcher case has a five-second watchdog. On timeout,
+`sh` and verify the fixed IP-literal Docker publication contract; this preflight
+assumes the host provides the standard POSIX shell and coreutils. Each controlled
+launcher case has a five-second watchdog. On timeout,
 the harness returns status `124`, sends `SIGTERM` to the launcher, waits three
 seconds (60 0.05-second intervals) for launcher-owned cleanup, sends `SIGKILL` to any remaining recorded
 relay or Server child so the launcher can reap it, then sends `SIGKILL` to the
