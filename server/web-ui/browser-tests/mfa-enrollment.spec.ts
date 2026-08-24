@@ -31,6 +31,7 @@ const RESTORE_KEY_PATH = "/api/v1/restore";
 const RESTORE_ARTIFACT_PATH = "/api/v1/restore/artifact";
 const LOGIN_PATH = "/api/v1/auth/login";
 const SESSION_PATH = "/api/v1/auth/session";
+const PASSWORD_CHANGE_PATH = "/api/v1/auth/password/change";
 const MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify";
 const MFA_ENROLLMENT_PATH = "/api/v1/auth/mfa/enrollment";
 const MFA_CONFIRM_PATH = "/api/v1/auth/mfa/enrollment/confirm";
@@ -381,6 +382,80 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
   expect(rendered).not.toContain(CONTINUATION);
   expect(state.local, "nothing is persisted to local storage").toBe("{}");
   expect(state.session, "nothing is persisted to session storage").toBe("{}");
+});
+
+test("a password-change session invalidation returns to neutral sign-in without retrying", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const passwordChanges: Request[] = [];
+  const requests = observeRequests(page);
+  let sessionProbes = 0;
+
+  await page.route(`${baseUrl}${LOGIN_PATH}`, (route) =>
+    fulfilJson(route, 200, envelope({ authenticated: true })),
+  );
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    if (sessionProbes === 1) return route.continue();
+    if (sessionProbes === 2) {
+      return fulfilJson(
+        route,
+        200,
+        envelope({
+          account_id: "a1".repeat(16),
+          public_id: ACCOUNT_PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: true,
+        }),
+      );
+    }
+    return fulfilJson(
+      route,
+      401,
+      JSON.stringify({ error: "session_invalid", correlation_id: CORRELATION }),
+    );
+  });
+  await page.route(`${baseUrl}${PASSWORD_CHANGE_PATH}`, (route) => {
+    passwordChanges.push(route.request());
+    return fulfilJson(
+      route,
+      401,
+      JSON.stringify({ error: "session_invalid", correlation_id: CORRELATION }),
+    );
+  });
+
+  await page.goto(baseUrl, { waitUntil: "load" });
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute(
+    "data-authentication-state",
+    "unauthenticated",
+  );
+  await page.evaluate(() => {
+    document.cookie = "__Host-weavelit_csrf=browser-csrf; Path=/; Secure; SameSite=Strict";
+  });
+  await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
+  await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
+  await expect(page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
+
+  await page.getByLabel("New password").fill("one-time replacement");
+  await page.getByRole("button", { name: "Save password" }).click();
+
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute(
+    "data-authentication-state",
+    "unauthenticated",
+  );
+  await expect(page.locator(USERNAME_INPUT)).toHaveValue("");
+  await expect(page.locator(PASSWORD_INPUT)).toHaveValue("");
+  await expect(page.getByRole("heading", { name: "Choose a new password" })).toHaveCount(0);
+  await expect(page.getByText("Password change was not accepted.")).toHaveCount(0);
+  expect(sessionProbes, "the initial, restricted, and ended-session probes ran once each").toBe(3);
+  expect(passwordChanges, "the password replacement was requested exactly once").toHaveLength(1);
+  expect(
+    requests.filter((request) => request.isNavigationRequest()),
+    "the session invalidation did not reload the page",
+  ).toHaveLength(1);
 });
 
 test("an MFA requirement confirms before code-only step-up and stores no proof", async ({

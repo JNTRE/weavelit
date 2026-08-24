@@ -605,6 +605,10 @@ control. The control submits one replacement password and never retries that
 mutation automatically. A reported success withdraws the control and opens the
 authenticated Accounts workspace. A reported refusal clears the replacement and
 returns the control to its ready state with fixed reason-free text.
+An exact canonical `session_invalid` result from the replacement request instead
+withdraws the restricted session to the neutral sign-in control with blank
+username and password inputs; it does not render the refusal presentation or
+retain the restricted password-change control.
 
 An unreported, malformed, or otherwise indeterminate mutation result clears the
 replacement immediately and locks the password input and mutation action while the

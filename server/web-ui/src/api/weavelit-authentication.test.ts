@@ -12,6 +12,7 @@ import {
   IndeterminateAuthenticationError,
   LoginFailedError,
   PasswordChangeFailedError,
+  PasswordChangeSessionInvalidError,
   confirmEnrollment,
   isSessionEstablished,
   isSessionIdentity,
@@ -886,13 +887,26 @@ describe("submitPasswordChange", () => {
     expect(target).not.toContain(PASSWORD);
   });
 
-  it("reports every known refusal without its cause", async () => {
+  it("returns canonical session invalidation separately from opaque refusals", async () => {
     withCookies(`${CSRF_COOKIE_NAME}=${CSRF_TOKEN}`);
     vi.spyOn(globalThis, "fetch").mockResolvedValue(rejectionResponse("session_invalid", 401));
 
     const failure = await submitPasswordChange(PASSWORD).catch((reason: unknown) => reason);
 
+    expect(failure).toBeInstanceOf(PasswordChangeSessionInvalidError);
+    expect(JSON.stringify(failure)).toBe('{"name":"PasswordChangeSessionInvalidError"}');
+  });
+
+  it("keeps other known refusals opaque", async () => {
+    withCookies(`${CSRF_COOKIE_NAME}=${CSRF_TOKEN}`);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      rejectionResponse("request_origin_denied", 403),
+    );
+
+    const failure = await submitPasswordChange(PASSWORD).catch((reason: unknown) => reason);
+
     expect(failure).toBeInstanceOf(PasswordChangeFailedError);
+    expect(failure).not.toBeInstanceOf(PasswordChangeSessionInvalidError);
     expect(JSON.stringify(failure)).toBe('{"name":"PasswordChangeFailedError"}');
   });
 

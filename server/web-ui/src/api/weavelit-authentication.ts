@@ -160,6 +160,14 @@ export class PasswordChangeFailedError extends Error {
   }
 }
 
+/** A canonical session invalidation while replacing a restricted-session password. */
+export class PasswordChangeSessionInvalidError extends PasswordChangeFailedError {
+  constructor() {
+    super();
+    this.name = "PasswordChangeSessionInvalidError";
+  }
+}
+
 /**
  * What a session probe found, which is a fact about the served surface rather
  * than about any credential.
@@ -594,6 +602,9 @@ export async function submitPasswordChange(password: string): Promise<void> {
     const error = await reportedErrorCode(response, PASSWORD_CHANGE_REPORTED_ERRORS);
     if (error === GATEWAY_TIMEOUT_CODE || error === null) {
       throw new IndeterminateAuthenticationError();
+    }
+    if (error === "session_invalid") {
+      throw new PasswordChangeSessionInvalidError();
     }
     throw new PasswordChangeFailedError();
   }

@@ -1604,6 +1604,61 @@ describe("ApplicationShell sign-in panel gating", () => {
     Reflect.deleteProperty(globalThis.document, "cookie");
   });
 
+  it("ends a restricted session after a canonical password-change invalidation", async () => {
+    Object.defineProperty(globalThis.document, "cookie", {
+      configurable: true,
+      get: () => "__Host-weavelit_csrf=csrf-token",
+    });
+    let sessionProbes = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target: unknown) => {
+      if (target === "/api/v1/status") {
+        return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+      }
+      if (target === "/api/v1/auth/session") {
+        sessionProbes += 1;
+        if (sessionProbes > 1) {
+          return Promise.resolve(
+            jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({
+            result: {
+              account_id: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              public_id: "QUFBQUFBQUFBQUFBQUFBQQ",
+              client_module: "web-ui",
+              password_change_required: true,
+            },
+            correlation_id: AUTH_CORRELATION,
+          }),
+        );
+      }
+      if (target === "/api/v1/auth/password/change") {
+        return Promise.resolve(
+          jsonResponse({ error: "session_invalid", correlation_id: AUTH_CORRELATION }, 401),
+        );
+      }
+      return Promise.reject(new Error("unexpected request"));
+    });
+
+    render(<ApplicationShell />);
+    fireEvent.change(await screen.findByLabelText("New password"), {
+      target: { value: "one-time replacement" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save password" }));
+
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+    expect(screen.queryByRole("heading", { name: "Choose a new password" })).toBeNull();
+    expect(screen.queryByText("Password change was not accepted.")).toBeNull();
+    expect(sessionProbes).toBe(2);
+    expect(
+      fetchMock.mock.calls.filter(([target]) => target === "/api/v1/auth/password/change"),
+    ).toHaveLength(1);
+    Reflect.deleteProperty(globalThis.document, "cookie");
+  });
+
   it.each([
     [
       "completed",

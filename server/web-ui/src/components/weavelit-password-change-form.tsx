@@ -2,6 +2,7 @@ import { useState, type ChangeEvent, type JSX } from "react";
 
 import {
   IndeterminateAuthenticationError,
+  PasswordChangeSessionInvalidError,
   probeSession,
   submitPasswordChange,
 } from "../api/weavelit-authentication";
@@ -37,6 +38,10 @@ export function PasswordChangeForm({
       },
       (error: unknown) => {
         setPassword("");
+        if (error instanceof PasswordChangeSessionInvalidError) {
+          onSessionEnded();
+          return;
+        }
         setState(error instanceof IndeterminateAuthenticationError ? "indeterminate" : "failed");
       },
     );
