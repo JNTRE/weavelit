@@ -327,6 +327,51 @@ describe("AccountsWorkspace", () => {
     expect(screen.queryByText("Accounts are unavailable.")).toBeNull();
   });
 
+  it.each([
+    ["list", ACCOUNTS_LIST_PATH],
+    ["view", ACCOUNTS_VIEW_PATH],
+  ] as const)(
+    "ends administration once when an exact $operation authorization denial is reported",
+    async (operation, deniedPath) => {
+      withCsrfCookie();
+      const onAdministrationEnded = vi.fn();
+      const onSessionEnded = vi.fn();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+        if (target === deniedPath) {
+          return Promise.resolve(
+            response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+          );
+        }
+        if (target === ACCOUNTS_LIST_PATH) {
+          return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+        }
+        throw new Error("unexpected request");
+      });
+
+      render(
+        <AccountsWorkspace
+          onAdministrationEnded={onAdministrationEnded}
+          onSessionEnded={onSessionEnded}
+        />,
+      );
+      if (operation === "view") {
+        const row = (await screen.findByRole("rowheader", { name: "alice" })).closest("tr")!;
+        fireEvent.click(row.querySelector<HTMLButtonElement>("button")!);
+      }
+
+      await waitFor(() => {
+        expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+      });
+      expect(onSessionEnded).not.toHaveBeenCalled();
+      expect(screen.queryByText("Accounts are unavailable.")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(fetchMock.mock.calls.filter(([target]) => target === deniedPath)).toHaveLength(1);
+      expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(
+        0,
+      );
+    },
+  );
+
   it("rejects an additive sensitive projection without rendering its fields", async () => {
     withCsrfCookie();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -473,7 +518,7 @@ describe("AccountsWorkspace", () => {
         return Promise.resolve(
           response(
             {
-              error: "authorization_denied",
+              error: "request_origin_denied",
               correlation_id: CORRELATION,
             },
             403,
@@ -489,11 +534,53 @@ describe("AccountsWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
 
     expect(await screen.findByText("The account status was not changed.")).toBeTruthy();
-    expect(document.body.textContent).not.toContain("authorization_denied");
+    expect(document.body.textContent).not.toContain("request_origin_denied");
     expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_STATUS_PATH)).toHaveLength(
       1,
     );
     expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
+  });
+
+  it("ends administration after an exact status authorization denial without probing or refreshing", async () => {
+    withCsrfCookie();
+    const onAdministrationEnded = vi.fn();
+    const onSessionEnded = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        return Promise.resolve(accountPage([account(ALICE_ID, "alice", "Alice", true, false)]));
+      }
+      if (target === ACCOUNTS_STATUS_PATH) {
+        return Promise.resolve(
+          response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+        );
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(
+      <AccountsWorkspace
+        onAdministrationEnded={onAdministrationEnded}
+        onSessionEnded={onSessionEnded}
+      />,
+    );
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.click(screen.getByRole("button", { name: "Disable alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disable" }));
+
+    await waitFor(() => {
+      expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(onSessionEnded).not.toHaveBeenCalled();
+    expect(screen.queryByText("The account status was not changed.")).toBeNull();
+    expect(screen.queryByText(/The account status outcome is unknown\./)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_STATUS_PATH)).toHaveLength(
+      1,
+    );
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_LIST_PATH)).toHaveLength(
+      1,
+    );
   });
 
   it("renders one generic indeterminate outcome and never retries the mutation", async () => {
@@ -664,6 +751,43 @@ describe("AccountsWorkspace", () => {
     storageWrite.mockRestore();
   });
 
+  it("clears a created credential disclosure when its refresh loses administration access", async () => {
+    withCsrfCookie();
+    const onAdministrationEnded = vi.fn();
+    let listRequests = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+      if (target === ACCOUNTS_LIST_PATH) {
+        listRequests += 1;
+        return Promise.resolve(
+          listRequests === 1
+            ? accountPage([account(ALICE_ID, "alice", "Alice", true, false)])
+            : response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+        );
+      }
+      if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+        return Promise.resolve(ticketResponse());
+      }
+      if (target === ACCOUNTS_CREATE_PATH) {
+        return Promise.resolve(credentialResponse(BOB_ID));
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AccountsWorkspace onAdministrationEnded={onAdministrationEnded} />);
+    await screen.findByRole("rowheader", { name: "alice" });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+    await waitFor(() => {
+      expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+    });
+    expect(listRequests).toBe(2);
+    expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(0);
+  });
+
   it.each([
     {
       phase: "assurance ticket",
@@ -729,6 +853,97 @@ describe("AccountsWorkspace", () => {
       await waitFor(() => {
         expect(onSessionEnded).toHaveBeenCalledTimes(1);
       });
+      expect(listRequests).toBe(1);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === CREDENTIAL_ISSUANCE_STEP_UP_PATH),
+      ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_CREATE_PATH),
+      ).toHaveLength(expectedCreateRequests);
+      expect(
+        fetchMock.mock.calls.filter(([target]) => target === ACCOUNTS_RESET_PASSWORD_PATH),
+      ).toHaveLength(expectedResetRequests);
+      expect(fetchMock.mock.calls.filter(([target]) => target === AUTH_SESSION_PATH)).toHaveLength(
+        0,
+      );
+      expect(screen.queryByRole("textbox", { name: "Temporary password" })).toBeNull();
+      expect(screen.queryByText("Credential issuance was not completed.")).toBeNull();
+      expect(screen.queryByText(/The credential issuance outcome is unknown\./)).toBeNull();
+    },
+  );
+
+  it.each([
+    {
+      phase: "assurance ticket",
+      action: "create",
+      deniedPath: CREDENTIAL_ISSUANCE_STEP_UP_PATH,
+      expectedCreateRequests: 0,
+      expectedResetRequests: 0,
+    },
+    {
+      phase: "create",
+      action: "create",
+      deniedPath: ACCOUNTS_CREATE_PATH,
+      expectedCreateRequests: 1,
+      expectedResetRequests: 0,
+    },
+    {
+      phase: "reset",
+      action: "reset",
+      deniedPath: ACCOUNTS_RESET_PASSWORD_PATH,
+      expectedCreateRequests: 0,
+      expectedResetRequests: 1,
+    },
+  ])(
+    "ends administration once when the $phase phase reports an exact authorization denial",
+    async ({ action, deniedPath, expectedCreateRequests, expectedResetRequests }) => {
+      withCsrfCookie();
+      const onAdministrationEnded = vi.fn();
+      const onSessionEnded = vi.fn();
+      let listRequests = 0;
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((target) => {
+        if (target === ACCOUNTS_LIST_PATH) {
+          listRequests += 1;
+          return Promise.resolve(
+            accountPage([
+              account(ALICE_ID, "alice", "Alice", true, false),
+              account(BOB_ID, "bob", "Bob", true, false),
+            ]),
+          );
+        }
+        if (target === deniedPath) {
+          return Promise.resolve(
+            response({ error: "authorization_denied", correlation_id: CORRELATION }, 403),
+          );
+        }
+        if (target === CREDENTIAL_ISSUANCE_STEP_UP_PATH) {
+          return Promise.resolve(ticketResponse());
+        }
+        throw new Error("unexpected request");
+      });
+
+      render(
+        <AccountsWorkspace
+          onAdministrationEnded={onAdministrationEnded}
+          onSessionEnded={onSessionEnded}
+        />,
+      );
+      await screen.findByRole("rowheader", { name: action === "create" ? "alice" : "bob" });
+      if (action === "create") {
+        fireEvent.change(screen.getByLabelText("Username"), { target: { value: "charlie" } });
+        fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Reset password for bob" }));
+      }
+      fireEvent.change(screen.getByLabelText("Current password"), {
+        target: { value: PASSWORD },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Confirm credential issuance" }));
+
+      await waitFor(() => {
+        expect(onAdministrationEnded).toHaveBeenCalledTimes(1);
+      });
+      expect(onSessionEnded).not.toHaveBeenCalled();
       expect(listRequests).toBe(1);
       expect(
         fetchMock.mock.calls.filter(([target]) => target === CREDENTIAL_ISSUANCE_STEP_UP_PATH),

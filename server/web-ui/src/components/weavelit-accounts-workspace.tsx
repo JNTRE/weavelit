@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
 
 import {
+  AccountStatusAdministrationAccessDeniedError,
   AccountStatusRefusedError,
+  AccountsAdministrationAccessDeniedError,
   AccountsSessionExpiredError,
   changeAccountStatus,
   listAccounts,
@@ -10,6 +12,7 @@ import {
 } from "../api/weavelit-administration-accounts";
 import { probeSession } from "../api/weavelit-authentication";
 import {
+  CredentialIssuanceAdministrationAccessDeniedError,
   CredentialIssuanceIndeterminateError,
   CredentialIssuanceSessionInvalidError,
   createAccount,
@@ -154,6 +157,21 @@ export function AccountsWorkspace({
     return true;
   }, [onAdministrationEnded]);
 
+  const reconcileAdministrationAccessDenied = useCallback(
+    (error: unknown): boolean => {
+      const administrationAccessDenied =
+        error instanceof AccountsAdministrationAccessDeniedError ||
+        error instanceof AccountStatusAdministrationAccessDeniedError ||
+        error instanceof CredentialIssuanceAdministrationAccessDeniedError ||
+        error instanceof MfaPolicyAccessDeniedError;
+      if (administrationAccessDenied) {
+        setDisclosure(null);
+      }
+      return administrationAccessDenied && endAdministration();
+    },
+    [endAdministration],
+  );
+
   const reconcileExpiredSession = useCallback(
     (error: unknown, preservedDisclosure?: CredentialIssued): boolean => {
       if (
@@ -197,7 +215,11 @@ export function AccountsWorkspace({
         }
       },
       (error: unknown) => {
-        if (!mounted.current || reconcileExpiredSession(error, preservedDisclosure)) {
+        if (
+          !mounted.current ||
+          reconcileAdministrationAccessDenied(error) ||
+          reconcileExpiredSession(error, preservedDisclosure)
+        ) {
           return;
         }
         if (collectionRequest.current === request) {
@@ -221,7 +243,11 @@ export function AccountsWorkspace({
         }
       },
       (error: unknown) => {
-        if (!mounted.current || reconcileExpiredSession(error)) {
+        if (
+          !mounted.current ||
+          reconcileAdministrationAccessDenied(error) ||
+          reconcileExpiredSession(error)
+        ) {
           return;
         }
         if (collectionRequest.current === request) {
@@ -239,7 +265,7 @@ export function AccountsWorkspace({
       credentialIssuanceTicket.current = "";
       mfaPolicyTicket.current = "";
     };
-  }, [reconcileExpiredSession]);
+  }, [reconcileAdministrationAccessDenied, reconcileExpiredSession]);
 
   const loadMore = (): void => {
     if (nextCursor === null || collectionState !== "ready") {
@@ -257,7 +283,11 @@ export function AccountsWorkspace({
         }
       },
       (error: unknown) => {
-        if (!mounted.current || reconcileExpiredSession(error)) {
+        if (
+          !mounted.current ||
+          reconcileAdministrationAccessDenied(error) ||
+          reconcileExpiredSession(error)
+        ) {
           return;
         }
         if (collectionRequest.current === request) {
@@ -279,7 +309,11 @@ export function AccountsWorkspace({
         }
       },
       (error: unknown) => {
-        if (!mounted.current || reconcileExpiredSession(error)) {
+        if (
+          !mounted.current ||
+          reconcileAdministrationAccessDenied(error) ||
+          reconcileExpiredSession(error)
+        ) {
           return;
         }
         if (selectionRequest.current === request) {
@@ -347,15 +381,14 @@ export function AccountsWorkspace({
           setStatusState("indeterminate");
         }
       } catch (error: unknown) {
-        if (mounted.current) {
-          setPendingStatusAction(null);
-          if (reconcileExpiredSession(error)) {
-            setStatusState("idle");
-          } else {
-            setStatusState(
-              error instanceof AccountStatusRefusedError ? "refused" : "indeterminate",
-            );
-          }
+        if (!mounted.current || reconcileAdministrationAccessDenied(error)) {
+          return;
+        }
+        setPendingStatusAction(null);
+        if (reconcileExpiredSession(error)) {
+          setStatusState("idle");
+        } else {
+          setStatusState(error instanceof AccountStatusRefusedError ? "refused" : "indeterminate");
         }
       } finally {
         statusAttemptActive.current = false;
@@ -500,6 +533,9 @@ export function AccountsWorkspace({
         if (!mounted.current) {
           return;
         }
+        if (reconcileAdministrationAccessDenied(error)) {
+          return;
+        }
         if (reconcileExpiredSession(error)) {
           return;
         }
@@ -606,17 +642,16 @@ export function AccountsWorkspace({
         }
       } catch (error: unknown) {
         mfaPolicyTicket.current = "";
-        if (mounted.current) {
-          setPendingMfaPolicyAction(null);
-          if (error instanceof MfaPolicyAccessDeniedError && endAdministration()) {
-            setMfaPolicyState("idle");
-          } else if (reconcileExpiredSession(error)) {
-            setMfaPolicyState("idle");
-          } else {
-            setMfaPolicyState(
-              error instanceof MfaPolicyIndeterminateError ? "indeterminate" : "refused",
-            );
-          }
+        if (!mounted.current || reconcileAdministrationAccessDenied(error)) {
+          return;
+        }
+        setPendingMfaPolicyAction(null);
+        if (reconcileExpiredSession(error)) {
+          setMfaPolicyState("idle");
+        } else {
+          setMfaPolicyState(
+            error instanceof MfaPolicyIndeterminateError ? "indeterminate" : "refused",
+          );
         }
       } finally {
         mfaPolicyTicket.current = "";
