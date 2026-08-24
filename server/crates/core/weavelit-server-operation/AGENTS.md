@@ -5,6 +5,14 @@ the Service Connection an authorized Operation runs against, and entering
 provider execution. It exists so that the ordering of those steps is carried by
 Rust's type system rather than by convention.
 
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
 ## Purpose and Scope
 
 - This crate owns the Service Connection selection an `AuthorizedOperation`
@@ -27,7 +35,6 @@ Rust's type system rather than by convention.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local routing, inventory, and operational-path rules.
 - `Cargo.toml`: Package metadata, the authorization and Application Database
   dependencies, and the JSON dev-dependency used to read Cargo's compiler
   diagnostics.
@@ -40,37 +47,33 @@ Rust's type system rather than by convention.
   proof instead of spending it, to spend a proof or a selection twice, and to
   assemble a selection without an authorization.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then each parent `AGENTS.md` through the
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then each parent `AGENTS.md` through the
   repository root.
-- Read the Server Authorization Design, Security Model, Technical
+- MUST read the Server Authorization Design, Security Model, Technical
   Specification, and Testing and Validation Policy before changing behavior
   here.
-- Keep selection taking the proof by value and execution taking the selection by
+- MUST keep selection taking the proof by value and execution taking the selection by
   value. Never add a borrowing overload, a `Clone` or `Copy` implementation, or
   an accessor that yields an owned proof; each would make an authorization
   reusable and is exactly what the compile fixtures forbid.
-- Keep every field of `SelectedServiceConnection` private and keep the type
+- MUST keep every field of `SelectedServiceConnection` private and keep the type
   without a public constructor, so a caller holding a connection identifier
   cannot manufacture a selection and bypass the authorization decision.
-- Keep selection free of authorization logic. It refuses only a connection whose
+- MUST keep selection free of authorization logic. It refuses only a connection whose
   Service Module the proof does not name; it must never grant, widen, or
   re-derive a permission.
-- Keep the protected credential out of this crate. A selection may name a
+- MUST keep the protected credential out of this crate. A selection may name a
   connection but must not carry, load, or render its credential.
-- When a fixture's required diagnostic carries no rustc error code, pin its
+- When a fixture's required diagnostic carries no rustc error code, agents MUST pin its
   exact message instead. Pinning nothing would let the fixture pass on any
   compilation failure, including a mistake in the fixture source itself.
-- Run the package tests during development and `make -C server check` before
+- MUST run the package tests during development and `make -C server check` before
   handoff.
 
-## Standards and Conventions
-
-- Update this inventory whenever crate assets are added, removed, renamed, or
+- MUST update this inventory whenever crate assets are added, removed, renamed, or
   moved.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.

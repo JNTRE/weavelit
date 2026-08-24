@@ -1,8 +1,12 @@
 # Server Restore Crate Agent Guide
 
-This crate defines the Server-owned validation of an encrypted Weavelit backup:
-outer envelope parsing, age v1 decryption, compatibility checking, and restored
-state normalization performed before any deployment state is replaced.
+## Instruction Precedence
+
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
 
 ## Purpose and Scope
 
@@ -11,8 +15,6 @@ state normalization performed before any deployment state is replaced.
   bounds and deadlines, the single-operation Restore permit, backup content
   parsing, compatibility checking, reference and component resolution, and
   redacted Restore errors.
-- It reuses the Application Database contract state types, the deployment
-  identifier, and lifecycle backend identifiers and errors.
 - It receives a validated lifecycle authority and the selected Application
   Database binding as inbound values through `RestoreAuthority`; it does not
   reach into the lifecycle crate's internals.
@@ -22,27 +24,11 @@ state normalization performed before any deployment state is replaced.
 
 ## Asset Inventory
 
-- `AGENTS.md`: Local Restore validation contract and fixture rules.
-- `Cargo.toml`: Package metadata and the approved cryptographic dependencies
-  that compose the in-house age v1 X25519 reader, with their excluded feature
-  surface, plus the `weavelit-server-authentication` and `argon2` dependencies
-  content validation resolves password verifiers against.
-- `src/`: Transfer bounds and the Restore permit, outer envelope parsing,
-  canonical recovery-key handling, authenticated decryption, backup content
-  normalization, redacted errors, and the validation entry point. `src/state.rs`
-  re-seals every recovered secret under the replacement deployment's at-rest key
-  and assembles the replacement application state. `src/ticket.rs` mints the
-  one-time submission ticket and its retained digest. `src/vectors.rs`
-  is compiled only under `cfg(test)` and runs the reader against the vendored
-  external age vectors.
+- `Cargo.toml`: Package metadata and approved cryptographic, authentication, and Argon2 dependencies.
+- `src/`: Transfer bounds, the Restore permit, envelope and recovery-key parsing, authenticated decryption, content normalization, redacted errors, and the validation entry point. `src/state.rs` re-seals recovered secrets and assembles state; `src/ticket.rs` mints the single-use ticket; `src/vectors.rs` is test-only vendored-vector coverage.
 - `examples/`: Development-only fixture generator; it is never linked into the
   Server binary.
-- `tests/`: Bounds, envelope, recovery-key, content, age parameter policy,
-  multi-chunk STREAM, fixture-reproducibility, secret re-sealing, and end-to-end
-  validation tests, a fixture-credential test (`tests/credentials.rs`) that
-  authenticates the committed fixtures' administrator password verifier
-  through the real password authenticator, plus the shared deterministic
-  fixture generator and harness in `tests/support/`.
+- `tests/`: Bounds, envelope, recovery-key, content, age policy, multi-chunk STREAM, fixture reproducibility, secret re-sealing, end-to-end validation, fixture-credential authentication, and the shared fixture generator and harness.
 - `tests/fixtures/`: Immutable committed backup fixtures, their canonical
   recovery keys, the expected decrypted plaintext for each valid fixture, and
   the `fixtures.json` manifest pinning every fixture's byte length and SHA-256
@@ -54,67 +40,61 @@ state normalization performed before any deployment state is replaced.
   provenance and license record, and the `vectors.json` manifest pinning every
   vendored file's byte length and SHA-256 digest.
 
-## Usage Guidance
+## Working Rules
 
-- Before editing, read this guide, then each parent `AGENTS.md` through the
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
+
+- Before editing, agents MUST read this guide, then each parent `AGENTS.md` through the
   repository root.
-- Read the Server Restore Design, Server Lifecycle Design, Server Architecture
-  Design, Application Database Design, Security Model, and Testing and
-  Validation Policy.
-- Preserve the committed fixture bytes and the `fixtures.json` manifest; a
+- MUST read the Server Restore, Lifecycle, Architecture, and Application Database Designs, Security Model, and Testing and Validation Policy.
+- MUST preserve the committed fixture bytes and the `fixtures.json` manifest; a
   fixture change requires regenerating with
   `cargo run --example generate-restore-fixtures -p weavelit-server-restore`
   and an explicit format decision recorded in the Server Restore Design.
-- Keep `tests/support/mod.rs`'s `FIXTURE_TOTP_SECRET` the exact length the TOTP
+- MUST keep `tests/support/mod.rs`'s `FIXTURE_TOTP_SECRET` the exact length the TOTP
   Module declares. Content validation refuses factor data a named MFA Module
   could not open, so a shorter placeholder would make the canonical valid
   fixture invalid.
-- Never edit a vendored vector under `tests/vectors/`. Refresh the whole set
+- Agents MUST NOT edit a vendored vector under `tests/vectors/`. Refresh the whole set
   from the pinned upstream commit instead, and update `tests/vectors/README.md`,
   `tests/vectors/vectors.json`, and the pinned expectation table in
   `src/vectors.rs` together.
-- Run the package tests during development and `make -C server check` before
+- MUST run the package tests during development and `make -C server check` before
   handoff.
 
-## Standards and Conventions
-
-- Update this inventory whenever crate assets are added, removed, renamed, or
+- MUST update this inventory whenever crate assets are added, removed, renamed, or
   moved.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep validation in the Server Restore Design's fixed order and reject before
+- MUST keep validation in the Server Restore Design's fixed order and reject before
   reading sensitive input; never mutate deployment state from this crate.
-- Keep every recovery key, unwrapped data key, and decrypted plaintext in
+- MUST keep every recovery key, unwrapped data key, and decrypted plaintext in
   bounded transient memory under maintained zeroization, and never write backup
   material to disk or logs.
-- Never add custom cryptographic primitives to production code. This crate
+- Agents MUST NOT add custom cryptographic primitives to production code. This crate
   implements the age v1 X25519 recipient profile itself, but composes it only
   from approved maintained primitives (`x25519-dalek`, `hkdf`, `hmac`, `sha2`,
   `chacha20poly1305`, `bech32`); never hand-roll a construction one of those
   provides. The test-only fixture generator is a deliberately independent
   second implementation of the same profile, used solely to pin known-answer
   vectors.
-- Accept exactly one X25519 recipient stanza. Reject `scrypt`, any other stanza
+- MUST accept exactly one X25519 recipient stanza. Reject `scrypt`, any other stanza
   type, an absent stanza, an additional stanza, and an unsupported version line
   as `backup_incompatible` before key agreement.
-- Keep every `backup_invalid` cause mutually indistinguishable in public
+- MUST keep every `backup_invalid` cause mutually indistinguishable in public
   presentation, and keep public errors payload-free with redacted diagnostic
   formatting.
-- Reject unknown, duplicate, missing, wrongly typed, non-canonically encoded, or
+- MUST reject unknown, duplicate, missing, wrongly typed, non-canonically encoded, or
   oversized fields before constructing restored state.
-- Reject every password verifier the backup carries that falls outside the
+- MUST reject every password verifier the backup carries that falls outside the
   closed Argon2 profile allowlist `weavelit-server-authentication` owns, before
   constructing restored state. Resolve it through `PasswordPolicy::approved` and
   that crate's PHC reader; never restate the allowlist or parse PHC here.
-- Keep that rejection to supplied entries only. Never require a verifier to
+- MUST keep that rejection to supplied entries only. Never require a verifier to
   exist for an account, and never add an administrator-topology or
   verifier-presence check: an absent verifier is a modeled credential state, and
   the Technical Specification's Multifactor Authentication section accepts a
   fail-closed deployment and forbids Restore from claiming to guarantee renewed
   administrative access. `tests/content.rs` pins that acceptance; changing it
   requires changing the specification first.
-- Enforce the approved transfer bounds, deadlines, and single-operation permit
+- MUST enforce the approved transfer bounds, deadlines, and single-operation permit
   in the crate rather than relying on callers.

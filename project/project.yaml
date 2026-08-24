@@ -1,0 +1,34 @@
+schema: jntre-project-profile/v2
+repository:
+  owner: JNTRE
+  name: weavelit
+  url: https://github.com/JNTRE/weavelit
+  milestones_url: https://github.com/JNTRE/weavelit/milestones
+  allowed_labels:
+    - documentation
+    - question
+    - service module
+    - client module
+    - database module
+    - log module
+    - server core
+project:
+  owner: JNTRE
+  number: 1
+  title: Weavelit
+  url: https://github.com/orgs/JNTRE/projects/1
+  issue_templates:
+    directory: /project/issue_templates
+    allowed_types:
+      - name: task
+        template: task-template.md
+      - name: bug
+        template: bug-template.md
+      - name: feature
+        template: feature-template.md
+      - name: epic
+        template: epic-template.md
+      - name: decision
+        template: decision-template.md
+      - name: risk
+        template: risk-template.md

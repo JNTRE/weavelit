@@ -23,9 +23,10 @@ development.
 ## Validation
 
 Run the applicable checks before opening a pull request. For Server Rust
-changes, run `make -C server check`. Rust changes must meet the [Testing and
-Validation Policy](docs/testing.md); the Rust Quality workflow repeats this
-suite on non-draft pull requests targeting `dev` or `main`.
+changes, run `make -C server container-check` before merging into `dev`. Rust
+changes must meet the [Testing and Validation Policy](docs/testing.md); the
+Rust Quality workflow repeats this suite from a clean checkout on non-draft
+pull requests targeting `main`.
 
 ## Branch names
 

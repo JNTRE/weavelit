@@ -4,7 +4,10 @@ mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use support::{committed, committed_text, components, validate};
+use support::{
+    account_public_identifier_persistence, committed, committed_text, components,
+    group_public_identifier_persistence, persistence, validate,
+};
 use weavelit_server_restore::{
     LogType, RequestBudget, RequestDeadline, RestoreError, RestoreRequest, RestoreValidator,
     TransferBounds,
@@ -27,9 +30,10 @@ fn a_valid_backup_normalizes_to_the_replacement_deployment() {
         backup.recovery_public_key().as_str(),
         committed_text("valid-recipient.txt")
     );
-    assert_eq!(backup.configuration().len(), 1);
+    assert_eq!(backup.configuration().len(), 2);
     assert_eq!(backup.protected_secrets().len(), 1);
     assert_eq!(backup.accounts().len(), 1);
+    assert_eq!(backup.account_public_identities().len(), 1);
     assert_eq!(backup.password_verifiers().len(), 1);
     assert_eq!(backup.groups().len(), 1);
     assert_eq!(backup.group_memberships().len(), 1);
@@ -43,14 +47,50 @@ fn a_valid_backup_normalizes_to_the_replacement_deployment() {
 #[test]
 fn the_decrypted_plaintext_matches_the_committed_expectation() {
     let artifact = committed("valid.wlitbackup");
-    let expected = committed("valid-plaintext.json");
+    let expected = committed_text("valid-plaintext.json");
 
     // Normalization only succeeds when decryption produced exactly this
-    // plaintext, so an independent parse of the expectation must agree.
+    // plaintext, so an independent parse of the expectation must agree. The
+    // fixture predates Group Public Identifiers and Audit References, so supply
+    // the independently generated values from the first normalization before
+    // comparing the complete state.
     let validated = validate(&artifact, &identity()).expect("the fixture backup is valid");
+    let expected = expected.replace(
+        "\"username\":\"administrator\"",
+        &format!(
+            "\"audit_reference\":\"{}\",\"username\":\"administrator\"",
+            validated.backup().account_audit_references()[0].audit_reference()
+        ),
+    );
+    let expected = expected.replace(
+        "\"name\":\"Administrators\"",
+        &format!(
+            "\"public_id\":\"{}\",\"name\":\"Administrators\"",
+            validated.backup().group_public_identities()[0]
+                .public_identifier()
+                .as_base64url()
+        ),
+    );
+    let expected = expected.replace(
+        "\"name\":\"Administrators\"",
+        &format!(
+            "\"audit_reference\":\"{}\",\"name\":\"Administrators\"",
+            validated.backup().group_audit_references()[0].audit_reference()
+        ),
+    );
+    let expected = expected.replace(
+        "\"module\":\"sqlite\"",
+        &format!(
+            "\"audit_reference\":\"{}\",\"module\":\"sqlite\"",
+            validated.backup().log_configuration_audit_references()[0].audit_reference()
+        ),
+    );
     let direct = weavelit_server_restore::normalize(
-        &expected,
+        expected.as_bytes(),
         validated.backup().source_backend(),
+        &account_public_identifier_persistence(),
+        &group_public_identifier_persistence(),
+        &persistence(),
         &components(),
     )
     .expect("the committed plaintext is the decrypted plaintext");

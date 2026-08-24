@@ -18,31 +18,168 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
 
-use axum::http::Method;
+use axum::http::{HeaderMap, Method, Uri};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::task;
 use weavelit_module_client::{
-    ExpectedOrigin, LIFECYCLE_RECONCILIATION_ROUTE,
+    ACCOUNTS_CREATE_ROUTE, ACCOUNTS_LIST_ROUTE, ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+    ACCOUNTS_MFA_RESET_ROUTE, ACCOUNTS_RESET_PASSWORD_ROUTE, ACCOUNTS_STATUS_ROUTE,
+    ACCOUNTS_VIEW_ROUTE, ADMINISTRATION_CATALOG_ROUTE, AUTH_PASSWORD_CHANGE_ROUTE,
+    AccountAdministrationCapability, AccountAdministrationDeclaration,
+    AccountAdministrationProjection as ClientAccountProjection, AccountAdministrationRejection,
+    AccountAdministrationRequest, AccountAdministrationResult as ClientAccountResult,
+    AccountAdministrationSubmission, AccountCreateSubmission, AccountCredentialIssued,
+    AccountPasswordResetSubmission, AccountsPage,
+    AdministrationCatalog as ClientAdministrationCatalog, AuthenticationRejection,
+    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE, ConfigurationAdministrationCapability,
+    ConfigurationAdministrationDeclaration, ConfigurationAdministrationRejection,
+    ConfigurationAdministrationRequest, ConfigurationAdministrationResult,
+    ConfigurationAdministrationSubmission, CredentialIssuanceCapability,
+    CredentialIssuanceDeclaration, CredentialIssuanceRejection, CredentialIssuanceStepUpSubmission,
+    CredentialIssuanceTicketIssued, ExpectedOrigin, GROUP_GRANTS_CHANGE_ROUTE,
+    GROUP_GRANTS_LIST_ROUTE, GROUP_MEMBERS_CHANGE_ROUTE, GROUP_MEMBERS_LIST_ROUTE,
+    GROUPS_CREATE_ROUTE, GROUPS_DELETE_ROUTE, GROUPS_LIST_ROUTE, GROUPS_UPDATE_ROUTE,
+    GROUPS_VIEW_ROUTE, GroupAdministrationCapability, GroupAdministrationDeclaration,
+    GroupAdministrationProjection as ClientGroupProjection, GroupAdministrationRejection,
+    GroupAdministrationRequest as ClientGroupRequest,
+    GroupAdministrationResult as ClientGroupResult, GroupAdministrationSubmission, GroupDeleted,
+    GroupGrantChanged as ClientGroupGrantChanged,
+    GroupGrantProjection as ClientGroupGrantProjection, GroupGrantsPage,
+    GroupMemberChanged as ClientGroupMemberChanged, GroupMembersPage, GroupsPage,
+    LIFECYCLE_RECONCILIATION_ROUTE, LOG_CONFIGURATIONS_CHANGE_ROUTE, LOG_CONFIGURATIONS_LIST_ROUTE,
+    LOG_CONFIGURATIONS_VIEW_ROUTE, LogConfigurationProjection as ClientLogConfigurationProjection,
+    LogConfigurationsPage, LogSettingProjection as ClientLogSettingProjection,
+    LogTypeProjection as ClientLogType, MAX_CONFIGURATION_ADMINISTRATION_BODY_BYTES,
+    MAX_CREDENTIAL_ISSUANCE_BODY_BYTES, MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES,
+    MAX_GROUP_ADMINISTRATION_BODY_BYTES, MAX_MFA_POLICY_BODY_BYTES, MAX_PASSWORD_CHANGE_BODY_BYTES,
+    MAX_PASSWORD_CHANGE_PASSWORD_BYTES, MFA_POLICY_STEP_UP_ROUTE, MfaPolicyCapability,
+    MfaPolicyDeclaration, MfaPolicyRejection, MfaPolicyStepUpFamily, MfaPolicyStepUpSubmission,
+    MfaPolicyTicketIssued, MfaRequirementSubmission, MfaResetSubmission, PasswordChangeCapability,
+    PasswordChangeDeclaration, PasswordChangeSubmission,
     ReconciliationCapability as ClientReconciliationCapability, ReconciliationOutcome,
-    ReconciliationRejection, validate_reconciliation_request,
+    ReconciliationRejection, TOTP_ENABLEMENT_APPLY_ROUTE, TOTP_ENABLEMENT_PREVIEW_ROUTE,
+    TotpEnablementApplied, TotpEnablementPreviewProjection,
+    validate_configuration_administration_request, validate_credential_issuance_request,
+    validate_mfa_policy_request, validate_password_change_request, validate_reconciliation_request,
 };
-use weavelit_server_authentication::RustCryptoArgon2;
+use weavelit_server_administration::{
+    AccountAdministrationAction, AccountAdministrationRead, AccountCreate, AccountPasswordReset,
+    AccountStatusChange, AdministrationAction, AdministrationClock, AdministrationPlane,
+    AdministrationRequest, AuthorizedAdministrationAdmission, ComponentEnablementChange,
+    ComponentEnablementSource, GroupAdministrationAction, GroupAdministrationRead, GroupCreate,
+    GroupGrantMutation, GroupMembershipMutation, GroupMutation, GroupUpdate, LogAssignmentChange,
+    LogConfigurationChange, LogConfigurationRead, MFA_STEP_UP_LIFETIME, MfaStepUpProof,
+    StepUpActionFamily,
+};
+use weavelit_server_administration_authority::ServerAdministrationAuthority;
+use weavelit_server_authentication::{
+    AccountCredentialIssuanceInput, MAX_PASSWORD_REPLACEMENT_BYTES, PasswordReplacementInput,
+    RustCryptoArgon2,
+};
+use weavelit_server_authorization::AuthorizationDenied;
+use weavelit_server_components::AvailableComponents;
+use weavelit_server_database::{
+    AccountAdministrationProjection, AccountAdministrationStore, AccountAuditReference,
+    AccountCreateMutation, AccountCreateOutcome, AccountCredentialAuditTerminalWrites,
+    AccountCredentialWriterStore, AccountPasswordResetMutation, AccountPasswordResetOutcome,
+    AccountPasswordResetTarget, AccountPublicIdentifier, AccountPublicIdentifierPersistence,
+    AccountStatus, AccountStatusAuditTerminalWrites, AccountStatusMutation,
+    AccountStatusMutationOutcome, AccountStatusTarget, AccountStatusWriterStore,
+    AuditReferencePersistence, AuditTerminalRecoveryPersistence, AuditTerminalRecoveryStore,
+    ComponentKind, ConfigurationKey, ConfigurationValue, GroupAdministrationAuditTerminalWrites,
+    GroupAdministrationStore, GroupAdministrationTarget, GroupCreateMutation, GroupCreateOutcome,
+    GroupDeleteMutation, GroupDeleteOutcome, GroupGrant, GroupGrantMutationTarget,
+    GroupMembershipMutationTarget, GroupMutationAuditTerminalWrites, GroupMutationOutcome,
+    GroupMutationStore, GroupPublicIdentifier, GroupUpdateMutation, GroupUpdateOutcome,
+    LogConfigurationAuditReference, LogConfigurationAuditTerminalWrites,
+    LogConfigurationGeneration, LogConfigurationGenerationKey,
+    LogConfigurationGenerationPersistence, LogConfigurationGenerationStore,
+    LogConfigurationMutationOutcome, LogConfigurationMutationPersistence,
+    LogConfigurationMutationRequest, LogConfigurationPreparation, LogConfigurationVersion,
+    LogModuleSetting, LogType, MfaPolicyAuditTerminalWrites, MfaPolicyMutation,
+    MfaPolicyMutationOutcome, MfaPolicyTarget, MfaPolicyWriterStore, MfaStore,
+    PasswordChangeAuditTerminalWrites, PasswordChangeMutation, PasswordChangeOutcome,
+    PreparedGroupMutation, PreparedLogConfigurationMutation, StateIdentifier,
+};
 use weavelit_server_lifecycle::{
     ApplicationDatabase, DatabaseError, InitializedState, ProtectedValueAccess, SealedDeployment,
+    SelectedDatabase,
 };
-use weavelit_server_log::LogModuleCatalog;
+use weavelit_server_log::{LogModuleCatalog, LogModuleIdentifier};
 use weavelit_server_restore::Name;
 use zeroize::Zeroizing;
 
 use crate::{
-    authentication::AuthenticationRuntime,
+    administration::{
+        AccountAdministrationReadResult, AccountAdministrationReadWorkflow,
+        AccountCredentialIssuanceResult, AccountCredentialIssuanceWorkflow,
+        AccountCredentialIssuanceWorkflowError, AccountStatusChangeError,
+        AccountStatusChangeResult, AccountStatusChangeWorkflow, GroupAdministrationMutationResult,
+        GroupAdministrationReadResult, GroupAdministrationWorkflow,
+        GroupAdministrationWorkflowError, GroupMutationResult, GroupMutationWorkflow,
+        GroupMutationWorkflowError, LogConfigurationChangeError, LogConfigurationChangeResult,
+        LogConfigurationChangeWorkflow, MfaModuleEnablementError, MfaModuleEnablementOutcome,
+        MfaModuleEnablementPreview, MfaModuleEnablementResult, MfaModuleEnablementWorkflow,
+        MfaPolicyChangeError, MfaPolicyChangeResult, MfaPolicyChangeWorkflow,
+    },
+    authentication::{AuthenticationRuntime, ValidatedSession, correlation_identifier},
+    authorization::{AuthorizationRuntime, ServedComponents},
     fallback_router,
+    mfa_policy_ticket::{MfaPolicyStepUpTicket, MfaPolicyStepUpTicketDigest},
+    operational_audit::{OperationalAuditRecovery, OperationalAuditRecoveryState},
+    password_change::{PasswordChangeResult, PasswordChangeWorkflow, PasswordChangeWorkflowError},
+    totp_enablement_preview::{TotpEnablementPreviewCredential, TotpEnablementPreviewDigest},
     transport::{
-        MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection, TransportCapability,
-        TransportProfile, TransportRegistration,
+        BodyAdmission, MountedSurface, PreBodyCheck, PreBodyGrant, PreBodyRejection,
+        TransportCapability, TransportProfile, TransportRegistration,
     },
 };
+
+const _: () = assert!(MAX_PASSWORD_CHANGE_PASSWORD_BYTES == MAX_PASSWORD_REPLACEMENT_BYTES);
+
+const PASSWORD_CHANGE_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_PASSWORD_CHANGE_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+const CREDENTIAL_ISSUANCE_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_CREDENTIAL_ISSUANCE_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+const MFA_POLICY_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_MFA_POLICY_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+const GROUP_ADMINISTRATION_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_GROUP_ADMINISTRATION_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+const CONFIGURATION_ADMINISTRATION_PROFILE: TransportProfile = TransportProfile::admitted(
+    MAX_CONFIGURATION_ADMINISTRATION_BODY_BYTES,
+    crate::REQUEST_READ_TIMEOUT,
+    crate::REQUEST_PROCESSING_TIMEOUT,
+);
+
+/// Maximum reusable MFA-policy step-up proofs retained by one Server process.
+const MAX_OUTSTANDING_MFA_POLICY_TICKETS: usize = 64;
+
+/// Maximum unexpired TOTP enablement previews retained by one Server process.
+const MAX_OUTSTANDING_TOTP_ENABLEMENT_PREVIEWS: usize = 64;
+
+const _: () = assert!(
+    MAX_CREDENTIAL_ISSUANCE_PASSWORD_BYTES
+        == weavelit_server_authentication::MAX_PASSWORD_REPLACEMENT_BYTES
+);
 
 /// The Server-wide values every operational composition is built against.
 ///
@@ -60,6 +197,8 @@ pub struct OperationalRuntime {
     pub log_catalog: Arc<LogModuleCatalog>,
     /// The Client Modules this build can issue a session for.
     pub client_modules: BTreeSet<Name>,
+    /// The complete compiled-in component inventory used by administration admission.
+    pub components: AvailableComponents,
     /// The process-wide owner shutdown closes the database through.
     pub active_database: ActiveDatabase,
     /// The deployment's at-rest protection for enrolled MFA factor data.
@@ -165,20 +304,87 @@ impl fmt::Debug for ActiveDatabase {
 /// later operation unavailable rather than racing a closing backend.
 #[derive(Clone)]
 pub struct OperationalDatabase {
-    database: Arc<Mutex<Option<Box<dyn ApplicationDatabase>>>>,
+    database: Arc<Mutex<Option<OperationalDatabaseHandle>>>,
+    account_public_identifier_persistence: AccountPublicIdentifierPersistence,
+    pub(crate) group_public_identifier_persistence:
+        weavelit_server_database::GroupPublicIdentifierPersistence,
+    audit_reference_persistence: AuditReferencePersistence,
+    audit_terminal_recovery_persistence: Arc<AuditTerminalRecoveryPersistence>,
+    log_configuration_generation_persistence: Arc<LogConfigurationGenerationPersistence>,
+    log_configuration_mutation_persistence: Arc<LogConfigurationMutationPersistence>,
+}
+
+enum OperationalDatabaseHandle {
+    Selected(SelectedDatabase),
+    #[cfg(test)]
+    UnselectedTest {
+        database: Box<dyn ApplicationDatabase>,
+        audit_reference_persistence: AuditReferencePersistence,
+    },
 }
 
 impl OperationalDatabase {
     /// Takes ownership of a sealed deployment's loaded state and open database.
     pub(crate) fn from_sealed(sealed: SealedDeployment) -> (InitializedState, Self) {
         let (state, database) = sealed.into_parts();
-        (state, Self::from_open(database))
+        (state, Self::from_selected(database))
     }
 
     /// Takes ownership of an already-open database.
+    #[cfg(test)]
     pub(crate) fn from_open(database: Box<dyn ApplicationDatabase>) -> Self {
+        let authority = weavelit_server_database_authority::ServerDatabaseAuthority::new();
         Self {
-            database: Arc::new(Mutex::new(Some(database))),
+            database: Arc::new(Mutex::new(Some(
+                OperationalDatabaseHandle::UnselectedTest {
+                    database,
+                    audit_reference_persistence: AuditReferencePersistence::from_server_authority(
+                        &authority,
+                    ),
+                },
+            ))),
+            account_public_identifier_persistence:
+                AccountPublicIdentifierPersistence::from_server_authority(&authority),
+            group_public_identifier_persistence:
+                weavelit_server_database::GroupPublicIdentifierPersistence::from_server_authority(
+                    &authority,
+                ),
+            audit_reference_persistence: AuditReferencePersistence::from_server_authority(
+                &authority,
+            ),
+            audit_terminal_recovery_persistence: Arc::new(
+                AuditTerminalRecoveryPersistence::from_server_authority(&authority),
+            ),
+            log_configuration_generation_persistence: Arc::new(
+                LogConfigurationGenerationPersistence::from_server_authority(&authority),
+            ),
+            log_configuration_mutation_persistence: Arc::new(
+                LogConfigurationMutationPersistence::from_server_authority(&authority),
+            ),
+        }
+    }
+
+    /// Takes ownership of a lifecycle-selected database and its decoder.
+    fn from_selected(database: SelectedDatabase) -> Self {
+        let account_public_identifier_persistence =
+            database.account_public_identifier_persistence();
+        let group_public_identifier_persistence = database.group_public_identifier_persistence();
+        let audit_reference_persistence = database.audit_reference_persistence();
+        let audit_terminal_recovery_persistence = database.audit_terminal_recovery_persistence();
+        let log_configuration_generation_persistence =
+            database.log_configuration_generation_persistence();
+        let log_configuration_mutation_persistence =
+            database.log_configuration_mutation_persistence();
+        Self {
+            database: Arc::new(Mutex::new(Some(OperationalDatabaseHandle::Selected(
+                database,
+            )))),
+            account_public_identifier_persistence,
+            group_public_identifier_persistence,
+            audit_reference_persistence,
+            audit_terminal_recovery_persistence,
+            log_configuration_generation_persistence,
+            log_configuration_mutation_persistence,
         }
     }
 
@@ -197,7 +403,570 @@ impl OperationalDatabase {
             .lock()
             .map_err(|_| DatabaseError::Unavailable)?;
         let database = database.as_mut().ok_or(DatabaseError::Unavailable)?;
-        Ok(operation(&mut **database))
+        Ok(match database {
+            OperationalDatabaseHandle::Selected(database) => database.with(operation),
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest { database, .. } => {
+                operation(&mut **database)
+            }
+        })
+    }
+
+    /// Runs one short target-scoped operation against MFA storage.
+    pub(crate) fn with_mfa<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn MfaStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| operation(database.mfa().ok_or(DatabaseError::Unavailable)?))?
+    }
+
+    /// Runs one bounded account administration read with the selected decoder.
+    pub(crate) fn with_account_administration<R>(
+        &self,
+        operation: impl FnOnce(
+            &AccountPublicIdentifierPersistence,
+            &mut dyn AccountAdministrationStore,
+        ) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                &self.account_public_identifier_persistence,
+                database
+                    .account_administration()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Loads one exact bounded account projection with the selected decoder.
+    fn load_account_administration_projection(
+        &self,
+        public_identifier: AccountPublicIdentifier,
+    ) -> Result<Option<AccountAdministrationProjection>, DatabaseError> {
+        self.with_account_administration(|persistence, store| {
+            store.load_account_administration_projection(persistence, public_identifier)
+        })
+    }
+
+    /// Decodes one canonical public account identifier through database authority.
+    fn account_public_identifier(
+        &self,
+        encoded: &str,
+    ) -> Result<AccountPublicIdentifier, DatabaseError> {
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        let bytes: [u8; 16] = decoded
+            .try_into()
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        self.account_public_identifier_persistence
+            .decode(bytes)
+            .map_err(|_| DatabaseError::IntegrityFailure)
+    }
+
+    /// Decodes one canonical public Group identifier through database authority.
+    fn group_public_identifier(
+        &self,
+        encoded: &str,
+    ) -> Result<GroupPublicIdentifier, DatabaseError> {
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        let bytes = decoded
+            .try_into()
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        self.group_public_identifier_persistence
+            .decode(bytes)
+            .map_err(|_| DatabaseError::IntegrityFailure)
+    }
+
+    pub(crate) fn with_group_administration<R>(
+        &self,
+        operation: impl FnOnce(
+            &weavelit_server_database::GroupPublicIdentifierPersistence,
+            &mut dyn GroupAdministrationStore,
+        ) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                &self.group_public_identifier_persistence,
+                database
+                    .group_administration()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    pub(crate) fn prepare_group_administration_target(
+        &self,
+        target: GroupPublicIdentifier,
+    ) -> Result<Option<GroupAdministrationTarget>, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.prepare_group_administration_target(
+                persistence,
+                &self.audit_reference_persistence,
+                target,
+            )
+        })
+    }
+
+    pub(crate) fn list_group_member_administration_projections(
+        &self,
+        target: GroupPublicIdentifier,
+    ) -> Result<Option<Vec<AccountAdministrationProjection>>, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.list_group_member_administration_projections(
+                &self.account_public_identifier_persistence,
+                persistence,
+                target,
+            )
+        })
+    }
+
+    pub(crate) fn list_group_grant_administration_projections(
+        &self,
+        target: GroupPublicIdentifier,
+    ) -> Result<Option<Vec<GroupGrant>>, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.list_group_grant_administration_projections(persistence, target)
+        })
+    }
+
+    pub(crate) fn create_group(
+        &self,
+        mutation: &GroupCreateMutation,
+        terminals: &GroupAdministrationAuditTerminalWrites<'_>,
+    ) -> Result<GroupCreateOutcome, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.create_group(persistence, mutation, terminals)
+        })
+    }
+
+    pub(crate) fn update_group(
+        &self,
+        mutation: &GroupUpdateMutation,
+        terminals: &GroupAdministrationAuditTerminalWrites<'_>,
+    ) -> Result<GroupUpdateOutcome, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.update_group(
+                persistence,
+                &self.audit_reference_persistence,
+                mutation,
+                terminals,
+            )
+        })
+    }
+
+    pub(crate) fn delete_group(
+        &self,
+        mutation: &GroupDeleteMutation,
+        terminals: &GroupAdministrationAuditTerminalWrites<'_>,
+    ) -> Result<GroupDeleteOutcome, DatabaseError> {
+        self.with_group_administration(|persistence, store| {
+            store.delete_group(
+                persistence,
+                &self.audit_reference_persistence,
+                mutation,
+                terminals,
+            )
+        })
+    }
+
+    /// Resolves one exact password-reset target through both selected decoders.
+    pub(crate) fn prepare_account_password_reset_target(
+        &self,
+        target: AccountPublicIdentifier,
+    ) -> Result<Option<AccountPasswordResetTarget>, DatabaseError> {
+        self.with_account_credential_writers(|store| {
+            store.prepare_password_reset_target(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                target,
+            )
+        })
+    }
+
+    /// Commits one account creation and exactly one selected Audit terminal.
+    pub(crate) fn create_account(
+        &self,
+        mutation: &AccountCreateMutation,
+        audit_terminals: &AccountCredentialAuditTerminalWrites<'_>,
+    ) -> Result<AccountCreateOutcome, DatabaseError> {
+        self.with_account_credential_writers(|store| {
+            store.create_account(
+                &self.account_public_identifier_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    /// Commits one password reset and exactly one selected Audit terminal.
+    pub(crate) fn reset_account_password(
+        &self,
+        mutation: &AccountPasswordResetMutation,
+        audit_terminals: &AccountCredentialAuditTerminalWrites<'_>,
+    ) -> Result<AccountPasswordResetOutcome, DatabaseError> {
+        self.with_account_credential_writers(|store| {
+            store.reset_account_password(
+                &self.account_public_identifier_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    fn with_account_credential_writers<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn AccountCredentialWriterStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                database
+                    .account_credential_writers()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Commits one restricted-session password change and selected Audit terminal.
+    pub(crate) fn change_password(
+        &self,
+        mutation: &PasswordChangeMutation,
+        audit_terminals: &PasswordChangeAuditTerminalWrites<'_>,
+    ) -> Result<PasswordChangeOutcome, DatabaseError> {
+        self.with(|database| {
+            database
+                .password_change_writers()
+                .ok_or(DatabaseError::Unavailable)?
+                .change_password(mutation, audit_terminals)
+        })?
+    }
+
+    /// Resolves one exact account status target through both selected decoders.
+    pub(crate) fn prepare_account_status_target(
+        &self,
+        target: AccountPublicIdentifier,
+    ) -> Result<Option<AccountStatusTarget>, DatabaseError> {
+        self.with_account_status_writers(|store| {
+            store.prepare_account_status_target(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                target,
+            )
+        })
+    }
+
+    /// Commits one account status change and exactly one selected Audit terminal.
+    pub(crate) fn change_account_status(
+        &self,
+        mutation: &AccountStatusMutation,
+        audit_terminals: &AccountStatusAuditTerminalWrites<'_>,
+    ) -> Result<AccountStatusMutationOutcome, DatabaseError> {
+        self.with_account_status_writers(|store| {
+            store.change_account_status(
+                &self.account_public_identifier_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    fn with_account_status_writers<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn AccountStatusWriterStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                database
+                    .account_status_writers()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Resolves one exact account MFA policy target through both selected decoders.
+    pub(crate) fn prepare_mfa_policy_target(
+        &self,
+        target: AccountPublicIdentifier,
+        module: &Name,
+    ) -> Result<Option<MfaPolicyTarget>, DatabaseError> {
+        self.with_mfa_policy_writers(|store| {
+            store.prepare_mfa_policy_target(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                module,
+                target,
+            )
+        })
+    }
+
+    /// Commits one MFA policy change and exactly one selected Audit terminal.
+    pub(crate) fn change_mfa_policy(
+        &self,
+        mutation: &MfaPolicyMutation,
+        audit_terminals: &MfaPolicyAuditTerminalWrites<'_>,
+    ) -> Result<MfaPolicyMutationOutcome, DatabaseError> {
+        self.with_mfa_policy_writers(|store| {
+            store.change_mfa_policy(
+                &self.account_public_identifier_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    fn with_mfa_policy_writers<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn MfaPolicyWriterStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                database
+                    .mfa_policy_writers()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Resolves one existing Group membership target through selected decoders.
+    pub(crate) fn prepare_group_membership_target(
+        &self,
+        group: StateIdentifier,
+        account: AccountPublicIdentifier,
+    ) -> Result<Option<GroupMembershipMutationTarget>, DatabaseError> {
+        self.with_group_mutations(|store| {
+            store.prepare_group_membership_target(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                group,
+                account,
+            )
+        })
+    }
+
+    /// Resolves one existing Group direct-grant target through the selected decoder.
+    pub(crate) fn prepare_group_grant_target(
+        &self,
+        group: StateIdentifier,
+        grant: GroupGrant,
+    ) -> Result<Option<GroupGrantMutationTarget>, DatabaseError> {
+        self.with_group_mutations(|store| {
+            store.prepare_group_grant_target(&self.audit_reference_persistence, group, grant)
+        })
+    }
+
+    /// Commits one Group association change and exactly one selected Audit terminal.
+    pub(crate) fn commit_group_mutation(
+        &self,
+        mutation: &PreparedGroupMutation,
+        audit_terminals: &GroupMutationAuditTerminalWrites<'_>,
+    ) -> Result<GroupMutationOutcome, DatabaseError> {
+        self.with_group_mutations(|store| {
+            store.commit_group_mutation(
+                &self.account_public_identifier_persistence,
+                &self.audit_reference_persistence,
+                mutation,
+                audit_terminals,
+            )
+        })
+    }
+
+    fn with_group_mutations<R>(
+        &self,
+        operation: impl FnOnce(&mut dyn GroupMutationStore) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                database
+                    .group_mutations()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Loads the authenticated actor's typed Audit Reference through database authority.
+    pub(crate) fn load_account_audit_reference(
+        &self,
+        account: StateIdentifier,
+    ) -> Result<Option<AccountAuditReference>, DatabaseError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| DatabaseError::Unavailable)?;
+        match database.as_mut().ok_or(DatabaseError::Unavailable)? {
+            OperationalDatabaseHandle::Selected(database) => {
+                database.load_account_audit_reference(account)
+            }
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest {
+                database,
+                audit_reference_persistence,
+                ..
+            } => database.load_account_audit_reference(audit_reference_persistence, account),
+        }
+    }
+
+    /// Loads one Log Module configuration's typed Audit Reference.
+    pub(crate) fn load_log_configuration_audit_reference(
+        &self,
+        configuration: StateIdentifier,
+    ) -> Result<Option<LogConfigurationAuditReference>, DatabaseError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| DatabaseError::Unavailable)?;
+        match database.as_mut().ok_or(DatabaseError::Unavailable)? {
+            OperationalDatabaseHandle::Selected(database) => {
+                database.load_log_configuration_audit_reference(configuration)
+            }
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest {
+                database,
+                audit_reference_persistence,
+                ..
+            } => database
+                .load_log_configuration_audit_reference(audit_reference_persistence, configuration),
+        }
+    }
+
+    /// Prepares one Log configuration mutation from one atomic backend snapshot.
+    pub(crate) fn prepare_log_configuration_mutation(
+        &self,
+        request: &LogConfigurationMutationRequest,
+    ) -> Result<LogConfigurationPreparation, DatabaseError> {
+        self.with(|database| {
+            database
+                .log_configuration_mutations()
+                .ok_or(DatabaseError::Unavailable)?
+                .prepare_log_configuration_mutation(
+                    &self.log_configuration_generation_persistence,
+                    &self.log_configuration_mutation_persistence,
+                    request,
+                )
+        })?
+    }
+
+    /// Commits one prepared mutation and exactly one selected terminal obligation.
+    pub(crate) fn commit_log_configuration_mutation(
+        &self,
+        mutation: &PreparedLogConfigurationMutation,
+        audit_terminals: &LogConfigurationAuditTerminalWrites<'_>,
+    ) -> Result<LogConfigurationMutationOutcome, DatabaseError> {
+        self.with(|database| {
+            database
+                .log_configuration_mutations()
+                .ok_or(DatabaseError::Unavailable)?
+                .commit_log_configuration_mutation(mutation, audit_terminals)
+        })?
+    }
+
+    /// Runs one short operation against terminal recovery storage and its decoder.
+    pub(crate) fn with_audit_terminal_recovery<R>(
+        &self,
+        operation: impl FnOnce(
+            &AuditTerminalRecoveryPersistence,
+            &mut dyn AuditTerminalRecoveryStore,
+        ) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                &self.audit_terminal_recovery_persistence,
+                database
+                    .audit_terminal_recovery()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Returns the selected decoder without taking the database operation lane.
+    pub(crate) fn audit_terminal_recovery_persistence(&self) -> &AuditTerminalRecoveryPersistence {
+        &self.audit_terminal_recovery_persistence
+    }
+
+    /// Loads the current Audit configuration generation from a capable backend.
+    pub(crate) fn load_current_audit_log_configuration_generation(
+        &self,
+    ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+        self.with_log_configuration_generations(|persistence, store| {
+            store.load_current_audit_log_configuration_generation(persistence)
+        })
+    }
+
+    /// Lists every current Log configuration generation from one validated snapshot.
+    pub(crate) fn list_current_log_configuration_generations(
+        &self,
+    ) -> Result<Vec<LogConfigurationGeneration>, DatabaseError> {
+        self.with_log_configuration_generations(|persistence, store| {
+            store.list_current_log_configuration_generations(persistence)
+        })
+    }
+
+    /// Loads one exact historical configuration generation from a capable backend.
+    pub(crate) fn load_log_configuration_generation(
+        &self,
+        key: LogConfigurationGenerationKey,
+    ) -> Result<Option<LogConfigurationGeneration>, DatabaseError> {
+        self.with_log_configuration_generations(|persistence, store| {
+            store.load_log_configuration_generation(persistence, key)
+        })
+    }
+
+    /// Converts one retained Audit binding into its exact generation key.
+    pub(crate) fn log_configuration_generation_key(
+        &self,
+        configuration: [u8; 16],
+        version: u64,
+    ) -> Result<LogConfigurationGenerationKey, DatabaseError> {
+        let configuration = StateIdentifier::from_bytes(configuration)
+            .map_err(|_| DatabaseError::IntegrityFailure)?;
+        let version =
+            LogConfigurationVersion::new(version).ok_or(DatabaseError::IntegrityFailure)?;
+        Ok(self
+            .log_configuration_generation_persistence
+            .key(configuration, version))
+    }
+
+    fn with_log_configuration_generations<R>(
+        &self,
+        operation: impl FnOnce(
+            &LogConfigurationGenerationPersistence,
+            &mut dyn LogConfigurationGenerationStore,
+        ) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.with(|database| {
+            operation(
+                &self.log_configuration_generation_persistence,
+                database
+                    .log_configuration_generations()
+                    .ok_or(DatabaseError::Unavailable)?,
+            )
+        })?
+    }
+
+    /// Loads initialized state through the selected database's decoder.
+    pub fn load_initialized_state(
+        &self,
+        expected_deployment_identifier: weavelit_server_database::DeploymentIdentifier,
+    ) -> Result<InitializedState, DatabaseError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| DatabaseError::Unavailable)?;
+        match database.as_mut().ok_or(DatabaseError::Unavailable)? {
+            OperationalDatabaseHandle::Selected(database) => {
+                database.load_initialized_state(expected_deployment_identifier)
+            }
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest {
+                database,
+                audit_reference_persistence,
+            } => database.load_initialized_state(
+                &self.account_public_identifier_persistence,
+                audit_reference_persistence,
+                expected_deployment_identifier,
+            ),
+        }
     }
 
     /// Takes the database out of every clone at once and closes it.
@@ -212,13 +981,22 @@ impl OperationalDatabase {
             Ok(mut database) => (database.take(), false),
             Err(poisoned) => (poisoned.into_inner().take(), true),
         };
-        let closed = taken.map_or(Ok(()), ApplicationDatabase::close);
+        let closed = taken.map_or(Ok(()), |database| match database {
+            OperationalDatabaseHandle::Selected(database) => database.close(),
+            #[cfg(test)]
+            OperationalDatabaseHandle::UnselectedTest { database, .. } => database.close(),
+        });
 
         closed.and(if poisoned {
             Err(DatabaseError::Unavailable)
         } else {
             Ok(())
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn close_for_test(&self) -> Result<(), DatabaseError> {
+        self.close()
     }
 
     /// Compares one submitted reconciliation capability against the live
@@ -291,6 +1069,107 @@ impl PreBodyCheck for ReconciliationPreconditions {
     }
 }
 
+/// Password-change checks that run before the listener allocates its secret body.
+struct PasswordChangePreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+/// Credential-issuance checks that run before any secret body allocation.
+struct CredentialIssuancePreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+/// MFA-policy checks that run before any secret body allocation.
+struct MfaPolicyPreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+struct ConfigurationAdministrationPreconditions {
+    expected_origin: ExpectedOrigin,
+}
+
+impl PreBodyCheck for CredentialIssuancePreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_credential_issuance_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(CredentialIssuanceRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(CredentialIssuanceRejection::SessionInvalid) => {
+                Err(PreBodyRejection::SessionInvalid)
+            }
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
+impl PreBodyCheck for MfaPolicyPreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_mfa_policy_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(MfaPolicyRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(MfaPolicyRejection::SessionInvalid) => Err(PreBodyRejection::SessionInvalid),
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
+impl PreBodyCheck for ConfigurationAdministrationPreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        let body_required = uri.path() != LOG_CONFIGURATIONS_LIST_ROUTE;
+        match validate_configuration_administration_request(
+            method,
+            headers,
+            self.expected_origin,
+            body_required,
+        ) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(ConfigurationAdministrationRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(ConfigurationAdministrationRejection::SessionInvalid) => {
+                Err(PreBodyRejection::SessionInvalid)
+            }
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
+impl PreBodyCheck for PasswordChangePreconditions {
+    fn check(
+        &self,
+        method: &Method,
+        _uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Result<PreBodyGrant, PreBodyRejection> {
+        match validate_password_change_request(method, headers, self.expected_origin) {
+            Ok(()) => Ok(PreBodyGrant::accepted()),
+            Err(AuthenticationRejection::RequestOriginDenied) => {
+                Err(PreBodyRejection::RequestOriginDenied)
+            }
+            Err(AuthenticationRejection::SessionInvalid) => Err(PreBodyRejection::SessionInvalid),
+            Err(_) => Err(PreBodyRejection::BadRequest),
+        }
+    }
+}
+
 /// Composes the operational surface a sealed deployment serves.
 ///
 /// The composer owns the deployment's open Application Database, so a route it
@@ -298,12 +1177,438 @@ impl PreBodyCheck for ReconciliationPreconditions {
 pub struct OperationalComposer {
     runtime: Arc<OperationalRuntime>,
     database: OperationalDatabase,
+    audit_recovery: Arc<OperationalAuditRecovery>,
+    #[cfg(test)]
+    activation_audit_recovery_state: OperationalAuditRecoveryState,
     /// The authentication runtime, when one could be composed.
     ///
     /// Its absence is the declaration that this deployment serves no
     /// authentication route, so a Server that cannot deny safely serves no
     /// login at all rather than one that decides on a broken authenticator.
     authentication: Option<Arc<AuthenticationRuntime<RustCryptoArgon2>>>,
+    authorization: Option<Arc<AuthorizationRuntime>>,
+    #[allow(dead_code)]
+    administration: Option<Arc<OperationalAdministration>>,
+}
+
+#[derive(Clone, Copy)]
+struct OperationalAdministrationClock(Instant);
+
+impl AdministrationClock for OperationalAdministrationClock {
+    fn now(&self) -> Duration {
+        self.0.elapsed()
+    }
+}
+
+struct OperationalComponentEnablement(OperationalDatabase);
+
+impl ComponentEnablementSource for OperationalComponentEnablement {
+    fn load_component_enablement(
+        &mut self,
+    ) -> Result<weavelit_server_database::ComponentEnablement, AuthorizationDenied> {
+        self.0
+            .with(|database| database.load_component_enablement())
+            .map_err(|_| AuthorizationDenied)?
+            .map_err(|_| AuthorizationDenied)
+    }
+}
+
+/// Internal transport-independent administration composition for current-session step-up.
+pub(crate) struct OperationalAdministration {
+    authentication: Arc<AuthenticationRuntime<RustCryptoArgon2>>,
+    state: Mutex<OperationalAdministrationState>,
+}
+
+struct OperationalAdministrationState {
+    clock: OperationalAdministrationClock,
+    plane: AdministrationPlane<OperationalAdministrationClock, OperationalComponentEnablement>,
+    pending_mfa_policy: Vec<PendingMfaPolicyStepUp>,
+    pending_totp_enablement: TotpEnablementPreviewRegistry,
+}
+
+struct PendingMfaPolicyStepUp {
+    digest: MfaPolicyStepUpTicketDigest,
+    expires_after: Duration,
+    proof: MfaStepUpProof,
+}
+
+struct PendingTotpEnablementPreview {
+    digest: TotpEnablementPreviewDigest,
+    expires_after: Duration,
+    actor: StateIdentifier,
+    session: weavelit_server_database::SessionTokenHash,
+    client_module: Name,
+    desired_state: bool,
+    preview: MfaModuleEnablementPreview,
+}
+
+#[derive(Default)]
+struct TotpEnablementPreviewRegistry {
+    pending: Vec<PendingTotpEnablementPreview>,
+}
+
+impl TotpEnablementPreviewRegistry {
+    fn issue(
+        &mut self,
+        now: Duration,
+        actor: StateIdentifier,
+        session: weavelit_server_database::SessionTokenHash,
+        client_module: Name,
+        desired_state: bool,
+        preview: MfaModuleEnablementPreview,
+    ) -> Result<TotpEnablementPreviewCredential, AuthorizationDenied> {
+        self.pending.retain(|entry| entry.expires_after > now);
+        if self.pending.len() >= MAX_OUTSTANDING_TOTP_ENABLEMENT_PREVIEWS {
+            return Err(AuthorizationDenied);
+        }
+        let credential = TotpEnablementPreviewCredential::generate().ok_or(AuthorizationDenied)?;
+        let expires_after = now
+            .checked_add(MFA_STEP_UP_LIFETIME)
+            .ok_or(AuthorizationDenied)?;
+        self.pending.push(PendingTotpEnablementPreview {
+            digest: credential.digest(),
+            expires_after,
+            actor,
+            session,
+            client_module,
+            desired_state,
+            preview,
+        });
+        Ok(credential)
+    }
+
+    fn claim(
+        &mut self,
+        now: Duration,
+        actor: StateIdentifier,
+        session: weavelit_server_database::SessionTokenHash,
+        client_module: &Name,
+        desired_state: bool,
+        submitted: &str,
+    ) -> Result<MfaModuleEnablementPreview, AuthorizationDenied> {
+        let submitted =
+            TotpEnablementPreviewDigest::of_canonical(submitted).ok_or(AuthorizationDenied)?;
+        self.pending.retain(|entry| entry.expires_after > now);
+        let position = self
+            .pending
+            .iter()
+            .position(|entry| {
+                entry.digest.matches(&submitted)
+                    && entry.actor == actor
+                    && entry.session.matches(&session)
+                    && entry.client_module == *client_module
+                    && entry.desired_state == desired_state
+            })
+            .ok_or(AuthorizationDenied)?;
+        Ok(self.pending.remove(position).preview)
+    }
+}
+
+impl OperationalAdministration {
+    fn new(
+        authentication: Arc<AuthenticationRuntime<RustCryptoArgon2>>,
+        database: OperationalDatabase,
+        components: AvailableComponents,
+    ) -> Self {
+        let clock = OperationalAdministrationClock(Instant::now());
+        Self {
+            authentication,
+            state: Mutex::new(OperationalAdministrationState {
+                clock,
+                plane: AdministrationPlane::new(
+                    clock,
+                    OperationalComponentEnablement(database),
+                    components,
+                ),
+                pending_mfa_policy: Vec::new(),
+                pending_totp_enablement: TotpEnablementPreviewRegistry::default(),
+            }),
+        }
+    }
+
+    /// Retains one exact preview behind a random digest-only process-local credential.
+    fn issue_totp_enablement_preview(
+        &self,
+        session: &ValidatedSession,
+        desired_state: bool,
+        preview: MfaModuleEnablementPreview,
+    ) -> Result<TotpEnablementPreviewCredential, AuthorizationDenied> {
+        let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
+        let now = state.clock.now();
+        state.pending_totp_enablement.issue(
+            now,
+            session.account(),
+            session.session_token_hash(),
+            session.client_module().clone(),
+            desired_state,
+            preview,
+        )
+    }
+
+    /// Claims one preview exactly once for its bound actor, session, client, and desired state.
+    fn claim_totp_enablement_preview(
+        &self,
+        session: &ValidatedSession,
+        desired_state: bool,
+        submitted: &str,
+    ) -> Result<MfaModuleEnablementPreview, AuthorizationDenied> {
+        let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
+        let now = state.clock.now();
+        state.pending_totp_enablement.claim(
+            now,
+            session.account(),
+            session.session_token_hash(),
+            session.client_module(),
+            desired_state,
+            submitted,
+        )
+    }
+
+    /// Verifies current-session TOTP and retains one reusable five-minute family-bound proof.
+    pub(crate) fn issue_mfa_policy_step_up(
+        &self,
+        session: &ValidatedSession,
+        code: &str,
+        family: StepUpActionFamily,
+    ) -> Result<MfaPolicyStepUpTicket, AuthenticationRejection> {
+        let ticket =
+            MfaPolicyStepUpTicket::generate().ok_or(AuthenticationRejection::ServiceUnavailable)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?;
+        let now = state.clock.now();
+        state
+            .pending_mfa_policy
+            .retain(|entry| entry.expires_after > now);
+        if state.pending_mfa_policy.len() >= MAX_OUTSTANDING_MFA_POLICY_TICKETS {
+            return Err(AuthenticationRejection::ServiceUnavailable);
+        }
+        let current = self
+            .authentication
+            .verify_administration_step_up(session, code)?;
+        let proof = state
+            .plane
+            .issue_step_up(&ServerAdministrationAuthority::new(), &current, family)
+            .map_err(|_| AuthenticationRejection::AuthenticationFailed)?;
+        let expires_after = state
+            .clock
+            .now()
+            .checked_add(MFA_STEP_UP_LIFETIME)
+            .ok_or(AuthenticationRejection::ServiceUnavailable)?;
+        state.pending_mfa_policy.push(PendingMfaPolicyStepUp {
+            digest: ticket.digest(family),
+            expires_after,
+            proof,
+        });
+        Ok(ticket)
+    }
+
+    /// Authorizes one MFA-policy action through a reusable opaque ticket.
+    pub(crate) fn authorize_mfa_policy(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        submitted: &str,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        let submitted =
+            MfaPolicyStepUpTicketDigest::of_canonical(submitted, StepUpActionFamily::MfaPolicy)
+                .ok_or(AuthorizationDenied)?;
+        let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
+        let now = state.clock.now();
+        state
+            .pending_mfa_policy
+            .retain(|entry| entry.expires_after > now);
+        let OperationalAdministrationState {
+            plane,
+            pending_mfa_policy,
+            ..
+        } = &mut *state;
+        let proof = pending_mfa_policy
+            .iter()
+            .find(|entry| entry.digest.matches(&submitted))
+            .map(|entry| &entry.proof)
+            .ok_or(AuthorizationDenied)?;
+        plane.authorize(
+            admission,
+            AdministrationRequest::new(AdministrationAction::MfaPolicy).with_step_up(proof),
+        )
+    }
+
+    /// Authorizes one exact GrantMutation action through a family-bound opaque ticket.
+    pub(crate) fn authorize_grant_mutation_ticket(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        mutation: weavelit_server_administration::GroupMutation,
+        submitted: &str,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        let submitted =
+            MfaPolicyStepUpTicketDigest::of_canonical(submitted, StepUpActionFamily::GrantMutation)
+                .ok_or(AuthorizationDenied)?;
+        let mut state = self.state.lock().map_err(|_| AuthorizationDenied)?;
+        let now = state.clock.now();
+        state
+            .pending_mfa_policy
+            .retain(|entry| entry.expires_after > now);
+        let OperationalAdministrationState {
+            plane,
+            pending_mfa_policy,
+            ..
+        } = &mut *state;
+        let proof = pending_mfa_policy
+            .iter()
+            .find(|entry| entry.digest.matches(&submitted))
+            .map(|entry| &entry.proof)
+            .ok_or(AuthorizationDenied)?;
+        plane.authorize(
+            admission,
+            AdministrationRequest::new(AdministrationAction::GrantMutation(mutation))
+                .with_step_up(proof),
+        )
+    }
+
+    /// Verifies and consumes current-session TOTP, then mints one five-minute grant proof.
+    #[allow(dead_code)]
+    pub(crate) fn verify_grant_mutation_step_up(
+        &self,
+        session: &ValidatedSession,
+        code: &str,
+    ) -> Result<MfaStepUpProof, AuthenticationRejection> {
+        let current = self
+            .authentication
+            .verify_administration_step_up(session, code)?;
+        self.state
+            .lock()
+            .map_err(|_| AuthenticationRejection::ServiceUnavailable)?
+            .plane
+            .issue_step_up(
+                &ServerAdministrationAuthority::new(),
+                &current,
+                StepUpActionFamily::GrantMutation,
+            )
+            .map_err(|_| AuthenticationRejection::AuthenticationFailed)
+    }
+
+    /// Authorizes one exact grant-mutation action against the same proof clock and inventory.
+    #[allow(dead_code)]
+    pub(crate) fn authorize_grant_mutation(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        mutation: weavelit_server_administration::GroupMutation,
+        proof: &MfaStepUpProof,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        self.state
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .plane
+            .authorize(
+                admission,
+                weavelit_server_administration::AdministrationRequest::new(
+                    weavelit_server_administration::AdministrationAction::GrantMutation(mutation),
+                )
+                .with_step_up(proof),
+            )
+    }
+
+    /// Consumes one exact Administration Plane admission for one account read.
+    fn authorize_account_read(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        read: AccountAdministrationRead,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        self.state
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .plane
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Account(
+                    AccountAdministrationAction::Read(read),
+                )),
+            )
+    }
+
+    /// Consumes one exact Administration Plane admission for an account status change.
+    fn authorize_account_status(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        change: AccountStatusChange,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        self.state
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .plane
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Account(
+                    AccountAdministrationAction::StatusChange(change),
+                )),
+            )
+    }
+
+    /// Consumes one exact Administration Plane admission for a credential writer.
+    fn authorize_account_write(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        action: AccountAdministrationAction,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        if !matches!(
+            action,
+            AccountAdministrationAction::Create(_) | AccountAdministrationAction::PasswordReset(_)
+        ) {
+            return Err(AuthorizationDenied);
+        }
+        self.state
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .plane
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Account(action)),
+            )
+    }
+
+    fn authorize_group_administration(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        action: GroupAdministrationAction,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        self.state
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .plane
+            .authorize(
+                admission,
+                AdministrationRequest::new(AdministrationAction::Group(action)),
+            )
+    }
+
+    fn authorize_configuration_action(
+        &self,
+        admission: AuthorizedAdministrationAdmission,
+        action: AdministrationAction,
+    ) -> Result<weavelit_server_administration::AuthorizedAdministrationAction, AuthorizationDenied>
+    {
+        if !matches!(
+            action,
+            AdministrationAction::ComponentEnablementChange(_)
+                | AdministrationAction::LogConfigurationRead(_)
+                | AdministrationAction::LogConfigurationChange(_)
+        ) {
+            return Err(AuthorizationDenied);
+        }
+        self.state
+            .lock()
+            .map_err(|_| AuthorizationDenied)?
+            .plane
+            .authorize(admission, AdministrationRequest::new(action))
+    }
 }
 
 impl OperationalComposer {
@@ -318,6 +1623,14 @@ impl OperationalComposer {
         database: OperationalDatabase,
     ) -> Self {
         runtime.active_database.activate(database.clone());
+        let audit_recovery = Arc::new(OperationalAuditRecovery::new(
+            &runtime,
+            state,
+            database.clone(),
+        ));
+        let activation_audit_recovery_state = audit_recovery.drain_for_activation();
+        #[cfg(not(test))]
+        let _ = activation_audit_recovery_state;
         let authentication = AuthenticationRuntime::new(
             database.clone(),
             state,
@@ -326,11 +1639,67 @@ impl OperationalComposer {
             &runtime.log_catalog,
             Arc::clone(&runtime.protection),
         );
+        let authorization = authentication.as_ref().map(|authentication| {
+            Arc::new(authentication.authorization_runtime(ServedComponents::compiled_in()))
+        });
+        let administration = authentication.as_ref().map(|authentication| {
+            Arc::new(OperationalAdministration::new(
+                Arc::clone(authentication),
+                database.clone(),
+                runtime.components.clone(),
+            ))
+        });
 
         Self {
             runtime,
             database,
+            audit_recovery,
+            #[cfg(test)]
+            activation_audit_recovery_state,
             authentication,
+            authorization,
+            administration,
+        }
+    }
+
+    /// Composes with a test-controlled recovery coordinator before activation.
+    #[cfg(test)]
+    pub(crate) fn with_audit_recovery_for_test(
+        runtime: Arc<OperationalRuntime>,
+        state: &InitializedState,
+        database: OperationalDatabase,
+        audit_recovery: OperationalAuditRecovery,
+    ) -> Self {
+        runtime.active_database.activate(database.clone());
+        let audit_recovery = Arc::new(audit_recovery);
+        let activation_audit_recovery_state = audit_recovery.drain_for_activation();
+        let authentication = AuthenticationRuntime::new(
+            database.clone(),
+            state,
+            runtime.client_modules.clone(),
+            runtime.state_root.clone(),
+            &runtime.log_catalog,
+            Arc::clone(&runtime.protection),
+        );
+        let authorization = authentication.as_ref().map(|authentication| {
+            Arc::new(authentication.authorization_runtime(ServedComponents::compiled_in()))
+        });
+        let administration = authentication.as_ref().map(|authentication| {
+            Arc::new(OperationalAdministration::new(
+                Arc::clone(authentication),
+                database.clone(),
+                runtime.components.clone(),
+            ))
+        });
+
+        Self {
+            runtime,
+            database,
+            audit_recovery,
+            activation_audit_recovery_state,
+            authentication,
+            authorization,
+            administration,
         }
     }
 
@@ -338,12 +1707,312 @@ impl OperationalComposer {
     #[cfg(test)]
     pub(crate) fn without_authentication(mut self) -> Self {
         self.authentication = None;
+        self.authorization = None;
+        self.administration = None;
         self
     }
 
     /// Returns the single open database every operational route shares.
     pub(crate) const fn database(&self) -> &OperationalDatabase {
         &self.database
+    }
+
+    /// Runs one bounded Audit recovery drain before a consequential workflow.
+    #[allow(dead_code)]
+    pub(crate) fn drain_audit_before_consequential_operation(
+        &self,
+    ) -> OperationalAuditRecoveryState {
+        self.audit_recovery.drain_before_consequential_operation()
+    }
+
+    /// Returns the internal TOTP enablement workflow over this operational composition.
+    #[allow(dead_code)]
+    pub(crate) fn mfa_module_enablement_workflow(
+        &self,
+    ) -> crate::administration::MfaModuleEnablementWorkflow<'_> {
+        crate::administration::MfaModuleEnablementWorkflow::new(
+            &self.database,
+            &self.audit_recovery,
+        )
+    }
+
+    fn account_administration_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<AccountAdministrationCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+
+        Some(AccountAdministrationCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            execute: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_account_administration(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(AccountAdministrationRejection::ServiceUnavailable))
+                })
+            }),
+        })
+    }
+
+    fn group_administration_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<GroupAdministrationCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+        let components = self.runtime.components.clone();
+        Some(GroupAdministrationCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            execute: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                let components = components.clone();
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_group_administration(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            &components,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(GroupAdministrationRejection::ServiceUnavailable))
+                })
+            }),
+        })
+    }
+
+    fn credential_issuance_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<CredentialIssuanceCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+
+        let step_up_authentication = Arc::clone(&authentication);
+        let step_up_authorization = Arc::clone(&authorization);
+        let create_authentication = Arc::clone(&authentication);
+        let create_authorization = Arc::clone(&authorization);
+        let create_administration = Arc::clone(&administration);
+        let create_database = database.clone();
+        let create_audit = Arc::clone(&audit_recovery);
+        Some(CredentialIssuanceCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            step_up: Arc::new(move |submission| {
+                let authentication = Arc::clone(&step_up_authentication);
+                let authorization = Arc::clone(&step_up_authorization);
+                Box::pin(async move {
+                    execute_credential_issuance_step_up(authentication, authorization, submission)
+                        .await
+                })
+            }),
+            create: Arc::new(move |submission| {
+                let authentication = Arc::clone(&create_authentication);
+                let authorization = Arc::clone(&create_authorization);
+                let administration = Arc::clone(&create_administration);
+                let database = create_database.clone();
+                let audit_recovery = Arc::clone(&create_audit);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_account_create(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(CredentialIssuanceRejection::ServiceUnavailable))
+                })
+            }),
+            reset_password: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_account_password_reset(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(CredentialIssuanceRejection::ServiceUnavailable))
+                })
+            }),
+        })
+    }
+
+    fn mfa_policy_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<MfaPolicyCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+
+        let step_up_authentication = Arc::clone(&authentication);
+        let step_up_authorization = Arc::clone(&authorization);
+        let step_up_administration = Arc::clone(&administration);
+        let requirement_authentication = Arc::clone(&authentication);
+        let requirement_authorization = Arc::clone(&authorization);
+        let requirement_administration = Arc::clone(&administration);
+        let requirement_database = database.clone();
+        let requirement_audit = Arc::clone(&audit_recovery);
+        Some(MfaPolicyCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            step_up: Arc::new(move |submission| {
+                let authentication = Arc::clone(&step_up_authentication);
+                let authorization = Arc::clone(&step_up_authorization);
+                let administration = Arc::clone(&step_up_administration);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_mfa_policy_step_up(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(MfaPolicyRejection::ServiceUnavailable))
+                })
+            }),
+            requirement: Arc::new(move |submission| {
+                let authentication = Arc::clone(&requirement_authentication);
+                let authorization = Arc::clone(&requirement_authorization);
+                let administration = Arc::clone(&requirement_administration);
+                let database = requirement_database.clone();
+                let audit_recovery = Arc::clone(&requirement_audit);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_mfa_requirement(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(MfaPolicyRejection::ServiceUnavailable))
+                })
+            }),
+            reset: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_mfa_reset(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(MfaPolicyRejection::ServiceUnavailable))
+                })
+            }),
+        })
+    }
+
+    fn configuration_administration_capability(
+        &self,
+        expected_origin: ExpectedOrigin,
+    ) -> Option<ConfigurationAdministrationCapability> {
+        let authentication = Arc::clone(self.authentication.as_ref()?);
+        let authorization = Arc::clone(self.authorization.as_ref()?);
+        let administration = Arc::clone(self.administration.as_ref()?);
+        let database = self.database.clone();
+        let audit_recovery = Arc::clone(&self.audit_recovery);
+        let log_catalog = Arc::clone(&self.runtime.log_catalog);
+        Some(ConfigurationAdministrationCapability {
+            expected_origin,
+            correlate: Arc::new(correlation_identifier),
+            execute: Arc::new(move |submission| {
+                let authentication = Arc::clone(&authentication);
+                let authorization = Arc::clone(&authorization);
+                let administration = Arc::clone(&administration);
+                let database = database.clone();
+                let audit_recovery = Arc::clone(&audit_recovery);
+                let log_catalog = Arc::clone(&log_catalog);
+                Box::pin(async move {
+                    task::spawn_blocking(move || {
+                        execute_configuration_administration(
+                            &authentication,
+                            &authorization,
+                            &administration,
+                            &database,
+                            &audit_recovery,
+                            &log_catalog,
+                            submission,
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err(
+                        ConfigurationAdministrationRejection::ServiceUnavailable,
+                    ))
+                })
+            }),
+        })
+    }
+
+    /// Returns the state observed by the activation drain.
+    #[cfg(test)]
+    pub(crate) const fn activation_audit_recovery_state(&self) -> OperationalAuditRecoveryState {
+        self.activation_audit_recovery_state
     }
 
     /// Composes the sealed deployment's operational surface.
@@ -355,9 +2024,28 @@ impl OperationalComposer {
     /// [`TransportCapability`] and therefore cannot be built without the
     /// registration that admits the route it mounts.
     pub(crate) fn mount(&self) -> OperationalMount {
-        let declared = weavelit_module_client_webui::operational_surface();
+        let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
+        let declared = weavelit_module_client_webui::operational_surface(
+            self.account_administration_capability(expected_origin),
+            self.group_administration_capability(expected_origin),
+            self.configuration_administration_capability(expected_origin),
+            self.credential_issuance_capability(expected_origin),
+            self.mfa_policy_capability(expected_origin),
+        );
+        let (declared, account_administration) = declared.split_account_administration();
+        let (declared, group_administration) = declared.split_group_administration();
+        let (declared, configuration_administration) =
+            declared.split_configuration_administration();
+        let (declared, credential_issuance) = declared.split_credential_issuance();
+        let (declared, mfa_policy) = declared.split_mfa_policy();
         let mut surface = MountedSurface::without_registrations(declared.mount(fallback_router()));
-        for capability in self.capabilities() {
+        for capability in self.capabilities(
+            account_administration,
+            group_administration,
+            configuration_administration,
+            credential_issuance,
+            mfa_policy,
+        ) {
             surface = surface.with_capability(capability);
         }
         OperationalMount { surface }
@@ -370,7 +2058,14 @@ impl OperationalComposer {
     /// it remains reachable when optional authentication cannot compose. Each
     /// authentication route arrives as a [`TransportCapability`], so login's
     /// single-permit admission lane travels with the route it bounds.
-    fn capabilities(&self) -> Vec<TransportCapability> {
+    fn capabilities(
+        &self,
+        account_administration: Option<AccountAdministrationDeclaration>,
+        group_administration: Option<GroupAdministrationDeclaration>,
+        configuration_administration: Option<ConfigurationAdministrationDeclaration>,
+        credential_issuance: Option<CredentialIssuanceDeclaration>,
+        mfa_policy: Option<MfaPolicyDeclaration>,
+    ) -> Vec<TransportCapability> {
         let expected_origin = ExpectedOrigin::from_listener(self.runtime.listener);
         let database = self.database.clone();
         let route = ClientReconciliationCapability {
@@ -397,8 +2092,1558 @@ impl OperationalComposer {
         let mut capabilities = vec![reconciliation];
         if let Some(runtime) = &self.authentication {
             capabilities.extend(runtime.capabilities(expected_origin));
+            let authentication = Arc::clone(runtime);
+            let database = self.database.clone();
+            let audit_recovery = Arc::clone(&self.audit_recovery);
+            let declaration = Arc::new(PasswordChangeDeclaration::new(PasswordChangeCapability {
+                expected_origin,
+                correlate: Arc::new(correlation_identifier),
+                change: Arc::new(move |submission| {
+                    let authentication = Arc::clone(&authentication);
+                    let database = database.clone();
+                    let audit_recovery = Arc::clone(&audit_recovery);
+                    Box::pin(async move {
+                        task::spawn_blocking(move || {
+                            execute_password_change(
+                                &authentication,
+                                &database,
+                                &audit_recovery,
+                                submission,
+                            )
+                        })
+                        .await
+                        .unwrap_or(Err(AuthenticationRejection::ServiceUnavailable))
+                    })
+                }),
+            }));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    AUTH_PASSWORD_CHANGE_ROUTE,
+                    PASSWORD_CHANGE_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(PasswordChangePreconditions { expected_origin })),
+                move |router| router.route(AUTH_PASSWORD_CHANGE_ROUTE, declaration.route()),
+            ));
+        }
+        if let Some(declaration) = account_administration {
+            let declaration = Arc::new(declaration);
+            let view = Arc::clone(&declaration);
+            let status = Arc::clone(&declaration);
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_LIST_ROUTE,
+                    TransportProfile::DEFAULT,
+                ),
+                move |router| router.route(ACCOUNTS_LIST_ROUTE, declaration.list_route()),
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_VIEW_ROUTE,
+                    TransportProfile::DEFAULT,
+                ),
+                move |router| router.route(ACCOUNTS_VIEW_ROUTE, view.view_route()),
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_STATUS_ROUTE,
+                    TransportProfile::DEFAULT,
+                ),
+                move |router| router.route(ACCOUNTS_STATUS_ROUTE, status.status_route()),
+            ));
+        }
+        if let Some(declaration) = group_administration {
+            let declaration = Arc::new(declaration);
+            let view = Arc::clone(&declaration);
+            let create = Arc::clone(&declaration);
+            let update = Arc::clone(&declaration);
+            let delete = Arc::clone(&declaration);
+            let members_list = Arc::clone(&declaration);
+            let member_change = Arc::clone(&declaration);
+            let grants_list = Arc::clone(&declaration);
+            let grant_change = Arc::clone(&declaration);
+            let catalog = Arc::clone(&declaration);
+            for (route, mount) in [
+                (GROUPS_LIST_ROUTE, declaration.list_route()),
+                (GROUPS_VIEW_ROUTE, view.view_route()),
+                (GROUPS_CREATE_ROUTE, create.create_route()),
+                (GROUPS_UPDATE_ROUTE, update.update_route()),
+                (GROUPS_DELETE_ROUTE, delete.delete_route()),
+                (GROUP_MEMBERS_LIST_ROUTE, members_list.members_list_route()),
+                (
+                    GROUP_MEMBERS_CHANGE_ROUTE,
+                    member_change.member_change_route(),
+                ),
+                (GROUP_GRANTS_LIST_ROUTE, grants_list.grants_list_route()),
+                (GROUP_GRANTS_CHANGE_ROUTE, grant_change.grant_change_route()),
+                (ADMINISTRATION_CATALOG_ROUTE, catalog.catalog_route()),
+            ] {
+                capabilities.push(TransportCapability::new(
+                    TransportRegistration::new(Method::PUT, route, GROUP_ADMINISTRATION_PROFILE),
+                    move |router| router.route(route, mount),
+                ));
+            }
+        }
+        if let Some(declaration) = configuration_administration {
+            let declaration = Arc::new(declaration);
+            let totp_apply = Arc::clone(&declaration);
+            let log_list = Arc::clone(&declaration);
+            let log_view = Arc::clone(&declaration);
+            let log_change = Arc::clone(&declaration);
+            for (route, mount) in [
+                (
+                    TOTP_ENABLEMENT_PREVIEW_ROUTE,
+                    declaration.totp_preview_route(),
+                ),
+                (TOTP_ENABLEMENT_APPLY_ROUTE, totp_apply.totp_apply_route()),
+                (LOG_CONFIGURATIONS_LIST_ROUTE, log_list.log_list_route()),
+                (LOG_CONFIGURATIONS_VIEW_ROUTE, log_view.log_view_route()),
+                (
+                    LOG_CONFIGURATIONS_CHANGE_ROUTE,
+                    log_change.log_change_route(),
+                ),
+            ] {
+                capabilities.push(TransportCapability::new(
+                    TransportRegistration::new(
+                        Method::PUT,
+                        route,
+                        CONFIGURATION_ADMINISTRATION_PROFILE,
+                    )
+                    .with_pre_body_check(Arc::new(
+                        ConfigurationAdministrationPreconditions { expected_origin },
+                    )),
+                    move |router| router.route(route, mount),
+                ));
+            }
+        }
+        if let (Some(declaration), Some(authentication)) =
+            (credential_issuance, self.authentication.as_ref())
+        {
+            let declaration = Arc::new(declaration);
+            let create = Arc::clone(&declaration);
+            let reset = Arc::clone(&declaration);
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+                    CREDENTIAL_ISSUANCE_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(CredentialIssuancePreconditions {
+                    expected_origin,
+                }))
+                .with_admission(authentication.password_admission_lane()),
+                move |router| {
+                    router.route(
+                        CREDENTIAL_ISSUANCE_STEP_UP_ROUTE,
+                        declaration.step_up_route(),
+                    )
+                },
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_CREATE_ROUTE,
+                    CREDENTIAL_ISSUANCE_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(CredentialIssuancePreconditions {
+                    expected_origin,
+                })),
+                move |router| router.route(ACCOUNTS_CREATE_ROUTE, create.create_route()),
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_RESET_PASSWORD_ROUTE,
+                    CREDENTIAL_ISSUANCE_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(CredentialIssuancePreconditions {
+                    expected_origin,
+                })),
+                move |router| {
+                    router.route(ACCOUNTS_RESET_PASSWORD_ROUTE, reset.reset_password_route())
+                },
+            ));
+        }
+        if let Some(declaration) = mfa_policy {
+            let declaration = Arc::new(declaration);
+            let requirement = Arc::clone(&declaration);
+            let reset = Arc::clone(&declaration);
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    MFA_POLICY_STEP_UP_ROUTE,
+                    MFA_POLICY_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(MfaPolicyPreconditions { expected_origin })),
+                move |router| router.route(MFA_POLICY_STEP_UP_ROUTE, declaration.step_up_route()),
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+                    MFA_POLICY_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(MfaPolicyPreconditions { expected_origin })),
+                move |router| {
+                    router.route(
+                        ACCOUNTS_MFA_REQUIREMENT_ROUTE,
+                        requirement.requirement_route(),
+                    )
+                },
+            ));
+            capabilities.push(TransportCapability::new(
+                TransportRegistration::new(
+                    Method::PUT,
+                    ACCOUNTS_MFA_RESET_ROUTE,
+                    MFA_POLICY_PROFILE,
+                )
+                .with_pre_body_check(Arc::new(MfaPolicyPreconditions { expected_origin })),
+                move |router| router.route(ACCOUNTS_MFA_RESET_ROUTE, reset.reset_route()),
+            ));
         }
         capabilities
+    }
+}
+
+fn execute_password_change(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: PasswordChangeSubmission,
+) -> Result<weavelit_module_client::SessionEstablished, AuthenticationRejection> {
+    let PasswordChangeSubmission {
+        session_token,
+        csrf_token,
+        password,
+        correlation_id,
+        context: _,
+    } = submission;
+    let input = PasswordReplacementInput::new(Zeroizing::new(password.as_bytes().to_vec()))
+        .map_err(|_| AuthenticationRejection::BadRequest)?;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(|rejection| match rejection {
+            AuthenticationRejection::ServiceUnavailable => rejection,
+            _ => AuthenticationRejection::SessionInvalid,
+        })?;
+
+    match PasswordChangeWorkflow::new(database, authentication, audit_recovery).change(
+        session,
+        input,
+        &correlation_id,
+    ) {
+        Ok(PasswordChangeResult::Changed { session, .. }) => Ok(session),
+        Ok(PasswordChangeResult::Denied { .. }) | Err(PasswordChangeWorkflowError::Denied) => {
+            Err(AuthenticationRejection::SessionInvalid)
+        }
+        Err(
+            PasswordChangeWorkflowError::Unavailable
+            | PasswordChangeWorkflowError::AuditLogUnavailable,
+        ) => Err(AuthenticationRejection::ServiceUnavailable),
+    }
+}
+
+async fn execute_credential_issuance_step_up(
+    authentication: Arc<AuthenticationRuntime<RustCryptoArgon2>>,
+    authorization: Arc<AuthorizationRuntime>,
+    submission: CredentialIssuanceStepUpSubmission,
+) -> Result<CredentialIssuanceTicketIssued, CredentialIssuanceRejection> {
+    let Some(admission) = submission.context.get::<BodyAdmission>().cloned() else {
+        return Err(CredentialIssuanceRejection::ServiceUnavailable);
+    };
+    let CredentialIssuanceStepUpSubmission {
+        session_token,
+        csrf_token,
+        password,
+        totp_code,
+        correlation_id,
+        context: _,
+    } = submission;
+    task::spawn_blocking(move || {
+        let _admission = admission;
+        let session = authentication
+            .validated_session(&session_token, &csrf_token)
+            .map_err(credential_authentication_rejection)?;
+        if !session.is_ordinary() {
+            return Err(CredentialIssuanceRejection::SessionInvalid);
+        }
+        let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+            .map_err(|_| CredentialIssuanceRejection::ServiceUnavailable)?;
+        let authorized = authorization
+            .authorize_administration(&session, &client_module, &correlation_id)
+            .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?
+            .into_credential_issuance();
+        let input = AccountCredentialIssuanceInput::new(
+            Zeroizing::new(password.as_bytes().to_vec()),
+            totp_code.map(|code| Zeroizing::new(code.as_bytes().to_vec())),
+        );
+        let ticket = authentication
+            .issue_credential_issuance_ticket(authorized, input)
+            .map_err(account_credential_authentication_error)?;
+        Ok(CredentialIssuanceTicketIssued {
+            credential_issuance_ticket: Zeroizing::new(ticket.as_str().to_owned()),
+        })
+    })
+    .await
+    .unwrap_or(Err(CredentialIssuanceRejection::ServiceUnavailable))
+}
+
+fn execute_mfa_policy_step_up(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    submission: MfaPolicyStepUpSubmission,
+) -> Result<MfaPolicyTicketIssued, MfaPolicyRejection> {
+    let MfaPolicyStepUpSubmission {
+        family,
+        session_token,
+        csrf_token,
+        code,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(mfa_policy_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(MfaPolicyRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| MfaPolicyRejection::ServiceUnavailable)?;
+    authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| MfaPolicyRejection::AuthorizationDenied)?;
+    let ticket = administration
+        .issue_mfa_policy_step_up(
+            &session,
+            &code,
+            match family {
+                MfaPolicyStepUpFamily::MfaPolicy => StepUpActionFamily::MfaPolicy,
+                MfaPolicyStepUpFamily::GrantMutation => StepUpActionFamily::GrantMutation,
+            },
+        )
+        .map_err(mfa_policy_step_up_rejection)?;
+    Ok(MfaPolicyTicketIssued {
+        totp_step_up_ticket: Zeroizing::new(ticket.as_str().to_owned()),
+    })
+}
+
+fn execute_mfa_requirement(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: MfaRequirementSubmission,
+) -> Result<ClientAccountProjection, MfaPolicyRejection> {
+    let MfaRequirementSubmission {
+        session_token,
+        csrf_token,
+        public_id,
+        required,
+        totp_step_up_ticket,
+        correlation_id,
+        context: _,
+    } = submission;
+    execute_mfa_policy_change(
+        authentication,
+        authorization,
+        administration,
+        database,
+        audit_recovery,
+        &session_token,
+        &csrf_token,
+        &public_id,
+        &totp_step_up_ticket,
+        &correlation_id,
+        weavelit_server_database::MfaPolicyAction::Requirement { required },
+    )
+}
+
+fn execute_mfa_reset(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: MfaResetSubmission,
+) -> Result<ClientAccountProjection, MfaPolicyRejection> {
+    let MfaResetSubmission {
+        session_token,
+        csrf_token,
+        public_id,
+        totp_step_up_ticket,
+        correlation_id,
+        context: _,
+    } = submission;
+    execute_mfa_policy_change(
+        authentication,
+        authorization,
+        administration,
+        database,
+        audit_recovery,
+        &session_token,
+        &csrf_token,
+        &public_id,
+        &totp_step_up_ticket,
+        &correlation_id,
+        weavelit_server_database::MfaPolicyAction::EnrollmentReset,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_mfa_policy_change(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    session_token: &str,
+    csrf_token: &str,
+    public_id: &str,
+    ticket: &str,
+    correlation_id: &str,
+    action: weavelit_server_database::MfaPolicyAction,
+) -> Result<ClientAccountProjection, MfaPolicyRejection> {
+    let session = authentication
+        .validated_session(session_token, csrf_token)
+        .map_err(mfa_policy_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(MfaPolicyRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| MfaPolicyRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, correlation_id)
+        .map_err(|_| MfaPolicyRejection::AuthorizationDenied)?;
+    let target = database
+        .account_public_identifier(public_id)
+        .map_err(|_| MfaPolicyRejection::BadRequest)?;
+    let authorized = administration
+        .authorize_mfa_policy(admission, ticket)
+        .map_err(|_| MfaPolicyRejection::MfaPolicyDenied)?;
+    match MfaPolicyChangeWorkflow::new(database, audit_recovery)
+        .apply(authorized, target, action, correlation_id)
+        .map_err(mfa_policy_workflow_error)?
+    {
+        MfaPolicyChangeResult::Unchanged | MfaPolicyChangeResult::Changed { .. } => {}
+        MfaPolicyChangeResult::Stale { .. } | MfaPolicyChangeResult::Denied { .. } => {
+            return Err(MfaPolicyRejection::MfaPolicyDenied);
+        }
+    }
+    let projection = database
+        .load_account_administration_projection(target)
+        .map_err(|_| MfaPolicyRejection::ServiceUnavailable)?
+        .ok_or(MfaPolicyRejection::ServiceUnavailable)?;
+    if let weavelit_server_database::MfaPolicyAction::Requirement { required } = action
+        && projection.mfa_required() != required
+    {
+        return Err(MfaPolicyRejection::ServiceUnavailable);
+    }
+    client_account_projection(projection).map_err(|_| MfaPolicyRejection::ServiceUnavailable)
+}
+
+fn execute_account_create(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: AccountCreateSubmission,
+) -> Result<AccountCredentialIssued, CredentialIssuanceRejection> {
+    let AccountCreateSubmission {
+        session_token,
+        csrf_token,
+        username,
+        display_name,
+        credential_issuance_ticket,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(credential_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(CredentialIssuanceRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| CredentialIssuanceRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
+    let change = AccountCreate::new(username, display_name)
+        .map_err(|_| CredentialIssuanceRejection::BadRequest)?;
+    let action = administration
+        .authorize_account_write(admission, AccountAdministrationAction::Create(change))
+        .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
+    match AccountCredentialIssuanceWorkflow::new(database, authentication, audit_recovery)
+        .issue(action, &credential_issuance_ticket, &correlation_id)
+        .map_err(account_credential_workflow_error)?
+    {
+        AccountCredentialIssuanceResult::Created {
+            account,
+            temporary_password,
+            ..
+        } => Ok(AccountCredentialIssued {
+            public_id: account.as_base64url(),
+            temporary_password: temporary_password.into_secret(),
+        }),
+        AccountCredentialIssuanceResult::Conflict { .. } => {
+            Err(CredentialIssuanceRejection::Conflict)
+        }
+        AccountCredentialIssuanceResult::Denied { .. }
+        | AccountCredentialIssuanceResult::Stale { .. } => {
+            Err(CredentialIssuanceRejection::CredentialDenied)
+        }
+        AccountCredentialIssuanceResult::PasswordReset { .. } => {
+            Err(CredentialIssuanceRejection::ServiceUnavailable)
+        }
+    }
+}
+
+fn execute_account_password_reset(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: AccountPasswordResetSubmission,
+) -> Result<AccountCredentialIssued, CredentialIssuanceRejection> {
+    let AccountPasswordResetSubmission {
+        session_token,
+        csrf_token,
+        public_id,
+        credential_issuance_ticket,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(credential_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(CredentialIssuanceRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| CredentialIssuanceRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
+    let target = database
+        .account_public_identifier(&public_id)
+        .map_err(|_| CredentialIssuanceRejection::BadRequest)?;
+    let action = administration
+        .authorize_account_write(
+            admission,
+            AccountAdministrationAction::PasswordReset(AccountPasswordReset::new(target)),
+        )
+        .map_err(|_| CredentialIssuanceRejection::AuthorizationDenied)?;
+    match AccountCredentialIssuanceWorkflow::new(database, authentication, audit_recovery)
+        .issue(action, &credential_issuance_ticket, &correlation_id)
+        .map_err(account_credential_workflow_error)?
+    {
+        AccountCredentialIssuanceResult::PasswordReset {
+            account,
+            temporary_password,
+            ..
+        } => Ok(AccountCredentialIssued {
+            public_id: account.as_base64url(),
+            temporary_password: temporary_password.into_secret(),
+        }),
+        AccountCredentialIssuanceResult::Denied { .. }
+        | AccountCredentialIssuanceResult::Stale { .. } => {
+            Err(CredentialIssuanceRejection::CredentialDenied)
+        }
+        AccountCredentialIssuanceResult::Created { .. }
+        | AccountCredentialIssuanceResult::Conflict { .. } => {
+            Err(CredentialIssuanceRejection::ServiceUnavailable)
+        }
+    }
+}
+
+fn credential_authentication_rejection(
+    rejection: AuthenticationRejection,
+) -> CredentialIssuanceRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => {
+            CredentialIssuanceRejection::ServiceUnavailable
+        }
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => CredentialIssuanceRejection::SessionInvalid,
+    }
+}
+
+fn mfa_policy_authentication_rejection(rejection: AuthenticationRejection) -> MfaPolicyRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => MfaPolicyRejection::ServiceUnavailable,
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => MfaPolicyRejection::SessionInvalid,
+    }
+}
+
+fn mfa_policy_step_up_rejection(rejection: AuthenticationRejection) -> MfaPolicyRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => MfaPolicyRejection::ServiceUnavailable,
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => MfaPolicyRejection::MfaPolicyDenied,
+    }
+}
+
+fn mfa_policy_workflow_error(error: MfaPolicyChangeError) -> MfaPolicyRejection {
+    match error {
+        MfaPolicyChangeError::TargetNotFound => MfaPolicyRejection::NotFound,
+        MfaPolicyChangeError::ActionNotSupported
+        | MfaPolicyChangeError::Unavailable
+        | MfaPolicyChangeError::AuditLogUnavailable => MfaPolicyRejection::ServiceUnavailable,
+    }
+}
+
+fn account_credential_authentication_error(
+    error: crate::authentication::AccountCredentialIssuanceError,
+) -> CredentialIssuanceRejection {
+    match error {
+        crate::authentication::AccountCredentialIssuanceError::Denied => {
+            CredentialIssuanceRejection::CredentialDenied
+        }
+        crate::authentication::AccountCredentialIssuanceError::Unavailable => {
+            CredentialIssuanceRejection::ServiceUnavailable
+        }
+    }
+}
+
+fn account_credential_workflow_error(
+    error: AccountCredentialIssuanceWorkflowError,
+) -> CredentialIssuanceRejection {
+    match error {
+        AccountCredentialIssuanceWorkflowError::CredentialDenied => {
+            CredentialIssuanceRejection::CredentialDenied
+        }
+        AccountCredentialIssuanceWorkflowError::TargetNotFound => {
+            CredentialIssuanceRejection::NotFound
+        }
+        AccountCredentialIssuanceWorkflowError::ActionNotSupported
+        | AccountCredentialIssuanceWorkflowError::Unavailable
+        | AccountCredentialIssuanceWorkflowError::AuditLogUnavailable => {
+            CredentialIssuanceRejection::ServiceUnavailable
+        }
+    }
+}
+
+fn execute_configuration_administration(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    log_catalog: &LogModuleCatalog,
+    submission: ConfigurationAdministrationSubmission,
+) -> Result<ConfigurationAdministrationResult, ConfigurationAdministrationRejection> {
+    let ConfigurationAdministrationSubmission {
+        request,
+        session_token,
+        csrf_token,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(configuration_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(ConfigurationAdministrationRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+
+    match request {
+        ConfigurationAdministrationRequest::TotpPreview(request) => {
+            let action = administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::ComponentEnablementChange(
+                        ComponentEnablementChange::new(
+                            ComponentKind::MfaModule,
+                            "totp",
+                            request.enabled(),
+                        )
+                        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?,
+                    ),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            let preview = MfaModuleEnablementWorkflow::new(database, audit_recovery)
+                .preview(&action)
+                .map_err(configuration_mfa_workflow_error)?;
+            let current_enabled = preview.current_enabled();
+            let affected_users = preview.affected_users();
+            let credential = administration
+                .issue_totp_enablement_preview(&session, request.enabled(), preview)
+                .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+            TotpEnablementPreviewProjection::new(
+                current_enabled,
+                request.enabled(),
+                affected_users,
+                Zeroizing::new(credential.as_str().to_owned()),
+            )
+            .map(ConfigurationAdministrationResult::TotpPreview)
+            .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)
+        }
+        ConfigurationAdministrationRequest::TotpApply(request) => {
+            let desired = request.enabled();
+            let action = administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::ComponentEnablementChange(
+                        ComponentEnablementChange::new(ComponentKind::MfaModule, "totp", desired)
+                            .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?,
+                    ),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            let preview = administration
+                .claim_totp_enablement_preview(
+                    &session,
+                    desired,
+                    request
+                        .preview()
+                        .ok_or(ConfigurationAdministrationRejection::Conflict)?,
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::Conflict)?;
+            match MfaModuleEnablementWorkflow::new(database, audit_recovery).apply(
+                action,
+                preview,
+                &correlation_id,
+            ) {
+                Ok(result) => totp_enablement_apply_result(result, desired),
+                Err(error) => Err(configuration_mfa_workflow_error(error)),
+            }
+        }
+        ConfigurationAdministrationRequest::LogList(request) => {
+            administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::LogConfigurationRead(LogConfigurationRead::List),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            let projections = current_log_configuration_projections(database, log_catalog)?;
+            LogConfigurationsPage::from_ordered(&request, projections)
+                .map(ConfigurationAdministrationResult::LogList)
+                .map_err(|_| ConfigurationAdministrationRejection::Conflict)
+        }
+        ConfigurationAdministrationRequest::LogView(request) => {
+            let name = Name::new(request.configuration_name().to_owned())
+                .map_err(|_| ConfigurationAdministrationRejection::BadRequest)?;
+            administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::LogConfigurationRead(LogConfigurationRead::View(name)),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            current_log_configuration_projections(database, log_catalog)?
+                .into_iter()
+                .find(|projection| projection.configuration_name() == request.configuration_name())
+                .map(ConfigurationAdministrationResult::LogProjection)
+                .ok_or(ConfigurationAdministrationRejection::NotFound)
+        }
+        ConfigurationAdministrationRequest::LogChange(request) => {
+            let current = database
+                .list_current_log_configuration_generations()
+                .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+            let primary = current
+                .iter()
+                .find(|generation| generation.name().as_str() == request.configuration_name())
+                .ok_or(ConfigurationAdministrationRejection::NotFound)?;
+            let settings = request
+                .settings()
+                .map(|settings| validate_log_settings(primary, settings, log_catalog))
+                .transpose()?;
+            let assignments = request
+                .assignments()
+                .iter()
+                .map(|assignment| {
+                    let generation = current
+                        .iter()
+                        .find(|generation| {
+                            generation.name().as_str() == assignment.configuration_name()
+                        })
+                        .ok_or(ConfigurationAdministrationRejection::Conflict)?;
+                    Ok(LogAssignmentChange::new(
+                        database_log_type(assignment.log_type()),
+                        generation.key().configuration(),
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let change = LogConfigurationChange::new(
+                primary.key().configuration(),
+                request.enabled(),
+                settings,
+                assignments,
+            )
+            .map_err(|_| ConfigurationAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_configuration_action(
+                    admission,
+                    AdministrationAction::LogConfigurationChange(change),
+                )
+                .map_err(|_| ConfigurationAdministrationRejection::AuthorizationDenied)?;
+            match LogConfigurationChangeWorkflow::new(database, audit_recovery)
+                .apply(action, &correlation_id)
+            {
+                Ok(result) => {
+                    accept_log_configuration_change_result(result)?;
+                    current_log_configuration_projections(database, log_catalog)?
+                        .into_iter()
+                        .find(|projection| {
+                            projection.configuration_name() == request.configuration_name()
+                        })
+                        .map(ConfigurationAdministrationResult::LogProjection)
+                        .ok_or(ConfigurationAdministrationRejection::ServiceUnavailable)
+                }
+                Err(LogConfigurationChangeError::ChangeRejected) => {
+                    Err(ConfigurationAdministrationRejection::Conflict)
+                }
+                Err(
+                    LogConfigurationChangeError::ActionNotSupported
+                    | LogConfigurationChangeError::AuditLogUnavailable,
+                ) => Err(ConfigurationAdministrationRejection::ServiceUnavailable),
+            }
+        }
+    }
+}
+
+fn totp_enablement_apply_result(
+    result: MfaModuleEnablementResult,
+    desired: bool,
+) -> Result<ConfigurationAdministrationResult, ConfigurationAdministrationRejection> {
+    match result.outcome {
+        MfaModuleEnablementOutcome::Applied {
+            desired_state,
+            affected_users,
+        } if desired_state == desired => Ok(ConfigurationAdministrationResult::TotpApplied(
+            TotpEnablementApplied::new(desired_state, affected_users),
+        )),
+        MfaModuleEnablementOutcome::EnrolledCountChanged { .. } => {
+            Err(ConfigurationAdministrationRejection::Conflict)
+        }
+        MfaModuleEnablementOutcome::Applied { .. } => {
+            Err(ConfigurationAdministrationRejection::ServiceUnavailable)
+        }
+    }
+}
+
+const fn accept_log_configuration_change_result(
+    result: LogConfigurationChangeResult,
+) -> Result<(), ConfigurationAdministrationRejection> {
+    match result {
+        LogConfigurationChangeResult::Unchanged | LogConfigurationChangeResult::Applied { .. } => {
+            Ok(())
+        }
+        LogConfigurationChangeResult::Stale { .. } => {
+            Err(ConfigurationAdministrationRejection::Conflict)
+        }
+    }
+}
+
+fn current_log_configuration_projections(
+    database: &OperationalDatabase,
+    log_catalog: &LogModuleCatalog,
+) -> Result<Vec<ClientLogConfigurationProjection>, ConfigurationAdministrationRejection> {
+    database
+        .list_current_log_configuration_generations()
+        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?
+        .into_iter()
+        .map(|generation| client_log_configuration_projection(&generation, log_catalog))
+        .collect()
+}
+
+fn client_log_configuration_projection(
+    generation: &LogConfigurationGeneration,
+    log_catalog: &LogModuleCatalog,
+) -> Result<ClientLogConfigurationProjection, ConfigurationAdministrationRejection> {
+    let module = LogModuleIdentifier::new(generation.module().as_str())
+        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let declaration = log_catalog
+        .declaration(&module)
+        .ok_or(ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let settings = generation
+        .settings()
+        .iter()
+        .map(|setting| {
+            if !declaration
+                .accepted_settings()
+                .defines(setting.key.as_str())
+                || path_like_setting(setting.key.as_str())
+            {
+                return Err(ConfigurationAdministrationRejection::ServiceUnavailable);
+            }
+            ClientLogSettingProjection::new(
+                setting.key.as_str().to_owned(),
+                setting.value.as_str().to_owned(),
+            )
+            .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let assigned_log_types = generation
+        .log_types()
+        .iter()
+        .copied()
+        .map(client_log_type)
+        .collect();
+    ClientLogConfigurationProjection::new(
+        generation.name().as_str().to_owned(),
+        generation.module().as_str().to_owned(),
+        generation.enabled(),
+        settings,
+        assigned_log_types,
+    )
+    .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)
+}
+
+fn validate_log_settings(
+    generation: &LogConfigurationGeneration,
+    settings: &[ClientLogSettingProjection],
+    log_catalog: &LogModuleCatalog,
+) -> Result<Vec<LogModuleSetting>, ConfigurationAdministrationRejection> {
+    let module = LogModuleIdentifier::new(generation.module().as_str())
+        .map_err(|_| ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let declaration = log_catalog
+        .declaration(&module)
+        .ok_or(ConfigurationAdministrationRejection::ServiceUnavailable)?;
+    let accepted = declaration.accepted_settings();
+    if settings.len() != accepted.keys().len()
+        || settings
+            .iter()
+            .zip(accepted.keys())
+            .any(|(setting, accepted)| setting.key() != accepted || path_like_setting(accepted))
+    {
+        return Err(ConfigurationAdministrationRejection::BadRequest);
+    }
+    settings
+        .iter()
+        .map(|setting| {
+            Ok(LogModuleSetting {
+                key: ConfigurationKey::new(setting.key().to_owned())
+                    .map_err(|_| ConfigurationAdministrationRejection::BadRequest)?,
+                value: ConfigurationValue::new(setting.value().to_owned())
+                    .map_err(|_| ConfigurationAdministrationRejection::BadRequest)?,
+            })
+        })
+        .collect()
+}
+
+fn path_like_setting(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key == "path"
+        || key == "file"
+        || key == "directory"
+        || key.ends_with("_path")
+        || key.ends_with("_file")
+        || key.ends_with("_directory")
+}
+
+const fn database_log_type(log_type: ClientLogType) -> LogType {
+    match log_type {
+        ClientLogType::System => LogType::System,
+        ClientLogType::Audit => LogType::Audit,
+    }
+}
+
+const fn client_log_type(log_type: LogType) -> ClientLogType {
+    match log_type {
+        LogType::System => ClientLogType::System,
+        LogType::Audit => ClientLogType::Audit,
+    }
+}
+
+fn configuration_authentication_rejection(
+    rejection: AuthenticationRejection,
+) -> ConfigurationAdministrationRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => {
+            ConfigurationAdministrationRejection::ServiceUnavailable
+        }
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => {
+            ConfigurationAdministrationRejection::SessionInvalid
+        }
+    }
+}
+
+fn configuration_mfa_workflow_error(
+    error: MfaModuleEnablementError,
+) -> ConfigurationAdministrationRejection {
+    match error {
+        MfaModuleEnablementError::ActionNotSupported
+        | MfaModuleEnablementError::AuditLogUnavailable => {
+            ConfigurationAdministrationRejection::ServiceUnavailable
+        }
+    }
+}
+
+fn execute_account_administration(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    submission: AccountAdministrationSubmission,
+) -> Result<ClientAccountResult, AccountAdministrationRejection> {
+    let AccountAdministrationSubmission {
+        request,
+        session_token,
+        csrf_token,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(account_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(AccountAdministrationRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+    match request {
+        AccountAdministrationRequest::List(request) => {
+            let action = administration
+                .authorize_account_read(admission, AccountAdministrationRead::List)
+                .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+            let AccountAdministrationReadResult::List(items) =
+                AccountAdministrationReadWorkflow::new(database)
+                    .read(action)
+                    .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?
+            else {
+                return Err(AccountAdministrationRejection::ServiceUnavailable);
+            };
+            let items = items
+                .into_iter()
+                .map(client_account_projection)
+                .collect::<Result<Vec<_>, _>>()?;
+            if items
+                .windows(2)
+                .any(|pair| pair[0].username() >= pair[1].username())
+            {
+                return Err(AccountAdministrationRejection::ServiceUnavailable);
+            }
+            AccountsPage::from_ordered(&request, items)
+                .map(ClientAccountResult::List)
+                .map_err(|_| AccountAdministrationRejection::BadRequest)
+        }
+        AccountAdministrationRequest::View(view) => {
+            let target = database
+                .account_public_identifier(view.public_id())
+                .map_err(|_| AccountAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_account_read(admission, AccountAdministrationRead::View(target))
+                .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+            match AccountAdministrationReadWorkflow::new(database)
+                .read(action)
+                .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?
+            {
+                AccountAdministrationReadResult::View(Some(item)) => {
+                    client_account_projection(item).map(ClientAccountResult::View)
+                }
+                AccountAdministrationReadResult::View(None) => {
+                    Err(AccountAdministrationRejection::NotFound)
+                }
+                AccountAdministrationReadResult::List(_) => {
+                    Err(AccountAdministrationRejection::ServiceUnavailable)
+                }
+            }
+        }
+        AccountAdministrationRequest::Status(status) => {
+            let target = database
+                .account_public_identifier(status.public_id())
+                .map_err(|_| AccountAdministrationRejection::BadRequest)?;
+            let desired = if status.active() {
+                AccountStatus::Active
+            } else {
+                AccountStatus::Disabled
+            };
+            let action = administration
+                .authorize_account_status(admission, AccountStatusChange::new(target, desired))
+                .map_err(|_| AccountAdministrationRejection::AuthorizationDenied)?;
+            match AccountStatusChangeWorkflow::new(database, audit_recovery)
+                .apply(action, &correlation_id)
+            {
+                Ok(AccountStatusChangeResult::Unchanged) => {}
+                Ok(AccountStatusChangeResult::Changed {
+                    status: AccountStatus::Active,
+                    ..
+                }) if desired == AccountStatus::Active => {}
+                Ok(AccountStatusChangeResult::Changed {
+                    status: AccountStatus::Disabled,
+                    ..
+                }) if desired == AccountStatus::Disabled => {}
+                Ok(
+                    AccountStatusChangeResult::Changed { .. }
+                    | AccountStatusChangeResult::Stale { .. },
+                ) => return Err(AccountAdministrationRejection::ServiceUnavailable),
+                Ok(AccountStatusChangeResult::Denied { .. }) => {
+                    return Err(AccountAdministrationRejection::AuthorizationDenied);
+                }
+                Err(AccountStatusChangeError::TargetNotFound) => {
+                    return Err(AccountAdministrationRejection::NotFound);
+                }
+                Err(
+                    AccountStatusChangeError::ActionNotSupported
+                    | AccountStatusChangeError::CredentialRevisionExhausted
+                    | AccountStatusChangeError::Unavailable
+                    | AccountStatusChangeError::AuditLogUnavailable,
+                ) => return Err(AccountAdministrationRejection::ServiceUnavailable),
+            }
+            let projection = database
+                .load_account_administration_projection(target)
+                .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)?
+                .ok_or(AccountAdministrationRejection::ServiceUnavailable)?;
+            if projection.active() != status.active() {
+                return Err(AccountAdministrationRejection::ServiceUnavailable);
+            }
+            client_account_projection(projection).map(ClientAccountResult::Status)
+        }
+    }
+}
+
+fn client_account_projection(
+    projection: AccountAdministrationProjection,
+) -> Result<ClientAccountProjection, AccountAdministrationRejection> {
+    ClientAccountProjection::new(
+        projection.public_identifier().as_base64url(),
+        projection.username().as_str().to_owned(),
+        projection
+            .display_name()
+            .map(|display_name| display_name.as_str().to_owned()),
+        projection.active(),
+        projection.mfa_required(),
+    )
+    .map_err(|_| AccountAdministrationRejection::ServiceUnavailable)
+}
+
+fn execute_group_administration(
+    authentication: &AuthenticationRuntime<RustCryptoArgon2>,
+    authorization: &AuthorizationRuntime,
+    administration: &OperationalAdministration,
+    database: &OperationalDatabase,
+    audit_recovery: &OperationalAuditRecovery,
+    components: &AvailableComponents,
+    submission: GroupAdministrationSubmission,
+) -> Result<ClientGroupResult, GroupAdministrationRejection> {
+    let GroupAdministrationSubmission {
+        request,
+        session_token,
+        csrf_token,
+        correlation_id,
+        context: _,
+    } = submission;
+    let session = authentication
+        .validated_session(&session_token, &csrf_token)
+        .map_err(group_authentication_rejection)?;
+    if !session.is_ordinary() {
+        return Err(GroupAdministrationRejection::SessionInvalid);
+    }
+    let client_module = Name::new(weavelit_module_client_webui::MODULE_IDENTIFIER)
+        .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?;
+    let admission = authorization
+        .authorize_administration(&session, &client_module, &correlation_id)
+        .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+    let workflow = GroupAdministrationWorkflow::new(database, audit_recovery);
+    match request {
+        ClientGroupRequest::List(request) => {
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::List),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            let GroupAdministrationReadResult::List(items) =
+                workflow.read(action).map_err(group_workflow_error)?
+            else {
+                return Err(GroupAdministrationRejection::ServiceUnavailable);
+            };
+            let items = items
+                .into_iter()
+                .map(client_group_projection)
+                .collect::<Result<Vec<_>, _>>()?;
+            GroupsPage::from_ordered(&request, items)
+                .map(ClientGroupResult::List)
+                .map_err(|_| GroupAdministrationRejection::BadRequest)
+        }
+        ClientGroupRequest::View(request) => {
+            let target = database
+                .group_public_identifier(request.public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::View(target)),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            match workflow.read(action).map_err(group_workflow_error)? {
+                GroupAdministrationReadResult::View(Some(value)) => {
+                    client_group_projection(value).map(ClientGroupResult::Projection)
+                }
+                GroupAdministrationReadResult::View(None) => {
+                    Err(GroupAdministrationRejection::NotFound)
+                }
+                GroupAdministrationReadResult::List(_) => {
+                    Err(GroupAdministrationRejection::ServiceUnavailable)
+                }
+                GroupAdministrationReadResult::Members(_)
+                | GroupAdministrationReadResult::Grants(_) => {
+                    Err(GroupAdministrationRejection::ServiceUnavailable)
+                }
+            }
+        }
+        ClientGroupRequest::Create(request) => {
+            let change = GroupCreate::new(request.name(), request.description())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Create(change),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            group_mutation_response(
+                workflow
+                    .mutate(action, &correlation_id)
+                    .map_err(group_workflow_error)?,
+            )
+        }
+        ClientGroupRequest::Update(request) => {
+            let target = database
+                .group_public_identifier(request.public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let change = GroupUpdate::new(target, request.name(), request.description())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Update(change),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            group_mutation_response(
+                workflow
+                    .mutate(action, &correlation_id)
+                    .map_err(group_workflow_error)?,
+            )
+        }
+        ClientGroupRequest::Delete(request) => {
+            let target = database
+                .group_public_identifier(request.public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_grant_mutation_ticket(
+                    admission,
+                    GroupMutation::Delete(target),
+                    request.ticket(),
+                )
+                .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
+            group_mutation_response(
+                workflow
+                    .delete(action, &correlation_id)
+                    .map_err(group_workflow_error)?,
+            )
+        }
+        ClientGroupRequest::MembersList(request) => {
+            let target = database
+                .group_public_identifier(request.group_public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::Members(target)),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            let GroupAdministrationReadResult::Members(Some(items)) =
+                workflow.read(action).map_err(group_workflow_error)?
+            else {
+                return Err(GroupAdministrationRejection::NotFound);
+            };
+            let items = items
+                .into_iter()
+                .map(client_account_projection)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?;
+            GroupMembersPage::from_ordered(&request, items)
+                .map(ClientGroupResult::Members)
+                .map_err(|_| GroupAdministrationRejection::BadRequest)
+        }
+        ClientGroupRequest::MemberChange(request) => {
+            let group = public_group_target(database, request.group_public_id())?;
+            let account = database
+                .account_public_identifier(request.account_public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let mutation = GroupMutation::Membership(GroupMembershipMutation::new(
+                group,
+                account,
+                request.present(),
+            ));
+            let action = administration
+                .authorize_grant_mutation_ticket(admission, mutation, request.ticket())
+                .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
+            group_association_result(
+                GroupMutationWorkflow::new(database, audit_recovery).apply(action, &correlation_id),
+            )?;
+            let account = database
+                .load_account_administration_projection(account)
+                .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?
+                .ok_or(GroupAdministrationRejection::NotFound)?;
+            Ok(ClientGroupResult::MemberChanged(
+                ClientGroupMemberChanged::new(
+                    client_account_projection(account)
+                        .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?,
+                    request.present(),
+                ),
+            ))
+        }
+        ClientGroupRequest::GrantsList(request) => {
+            let target = database
+                .group_public_identifier(request.group_public_id())
+                .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+            let action = administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::Grants(target)),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            let GroupAdministrationReadResult::Grants(Some(items)) =
+                workflow.read(action).map_err(group_workflow_error)?
+            else {
+                return Err(GroupAdministrationRejection::NotFound);
+            };
+            let items = items
+                .into_iter()
+                .map(client_group_grant)
+                .collect::<Result<Vec<_>, _>>()?;
+            GroupGrantsPage::from_ordered(&request, items)
+                .map(ClientGroupResult::Grants)
+                .map_err(|_| GroupAdministrationRejection::BadRequest)
+        }
+        ClientGroupRequest::GrantChange(request) => {
+            let group = public_group_target(database, request.group_public_id())?;
+            let grant = database_group_grant(request.grant())?;
+            if !catalog_contains(components, &grant) {
+                return Err(GroupAdministrationRejection::NotFound);
+            }
+            let mutation = GroupMutation::Grant(GroupGrantMutation::new(
+                group,
+                grant.clone(),
+                request.present(),
+            ));
+            let action = administration
+                .authorize_grant_mutation_ticket(admission, mutation, request.ticket())
+                .map_err(|_| GroupAdministrationRejection::GrantMutationDenied)?;
+            group_association_result(
+                GroupMutationWorkflow::new(database, audit_recovery).apply(action, &correlation_id),
+            )?;
+            Ok(ClientGroupResult::GrantChanged(
+                ClientGroupGrantChanged::new(client_group_grant(grant)?, request.present())
+                    .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?,
+            ))
+        }
+        ClientGroupRequest::Catalog(_) => {
+            administration
+                .authorize_group_administration(
+                    admission,
+                    GroupAdministrationAction::Read(GroupAdministrationRead::Catalog),
+                )
+                .map_err(|_| GroupAdministrationRejection::AuthorizationDenied)?;
+            ClientAdministrationCatalog::new(
+                components
+                    .client_modules
+                    .iter()
+                    .map(|name| name.as_str().to_owned())
+                    .collect(),
+                components
+                    .service_modules
+                    .iter()
+                    .map(|name| name.as_str().to_owned())
+                    .collect(),
+                components
+                    .operations
+                    .iter()
+                    .map(|name| name.as_str().to_owned())
+                    .collect(),
+            )
+            .map(ClientGroupResult::Catalog)
+            .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)
+        }
+    }
+}
+
+fn public_group_target(
+    database: &OperationalDatabase,
+    encoded: &str,
+) -> Result<StateIdentifier, GroupAdministrationRejection> {
+    let public_identifier = database
+        .group_public_identifier(encoded)
+        .map_err(|_| GroupAdministrationRejection::BadRequest)?;
+    database
+        .prepare_group_administration_target(public_identifier)
+        .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)?
+        .map(|target| target.group().group())
+        .ok_or(GroupAdministrationRejection::NotFound)
+}
+
+fn database_group_grant(
+    grant: &ClientGroupGrantProjection,
+) -> Result<GroupGrant, GroupAdministrationRejection> {
+    match grant {
+        ClientGroupGrantProjection::ClientModule { value } => Name::new(value.clone())
+            .map(GroupGrant::ClientModule)
+            .map_err(|_| GroupAdministrationRejection::BadRequest),
+        ClientGroupGrantProjection::ServiceModule { value } => Name::new(value.clone())
+            .map(GroupGrant::ServiceModule)
+            .map_err(|_| GroupAdministrationRejection::BadRequest),
+        ClientGroupGrantProjection::Operation { value } => Name::new(value.clone())
+            .map(GroupGrant::Operation)
+            .map_err(|_| GroupAdministrationRejection::BadRequest),
+        ClientGroupGrantProjection::ServerAdministration => Ok(GroupGrant::ServerAdministration),
+    }
+}
+
+fn client_group_grant(
+    grant: GroupGrant,
+) -> Result<ClientGroupGrantProjection, GroupAdministrationRejection> {
+    Ok(match grant {
+        GroupGrant::ClientModule(value) => ClientGroupGrantProjection::ClientModule {
+            value: value.as_str().to_owned(),
+        },
+        GroupGrant::ServiceModule(value) => ClientGroupGrantProjection::ServiceModule {
+            value: value.as_str().to_owned(),
+        },
+        GroupGrant::Operation(value) => ClientGroupGrantProjection::Operation {
+            value: value.as_str().to_owned(),
+        },
+        GroupGrant::ServerAdministration => ClientGroupGrantProjection::ServerAdministration,
+    })
+}
+
+fn catalog_contains(components: &AvailableComponents, grant: &GroupGrant) -> bool {
+    match grant {
+        GroupGrant::ClientModule(name) => components.has_client_module(name),
+        GroupGrant::ServiceModule(name) => components.has_service_module(name),
+        GroupGrant::Operation(name) => components.has_operation(name),
+        GroupGrant::ServerAdministration => true,
+    }
+}
+
+fn group_association_result(
+    result: Result<GroupMutationResult, GroupMutationWorkflowError>,
+) -> Result<(), GroupAdministrationRejection> {
+    match result {
+        Ok(GroupMutationResult::Unchanged | GroupMutationResult::Changed { .. }) => Ok(()),
+        Ok(GroupMutationResult::Stale { .. }) => {
+            Err(GroupAdministrationRejection::ServiceUnavailable)
+        }
+        Ok(GroupMutationResult::Denied { .. }) => {
+            Err(GroupAdministrationRejection::AuthorizationDenied)
+        }
+        Err(GroupMutationWorkflowError::TargetNotFound) => {
+            Err(GroupAdministrationRejection::NotFound)
+        }
+        Err(GroupMutationWorkflowError::CannotRemoveLastAdministrator) => {
+            Err(GroupAdministrationRejection::Conflict)
+        }
+        Err(
+            GroupMutationWorkflowError::ActionNotSupported
+            | GroupMutationWorkflowError::AuditLogUnavailable,
+        ) => Err(GroupAdministrationRejection::ServiceUnavailable),
+    }
+}
+
+fn group_mutation_response(
+    result: GroupAdministrationMutationResult,
+) -> Result<ClientGroupResult, GroupAdministrationRejection> {
+    match result {
+        GroupAdministrationMutationResult::Unchanged(value)
+        | GroupAdministrationMutationResult::Projection {
+            projection: value, ..
+        } => client_group_projection(value).map(ClientGroupResult::Projection),
+        GroupAdministrationMutationResult::Deleted {
+            public_identifier, ..
+        } => GroupDeleted::new(public_identifier.as_base64url())
+            .map(ClientGroupResult::Deleted)
+            .map_err(|_| GroupAdministrationRejection::ServiceUnavailable),
+        GroupAdministrationMutationResult::Conflict { .. }
+        | GroupAdministrationMutationResult::Nonempty { .. } => {
+            Err(GroupAdministrationRejection::Conflict)
+        }
+        GroupAdministrationMutationResult::Denied { .. } => {
+            Err(GroupAdministrationRejection::AuthorizationDenied)
+        }
+        GroupAdministrationMutationResult::Stale { .. } => {
+            Err(GroupAdministrationRejection::ServiceUnavailable)
+        }
+    }
+}
+
+fn client_group_projection(
+    projection: weavelit_server_database::GroupAdministrationProjection,
+) -> Result<ClientGroupProjection, GroupAdministrationRejection> {
+    ClientGroupProjection::new(
+        projection.public_identifier().as_base64url(),
+        projection.name().as_str().to_owned(),
+        projection
+            .description()
+            .map(|value| value.as_str().to_owned()),
+    )
+    .map_err(|_| GroupAdministrationRejection::ServiceUnavailable)
+}
+
+fn group_authentication_rejection(
+    rejection: AuthenticationRejection,
+) -> GroupAdministrationRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => {
+            GroupAdministrationRejection::ServiceUnavailable
+        }
+        _ => GroupAdministrationRejection::SessionInvalid,
+    }
+}
+
+fn group_workflow_error(error: GroupAdministrationWorkflowError) -> GroupAdministrationRejection {
+    match error {
+        GroupAdministrationWorkflowError::TargetNotFound => GroupAdministrationRejection::NotFound,
+        GroupAdministrationWorkflowError::ActionNotSupported
+        | GroupAdministrationWorkflowError::Unavailable
+        | GroupAdministrationWorkflowError::AuditLogUnavailable => {
+            GroupAdministrationRejection::ServiceUnavailable
+        }
+    }
+}
+
+fn account_authentication_rejection(
+    rejection: AuthenticationRejection,
+) -> AccountAdministrationRejection {
+    match rejection {
+        AuthenticationRejection::ServiceUnavailable => {
+            AccountAdministrationRejection::ServiceUnavailable
+        }
+        AuthenticationRejection::BadRequest
+        | AuthenticationRejection::AuthenticationFailed
+        | AuthenticationRejection::SessionInvalid
+        | AuthenticationRejection::RequestOriginDenied
+        | AuthenticationRejection::MethodNotAllowed => {
+            AccountAdministrationRejection::SessionInvalid
+        }
     }
 }
 
@@ -464,6 +3709,7 @@ pub(crate) mod test_support {
 
         fn complete_checkpoint(
             &mut self,
+            _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
             _checkpoint: &WorkflowCheckpoint,
             _state: &ApplicationState,
             _reconciliation: &weavelit_server_database::ReconciliationDigest,
@@ -473,8 +3719,19 @@ pub(crate) mod test_support {
 
         fn load_initialized_state(
             &mut self,
+            _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+            _audit_reference_persistence: &weavelit_server_database::AuditReferencePersistence,
             _expected_deployment_identifier: DeploymentIdentifier,
         ) -> Result<InitializedState, DatabaseError> {
+            Err(DatabaseError::Unavailable)
+        }
+
+        fn load_account_public_identity(
+            &mut self,
+            _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+            _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+        ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError>
+        {
             Err(DatabaseError::Unavailable)
         }
 
@@ -494,6 +3751,32 @@ pub(crate) mod test_support {
             Err(DatabaseError::Unavailable)
         }
 
+        fn load_account_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _account: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::AccountAuditReference>, DatabaseError>
+        {
+            Err(DatabaseError::Unavailable)
+        }
+
+        fn load_group_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _group: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
+            Err(DatabaseError::Unavailable)
+        }
+
+        fn load_log_configuration_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _configuration: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+        {
+            Err(DatabaseError::Unavailable)
+        }
+
         fn load_component_enablement(
             &mut self,
         ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
@@ -509,6 +3792,12 @@ pub(crate) mod test_support {
         }
 
         fn reconciliation(&mut self) -> Option<&mut dyn ReconciliationStore> {
+            None
+        }
+
+        fn audit_terminal_recovery(
+            &mut self,
+        ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
             None
         }
 
@@ -647,7 +3936,172 @@ pub(crate) mod test_support {
 mod tests {
     use std::sync::atomic::Ordering;
 
+    use crate::administration::{LogConfigurationChangeDelivery, MfaModuleEnablementDelivery};
+
     use super::{test_support::activated, *};
+
+    fn identifier(byte: u8) -> StateIdentifier {
+        StateIdentifier::from_bytes([byte; 16]).unwrap()
+    }
+
+    fn session_hash(byte: u8) -> weavelit_server_database::SessionTokenHash {
+        weavelit_server_database::SessionTokenHash::from_bytes([byte; 32]).unwrap()
+    }
+
+    #[test]
+    fn totp_preview_claim_is_exact_single_use_and_replay_safe() {
+        let mut registry = TotpEnablementPreviewRegistry::default();
+        let actor = identifier(1);
+        let session = session_hash(2);
+        let client = Name::new("web-ui").unwrap();
+        let credential = registry
+            .issue(
+                Duration::ZERO,
+                actor,
+                session,
+                client.clone(),
+                false,
+                MfaModuleEnablementPreview::for_test(true, false, 3),
+            )
+            .unwrap();
+
+        for (candidate_actor, candidate_session, candidate_client, candidate_desired) in [
+            (identifier(9), session, client.clone(), false),
+            (actor, session_hash(9), client.clone(), false),
+            (actor, session, Name::new("other-client").unwrap(), false),
+            (actor, session, client.clone(), true),
+        ] {
+            assert!(
+                registry
+                    .claim(
+                        Duration::ZERO,
+                        candidate_actor,
+                        candidate_session,
+                        &candidate_client,
+                        candidate_desired,
+                        credential.as_str(),
+                    )
+                    .is_err()
+            );
+        }
+
+        let preview = registry
+            .claim(
+                Duration::ZERO,
+                actor,
+                session,
+                &client,
+                false,
+                credential.as_str(),
+            )
+            .unwrap();
+        assert_eq!(preview.affected_users(), 3);
+        assert!(
+            registry
+                .claim(
+                    Duration::ZERO,
+                    actor,
+                    session,
+                    &client,
+                    false,
+                    credential.as_str(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn totp_preview_expires_at_five_minutes_and_retention_is_bounded() {
+        let mut registry = TotpEnablementPreviewRegistry::default();
+        let actor = identifier(1);
+        let session = session_hash(2);
+        let client = Name::new("web-ui").unwrap();
+        let expired = registry
+            .issue(
+                Duration::ZERO,
+                actor,
+                session,
+                client.clone(),
+                true,
+                MfaModuleEnablementPreview::for_test(false, true, 0),
+            )
+            .unwrap();
+        assert!(
+            registry
+                .claim(
+                    MFA_STEP_UP_LIFETIME,
+                    actor,
+                    session,
+                    &client,
+                    true,
+                    expired.as_str(),
+                )
+                .is_err()
+        );
+
+        for _ in 0..MAX_OUTSTANDING_TOTP_ENABLEMENT_PREVIEWS {
+            registry
+                .issue(
+                    Duration::ZERO,
+                    actor,
+                    session,
+                    client.clone(),
+                    true,
+                    MfaModuleEnablementPreview::for_test(false, true, 0),
+                )
+                .unwrap();
+        }
+        assert!(
+            registry
+                .issue(
+                    Duration::ZERO,
+                    actor,
+                    session,
+                    client,
+                    true,
+                    MfaModuleEnablementPreview::for_test(false, true, 0),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn committed_totp_enablement_result_is_public_success_for_each_delivery_state() {
+        for delivery in [
+            MfaModuleEnablementDelivery::Acknowledged,
+            MfaModuleEnablementDelivery::Pending,
+        ] {
+            assert!(matches!(
+                totp_enablement_apply_result(
+                    MfaModuleEnablementResult {
+                        outcome: MfaModuleEnablementOutcome::Applied {
+                            desired_state: true,
+                            affected_users: 2,
+                        },
+                        delivery,
+                    },
+                    true,
+                ),
+                Ok(ConfigurationAdministrationResult::TotpApplied(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn committed_log_configuration_result_is_public_success_for_each_delivery_state() {
+        for delivery in [
+            LogConfigurationChangeDelivery::Acknowledged,
+            LogConfigurationChangeDelivery::Pending,
+        ] {
+            assert_eq!(
+                accept_log_configuration_change_result(LogConfigurationChangeResult::Applied {
+                    generation_count: 2,
+                    delivery,
+                }),
+                Ok(())
+            );
+        }
+    }
 
     #[test]
     fn an_owner_with_no_activated_database_closes_cleanly() {

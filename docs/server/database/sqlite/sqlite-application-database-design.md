@@ -60,7 +60,16 @@ the backend changes nothing and refuses to report readiness.
 The registry contains `0001_create_migration_ledger.sql`,
 `0002_create_lifecycle_state.sql`, `0003_create_application_state.sql`,
 `0004_create_session_store.sql`, and
-`0005_add_mfa_policy_and_replay_watermark.sql`. Each
+`0005_add_mfa_policy_and_replay_watermark.sql`,
+`0006_add_lifecycle_reconciliation.sql`, and
+`0007_add_audit_references.sql`, and
+`0008_add_audit_terminal_recovery.sql`, and
+`0009_add_log_configuration_generations.sql`, and
+`0010_migrate_totp_component_enablement.sql`, and
+`0011_add_log_configuration_audit_references.sql`, and
+`0012_add_account_public_identities.sql`, and
+`0013_add_account_credential_state.sql`, and
+`0014_add_group_public_identities.sql`. Each
 entry has a one-based sequence, the filename without `.sql` as its identifier,
 and SQL embedded through `include_str!`. `sha2 = "=0.11.0"` computes a 32-byte
 SHA-256 digest directly over the exact embedded UTF-8 file bytes with default
@@ -136,6 +145,210 @@ and the completion obligation each use a singleton row. Protected values and
 protected credentials are stored as opaque BLOBs; the backend never inspects,
 derives, or transforms them.
 
+`0007_add_audit_references.sql` creates separate `STRICT`
+`weavelit_account_audit_reference` and
+`weavelit_group_audit_reference` tables. Each owner column is both the primary
+key and a foreign key to its typed owning table, so each existing account or
+Group can carry at most one association and an orphan or wrong-kind owner is
+rejected. Each table checks the exact nonzero `ar-` plus
+32-lowercase-hexadecimal representation and has a named unique index on the
+reference value. Reciprocal insert triggers reject reuse across the two entity
+kinds, and per-table update triggers reject every association update. Future
+entity types receive their own typed table only when their owning application
+state exists. Names and state identifiers remain in their owning tables and
+are never used as reference values.
+
+The migration backfills every existing account and Group with a fresh
+independent 16-byte SQLite `randomblob` value rendered canonically. This
+migration-only backfill does not derive values from identifiers or names and
+does not change the Application Database contract's ownership of runtime
+generation. Both table creations, both backfills, and migration-ledger
+insertion share the migration's single immediate transaction. A zero value,
+per-table or cross-table collision, or later statement failure violates the
+schema and rolls the entire migration back, preserving all prior entity fields
+and the six-entry ledger prefix. State reads use the persistence decoder
+supplied by lifecycle's selected database wrapper and rebuild typed account and
+Group projections through the backend-neutral checked constructor; a missing,
+extra, malformed, reused, orphaned, or wrongly associated reference is an
+`IntegrityFailure`.
+
+`0011_add_log_configuration_audit_references.sql` adds the separate `STRICT`
+`weavelit_log_configuration_audit_reference` table. Its owner is the existing
+Log Module configuration identifier, while its value has the same canonical
+random Audit Reference form and remains immutable. Reciprocal triggers reject
+reuse with account or Group references regardless of insertion order. The
+migration backfills every existing Log Module configuration from SQLite
+`randomblob`, and table creation, indexes, triggers, complete backfill, and the
+ledger row share one immediate transaction. A collision or later failure rolls
+the database back to the exact `0010` prefix. Init and Restore instead supply
+their already validated typed references in the application-state replacement
+transaction, and state reads require exact configuration coverage and global
+cross-kind uniqueness.
+
+`0012_add_account_public_identities.sql` creates the separate `STRICT`
+`weavelit_account_public_identity` table. Its account identifier is both the
+primary key and a foreign key to `weavelit_account`; its public identifier is an
+exact nonzero 16-byte BLOB protected by a unique index. Update and delete
+triggers make every association immutable. The migration materializes up to
+eight SQLite `randomblob` candidates for every existing account, rejects zero
+and duplicated candidates, and selects the first remaining candidate for each
+account. Table creation, index, triggers, complete backfill, and the ledger row
+share one immediate transaction. Exhausting the candidate pool, an orphan, or
+a later failure rolls the database back to the exact `0011` prefix so reopening
+can retry the migration from unchanged legacy state.
+
+Init and Restore completion insert their already validated typed identities in
+the application-state replacement transaction. State reads require exact
+account coverage and global public-identifier uniqueness. The SQLite
+`AccountAdministrationStore` performs deterministic list ordering by the unique
+username and exact lookup by the typed Account Public Identifier. Both queries
+join `weavelit_account` to `weavelit_account_public_identity` and select only
+the public identifier, username, display name, active state, and MFA-required
+state. Before either query returns, the same read transaction verifies complete
+reciprocal coverage, decodes every public identifier, and independently rejects
+duplicates. Missing, malformed, orphaned, or duplicate identities therefore
+return `IntegrityFailure` without partial output or an internal-identifier
+fallback; an unknown valid public identifier returns absence. These reads do
+not touch sessions or Audit terminal storage. The normal schema validation
+performed during database open rejects a missing or changed identity table,
+index, or immutability trigger with `IntegrityFailure` before readiness.
+
+`0014_add_group_public_identities.sql` creates the separate `STRICT`
+`weavelit_group_public_identity` table. Its Group owner is the primary key and
+foreign key, its public identifier is an exact nonzero 16-byte BLOB, and a
+unique index prevents reuse. Updates are forbidden. Owner deletion cascades the
+identity only as part of Group deletion; direct deletion of an association is
+rejected while its parent Group exists. The migration materializes up to eight
+SQLite `randomblob` candidates for every existing Group, rejects zero and
+duplicated candidates, and selects the first remaining candidate for each
+Group. Table, index, trigger, complete backfill, and ledger row share one
+immediate transaction. Exhausting the candidate pool, an orphan, or a later
+failure rolls the database back to the exact `0013` prefix so reopening can
+retry the migration from unchanged legacy state.
+
+SQLite Group administration reads join only Group name, nullable description,
+and public identity and validate complete reciprocal coverage before output.
+Create, update, and delete use `BEGIN IMMEDIATE`, recheck the issuer session and
+complete prepared target, and persist the selected opaque Audit terminal in the
+same transaction. Delete first proves both membership and direct-grant absence,
+then removes the Audit Reference and owning Group; the public identity cascades.
+No nonempty count or cause leaves the backend.
+
+### Immutable Log Module Configuration Generations
+
+`0009_add_log_configuration_generations.sql` creates four `STRICT` tables for
+deployment-local operational configuration history: immutable generation
+snapshots, immutable ordered non-secret settings, immutable Log Type
+memberships, and one current-generation pointer per application-owned Log
+Module configuration. The compound generation key is the existing nonzero
+16-byte configuration identifier plus a nonzero eight-byte big-endian version
+BLOB. The BLOB representation preserves the complete nonzero `u64` range
+without narrowing through SQLite's signed integer type.
+
+The migration backfills every existing configuration as version `1`, copies
+its current settings and Log Type assignments into that snapshot, and points
+the configuration at version `1`. Snapshot, setting, and membership tables
+reject updates and deletes through schema triggers. Their creation, complete
+backfill, immutable triggers, and migration-ledger entry share the migration's
+single immediate transaction; any failure rolls the schema, data, and ledger
+back to the exact `0008` prefix.
+
+Fresh Init and Restore completion seed the same version `1` rows after writing
+the supplied `ApplicationState` and before marking lifecycle state initialized.
+Seeding runs inside the completion operation's existing immediate transaction,
+so generation failure also rolls back every application-state row and retains
+the pending checkpoint.
+
+The SQLite implementation returns its read-only store through
+`ApplicationDatabase::log_configuration_generations`. Current Audit lookup
+starts from the current restorable Audit assignment, requires its current
+pointer and exact generation, and verifies configuration identity, version,
+module, name, enabled state, ordered settings, and Audit membership against the
+current application-state rows. Exact historical lookup reads only the
+requested compound key. Both paths rebuild bounded contract types through
+database persistence authority and return payload-free `IntegrityFailure` for
+malformed or inconsistent rows; an absent exact historical key returns `None`.
+
+The backend also returns its internal mutation store through
+`ApplicationDatabase::log_configuration_mutations`. Preparation uses one read
+transaction to load and validate every current configuration, setting,
+assignment, immutable snapshot, and pointer. It returns an exact no-op without
+writing; otherwise it allocates one next version per distinct affected
+configuration and carries the complete expected and desired assignment sets.
+
+Commit uses `BEGIN IMMEDIATE`. It first rechecks the complete expected
+assignment topology and each affected current generation. A stale plan persists
+only its selected opaque denied terminal. A matching plan appends immutable
+snapshots, updates current enabled state, settings, and assignments, persists
+only its selected applied terminal, and updates generation pointers last. Every
+step and the selected terminal obligation commit together or roll back
+together. This internal store adds no public route, public identifier,
+destination credential storage, generation deletion, or supersession behavior.
+
+These four tables survive ordinary restart but remain outside
+`ApplicationState`. State reads and writes do not enumerate or import them, a
+backup includes only current non-secret Log Module configuration and
+assignments, and Restore seeds fresh version `1` rows from that normalized
+input. Source-deployment generation history and pointers therefore never enter
+a replacement database, and the backup format and version remain unchanged.
+
+### Account Credential State Migration
+
+`0013_add_account_credential_state.sql` adds an exact nonzero eight-byte
+big-endian `credential_revision` BLOB, a `0` or `1`
+`must_change_password` integer, and an optional nonnegative
+`temporary_credential_expires_at_milliseconds` integer to
+`weavelit_account`. Existing rows receive revision `1`, a false flag, and no
+expiry. Column constraints and insert and update triggers require the flag and
+expiry to be present or absent together. The backend rebuilds their checked
+contract types on read, and `ApplicationState` additionally requires every
+temporary account to have a password verifier.
+
+The migration stores only the existing Argon2 verifier and bounded metadata;
+plaintext temporary passwords, response buffers, delivery content, and
+continuation bearer values have no SQLite column. It adds no route, retrieval
+endpoint, response store, or password-change ticket. Account creation and
+password reset use the existing schema through separately implemented
+compare-and-set transactions; no later migration or backup-format change is
+required.
+
+The account credential writer uses one `BEGIN IMMEDIATE` transaction. It
+rechecks exact issuer session ownership, Client Module, and lifetime; active
+ordinary actor credential state and revision; current TOTP factor identity and
+Module enablement; and atomically advances the replay watermark when enrolled.
+A create prechecks username and generated identity collisions before inserting
+the account, public identity, Audit Reference, and verifier. A reset verifies
+the exact public-identifier association, compare-and-sets the target revision,
+replaces or creates the verifier, and deletes every target session. Success,
+duplicate or stale conflict, and final issuer denial each select exactly one
+opaque terminal obligation. The selected obligation and any watermark or
+business writes commit together or roll back together.
+
+The password-change writer also uses `BEGIN IMMEDIATE` and the existing Account,
+password-verifier, session, and Audit terminal tables. It joins the presented
+session to the live Account to derive `PasswordChangeRequired`, then rechecks
+the exact session digest, actor, Client Module, lifetime, active state,
+credential revision, unexpired temporary metadata, and current verifier. On a
+match it advances the revision, clears the flag and expiry, replaces the
+verifier, deletes every Account session, inserts the prepared fresh session at
+the successor revision, and persists the selected success terminal. A mismatch
+persists only the denied terminal. A verifier update anomaly, fresh-session
+collision, or terminal persistence failure rolls the complete transaction back.
+This writer adds no migration or backup-format field and does not read or write
+MFA replay watermarks.
+
+The account status writer uses the same existing account, public-identity,
+Audit-reference, session, and terminal-recovery tables; it adds no migration or
+backup field. Its `BEGIN IMMEDIATE` transaction rechecks issuer session
+ownership, actor, Client Module, lifetime, and active state before evaluating
+the target. One update compare-and-sets the target account identifier, exact
+public identifier association, active flag, and eight-byte credential revision.
+Disablement writes inactive state and the checked successor revision, then
+deletes every target session. Re-enablement writes active state with the same
+revision and performs no session insert. The selected success or payload-free
+denied terminal is persisted before commit, so a terminal failure rolls back
+the status, revision, and session deletion together.
+
 ## Live Session Schema
 
 `0004_create_session_store.sql` creates the single `STRICT` table
@@ -166,6 +379,14 @@ on the storage engine's own byte comparison. A row whose stored bytes cannot be
 rebuilt into the contract's types is refused as `IntegrityFailure` rather than
 accepted.
 
+Session insertion reads the account's active flag, credential revision, and
+temporary-credential expiry in the same immediate transaction that would write
+the session. An absent or inactive account, a stale expected revision, or an
+expiry at or before the session issue instant returns one reason-free rejection
+and commits no session. Direct MFA admission, accepted TOTP steps, and confirmed
+enrollment use the same check before any session, replay watermark, or factor
+write, so a concurrent account-state change rolls back the whole operation.
+
 Inserting a session first deletes rows already expired at the new session's
 issue instant, in the same transaction. The delete is bounded to a named batch
 constant by selecting that many `token_hash` values in a subquery, because
@@ -193,6 +414,59 @@ out-of-bounds text, unknown discriminator, missing singleton, duplicate row,
 dangling reference, or disabled log assignment returns `IntegrityFailure`
 without returning the offending value.
 
+## Live Audit Terminal Recovery Schema
+
+`0008_add_audit_terminal_recovery.sql` creates private `STRICT`
+`weavelit_audit_terminal_obligation` and
+`weavelit_audit_terminal_supersession` tables. They are live operational
+storage, not normalized application state, Log Module destination tables, or
+backup content. `ApplicationState` reads and writes never reference either
+table, Restore imports neither table, and the SQLite backend returns its private
+store through `ApplicationDatabase::audit_terminal_recovery`.
+
+An obligation row stores an insertion sequence, nonzero 16-byte identity,
+1 to 50,176 byte opaque projection, separately stored nonzero 16-byte binding
+identity, separately stored nonzero eight-byte big-endian binding version, and
+an acknowledgement tombstone. The backend never interprets the projection as
+JSON or extracts an Audit field from it. The big-endian version representation
+preserves the complete nonzero `u64` contract range without a signed SQLite
+integer narrowing.
+
+A supersession row stores the original and replacement obligation identities,
+1 to 1,024 opaque disposition bytes, and separate exact original and replacement
+binding columns. Foreign keys require both retained obligations, while unique
+identity constraints prevent one original or replacement from participating in
+conflicting dispositions. Triggers reject obligation deletion, immutable-field
+rewrites, acknowledgement reversal or repetition, and every disposition update
+or deletion. Acknowledged rows remain as tombstones so an exact write or
+supersession retry is idempotent and cannot resurrect completed recovery.
+
+The private SQLite transaction adapter implements
+`AuditTerminalRecoveryTransaction` only for an owning serialized mutation. It
+does not expose standalone enqueue. A new write first compares any existing row
+by exact identity, projection bytes, binding identity, and binding version. An
+exact match succeeds without writing; any difference returns `InvalidState`.
+Supersession requires the exact oldest active original, compares its complete
+opaque bytes and separate binding columns, inserts the replacement, and appends
+the disposition in that same caller-owned transaction. An injected failure at
+either insert rolls back both. An exact completed supersession retry succeeds;
+partial or byte-different retained state fails without mutation.
+
+Active replay selects unacknowledged rows without a disposition by insertion
+sequence. Late delivery selects unacknowledged disposition originals by their
+original insertion sequence. Reads decode only storage shape and bounds; late
+reads additionally require the disposition's separate bindings to equal the
+stored original and replacement bindings. They never parse the projection or
+disposition. Malformed storage shape returns `IntegrityFailure`; a bounded but
+semantically malformed projection is returned opaquely for Server Audit to
+reject through the runtime recovery-required path.
+
+Acknowledgement runs in one immediate transaction. It requires exact identity
+and binding proof, validates the retained row and any disposition relationship,
+requires the row to be oldest in its active or late sequence, and changes only
+its acknowledgement tombstone. Wrong-binding, absent, repeated, and
+out-of-order acknowledgement returns `InvalidState` without mutation.
+
 ## MFA Policy And Replay Watermark Schema
 
 `0005_add_mfa_policy_and_replay_watermark.sql` adds the account column
@@ -213,6 +487,18 @@ an enrolled factor is part of the aggregate a Restore replaces, while the
 highest time step that factor has been observed to use is live operational
 state produced by this running deployment.
 
+`0010_migrate_totp_component_enablement.sql` normalizes an initialized
+deployment's former `mfa.totp` / `enabled` configuration entry into the generic
+`totp` / `mfa-module.enabled` component entry. Exact legacy `true` becomes
+canonical `true`; legacy false or any other legacy value becomes canonical
+`false`, replacing a conflicting canonical row. When the legacy entry is absent,
+an existing canonical value is preserved; when both entries are absent,
+canonical `false` is inserted. The legacy row is then removed in the same
+migration transaction. An uninitialized database is unchanged;
+Init explicitly seeds canonical TOTP disablement when it creates application
+state. Reopening repeats no data change because the migration ledger records
+the exact migration once.
+
 Accepting a time step reads the Module's enabled setting, advances the
 watermark, and inserts the session the acceptance issues, inside one
 `BEGIN IMMEDIATE` transaction. A disabled Module returns before anything is
@@ -228,6 +514,22 @@ trigger additionally aborts any statement, including a direct one, that reuses
 or rewinds an accepted step, so a spent code cannot be made usable again by
 writing to the table. Enrolling a factor spans the same three tables in one
 transaction for the same reason.
+
+The enablement mutation uses one `BEGIN IMMEDIATE` transaction to count
+distinct enrolled account identifiers, select one of the two opaque validated
+Audit terminal writes, and persist that obligation. The applied branch writes
+`totp` / `mfa-module.enabled` and deletes every session belonging to an enrolled
+account only when disabling. The stale-preview branch writes no configuration
+or session state and commits only its conflict obligation. An obligation insert
+failure rolls back configuration and session changes with it.
+
+The enablement preview uses one read transaction to load the canonical
+`totp` / `mfa-module.enabled` value and count distinct enrolled account
+identifiers. The current Log configuration list likewise uses one read
+transaction to load every current immutable generation, validate its pointer
+against current configuration, settings and Log Type membership, validate the
+complete System and Audit assignment topology, and sort by unique configuration
+name. Both reads use the existing schema; no migration is required.
 
 Issuing the session a login receives when no second factor gates it uses one
 `BEGIN IMMEDIATE` transaction in the same way: it reads the Module's enabled
@@ -402,6 +704,26 @@ migrations, restart persistence, migration and write rollback, invalid
 configuration, unavailable storage, incompatible migration history, and error
 and diagnostic redaction.
 
+Generation migration tests open a populated real database carrying the exact
+eight-entry migration prefix, prove version `1` backfill and the ninth checksum,
+and inject a final migration failure to prove schema, data, and ledger rollback.
+State tests prove fresh Init seeding, current and exact historical reads across
+restart including the full `u64` version range, immutable-row enforcement,
+completion rollback, and fail-closed malformed version, pointer, configuration,
+enabled-state, settings, and Audit-membership handling. A source-to-replacement
+test proves normalized Restore state excludes historical generations and that
+the replacement creates only its local version `1` snapshot.
+
+Migration tests apply the six-migration prefix to populated account and Group
+tables, then prove `0007` preserves broad Unicode names and state identifiers,
+assigns distinct canonical values derived from neither, installs the indexed
+lookup, and rolls schema, data, and ledger changes back together after an
+injected later failure. Application-state tests prove typed account and Group
+lookups, foreign-key ownership, per-kind and cross-kind uniqueness, exact text
+checks, immutable associations, indexed reference lookup, exact round trips
+across reopen, and integrity failure for missing, extra, or wrong-kind
+associations.
+
 Close tests build a real database whose committed write is still held only in a
 non-empty WAL. They prove that a clean close leaves neither the WAL nor the
 shared-memory sidecar behind while the committed write survives in the main
@@ -441,3 +763,5 @@ from the outset.
 - [Security Model](../../../security-model.md)
 - [Testing and Validation Policy](../../../testing.md)
 - [Log Module Design](../../../log-modules/log-module-design.md)
+- [Authentication Design](../../authentication/authentication-design.md)
+- [Temporary Password Disclosure Decision](../../authentication/temporary-password-disclosure-decision.md)

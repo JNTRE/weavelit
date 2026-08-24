@@ -5,9 +5,15 @@ Application Database backend. It owns SQLite-specific driver integration,
 schema migrations, transaction behavior, connection health handling, and
 backend-specific errors behind the Server's internal backend contract.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns SQLite-specific Application Database backend behavior.
 - It does not own the shared backend contract, Server business logic, or Log Module storage.
@@ -15,33 +21,22 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
-
-- `AGENTS.md`: Local routing, inventory, and SQLite backend crate-boundary rules.
 - `Cargo.toml`: Package manifest and exact production and test dependencies.
 - `migrations/`: Immutable embedded SQL migrations for the SQLite schema.
-- `src/`: Trusted-path connection setup, migrations, state inspection, atomic checkpoint and completion operations, application-state reading and writing, live session storage, MFA replay watermark storage, and private error mapping.
-- `tests/`: Public-boundary connection, migration, inspection, checkpoint, application-state, live-session, and MFA replay watermark tests using isolated real SQLite files.
+- `src/`: Trusted-path connection setup, migrations, state inspection, atomic checkpoint and completion operations, application-state reading and writing, bounded account and Group administration reads and writers, account credential, password-change, status, and MFA-policy writers, live session storage, MFA replay watermark and atomic enablement-preview reads, typed Log Module configuration Audit References, immutable Log Module configuration generations, integrity-checked current-generation lists and atomic mutation, private Audit terminal recovery storage, and private error mapping.
+- `tests/`: Public-boundary connection, migration, inspection, checkpoint, application-state, bounded account and Group administration, credential, password-change, status, and MFA-policy writers, live-session, MFA replay watermark, Log Module configuration Audit Reference and immutable-generation persistence, atomic mutation, rollback, and fail-closed integrity tests, plus recovery-exclusion tests using isolated real SQLite files.
 
-## Usage Guidance
+## Working Rules
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
+- MUST follow [Contribution Guidelines](../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../docs/glossary.md), formatting them as bold links on first substantive use.
 
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read `../../../../docs/server/database/sqlite/` and `../../../../docs/server/database/` before changing SQLite persistence behavior.
-- Keep SQLite-specific driver, migration, transaction, connection-health, and error behavior in this crate.
-- Add isolated integration tests using temporary resources for persistence behavior, following `../../../../docs/testing.md`.
+- Before editing, agents MUST read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, `../../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- MUST read `../../../../docs/server/database/sqlite/` and `../../../../docs/server/database/` before changing SQLite persistence behavior.
+- MUST keep SQLite-specific driver, migration, transaction, connection-health, and error behavior in this crate.
+- MUST add isolated integration tests using temporary resources for persistence behavior, following `../../../../docs/testing.md`.
 
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Do not present SQLite behavior as a requirement for every Application Database backend.
-- Keep SQLite persistence separate from the default SQLite Log Module database and destination.
-- Preserve shared backend decisions in `../../../../docs/server/database/` rather than duplicating them here.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- Agents MUST NOT present SQLite behavior as a requirement for every Application Database backend.
+- MUST keep SQLite persistence separate from the default SQLite Log Module database and destination.
+- MUST preserve shared backend decisions in `../../../../docs/server/database/` rather than duplicating them here.

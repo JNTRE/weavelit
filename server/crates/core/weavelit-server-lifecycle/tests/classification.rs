@@ -154,6 +154,7 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn complete_checkpoint(
         &mut self,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
         _checkpoint: &WorkflowCheckpoint,
         _state: &ApplicationState,
         _reconciliation: &weavelit_server_database::ReconciliationDigest,
@@ -163,8 +164,18 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn load_initialized_state(
         &mut self,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _audit_reference_persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_account_public_identity(
+        &mut self,
+        _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+    ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError> {
         Err(DatabaseError::NotInitialized)
     }
 
@@ -183,6 +194,31 @@ impl ApplicationDatabase for FakeDatabase {
         Err(DatabaseError::NotInitialized)
     }
 
+    fn load_account_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _account: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::AccountAuditReference>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_group_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _group: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _configuration: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+    {
+        Err(DatabaseError::NotInitialized)
+    }
+
     fn load_component_enablement(
         &mut self,
     ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
@@ -198,6 +234,12 @@ impl ApplicationDatabase for FakeDatabase {
     }
 
     fn reconciliation(&mut self) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
+        None
+    }
+
+    fn audit_terminal_recovery(
+        &mut self,
+    ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
         None
     }
 
@@ -336,7 +378,8 @@ fn uninitialized_record_with_init_checkpoint_is_interrupted_without_record_mutat
         .unwrap();
 
     let checkpoint = fake_checkpoint(store.record().deployment_identifier(), WorkflowKind::Init);
-    db.create_checkpoint(&checkpoint).unwrap();
+    db.with(|database| database.create_checkpoint(&checkpoint))
+        .unwrap();
     drop(db);
     let record_bytes = fs::read(path.join("deployment-record.json")).unwrap();
 
@@ -371,7 +414,8 @@ fn uninitialized_record_with_restore_checkpoint_is_interrupted() {
         store.record().deployment_identifier(),
         WorkflowKind::Restore,
     );
-    db.create_checkpoint(&checkpoint).unwrap();
+    db.with(|database| database.create_checkpoint(&checkpoint))
+        .unwrap();
     drop(db);
 
     let classification = store
@@ -588,6 +632,7 @@ fn deployment_mismatch_on_database_fails_closed() {
 
         fn complete_checkpoint(
             &mut self,
+            _: &weavelit_server_database::AccountPublicIdentifierPersistence,
             _: &WorkflowCheckpoint,
             _: &ApplicationState,
             _: &weavelit_server_database::ReconciliationDigest,
@@ -597,8 +642,19 @@ fn deployment_mismatch_on_database_fails_closed() {
 
         fn load_initialized_state(
             &mut self,
+            _: &weavelit_server_database::AccountPublicIdentifierPersistence,
+            _: &weavelit_server_database::AuditReferencePersistence,
             _: DeploymentIdentifier,
         ) -> Result<InitializedState, DatabaseError> {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_account_public_identity(
+            &mut self,
+            _: &weavelit_server_database::AccountPublicIdentifierPersistence,
+            _: weavelit_server_database::AccountPublicIdentifier,
+        ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError>
+        {
             Err(DatabaseError::DeploymentMismatch)
         }
 
@@ -614,6 +670,32 @@ fn deployment_mismatch_on_database_fails_closed() {
             &mut self,
             _: StateIdentifier,
         ) -> Result<Option<weavelit_server_database::HumanAuthorizationSnapshot>, DatabaseError>
+        {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_account_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::AccountAuditReference>, DatabaseError>
+        {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_group_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
+            Err(DatabaseError::DeploymentMismatch)
+        }
+
+        fn load_log_configuration_audit_reference(
+            &mut self,
+            _persistence: &weavelit_server_database::AuditReferencePersistence,
+            _: StateIdentifier,
+        ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
         {
             Err(DatabaseError::DeploymentMismatch)
         }
@@ -635,6 +717,12 @@ fn deployment_mismatch_on_database_fails_closed() {
         fn reconciliation(
             &mut self,
         ) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
+            None
+        }
+
+        fn audit_terminal_recovery(
+            &mut self,
+        ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
             None
         }
 
@@ -796,7 +884,9 @@ fn retained_wal_mode_database_without_sidecars_preserves_state_and_classifies_ch
         drop(connection);
 
         let checkpoint = fake_checkpoint(store.record().deployment_identifier(), workflow);
-        database.create_checkpoint(&checkpoint).unwrap();
+        database
+            .with(|database| database.create_checkpoint(&checkpoint))
+            .unwrap();
         drop(database);
         assert!(!path.join("application.sqlite3-wal").exists());
         assert!(!path.join("application.sqlite3-shm").exists());

@@ -18,6 +18,39 @@ use zeroize::Zeroizing;
 
 use crate::cookie::CookieEffect;
 
+/// Closed marker for a typed response that discloses a one-time secret.
+///
+/// Only this module can name or construct this type. The named secret-response
+/// builders below attach it and the listener observes it through
+/// [`has_secret_disclosure_effect`], so a route can supply no cache-header name,
+/// value, or effect value.
+#[derive(Clone)]
+struct SecretDisclosureEffect {
+    _private: (),
+}
+
+impl SecretDisclosureEffect {
+    const fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+/// Reports whether a response carries the closed one-time-secret effect.
+///
+/// This is deliberately observation-only. The effect type is private, so a
+/// caller outside this module cannot construct, clone, remove, or insert it.
+///
+/// ```compile_fail
+/// use weavelit_module_client::typed_json::SecretDisclosureEffect;
+/// ```
+#[must_use]
+pub fn has_secret_disclosure_effect(response: &Response) -> bool {
+    response
+        .extensions()
+        .get::<SecretDisclosureEffect>()
+        .is_some()
+}
+
 /// Longest stable code or result field name the typed profile serializes.
 pub const MAX_STABLE_CODE_BYTES: usize = 48;
 
@@ -359,15 +392,38 @@ impl TypedJsonEnvelope {
 ///
 /// The response carries no header of its own: the listener supplies the media
 /// type from the response profile, so a route cannot emit a cross-origin
-/// header, a cache directive, or any other header through this path. The one
-/// exception is the closed cookie effect, which a route reaches only through
-/// [`typed_json_response_with_cookies`] and which the listener renders itself.
+/// header, a cache directive, or any other header text through this path. The
+/// closed cookie and secret-disclosure effects are typed values that the
+/// listener renders itself; neither accepts header text from a route.
 #[must_use]
 pub fn typed_json_response(status: StatusCode, envelope: TypedJsonEnvelope) -> Response {
     let mut response = Response::new(Body::empty());
     *response.status_mut() = status;
     response.extensions_mut().insert(envelope);
     response
+}
+
+/// Builds a typed response carrying the closed one-time-secret marker.
+///
+/// This is crate-private so external route implementations cannot opt an
+/// arbitrary response into the effect. Callers still supply no header text.
+#[must_use]
+pub(crate) fn typed_json_secret_response(
+    status: StatusCode,
+    envelope: TypedJsonEnvelope,
+) -> Response {
+    let mut response = typed_json_response(status, envelope);
+    response
+        .extensions_mut()
+        .insert(SecretDisclosureEffect::new());
+    response
+}
+
+/// Marks a non-typed-envelope response owned by this crate as a secret disclosure.
+pub(crate) fn mark_secret_disclosure(response: &mut Response) {
+    response
+        .extensions_mut()
+        .insert(SecretDisclosureEffect::new());
 }
 
 /// Builds a typed response that also carries one closed cookie effect.

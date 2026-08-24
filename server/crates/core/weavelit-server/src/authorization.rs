@@ -9,10 +9,13 @@
 //!
 //! The order is carried by the types. The entry points take a
 //! [`ValidatedSession`], whose constructor is private to [`crate::authentication`],
-//! so session validation cannot be skipped; and they return an
-//! [`AuthorizedOperation`] or [`AuthorizedAdministration`] proof, whose
-//! constructors are private to the authorization crate, so Service Connection
-//! selection and provider execution cannot be reached without a decision.
+//! so session validation cannot be skipped. They return an [`AuthorizedOperation`]
+//! proof, whose constructor is private to the authorization crate, so Service
+//! Connection selection and provider execution cannot be reached without a decision.
+//! Administration requests return an [`AuthorizedAdministrationAdmission`] proof,
+//! exact-session-bound: its constructor is authority-gated by
+//! [`ServerAdministrationAuthority`], and it binds the same [`ValidatedSession`]
+//! actor, client module, and session digest without exposing raw values.
 //!
 //! Nothing an authorization decision reads is cached. The account's grants and
 //! the component enablement are read from the Application Database inside every
@@ -29,11 +32,12 @@
 use std::sync::Arc;
 
 use weavelit_module_client::AuthorizationRejection;
+use weavelit_server_administration::AuthorizedAdministrationAdmission;
+use weavelit_server_administration_authority::ServerAdministrationAuthority;
 use weavelit_server_authorization::{
-    AdministrationRequest, AuthorizationCatalog, AuthorizationDenied, AuthorizedAdministration,
-    AuthorizedOperation, ClientModuleDeclaration, OperationDeclaration, Plane,
-    ServiceModuleDeclaration, UserOperationRequest, authorize_administration,
-    authorize_user_operation,
+    AdministrationRequest, AuthorizationCatalog, AuthorizationDenied, AuthorizedOperation,
+    ClientModuleDeclaration, OperationDeclaration, Plane, ServiceModuleDeclaration,
+    UserOperationRequest, authorize_administration, authorize_user_operation,
 };
 use weavelit_server_database::{
     ComponentEnablement, ComponentKind, HumanAuthorizationSnapshot, Name, StateIdentifier,
@@ -238,15 +242,22 @@ impl AuthorizationRuntime {
         session: &ValidatedSession,
         client_module: &Name,
         correlation_id: &str,
-    ) -> Result<AuthorizedAdministration, AuthorizationRejection> {
-        self.decide(
+    ) -> Result<AuthorizedAdministrationAdmission, AuthorizationRejection> {
+        let authorization = self.decide(
             session,
             client_module,
             correlation_id,
             |account, catalog| {
                 authorize_administration(account, catalog, AdministrationRequest { client_module })
             },
-        )
+        )?;
+
+        Ok(AuthorizedAdministrationAdmission::from_server_authority(
+            &ServerAdministrationAuthority::new(),
+            authorization,
+            session.account(),
+            session.session_token_hash(),
+        ))
     }
 
     /// Runs one decision against live inputs and delivers every denial.
@@ -287,6 +298,10 @@ impl AuthorizationRuntime {
             &AuthorizationCatalog,
         ) -> Result<T, AuthorizationDenied>,
     ) -> Result<T, AuthorizationRejection> {
+        if !session.is_ordinary() {
+            return Err(AuthorizationRejection);
+        }
+
         // A request that names a Client Module other than the one the session
         // was established for is denied: the session authorizes through the
         // surface it was issued to and no other.
@@ -372,14 +387,22 @@ mod tests {
         os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
         sync::Mutex,
+        time::Duration,
     };
 
     use axum::http::StatusCode;
     use rusqlite::Connection;
     use weavelit_module_client::typed_json::TypedJsonEnvelope;
+    use weavelit_server_administration::{
+        AccountAdministrationAction, AccountAdministrationRead, AdministrationAction,
+        AdministrationClock, AdministrationPlane,
+        AdministrationRequest as AdministrationActionRequest, AuthorizedAdministrationAction,
+        ComponentEnablementSource, ComponentOperation,
+    };
     use weavelit_server_authentication::{
         Argon2Engine, Argon2Profile, AuthenticationError, SessionSecrets,
     };
+    use weavelit_server_components::AvailableComponents;
     use weavelit_server_database::{
         Account, Group, GroupGrant, GroupGrantRecord, GroupMembership, NewSession, SessionCsrfHash,
         SessionInstant, SessionTokenHash,
@@ -524,17 +547,20 @@ mod tests {
         fn session(&self, account: StateIdentifier, client_module: &str) -> ValidatedSession {
             let secrets = SessionSecrets::generate().expect("the test session must be generated");
             let (session_digest, csrf_digest) = secrets.digests();
+            let session_token_hash = SessionTokenHash::from_bytes(*session_digest.as_bytes())
+                .expect("the session digest must be accepted");
             let stored = NewSession::new(
-                SessionTokenHash::from_bytes(*session_digest.as_bytes())
-                    .expect("the session digest must be accepted"),
+                session_token_hash,
                 SessionCsrfHash::from_bytes(*csrf_digest.as_bytes())
                     .expect("the csrf digest must be accepted"),
                 account,
+                weavelit_server_database::CredentialRevision::INITIAL,
                 name(client_module),
                 SessionInstant::from_unix_milliseconds(ISSUED_AT)
                     .expect("the test instant must be accepted"),
             );
-            self.database
+            let issuance = self
+                .database
                 .with(|database| {
                     database
                         .sessions()
@@ -543,10 +569,17 @@ mod tests {
                 })
                 .expect("the database lane must be usable")
                 .expect("the session must be stored");
+            assert_eq!(issuance, weavelit_server_database::SessionIssuance::Issued);
 
-            self.authentication
+            let validated = self
+                .authentication
                 .validated_session(secrets.session().as_str(), secrets.csrf().as_str())
-                .expect("the freshly stored session must validate")
+                .expect("the freshly stored session must validate");
+            assert!(
+                validated.session_token_hash().matches(&session_token_hash),
+                "validation must retain the digest of this exact session"
+            );
+            validated
         }
 
         fn authorize_operation(
@@ -565,7 +598,7 @@ mod tests {
         fn authorize_administration(
             &self,
             session: &ValidatedSession,
-        ) -> Result<AuthorizedAdministration, AuthorizationRejection> {
+        ) -> Result<AuthorizedAdministrationAdmission, AuthorizationRejection> {
             self.runtime
                 .authorize_administration(session, &name(CLIENT_MODULE), CORRELATION)
         }
@@ -621,6 +654,9 @@ mod tests {
                     display_name: None,
                     active: true,
                     mfa_required: false,
+                    credential_revision: weavelit_server_database::CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
                 },
                 Account {
                     identifier: identifier(ADMINISTRATOR_BYTES),
@@ -628,6 +664,9 @@ mod tests {
                     display_name: None,
                     active: true,
                     mfa_required: false,
+                    credential_revision: weavelit_server_database::CredentialRevision::INITIAL,
+                    must_change_password: false,
+                    temporary_credential_expiration: None,
                 },
             ],
             groups: vec![
@@ -704,6 +743,78 @@ mod tests {
                 rusqlite::params![component, kind.enablement_key()],
             )
             .expect("the enablement change must run");
+    }
+
+    fn require_password_change(path: &Path, account: [u8; 16]) {
+        let connection = Connection::open(path).expect("the test connection must open");
+        connection
+            .execute(
+                "INSERT INTO weavelit_password_verifier (account_id, encoded_verifier) \
+                 VALUES (?1, '$argon2id$v=19$m=65536,t=3,p=1$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')",
+                [account.as_slice()],
+            )
+            .expect("the temporary account must have a verifier");
+        connection
+            .execute(
+                "UPDATE weavelit_account SET must_change_password = 1, \
+                 temporary_credential_expires_at_milliseconds = ?2 WHERE account_id = ?1",
+                rusqlite::params![account.as_slice(), ISSUED_AT + 60_000],
+            )
+            .expect("the temporary account state must be stored");
+    }
+
+    struct AdministrationTestClock;
+
+    impl AdministrationClock for AdministrationTestClock {
+        fn now(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    struct AdministrationTestEnablement(ComponentEnablement);
+
+    impl ComponentEnablementSource for AdministrationTestEnablement {
+        fn load_component_enablement(
+            &mut self,
+        ) -> Result<ComponentEnablement, AuthorizationDenied> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn authorize_administration_action(
+        admission: AuthorizedAdministrationAdmission,
+        action: AdministrationAction,
+        enablement: ComponentEnablement,
+    ) -> AuthorizedAdministrationAction {
+        AdministrationPlane::new(
+            AdministrationTestClock,
+            AdministrationTestEnablement(enablement),
+            AvailableComponents {
+                client_modules: [name(CLIENT_MODULE)].into_iter().collect(),
+                ..AvailableComponents::default()
+            },
+        )
+        .authorize(admission, AdministrationActionRequest::new(action))
+        .expect("the runtime-bound admission must authorize its matching action")
+    }
+
+    #[test]
+    fn password_change_required_sessions_are_rejected_by_ordinary_authorization() {
+        let surface = AuthorizationSurface::new();
+        require_password_change(&surface.database_path, OPERATOR_BYTES);
+        require_password_change(&surface.database_path, ADMINISTRATOR_BYTES);
+
+        let operator = surface.session(identifier(OPERATOR_BYTES), CLIENT_MODULE);
+        let administrator = surface.session(identifier(ADMINISTRATOR_BYTES), CLIENT_MODULE);
+
+        assert_eq!(
+            surface.authorize_operation(&operator),
+            Err(AuthorizationRejection)
+        );
+        assert!(matches!(
+            surface.authorize_administration(&administrator),
+            Err(AuthorizationRejection)
+        ));
     }
 
     #[test]
@@ -840,6 +951,44 @@ mod tests {
     }
 
     #[test]
+    fn administration_actions_retain_the_runtime_bound_actor_and_client_module() {
+        let surface = AuthorizationSurface::new();
+        let administrator = surface.session(identifier(ADMINISTRATOR_BYTES), CLIENT_MODULE);
+        let operator = surface.session(identifier(OPERATOR_BYTES), CLIENT_MODULE);
+
+        let account = authorize_administration_action(
+            surface
+                .authorize_administration(&administrator)
+                .expect("the administrator must receive a compound admission"),
+            AdministrationAction::Account(AccountAdministrationAction::Read(
+                AccountAdministrationRead::List,
+            )),
+            surface.enablement(),
+        );
+        let component = authorize_administration_action(
+            surface
+                .authorize_administration(&administrator)
+                .expect("the administrator must receive a second compound admission"),
+            AdministrationAction::ComponentOperation(
+                ComponentOperation::new(ComponentKind::ClientModule, CLIENT_MODULE).unwrap(),
+            ),
+            surface.enablement(),
+        );
+
+        for authorized in [account, component] {
+            assert_eq!(authorized.actor(), identifier(ADMINISTRATOR_BYTES));
+            assert_eq!(authorized.client_module().as_str(), CLIENT_MODULE);
+        }
+        assert!(
+            matches!(
+                surface.authorize_administration(&operator),
+                Err(AuthorizationRejection)
+            ),
+            "the same Client Module under another actor cannot produce an admission",
+        );
+    }
+
+    #[test]
     fn a_disabled_mfa_module_does_not_block_the_administration_function_that_re_enables_it() {
         let surface = AuthorizationSurface::new();
         let administrator = surface.session(identifier(ADMINISTRATOR_BYTES), CLIENT_MODULE);
@@ -857,18 +1006,27 @@ mod tests {
         // The administration function that re-enables the MFA Module stays
         // reachable, so a disabled MFA Module cannot be permanently disabled.
         assert_eq!(
-            surface
-                .authorize_administration(&administrator)
-                .expect("an administrator must still reach the Administration Plane")
-                .client_module()
-                .as_str(),
-            CLIENT_MODULE
+            authorize_administration_action(
+                surface
+                    .authorize_administration(&administrator)
+                    .expect("an administrator must still reach the Administration Plane"),
+                AdministrationAction::Account(AccountAdministrationAction::Read(
+                    AccountAdministrationRead::List,
+                )),
+                surface.enablement(),
+            )
+            .client_module()
+            .as_str(),
+            CLIENT_MODULE,
         );
         // The exception is not a hole: it admits an administrator and no one
         // else.
-        assert_eq!(
-            surface.authorize_administration(&operator),
-            Err(AuthorizationRejection)
+        assert!(
+            matches!(
+                surface.authorize_administration(&operator),
+                Err(AuthorizationRejection)
+            ),
+            "the MFA re-enable exception must not admit an operator",
         );
     }
 }

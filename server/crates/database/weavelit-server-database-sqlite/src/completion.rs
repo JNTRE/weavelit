@@ -1,12 +1,14 @@
 use rusqlite::{TransactionBehavior, params};
 use weavelit_server_database::{
-    ApplicationState, DatabaseError, DatabaseInspection, DeploymentIdentifier, InitializedState,
+    AccountPublicIdentifierPersistence, ApplicationState, AuditReferencePersistence, DatabaseError,
+    DatabaseInspection, DeploymentIdentifier, GroupPublicIdentifierPersistence, InitializedState,
     ReconciliationDigest, StateIdentifier, WorkflowCheckpoint,
 };
 
 use crate::SqliteDatabase;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::inspection::inspect_connection;
+use crate::log_configuration;
 use crate::mfa;
 use crate::reconciliation;
 use crate::session;
@@ -15,6 +17,7 @@ use crate::state;
 impl SqliteDatabase {
     pub(super) fn complete_checkpoint_atomic(
         &mut self,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
         checkpoint: &WorkflowCheckpoint,
         application_state: &ApplicationState,
         reconciliation_digest: &ReconciliationDigest,
@@ -44,7 +47,17 @@ impl SqliteDatabase {
         session::clear(&transaction)?;
         mfa::clear(&transaction)?;
         reconciliation::replace(&transaction, reconciliation_digest)?;
-        state::write(&transaction, application_state)?;
+        let group_public_identity_persistence =
+            GroupPublicIdentifierPersistence::from_account_public_identifier_persistence(
+                public_identity_persistence,
+            );
+        state::write(
+            &transaction,
+            public_identity_persistence,
+            &group_public_identity_persistence,
+            application_state,
+        )?;
+        log_configuration::seed_initial_generations(&transaction)?;
         let replaced = transaction
             .execute(
                 "UPDATE weavelit_lifecycle_state \
@@ -64,6 +77,8 @@ impl SqliteDatabase {
 
     pub(super) fn load_initialized_state_atomic(
         &mut self,
+        public_identity_persistence: &AccountPublicIdentifierPersistence,
+        audit_reference_persistence: &AuditReferencePersistence,
         expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
         let transaction = self
@@ -75,7 +90,16 @@ impl SqliteDatabase {
             DatabaseInspection::Initialized {
                 deployment_identifier,
             } => {
-                let (application_state, acknowledged) = state::read(&transaction)?;
+                let group_public_identity_persistence =
+                    GroupPublicIdentifierPersistence::from_account_public_identifier_persistence(
+                        public_identity_persistence,
+                    );
+                let (application_state, acknowledged) = state::read(
+                    &transaction,
+                    public_identity_persistence,
+                    &group_public_identity_persistence,
+                    audit_reference_persistence,
+                )?;
                 Ok(InitializedState::new(
                     deployment_identifier,
                     application_state,

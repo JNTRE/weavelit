@@ -162,6 +162,44 @@ transport these workflows, but they must not persist passwords or password
 verifiers or implement independent password hashing or verification. Browser
 sessions must use secure, Server-managed session handling.
 
+### Administrator-Initiated Password Reset
+
+Password reset initiated by an Administrator is distinct from user-initiated
+password change. The Server-generated temporary password is emitted as
+plaintext only in the originating successful account-create or password-reset
+response. An authorized **[Administrator](glossary.md#identities-and-access)** may receive it once there; the
+Server has no later retrieval or re-disclosure path. This is a non-recoverable
+server property, not a promise that a client or Administrator cannot copy or
+retain the value.
+
+The temporary password is never persisted, plaintext or reversibly encrypted:
+the Server retains only its approved password verifier. It must never appear in
+System Logs, Audit Logs, errors, debug output, a URL, cookie, redirect, browser
+storage, or an ordinary account read. The secret-bearing response is
+`Cache-Control: no-store`. Weavelit cannot prove that a human viewed or handled
+the value, so custody and any sharing outside Weavelit remain the
+Administrator's responsibility.
+
+The originating response is the only disclosure opportunity. A lost or
+indeterminate response requires a new reset; automatic retry is prohibited, and
+each repeated reset supersedes the prior temporary credential. The temporary
+credential has a fixed 24-hour absolute expiry. Account creation creates no
+sessions; reset revokes the target's active sessions. Each issuance increments
+or replaces the credential revision, so stale authentication cannot issue a
+session. The temporary credential then expires or becomes unusable, and the
+forced password-change requirement remains in force until the user completes
+the password change.
+
+Issuing a temporary password requires fresh exact-session credential
+reauthentication by the Administrator and TOTP verification when that
+Administrator is enrolled in MFA. This issuance gate is separate from ordinary
+account operations. Password change clears the temporary metadata and flag,
+increments or replaces the credential revision, and issues a fresh session
+after required MFA. A self-reset whose lost or expired result locks the last
+Administrator can make the deployment inaccessible through supported interfaces;
+this accepted fail-closed risk is the operator's responsibility. Init is
+unchanged and does not use this operational disclosure flow.
+
 ## Multifactor Authentication Security Profile
 
 The initial **[Time-Based One-Time Password (TOTP)](glossary.md#identities-and-access)**
@@ -353,6 +391,72 @@ display and diagnostic representations must not include rejected values, and a
 logging-required workflow must fail closed when a pre-redacted bounded record
 cannot be constructed.
 
+### Secret Disclosure Cache Control
+
+Every successful HTTP response that discloses newly issued plaintext
+authentication or recovery material, or an opaque bearer capability outside a
+`Set-Cookie` header, must emit exactly `Cache-Control: no-store`. The current
+approved response shapes are:
+
+- credential-issuance assurance tickets and originating account-create or
+  password-reset results carrying a temporary password;
+- password-verified MFA continuations, TOTP enrollment secrets, provisioning
+  URIs, enrollment-confirmation continuations, Administration MFA step-up
+  tickets, and TOTP enablement preview credentials;
+- the Init recovery key, delivery nonce, and reconciliation capability; and
+- the Restore ticket and reconciliation capability.
+
+The response profile must represent this as a closed internal effect whose
+only wire rendering is the fixed directive above. A route must not supply a
+header name, header value, or generic response-header collection. Ordinary
+typed results, errors, fixed JSON responses, and cookie-only session responses
+do not carry this effect. Embedded Web UI assets retain their independently
+approved `Cache-Control: no-store` security profile.
+
+Normal-operation Audit terminal projections and supersession dispositions are
+integrity metadata, not authentication or destination-configuration storage.
+They must not contain raw destination errors, paths, settings, credentials,
+request bodies, passwords, password verifiers, TOTP codes, confirmation
+content, or arbitrary reason text. Their validation and debug failures remain
+payload-free.
+
+The Application Database stores this recovery state only as a nonzero opaque
+identity, 1 to 50,176 projection bytes, separate nonzero binding identity and
+version columns, and, for supersession, 1 to 1,024 disposition bytes with
+separate original and replacement bindings. Its contract and backends must not
+depend on Log or logging-authority types, parse or materialize Audit fields,
+derive a field from projection bytes, or mint a recovery write, disposition, or
+acknowledgement proof. Server Audit alone validates and imports Log semantics,
+requires embedded identity and binding to equal the separate stored columns,
+and converts successful destination acknowledgement into database proof.
+
+The backend compares opaque bytes and separate columns exactly. An exact write
+or supersession repeat is idempotent; an identity reused with different bytes or
+bindings fails without mutation. Recovery rows are live operational data, not
+`ApplicationState`; they remain absent from backups and normalized Restore
+input. A bounded opaque row that fails Server Audit import causes the owning
+runtime recovery-required state before destination access and is never repaired
+by backend parsing.
+
+The supersession authority boundary must bind fresh password reauthentication
+to the exact current session, require fresh TOTP verification when that account
+is enrolled, bind explicit confirmation to the exact original and replacement,
+and require successful replacement Audit preflight. No caller-supplied boolean
+may stand in for those proofs. The original terminal and destination binding
+remain immutable and late-delivery eligible, while the deployment exposes
+degraded Audit completeness. A replacement Audit action, System Log, Restore,
+or lifecycle result is not original-delivery evidence and must not authorize
+acknowledgement of the original.
+
+An **[Audit Reference Identifier](glossary.md#applications-and-interfaces)** is
+internal pseudonymous data. It is safe to carry in a pre-redacted Audit Log but
+remains linkable across records, so it must not be presented as anonymous or
+secret and must not become a public account, Group, or other application API
+identifier. Diagnostic formatting and validation errors must not reveal its
+payload. The Application Database owns its independent generation and durable
+association through its shared contract; a backend path, name, user input,
+public identifier, or internal state identifier must never determine it.
+
 ## Component Security Ownership
 
 - The [Authentication Design](server/authentication/authentication-design.md)
@@ -392,6 +496,7 @@ requests.
 
 - [Technical Specification](spec.md)
 - [Glossary](glossary.md)
+- [Temporary Password Disclosure Decision](server/authentication/temporary-password-disclosure-decision.md)
 - [Lifecycle Anchor Protection And Serialization Profile](server/lifecycle/lifecycle-anchor-profile-decision.md)
 - [Authentication Design](server/authentication/authentication-design.md)
 - [Authorization Design](server/authorization/authorization-design.md)
@@ -400,3 +505,4 @@ requests.
 - [Server Init Design](server/lifecycle/init/init-design.md)
 - [Server Restore Design](server/lifecycle/restore/restore-design.md)
 - [Testing and Validation Policy](testing.md)
+- [Audit Terminal Binding Retention And Supersession Decision](log-modules/audit-terminal-binding-retention-decision.md)

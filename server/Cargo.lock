@@ -1383,6 +1383,7 @@ name = "weavelit-module-client"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.0",
  "serde",
  "serde_json",
  "tokio",
@@ -1446,10 +1447,14 @@ dependencies = [
  "weavelit-module-client-webui",
  "weavelit-module-log-sqlite",
  "weavelit-module-mfa-totp",
+ "weavelit-server-administration",
+ "weavelit-server-administration-authority",
+ "weavelit-server-audit",
  "weavelit-server-authentication",
  "weavelit-server-authorization",
  "weavelit-server-components",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
  "weavelit-server-database-sqlite",
  "weavelit-server-init",
  "weavelit-server-lifecycle",
@@ -1459,6 +1464,36 @@ dependencies = [
  "weavelit-server-recovery-key",
  "weavelit-server-restore",
  "zeroize",
+]
+
+[[package]]
+name = "weavelit-server-administration"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "weavelit-server-administration-authority",
+ "weavelit-server-authorization",
+ "weavelit-server-components",
+ "weavelit-server-database",
+]
+
+[[package]]
+name = "weavelit-server-administration-authority"
+version = "0.1.0"
+
+[[package]]
+name = "weavelit-server-audit"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "weavelit-module-log-sqlite",
+ "weavelit-server-database",
+ "weavelit-server-database-authority",
+ "weavelit-server-log",
+ "weavelit-server-log-authority",
 ]
 
 [[package]]
@@ -1492,8 +1527,16 @@ dependencies = [
 name = "weavelit-server-database"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.0",
+ "getrandom 0.4.3",
+ "serde_json",
  "subtle",
+ "weavelit-server-database-authority",
 ]
+
+[[package]]
+name = "weavelit-server-database-authority"
+version = "0.1.0"
 
 [[package]]
 name = "weavelit-server-database-sqlite"
@@ -1504,6 +1547,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
 ]
 
 [[package]]
@@ -1533,6 +1577,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
  "weavelit-server-database-sqlite",
  "zeroize",
 ]
@@ -1541,6 +1586,7 @@ dependencies = [
 name = "weavelit-server-log"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "weavelit-server-log-authority",
 ]
@@ -1598,6 +1644,7 @@ dependencies = [
  "weavelit-server-authentication",
  "weavelit-server-components",
  "weavelit-server-database",
+ "weavelit-server-database-authority",
  "weavelit-server-lifecycle",
  "weavelit-server-recovery-key",
  "x25519-dalek",

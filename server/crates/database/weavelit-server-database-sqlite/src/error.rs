@@ -2,15 +2,20 @@ use rusqlite::{Error, ErrorCode};
 use weavelit_server_database::DatabaseError;
 
 pub(super) enum ErrorContext {
+    AccountWriter,
+    AuditRecovery,
     Checkpoint,
     Close,
     Completion,
+    GroupMutation,
     Open,
     Configure,
     Health,
     Inspect,
+    LogConfiguration,
     Migration,
     Mfa,
+    PasswordChange,
     Reconciliation,
     Session,
     State,
@@ -25,13 +30,18 @@ pub(super) fn map_sqlite_error(error: Error, context: ErrorContext) -> DatabaseE
             // A failure to empty the log or release the connection is a
             // cleanup failure; it is not evidence that stored state is unsound.
             ErrorContext::Close => DatabaseError::Unavailable,
-            ErrorContext::Checkpoint
+            ErrorContext::AccountWriter
+            | ErrorContext::AuditRecovery
+            | ErrorContext::Checkpoint
             | ErrorContext::Completion
+            | ErrorContext::GroupMutation
             | ErrorContext::Configure
             | ErrorContext::Health
             | ErrorContext::Inspect
+            | ErrorContext::LogConfiguration
             | ErrorContext::Migration
             | ErrorContext::Mfa
+            | ErrorContext::PasswordChange
             | ErrorContext::Reconciliation
             | ErrorContext::Session
             | ErrorContext::State => DatabaseError::IntegrityFailure,

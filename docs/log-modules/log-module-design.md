@@ -14,17 +14,23 @@ variants, declared module capabilities, trusted registration and factory
 inputs, process-level durable-delivery acknowledgement, and payload-free typed
 errors. The
 common envelope includes a Server-generated opaque record identifier, event
-time, result, and correlation identifier. It contains no SQLite, filesystem,
-Application Database, client-wire serialization, query, retention, backup,
-recovery, purge, or remote-credential behavior.
+time, and correlation identifier. A System record carries an independent
+result. An Audit record instead carries a typed phase that structurally binds
+its terminal result and direct Attempt link. The Audit persistence view exposes
+that single phase value rather than a separate result accessor. The envelope
+contains no SQLite, filesystem, Application Database, client-wire serialization,
+query, retention, backup, recovery, purge, or remote-credential behavior.
 
-The contract enforces UTF-8 byte limits before it constructs a complete
-record. Every record carries a nonzero 16-byte random `record_id`, a UTC
-Unix-millisecond `event_time`, a `success` or `failure` `result`, a
-`correlation_id` of 1–64 bytes, and a `classification` selected from its
-closed typed catalog of lowercase dotted identifiers. A System record adds a
-`detail` of 1–4096 bytes; an Audit record adds a typed `principal` of 1–256
-bytes that is structurally either human with no
+The contract enforces UTF-8 byte limits before it constructs a complete record.
+Every record carries a nonzero 16-byte random `record_id`, a UTC
+Unix-millisecond `event_time`, a `correlation_id` of 1–64 bytes, and a
+`classification` selected from its closed typed catalog of lowercase dotted
+identifiers. A System record carries a `success` or `failure` result and a
+`detail` of 1–4096 bytes. An Audit record carries `phase: attempt` with no
+result or link, `phase: completion` with a `success` or `failure` result and
+one opaque 16-byte `attempt_record_id`, or `phase: correction` with the same
+required result and link shape. It adds a typed
+`principal` of 1–256 bytes that is structurally either human with no
 **[Responsible Owner](../glossary.md#identities-and-access)** or automation
 with its required 1–256-byte `responsible_owner`, plus an `action` of 1–128
 bytes, a `target` of 1–1024 bytes, and its own `detail` of 1–4096 bytes. Every
@@ -41,10 +47,19 @@ immutable `CompleteLogRecord`; no public delivery operation accepts a raw
 source payload or a caller-created record identifier. The destination must
 acknowledge the same identifier and type synchronously after completing its
 configured supported storage interface's commit path during a valid process run
-or confirming an exact prior-record match. A capability mismatch, malformed
-registration,
-unavailable destination, or conflicting replay returns a stable payload-free
-error.
+or confirming an exact prior-record match. Every destination must use the record
+identifier as a mandatory idempotency key inside the same atomic delivery
+operation that commits a new record. It must compare the record type and every
+immutable field exposed by the complete record's persistence view. An exact
+match returns durable acknowledgement without writing a second record. A proven
+type or field mismatch returns top-level `LogDeliveryError::IntegrityFailure`
+without overwrite, deletion, replacement, supersession, or acknowledgement. A
+lock, query, decode, or other failure that prevents the destination from proving
+equality returns `LogDeliveryError::Destination(LogDestinationError::Unavailable)`
+and leaves delivery pending without acknowledgement. This behavior is required
+for every destination and is not an optional or weaker declared capability. A
+capability mismatch or malformed registration also returns its stable
+payload-free error.
 
 The Server-owned contract and dispatch boundary retains the trusted context
 that configures a catalog destination and creates record issuers, read-only
@@ -58,10 +73,12 @@ or inject a configured dispatch. A validated catalog without the Server-retained
 trusted context has no configured destination or delivery authority. Isolated
 SQLite destination tests construct only private SQLite-owned persistence inputs;
 normal module dependency graphs contain no authority-minting test feature and do
-not depend on Server or lifecycle crates. External-consumer compile fixtures prove
-provide stable boundary evidence for both the permitted registration surface and rejection of issuer, context,
-acknowledgement, direct dispatch, and catalog-mediated destination-configuration
-attempts.
+not depend on Server or lifecycle crates. External-consumer compile fixtures
+provide stable boundary evidence for both the permitted registration surface
+and rejection of issuer, context, acknowledgement, direct dispatch, and
+catalog-mediated destination-configuration attempts, record-identity
+duplication, Attempt-link cloning, direct Audit-record construction, and direct
+terminal-phase variant construction.
 
 Server Audit constructs and pre-redacts Audit records; Server Observability
 constructs and pre-redacts System records, including Init and Restore completion
@@ -69,22 +86,108 @@ results. A Log Module accepts only these complete typed records. It may validate
 its declared capability and persist or deliver a record, but it must not redact,
 enrich, reinterpret, or access Application Database state.
 
+An Audit attempt records accepted intent before mutation and carries no outcome.
+Each newly constructed completion or correction carries the authoritative result
+and the opaque identifier capability minted only by its precise prior Attempt.
+The shared constructor rejects a terminal record whose correlation differs from
+that Attempt, whose record identifier reuses the Attempt identifier, or whose
+event time precedes the Attempt. Each record receives a fresh nonzero identifier,
+while related records reuse the owning request or workflow correlation
+identifier. Exact replay matching includes the Audit phase, phase-bound result,
+and Attempt link. The Audit producer constructs and delivers attempts,
+linked completions, and linked corrections; the owning
+**[Administration Plane](../glossary.md#applications-and-interfaces)** workflow
+must sequence the mutation, decide when correction evidence is
+required, emit any System Log, and own durable normal-operation recovery when
+terminal delivery cannot finish after commit. That recovery must use the shared
+projection and acknowledgement contracts without reusing the Init or Restore
+lifecycle obligation contract.
+
+The first such workflow changes TOTP MFA Module enablement. It waits for durable
+Attempt acknowledgement, captures applied and stale-preview terminal candidates
+against the exact current Audit binding, and lets the Application Database
+transaction persist exactly the selected opaque obligation with its outcome.
+
+The producer's prepared terminal delivery borrows the immutable record so a
+caller may deliberately re-deliver its exact identifier and content. Each call
+performs one synchronous dispatch. The producer does not loop, schedule,
+replace, or decide to recover that record. The shared contract also defines a
+versioned `AuditTerminalRecoveryProjection` containing the exact terminal
+record and `AuditDestinationBinding`. The binding is the opaque nonzero
+application-owned Log Module configuration identity plus a nonzero version that
+changes whenever the configuration or Audit assignment changes. Its constructor
+requires Server logging authority. The projection's derived 49 KiB encoded
+bound covers the 8 KiB maximum record payload under worst-case JSON escaping
+plus fixed document overhead. It contains no destination setting, path,
+credential, delivery failure, or source request payload. Import revalidates the
+terminal record through the shared constructors rather than exposing
+constructors for persisted identities or Attempt links.
+
+The Application Database contract does not depend on this Log contract,
+`ServerLogAuthority`, `AuditTerminalRecoveryProjection`,
+`AuditDestinationBinding`, `AuditTerminalSupersessionDisposition`, or
+`AuditTerminalDeliveryAcknowledgement`. Server Audit is the exclusive adapter:
+it validates the Log-owned projection and disposition, exports only bounded
+opaque bytes plus separate binding columns through database-authority-gated
+wrappers, reimports opaque rows for semantic validation, and converts a
+successful destination acknowledgement into the database contract's opaque
+identity-and-binding proof. An Application Database backend compares bytes and
+columns only and cannot mint, parse, restore, or acknowledge a Log-owned value.
+
+A recovered terminal accepts one `ResolvedAuditDestination`, which structurally
+pairs the binding and configured destination selected by trusted Server code.
+Binding equality cannot inspect or prove the identity of an independently
+supplied destination handle, so the runtime assignment resolver derives both
+members from the same committed configuration before constructing the pair. A
+different identity or version fails before the destination is called. An exact
+match performs one ordinary synchronous delivery and yields a terminal-delivery
+acknowledgement capability only after the destination acknowledges the exact
+record. That capability is the only path from replay to Application Database
+acknowledgement, after Server Audit converts it to the database contract's
+private proof. It does not authorize a mutation or represent whether the
+already committed mutation succeeded. `AuditDestinationBindingTransition`
+retains the exact prior binding beside its distinct replacement without
+selecting generation order. A future configuration workflow must preserve a
+resolvable old binding handle while any terminal obligation references that
+version; identifying a replacement never changes the original projection.
+
 Delivery is synchronous and succeeds only when the assigned destination
 completes its configured supported storage interface's commit path for the
-complete record or confirms an exact existing record with the same type and
-record identifier. Before an Init or Restore application-state commit, the
-Server creates the opaque identifier and persists it with immutable
-completion-record fields in the post-commit obligation. During a valid
-uninterrupted workflow run, the Server delivers that identical record until it
-receives a durable acknowledgement. That acknowledgement does not guarantee
-record survival across host power loss, filesystem loss or corruption, abrupt
-process termination, or an operator-broken environment. An interruption before
-acknowledgement leaves the workflow non-operational; the lifecycle does not
-retry delivery, construct a replacement record, or seal on restart. A matching
-identifier with different content is an integrity failure. This provides
-at-least-once attempts and one persisted completion record per identifier for
-the MVP SQLite destination; it does not claim distributed exactly-once delivery
-or select a fan-out policy.
+complete record or confirms an existing record with the same type and every
+immutable field. Before an Init or Restore application-state commit, the Server
+creates the opaque identifier and persists it with immutable completion-record
+fields in the post-commit obligation. During a valid uninterrupted workflow
+run, the Server delivers that identical record until it receives a durable
+acknowledgement. That acknowledgement does not guarantee record survival across
+host power loss, filesystem loss or corruption, abrupt process termination, or
+an operator-broken environment. An interruption before acknowledgement leaves
+the workflow non-operational; the lifecycle does not retry delivery, construct
+a replacement record, or seal on restart. This provides at-least-once attempts
+and one persisted completion record per identifier for the MVP SQLite
+destination; it does not claim distributed exactly-once delivery or select a
+fan-out policy.
+
+**Operational Resilience Requirement:** The Server does NOT crash or exit if a
+Log Module destination becomes unavailable during normal operation (after
+Init/Restore). Instead:
+
+- Delivery requests fail with a stable, payload-free error
+  (`LogDeliveryError::Destination`).
+- If required Audit preparation or Attempt delivery fails before a
+  **consequential operation** commits, the route rejects the operation with the
+  stable error "Audit Log unavailable; operation rejected."
+- If terminal delivery fails after the business state and recovery obligation
+  commit, the route returns the ordinary safe committed result. It exposes no
+  Audit delivery state or retry invitation; recovery remains internal.
+- For **non-consequential operations** (read-only queries, health checks, or
+  internal-only tasks), the route layer MAY absorb the delivery failure and
+  succeed, after recording the failure in System Logs.
+
+A "consequential operation" is an operation that modifies application state
+(account creation, permission grant, policy change, etc.). All Administration
+Plane mutations are consequential and MUST fail closed when required Audit work
+is unavailable before commit. A post-commit terminal-delivery failure MUST NOT
+change or conceal their authoritative committed business result.
 
 ## Destination Preflight And Configuration Validation
 
@@ -111,6 +214,12 @@ factory must reject any setting it does not define as
 `LogDestinationError::ConfigurationInvalid`; `LogModuleCatalog::create_destination`
 propagates that rejection as `LogConfigurationError::Destination`, so an
 unconfigured or misconfigured setting is refused rather than silently ignored.
+
+**Runtime vs. Configuration-Time Failures:** If preflight fails during Init or
+Restore, the Server MUST fail closed (Init/Restore fails, no deployment
+proceeds). If a destination becomes unavailable **after** Init succeeds and
+normal operation has begun, the failure is handled at the route layer (see
+"Operational Resilience Requirement" above); the Server remains operational.
 
 ### Declaring The Settings A Module Accepts
 
@@ -142,6 +251,82 @@ carrying settings its named module could not serve before their checkpoints are
 committed, without opening the destination; see
 [Compiled-In Component Inventory](../server/lifecycle/restore/restore-design.md#compiled-in-component-inventory).
 
+### Immutable Configuration Generations
+
+The **[Application Database](../glossary.md#applications-and-interfaces)**
+contract represents each immutable Log Module configuration generation by the
+existing internal configuration `StateIdentifier` and a nonzero version that
+starts at `1`. It introduces no separate random generation identifier, text
+encoding, Serde form, or public configuration ID. A generation snapshot retains
+the committed module, configuration name, enabled state, ordered non-secret
+settings, and Log Type membership. It contains no destination credential or
+Log-owned authority.
+
+The read contract exposes a complete current-generation list ordered by unique
+configuration name, the current Audit generation, and exact historical lookup.
+The list validates current pointers, snapshots, settings, and the complete
+System and Audit assignment topology in one database snapshot before returning
+anything. Construction requires database persistence authority, and the
+Application Database's optional accessor defaults to absent until a concrete
+backend implements generation persistence. The MVP SQLite Application Database
+implements immutable snapshot, setting, membership, and current-pointer
+storage; version `1` is backfilled on migration or seeded atomically with fresh
+Init and Restore state. Its history survives restart but remains outside
+`ApplicationState`, backup content, and normalized Restore input.
+
+The backend-neutral internal mutation contract accepts one existing primary
+configuration, an optional desired enabled state, optional complete non-secret
+settings, and zero or more desired Log Type assignments. Preparation reads one
+consistent current snapshot and returns an exact no-op before any Audit record
+or write. Otherwise it creates one immutable next generation for each distinct
+affected configuration. An assignment move therefore advances its source and
+destination exactly once, including when the destination is also the primary
+configuration being enabled or reconfigured. Every resultant configuration is
+validated against its compiled-in module declaration, and every desired
+assignment destination completes the appropriate preflight before commit.
+
+The normal-operation workflow drains earlier terminal obligations before the
+change, resolves the source Audit destination from the exact current generation
+observed during preparation, and binds the Attempt and both possible terminal
+records to that retained binding. The Attempt target contains only the
+canonically ordered typed Audit Reference Identifiers of affected
+configurations. There is no bootstrap exception: an unavailable or mismatched
+source Audit generation rejects the mutation before the Attempt.
+
+After durable Attempt acknowledgement, one serialized Application Database
+transaction rechecks the exact affected generations and complete assignment
+topology. A stale result commits only its denied terminal obligation. A match
+commits all configuration state, assignments, immutable generations, the
+applied terminal obligation, and each affected pointer, with pointer updates
+last. The workflow then runs the bounded recovery drain. A post-commit delivery
+failure reports the authoritative internal result as committed with delivery
+pending. The specialized
+[Log Configuration Administration contract](../server/api/api-contract-design.md#log-configuration-administration)
+returns the ordinary safe committed projection without exposing that internal
+delivery state or inviting an automatic retry. That contract targets only an
+existing unique configuration name and exposes only module, name, enabled
+state, ordered module-declared non-secret non-path settings, and assigned Log
+Types. It adds no public identifier or generation, configuration create or
+delete, module replacement, destination credential or path, Log browsing,
+retention or purge control, generation deletion, or terminal supersession
+surface.
+
+Trusted Server runtime reconstructs an Audit destination only from one exact
+authority-materialized generation. Before module factory access, it verifies
+the selected identity and version, enabled state, Audit membership, compiled-in
+module Audit capability, and the module's accepted-settings declaration. It
+then derives the binding and destination from that same snapshot and constructs
+one `ResolvedAuditDestination`. Missing or mismatched generation state cannot
+fall back to the current assignment or an independently supplied destination.
+The operational resolver actively loads and validates the exact current Audit
+generation for each recovery drain. Every active or late-delivery terminal
+obligation is then resolved through the exact generation named by its retained
+binding: the already loaded current snapshot only on an exact key match, or one
+exact historical read otherwise. Missing, corrupt, disabled, non-Audit, or
+mismatched required generations fail closed before module factory or destination
+access without trying mutable `ApplicationState`, another generation, or a
+caller-supplied destination.
+
 ## Event Classification Taxonomy
 
 Every classification is a lowercase dotted identifier that a producer selects
@@ -149,8 +334,9 @@ from its closed typed catalog; a destination stores its canonical string
 opaquely and does not enforce the taxonomy. The initial System Log taxonomy is
 `lifecycle.startup`, `lifecycle.init`, `lifecycle.restore`,
 `operational.state`, `configuration.change`, `authentication.failure`,
-`authorization.denial`, `dependency.failure`, `provider.failure`, and
-`internal.error`. The initial Audit Log taxonomy is `lifecycle.backup.created`;
+`authorization.denial`, `dependency.failure`,
+`dependency.audit-log-unavailable`, `provider.failure`, and `internal.error`.
+The initial Audit Log taxonomy is `lifecycle.backup.created`;
 `authentication.user.created`, `authentication.user.disabled`,
 `authentication.password.changed`, `authentication.password-reset.started`,
 `authentication.mfa.enrolled`, `authentication.mfa.reset`,
@@ -158,11 +344,50 @@ opaquely and does not enforce the taxonomy. The initial System Log taxonomy is
 `authentication.mfa-module-enablement.changed`, and
 `authentication.session.revoked`; `authorization.group.created`,
 `authorization.group-membership.changed`, `authorization.group-grant.changed`,
-and `authorization.automation-scope.changed`;
-`dependency.log-module-configuration.changed` and
+`authorization.group-grant.removal-denied`, and
+`authorization.automation-scope.changed`;
+`dependency.audit-terminal.superseded`,
+`dependency.log-module-configuration.changed`, and
 `dependency.service-connection.changed`; `provider.operation.started` and
 `provider.operation.completed`; and `internal.server-configuration.changed`,
 `internal.user-status.changed`, and `internal.log-policy.changed`.
+
+- **`dependency.audit-log-unavailable`** (System Log)
+  - Recorded when a Log Module destination fails to accept an Audit Log record.
+  - Recorded when a consequential operation fails because Audit Log delivery
+    was unavailable.
+  - Recorded when a non-consequential operation absorbs an audit-delivery
+    failure.
+  - Context: timestamp, validated destination module identifier, and the closed
+    typed Audit classification for the affected operation. Destination error
+    text and arbitrary operation or payload text are excluded.
+  - Construction and normal-operation failure mapping follow the
+    [Audit Log Unavailability System Log Record design](../server/observability/audit-log-unavailability-record-design.md).
+
+- **`authorization.group-grant.removal-denied`** (Audit Log)
+  - Recorded when an Administrator attempts to remove the last
+    ServerAdministration grant from an account and the operation is rejected.
+  - Context: administrator (principal), target group, target account, reason
+    (e.g., "would orphan permission").
+
+- **`dependency.audit-terminal.superseded`** (Audit Log)
+  - Records the constrained integrity exception for one exact oldest terminal
+    obligation after its retained destination is permanently unavailable.
+  - Action: `supersede-terminal-delivery`; target: the bounded typed terminal
+    obligation reference; successful detail: Audit completeness is degraded.
+  - Destination error text, settings, credentials, password or TOTP evidence,
+    confirmation content, and raw identifiers are excluded.
+  - This event is distinct from the original terminal and is never a
+    Correction or proof that the original was delivered.
+
+- **`dependency.log-module-configuration.changed`** (Audit Log)
+  - Records an internal Log Module configuration, enabled-state, or Log Type
+    assignment change.
+  - Action: `change-log-module-configuration`; target: the canonically ordered
+    typed Audit Reference Identifiers for every affected configuration.
+  - Configuration names, module names, settings, destination credentials,
+    internal state identifiers, generation numbers, and record identifiers are
+    excluded.
 
 **[Init](../glossary.md#states-and-requests)** and
 **[Restore](../glossary.md#states-and-requests)** completion results remain
@@ -185,8 +410,9 @@ accepts a path, filename, URI, or connection string for this destination.
 The runtime constructs one validated SQLite registration in its compiled-in Log
 Module catalog after lifecycle startup classification and retains that catalog
 for the process lifetime. Catalog construction does not invoke the destination
-factory. Until a later Server-owned configuration and assignment flow selects
-the module, startup neither opens nor delivers to the destination.
+factory, and startup alone neither opens nor delivers to the destination. The
+internal configuration workflow opens a candidate only for its required
+preflight and does not expose a public selection surface.
 
 The destination stores System and Audit records separately within its own
 database. It must not depend on or reuse an Application Database crate, file,
@@ -217,9 +443,8 @@ ignoring it.
 This MVP defines one local SQLite destination rather than Server-issued
 multiple destination instances. The recovery and capacity policy below defines
 requirements for future destination implementation work; it does not add
-backup, recovery, retention, purge, or capacity behavior to the current
-unselected SQLite catalog scaffold, assert that it is production-ready, or
-activate it through a configuration or assignment flow.
+backup, recovery, retention, purge, or capacity behavior, assert that the
+destination is production-ready, or add a public activation route.
 
 The SQLite destination derives its fixed `log.sqlite3` filename only from the
 trusted local root supplied to its factory; it does not inspect an environment
@@ -254,7 +479,7 @@ only when they satisfy the new schema. An existing oversized row makes the
 migration fail closed without dropping, altering, or replacing any destination
 record; this MVP defines no data-recovery exception for that incompatibility.
 
-The migration ledger's existing checksummed migrations 1 and 2 remain
+The migration ledger's existing checksummed migrations 1 through 3 remain
 unchanged. Migration 3 transactionally adds nullable `classification`,
 `principal_type`, and `responsible_owner` columns to the Audit table. Existing
 rows remain unchanged with all three new fields `NULL`. A newly written Audit
@@ -263,6 +488,43 @@ typed principal supplies no `responsible_owner` for a human and the required
 one for automation. The shared record contract enforces that structural rule
 before construction; SQLite stores the resulting canonical strings without
 enforcing the classification taxonomy.
+
+Append-only migration 4 transactionally rebuilds the Audit table with a
+non-null `phase`, nullable `result`, and nullable `attempt_record_id` BLOB. Its
+CHECK requires an `attempt` to have neither result nor link, a `completion` to
+have result `0` or `1` and either a `NULL` or 16-byte link, and every
+`correction` to have result `0` or `1` and a non-null 16-byte link. The nullable
+completion link is permitted only to retain legacy backfilled completion rows.
+Migration 4 maps every earlier Audit row to `phase = 'completion'`, preserves
+its existing result and all other fields, and sets its link to `NULL`; no
+Attempt history is invented. The terminal-insert trigger is created after that
+copy and, rather than the CHECK, requires every newly inserted completion or
+correction to link an already-persisted Audit Attempt with the same correlation
+identifier. The
+`weavelit_log_audit_attempt_record_id_idx` partial index supports
+Attempt-to-terminal joins. A failed copy rolls back the table replacement,
+index, trigger, and migration-ledger entry together.
+
+Before insertion, the SQLite destination also resolves the referenced row,
+requires its Audit phase to be `attempt`, compares the correlation identifier,
+parses its event time, and rejects a target whose event time is later than the
+terminal record. This application check covers malformed historical time text
+without relying on SQLite integer conversion for the unsigned timestamp range.
+The trigger enforces existing-row phase and correlation for direct new inserts,
+but SQLite does not prove that an opaque capability originated in the Audit
+producer, and the schema does not use a self-referential foreign key.
+Within its immediate delivery transaction, exact replay matching compares the
+record type and every immutable stored field. System matching includes event
+time, result, correlation identifier, classification, and detail. Audit matching
+includes event time, canonical phase literal, phase-bound result, nullable
+Attempt record identifier, correlation identifier, classification, principal,
+principal type, Responsible Owner, action, target, and detail. An exact row is
+acknowledged without insertion, including after destination close and reopen. A
+proven cross-type or field mismatch is an integrity failure and leaves the
+existing row unchanged. Query, decode, or lock failure is unavailable because
+the destination cannot prove equality; it returns no acknowledgement. Legacy
+unlinked completions remain readable but cannot be used to invent or infer
+Attempt history.
 
 ### Descriptor-Relative Candidate Evidence
 
@@ -298,6 +560,44 @@ SQLite-consistent snapshot procedure. Copying a lone WAL-mode database file is
 not a valid snapshot or recovery procedure. A future remote destination must
 choose either source-bound replacement lineage or validated shared continuity
 with exact record-identifier replay.
+
+### Audit Binding Retention And Terminal Supersession
+
+Ordinary Audit destination changes retain each old binding identity, version,
+and resolved destination handle while a pending terminal obligation references
+it. Exact replay continues through `ResolvedAuditDestination`; a current or
+replacement binding with a different identity or version is rejected before
+delivery. The Administration Plane configuration work owns durable generation
+sequencing and change execution, but may not discard a referenced old binding.
+
+Supersession is permitted only for the exact oldest valid active obligation
+after retained-binding repair failed and the destination is permanently
+unavailable. The trusted input boundary requires fresh exact-session password
+reauthentication, fresh TOTP when enrolled, explicit confirmation bound to the
+original and replacement, and a replacement handle produced by successful
+Audit preflight. The contract accepts no boolean bypass.
+
+The append-only disposition carries only the original record identity, original
+binding, fixed `destination_permanently_unavailable` reason, replacement
+binding, `degraded` completeness, and
+`retained_pending_late_delivery` original state. It is bounded to 1 KiB and
+contains no error, setting, path, credential, request body, or arbitrary reason.
+The replacement assignment, disposition, and new supersession Audit terminal
+obligation commit together. Every malformed, mismatched, repeated, non-oldest,
+or out-of-order request fails closed without mutation. Before that append, the
+Application Database compares the stored original identity and opaque
+projection bytes with the exact Server Audit-validated obligation carried by
+the request, and separately compares its retained binding with the disposition.
+A matching identity alone is insufficient.
+
+Supersession moves the original out of the active sequence but neither rewrites
+nor acknowledges it. It remains in an oldest-first late-delivery sequence and
+accepts only exact replay through its retained binding. The replacement Audit
+action records a visible degraded-completeness integrity exception; it cannot
+stand in for original delivery. System Logs, Restore, and lifecycle completion
+records are also never substitutes. The accepted rationale and follow-on
+boundaries are preserved in the
+[Audit Terminal Binding Retention And Supersession decision](audit-terminal-binding-retention-decision.md).
 
 ## Destination Retention And Capacity
 
@@ -396,9 +696,14 @@ into the replacement Server; it does not prove the Audit Log destination can
 complete its commit path, because Restore never opens or delivers to it. This
 is a documented limitation of the Restore path rather than a defect: an
 imported Audit Log assignment that cannot commit surfaces only when Audit
-logging is first attempted after Restore completes. A failure remains non-operational and follows the retained-state interruption boundary in the
-[Server Restore Design](../server/lifecycle/restore/restore-design.md). A restored
-Log Module never reads backup contents or Application Database state directly.
+logging is first attempted after Restore completes. At that normal-operation
+boundary, a consequential operation is rejected while the Server remains alive;
+the Restore lifecycle is not reopened and no retained-state interruption is
+created. Failure to deliver the required Restore-result System Log after the
+checkpoint remains fail-closed under the
+[Server Restore Design](../server/lifecycle/restore/restore-design.md). A
+restored Log Module never reads backup contents or Application Database state
+directly.
 
 ## Related Documents
 
@@ -408,3 +713,5 @@ Log Module never reads backup contents or Application Database state directly.
 - [Glossary](../glossary.md)
 - [Application Database Design](../server/database/application-database-design.md)
 - [Server Restore Design](../server/lifecycle/restore/restore-design.md)
+- [Audit Log Unavailability System Log Record](../server/observability/audit-log-unavailability-record-design.md)
+- [Audit Terminal Binding Retention And Supersession Decision](audit-terminal-binding-retention-decision.md)

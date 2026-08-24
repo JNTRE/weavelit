@@ -16,6 +16,7 @@ RUN apt-get update \
 		xz-utils \
 		build-essential \
 		pkg-config \
+		socat \
 		libssl-dev \
 		libsqlite3-dev \
 		openssl \

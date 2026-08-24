@@ -15,8 +15,9 @@ use weavelit_server_lifecycle::{
     BackendOpenError, BackendRegistration, ConnectionFieldDeclaration, ConnectionFieldIdentifier,
     ConnectionFieldInput, ConnectionFieldRequirement, ConnectionValidationError, ConnectionValue,
     ConnectionValueKind, FieldDeclarationError, LifecycleError, LifecycleStore,
-    RetainedDatabaseInspection, SecretClassification, SelectionError, SelectionFailureKind,
-    TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint, WorkflowKind,
+    RetainedDatabaseInspection, SecretClassification, SelectedDatabase, SelectionError,
+    SelectionFailureKind, TrustedBackendContext, ValidatedConnectionSettings, WorkflowCheckpoint,
+    WorkflowKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -32,9 +33,7 @@ fn state_root() -> (tempfile::TempDir, PathBuf) {
     (directory, canonical)
 }
 
-fn expect_selection_error(
-    result: Result<Box<dyn ApplicationDatabase>, SelectionError>,
-) -> SelectionError {
+fn expect_selection_error(result: Result<SelectedDatabase, SelectionError>) -> SelectionError {
     match result {
         Ok(_) => panic!("selection unexpectedly succeeded"),
         Err(e) => e,
@@ -139,6 +138,7 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn complete_checkpoint(
         &mut self,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
         _checkpoint: &WorkflowCheckpoint,
         _state: &ApplicationState,
         _reconciliation: &weavelit_server_database::ReconciliationDigest,
@@ -148,8 +148,18 @@ impl ApplicationDatabase for FakeDatabase {
 
     fn load_initialized_state(
         &mut self,
+        _public_identity_persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _audit_reference_persistence: &weavelit_server_database::AuditReferencePersistence,
         _expected_deployment_identifier: DeploymentIdentifier,
     ) -> Result<InitializedState, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_account_public_identity(
+        &mut self,
+        _persistence: &weavelit_server_database::AccountPublicIdentifierPersistence,
+        _public_identifier: weavelit_server_database::AccountPublicIdentifier,
+    ) -> Result<Option<weavelit_server_database::AccountPublicIdentity>, DatabaseError> {
         Err(DatabaseError::NotInitialized)
     }
 
@@ -168,6 +178,31 @@ impl ApplicationDatabase for FakeDatabase {
         Err(DatabaseError::NotInitialized)
     }
 
+    fn load_account_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _account: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::AccountAuditReference>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_group_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _group: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::GroupAuditReference>, DatabaseError> {
+        Err(DatabaseError::NotInitialized)
+    }
+
+    fn load_log_configuration_audit_reference(
+        &mut self,
+        _persistence: &weavelit_server_database::AuditReferencePersistence,
+        _configuration: StateIdentifier,
+    ) -> Result<Option<weavelit_server_database::LogConfigurationAuditReference>, DatabaseError>
+    {
+        Err(DatabaseError::NotInitialized)
+    }
+
     fn load_component_enablement(
         &mut self,
     ) -> Result<weavelit_server_database::ComponentEnablement, DatabaseError> {
@@ -183,6 +218,12 @@ impl ApplicationDatabase for FakeDatabase {
     }
 
     fn reconciliation(&mut self) -> Option<&mut dyn weavelit_server_database::ReconciliationStore> {
+        None
+    }
+
+    fn audit_terminal_recovery(
+        &mut self,
+    ) -> Option<&mut dyn weavelit_server_database::AuditTerminalRecoveryStore> {
         None
     }
 
@@ -740,7 +781,8 @@ fn replacement_rejected_when_current_database_has_checkpoint() {
         .unwrap();
 
     let checkpoint = fake_checkpoint(store.record().deployment_identifier());
-    db.create_checkpoint(&checkpoint).unwrap();
+    db.with(|database| database.create_checkpoint(&checkpoint))
+        .unwrap();
     drop(db);
 
     let error = expect_selection_error(store.select_database(
@@ -808,7 +850,8 @@ fn reopen_selected_database_returns_correct_backend_after_restart() {
         .expect("reopening must succeed");
 
     assert_eq!(
-        db.inspect(store.record().deployment_identifier()).unwrap(),
+        db.with(|database| database.inspect(store.record().deployment_identifier()))
+            .unwrap(),
         DatabaseInspection::Uninitialized
     );
 }

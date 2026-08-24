@@ -23,7 +23,6 @@ const RESTORE_ACTION_NAME = "Restore backup";
 const LOGIN_ACTION_NAME = "Sign in";
 const VERIFY_ACTION_NAME = "Verify code";
 const CONFIRM_ACTION_NAME = "Confirm authenticator app";
-const AUTHENTICATED_MESSAGE = "You are signed in.";
 const ATTEMPT_ENDED_MESSAGE =
   "That code was not accepted. This sign-in attempt has ended, so sign in again to start a new one.";
 
@@ -31,9 +30,19 @@ const SELECTION_PATH = "/api/v1/application-database";
 const RESTORE_KEY_PATH = "/api/v1/restore";
 const RESTORE_ARTIFACT_PATH = "/api/v1/restore/artifact";
 const LOGIN_PATH = "/api/v1/auth/login";
+const SESSION_PATH = "/api/v1/auth/session";
+const PASSWORD_CHANGE_PATH = "/api/v1/auth/password/change";
 const MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify";
 const MFA_ENROLLMENT_PATH = "/api/v1/auth/mfa/enrollment";
 const MFA_CONFIRM_PATH = "/api/v1/auth/mfa/enrollment/confirm";
+const ACCOUNTS_LIST_PATH = "/api/v1/administration/accounts/list";
+const ACCOUNTS_VIEW_PATH = "/api/v1/administration/accounts/view";
+const ACCOUNTS_STATUS_PATH = "/api/v1/administration/accounts/status";
+const CREDENTIAL_ISSUANCE_STEP_UP_PATH = "/api/v1/administration/step-up/credential-issuance";
+const ACCOUNTS_CREATE_PATH = "/api/v1/administration/accounts/create";
+const ACCOUNTS_RESET_PASSWORD_PATH = "/api/v1/administration/accounts/reset-password";
+const MFA_POLICY_STEP_UP_PATH = "/api/v1/administration/step-up/totp";
+const MFA_REQUIREMENT_PATH = "/api/v1/administration/accounts/mfa-requirement";
 
 const ARTIFACT_INPUT = "#weavelit-restore-artifact";
 const RECOVERY_KEY_INPUT = "#weavelit-restore-recovery-key";
@@ -69,6 +78,13 @@ const PROVISIONING_URI =
   "&issuer=Weavelit&algorithm=SHA1&digits=6&period=30";
 const CODE = "123456";
 const CORRELATION = "0123456789abcdef0123456789abcdef";
+const ACCOUNT_PUBLIC_ID = "QUFBQUFBQUFBQUFBQUFBQQ";
+const MFA_POLICY_TICKET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const CREDENTIAL_ISSUANCE_TICKET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const AUTHORIZATION_DENIAL = JSON.stringify({
+  error: "authorization_denied",
+  correlation_id: CORRELATION,
+});
 
 const fixturesDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -103,6 +119,96 @@ async function browserState(page: Page): Promise<{ local: string; session: strin
     local: JSON.stringify(globalThis.localStorage),
     session: JSON.stringify(globalThis.sessionStorage),
   }));
+}
+
+function accountPage(): string {
+  return envelope({
+    items: [
+      {
+        public_id: ACCOUNT_PUBLIC_ID,
+        username: FIXTURE_USERNAME,
+        display_name: "Administrator",
+        active: true,
+        mfa_required: false,
+      },
+    ],
+    next_cursor: null,
+  });
+}
+
+async function installAuthenticatedLogin(
+  page: Page,
+  sessionProbes: { current: number },
+): Promise<void> {
+  await page.route(`${baseUrl}${LOGIN_PATH}`, (route) =>
+    fulfilJson(route, 200, envelope({ authenticated: true })),
+  );
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes.current += 1;
+    return sessionProbes.current === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
+}
+
+async function signInForAccounts(page: Page): Promise<void> {
+  await page.goto(baseUrl, { waitUntil: "load" });
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute(
+    "data-authentication-state",
+    "unauthenticated",
+  );
+  await page.evaluate(() => {
+    document.cookie = "__Host-weavelit_csrf=browser-csrf; Path=/; Secure; SameSite=Strict";
+  });
+  await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
+  await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
+}
+
+async function expectTerminalAccountsAuthorizationDenial(
+  page: Page,
+  requests: readonly Request[],
+  sessionProbes: { current: number },
+  accountReads: readonly Request[],
+  operationRequests: readonly Request[],
+): Promise<void> {
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute(
+    "data-authentication-state",
+    "unauthenticated",
+  );
+  await expect(page.locator(USERNAME_INPUT)).toHaveValue("");
+  await expect(page.locator(PASSWORD_INPUT)).toHaveValue("");
+  await expect(page.getByRole("heading", { name: "Accounts" })).toHaveCount(0);
+  await expect(page.getByText("Administration", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".accounts__credential-disclosure")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Refresh" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  for (const message of [
+    "Accounts are unavailable.",
+    "The account status was not changed.",
+    "The account status outcome is unknown. Refresh before taking another status action.",
+    "Credential issuance was not completed.",
+    "The credential issuance outcome is unknown. Start a new action only if you intend to issue another credential.",
+  ]) {
+    await expect(page.getByText(message, { exact: true })).toHaveCount(0);
+  }
+
+  expect(sessionProbes.current, "only the initial and post-login sessions were probed").toBe(2);
+  expect(accountReads, "the Accounts collection was not refreshed").toHaveLength(1);
+  expect(operationRequests, "the terminal operation was requested exactly once").toHaveLength(1);
+  expect(
+    requests.filter((request) => request.isNavigationRequest()),
+    "the terminal denial did not reload the page",
+  ).toHaveLength(1);
 }
 
 let fixtureRoot = "";
@@ -218,6 +324,22 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
     verified.push(route.request());
     return fulfilJson(route, 200, envelope({ authenticated: true }));
   });
+  let sessionProbes = 0;
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    return sessionProbes === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
 
   const login = page.locator(LOGIN_PANEL);
   await page.goto(baseUrl, { waitUntil: "load" });
@@ -239,8 +361,8 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
   await expect(verify).toBeEnabled();
   await verify.click();
 
-  await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-  await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  expect(sessionProbes, "the initial and post-success sessions were probed").toBe(2);
 
   expect(verified, "the code was submitted exactly once").toHaveLength(1);
   const submitted = verified[0] as Request;
@@ -260,6 +382,283 @@ test("a code submitted after a 202 mfa_required completes the sign-in", async ({
   expect(rendered).not.toContain(CONTINUATION);
   expect(state.local, "nothing is persisted to local storage").toBe("{}");
   expect(state.session, "nothing is persisted to session storage").toBe("{}");
+});
+
+test("a password-change session invalidation returns to neutral sign-in without retrying", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const passwordChanges: Request[] = [];
+  const requests = observeRequests(page);
+  let sessionProbes = 0;
+
+  await page.route(`${baseUrl}${LOGIN_PATH}`, (route) =>
+    fulfilJson(route, 200, envelope({ authenticated: true })),
+  );
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    if (sessionProbes === 1) return route.continue();
+    if (sessionProbes === 2) {
+      return fulfilJson(
+        route,
+        200,
+        envelope({
+          account_id: "a1".repeat(16),
+          public_id: ACCOUNT_PUBLIC_ID,
+          client_module: "web-ui",
+          password_change_required: true,
+        }),
+      );
+    }
+    return fulfilJson(
+      route,
+      401,
+      JSON.stringify({ error: "session_invalid", correlation_id: CORRELATION }),
+    );
+  });
+  await page.route(`${baseUrl}${PASSWORD_CHANGE_PATH}`, (route) => {
+    passwordChanges.push(route.request());
+    return fulfilJson(
+      route,
+      401,
+      JSON.stringify({ error: "session_invalid", correlation_id: CORRELATION }),
+    );
+  });
+
+  await page.goto(baseUrl, { waitUntil: "load" });
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute(
+    "data-authentication-state",
+    "unauthenticated",
+  );
+  await page.evaluate(() => {
+    document.cookie = "__Host-weavelit_csrf=browser-csrf; Path=/; Secure; SameSite=Strict";
+  });
+  await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
+  await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
+  await expect(page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
+
+  await page.getByLabel("New password").fill("one-time replacement");
+  await page.getByRole("button", { name: "Save password" }).click();
+
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute(
+    "data-authentication-state",
+    "unauthenticated",
+  );
+  await expect(page.locator(USERNAME_INPUT)).toHaveValue("");
+  await expect(page.locator(PASSWORD_INPUT)).toHaveValue("");
+  await expect(page.getByRole("heading", { name: "Choose a new password" })).toHaveCount(0);
+  await expect(page.getByText("Password change was not accepted.")).toHaveCount(0);
+  expect(sessionProbes, "the initial, restricted, and ended-session probes ran once each").toBe(3);
+  expect(passwordChanges, "the password replacement was requested exactly once").toHaveLength(1);
+  expect(
+    requests.filter((request) => request.isNavigationRequest()),
+    "the session invalidation did not reload the page",
+  ).toHaveLength(1);
+});
+
+test("an MFA requirement confirms before code-only step-up and stores no proof", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const requests = observeRequests(page);
+  const stepUps: Request[] = [];
+  const requirements: Request[] = [];
+  let sessionProbes = 0;
+  let accountReads = 0;
+
+  await page.route(`${baseUrl}${LOGIN_PATH}`, (route) =>
+    fulfilJson(route, 200, envelope({ authenticated: true })),
+  );
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    return sessionProbes === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads += 1;
+    return fulfilJson(
+      route,
+      200,
+      envelope({
+        items: [
+          {
+            public_id: ACCOUNT_PUBLIC_ID,
+            username: FIXTURE_USERNAME,
+            display_name: "Administrator",
+            active: true,
+            mfa_required: accountReads > 1,
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+  });
+  await page.route(`${baseUrl}${MFA_POLICY_STEP_UP_PATH}`, (route) => {
+    stepUps.push(route.request());
+    return fulfilJson(route, 200, envelope({ totp_step_up_ticket: MFA_POLICY_TICKET }));
+  });
+  await page.route(`${baseUrl}${MFA_REQUIREMENT_PATH}`, (route) => {
+    requirements.push(route.request());
+    return fulfilJson(
+      route,
+      200,
+      envelope({
+        public_id: ACCOUNT_PUBLIC_ID,
+        username: FIXTURE_USERNAME,
+        display_name: "Administrator",
+        active: true,
+        mfa_required: true,
+      }),
+    );
+  });
+
+  await page.goto(baseUrl, { waitUntil: "load" });
+  await page.evaluate(() => {
+    document.cookie = "__Host-weavelit_csrf=browser-csrf; Path=/; Secure; SameSite=Strict";
+  });
+  await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
+  await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+
+  await page.getByRole("switch", { name: `Require MFA for ${FIXTURE_USERNAME}` }).click();
+  await expect(page.getByRole("heading", { name: "Require MFA" })).toBeVisible();
+  expect(stepUps, "confirmation itself sends no request").toHaveLength(0);
+  expect(requirements, "confirmation itself mutates nothing").toHaveLength(0);
+  await page.getByRole("button", { name: "Confirm policy action" }).click();
+  await expect(page.getByLabel("Authentication code")).toBeVisible();
+  await expect(page.getByLabel("Current password")).toHaveCount(0);
+  await page.getByLabel("Authentication code").fill(CODE);
+  await page.getByRole("button", { name: "Verify and apply" }).click();
+
+  await expect(
+    page.getByRole("switch", { name: `Require MFA for ${FIXTURE_USERNAME}` }),
+  ).toBeChecked();
+  expect(stepUps).toHaveLength(1);
+  expect(stepUps[0]?.postData()).toBe(JSON.stringify({ family: "mfa_policy", code: CODE }));
+  expect(requirements).toHaveLength(1);
+  expect(requirements[0]?.postData()).toBe(
+    JSON.stringify({
+      public_id: ACCOUNT_PUBLIC_ID,
+      required: true,
+      totp_step_up_ticket: MFA_POLICY_TICKET,
+    }),
+  );
+
+  const state = await browserState(page);
+  const rendered = await page.content();
+  expect(state.local).toBe("{}");
+  expect(state.session).toBe("{}");
+  expect(rendered).not.toContain(MFA_POLICY_TICKET);
+  expect(rendered).not.toContain(CODE);
+  for (const request of requests) {
+    expect(request.url()).not.toContain(MFA_POLICY_TICKET);
+    expect(request.url()).not.toContain(CODE);
+  }
+});
+
+test("an MFA-policy authorization denial returns to neutral sign-in without retrying", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const stepUps: Request[] = [];
+  const requirements: Request[] = [];
+  let accountReads = 0;
+  let sessionProbes = 0;
+
+  await page.route(`${baseUrl}${LOGIN_PATH}`, (route) =>
+    fulfilJson(route, 200, envelope({ authenticated: true })),
+  );
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    return sessionProbes === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads += 1;
+    return fulfilJson(
+      route,
+      200,
+      envelope({
+        items: [
+          {
+            public_id: ACCOUNT_PUBLIC_ID,
+            username: FIXTURE_USERNAME,
+            display_name: "Administrator",
+            active: true,
+            mfa_required: false,
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+  });
+  await page.route(`${baseUrl}${MFA_POLICY_STEP_UP_PATH}`, (route) => {
+    stepUps.push(route.request());
+    return fulfilJson(route, 200, envelope({ totp_step_up_ticket: MFA_POLICY_TICKET }));
+  });
+  await page.route(`${baseUrl}${MFA_REQUIREMENT_PATH}`, (route) => {
+    requirements.push(route.request());
+    return fulfilJson(
+      route,
+      403,
+      JSON.stringify({ error: "authorization_denied", correlation_id: CORRELATION }),
+    );
+  });
+
+  await page.goto(baseUrl, { waitUntil: "load" });
+  await page.evaluate(() => {
+    document.cookie = "__Host-weavelit_csrf=browser-csrf; Path=/; Secure; SameSite=Strict";
+  });
+  await page.locator(USERNAME_INPUT).fill(FIXTURE_USERNAME);
+  await page.locator(PASSWORD_INPUT).fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: LOGIN_ACTION_NAME }).click();
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+
+  await page.getByRole("switch", { name: `Require MFA for ${FIXTURE_USERNAME}` }).click();
+  await page.getByRole("button", { name: "Confirm policy action" }).click();
+  await page.getByLabel("Authentication code").fill(CODE);
+  await page.getByRole("button", { name: "Verify and apply" }).click();
+
+  await expect(page.locator(LOGIN_PANEL)).toHaveAttribute(
+    "data-authentication-state",
+    "unauthenticated",
+  );
+  await expect(page.locator(USERNAME_INPUT)).toHaveValue("");
+  await expect(page.locator(PASSWORD_INPUT)).toHaveValue("");
+  await expect(page.getByRole("heading", { name: "Accounts" })).toHaveCount(0);
+  await expect(page.getByText("Administration", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("MFA policy was not changed.")).toHaveCount(0);
+  await expect(page.getByText(/The MFA policy outcome is unknown\./)).toHaveCount(0);
+
+  expect(sessionProbes, "the initial and post-login sessions were probed").toBe(2);
+  expect(stepUps).toHaveLength(1);
+  expect(requirements).toHaveLength(1);
+  expect(accountReads).toBe(1);
 });
 
 test("a rejected code after a 202 mfa_required ends the attempt", async ({ page }) => {
@@ -331,6 +730,22 @@ test("an enrollment after a 202 mfa_enrollment_required discloses its key and li
     confirmed.push(route.request());
     return fulfilJson(route, 200, envelope({ authenticated: true }));
   });
+  let sessionProbes = 0;
+  await page.route(`${baseUrl}${SESSION_PATH}`, (route) => {
+    sessionProbes += 1;
+    return sessionProbes === 1
+      ? route.continue()
+      : fulfilJson(
+          route,
+          200,
+          envelope({
+            account_id: "a1".repeat(16),
+            public_id: ACCOUNT_PUBLIC_ID,
+            client_module: "web-ui",
+            password_change_required: false,
+          }),
+        );
+  });
 
   const login = page.locator(LOGIN_PANEL);
   await page.goto(baseUrl, { waitUntil: "load" });
@@ -355,8 +770,8 @@ test("an enrollment after a 202 mfa_enrollment_required discloses its key and li
 
   await page.locator(CODE_INPUT).fill(CODE);
   await page.getByRole("button", { name: CONFIRM_ACTION_NAME }).click();
-  await expect(login).toHaveAttribute("data-authentication-state", "authenticated");
-  await expect(page.locator("p.shell__login-authenticated")).toHaveText(AUTHENTICATED_MESSAGE);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  expect(sessionProbes, "the initial and post-success sessions were probed").toBe(2);
 
   expect(confirmed).toHaveLength(1);
   expect((confirmed[0] as Request).postData()).toBe(
@@ -389,4 +804,218 @@ test("an enrollment after a 202 mfa_enrollment_required discloses its key and li
   expect(await page.context().cookies(), "no disclosed value reached a cookie").toEqual(
     expect.not.arrayContaining([expect.objectContaining({ value: SECRET })]),
   );
+});
+
+test("an Accounts list authorization denial ends Administration without recovery", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const requests = observeRequests(page);
+  const sessionProbes = { current: 0 };
+  const accountReads: Request[] = [];
+
+  await installAuthenticatedLogin(page, sessionProbes);
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads.push(route.request());
+    return fulfilJson(route, 403, AUTHORIZATION_DENIAL);
+  });
+
+  await signInForAccounts(page);
+  await expectTerminalAccountsAuthorizationDenial(
+    page,
+    requests,
+    sessionProbes,
+    accountReads,
+    accountReads,
+  );
+});
+
+test("an Accounts view authorization denial ends Administration without recovery", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const requests = observeRequests(page);
+  const sessionProbes = { current: 0 };
+  const accountReads: Request[] = [];
+  const views: Request[] = [];
+
+  await installAuthenticatedLogin(page, sessionProbes);
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads.push(route.request());
+    return fulfilJson(route, 200, accountPage());
+  });
+  await page.route(`${baseUrl}${ACCOUNTS_VIEW_PATH}`, (route) => {
+    views.push(route.request());
+    return fulfilJson(route, 403, AUTHORIZATION_DENIAL);
+  });
+
+  await signInForAccounts(page);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  await page.getByRole("button", { name: "View" }).click();
+  await expectTerminalAccountsAuthorizationDenial(
+    page,
+    requests,
+    sessionProbes,
+    accountReads,
+    views,
+  );
+});
+
+test("an Accounts status authorization denial ends Administration without recovery", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const requests = observeRequests(page);
+  const sessionProbes = { current: 0 };
+  const accountReads: Request[] = [];
+  const statuses: Request[] = [];
+
+  await installAuthenticatedLogin(page, sessionProbes);
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads.push(route.request());
+    return fulfilJson(route, 200, accountPage());
+  });
+  await page.route(`${baseUrl}${ACCOUNTS_STATUS_PATH}`, (route) => {
+    statuses.push(route.request());
+    return fulfilJson(route, 403, AUTHORIZATION_DENIAL);
+  });
+
+  await signInForAccounts(page);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  await page.getByRole("button", { name: `Disable ${FIXTURE_USERNAME}` }).click();
+  await page.getByRole("button", { name: "Confirm disable" }).click();
+  await expectTerminalAccountsAuthorizationDenial(
+    page,
+    requests,
+    sessionProbes,
+    accountReads,
+    statuses,
+  );
+});
+
+test("a credential-assurance authorization denial ends Administration without recovery", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const requests = observeRequests(page);
+  const sessionProbes = { current: 0 };
+  const accountReads: Request[] = [];
+  const assurances: Request[] = [];
+
+  await installAuthenticatedLogin(page, sessionProbes);
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads.push(route.request());
+    return fulfilJson(route, 200, accountPage());
+  });
+  await page.route(`${baseUrl}${CREDENTIAL_ISSUANCE_STEP_UP_PATH}`, (route) => {
+    assurances.push(route.request());
+    return fulfilJson(route, 403, AUTHORIZATION_DENIAL);
+  });
+
+  await signInForAccounts(page);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  await page.locator("#account-create-username").fill("new-administrator");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await page.getByLabel("Current password").fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: "Confirm credential issuance" }).click();
+  await expectTerminalAccountsAuthorizationDenial(
+    page,
+    requests,
+    sessionProbes,
+    accountReads,
+    assurances,
+  );
+});
+
+test("an account-create authorization denial ends Administration without recovery", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const requests = observeRequests(page);
+  const sessionProbes = { current: 0 };
+  const accountReads: Request[] = [];
+  const assurances: Request[] = [];
+  const creates: Request[] = [];
+
+  await installAuthenticatedLogin(page, sessionProbes);
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads.push(route.request());
+    return fulfilJson(route, 200, accountPage());
+  });
+  await page.route(`${baseUrl}${CREDENTIAL_ISSUANCE_STEP_UP_PATH}`, (route) => {
+    assurances.push(route.request());
+    return fulfilJson(
+      route,
+      200,
+      envelope({ credential_issuance_ticket: CREDENTIAL_ISSUANCE_TICKET }),
+    );
+  });
+  await page.route(`${baseUrl}${ACCOUNTS_CREATE_PATH}`, (route) => {
+    creates.push(route.request());
+    return fulfilJson(route, 403, AUTHORIZATION_DENIAL);
+  });
+
+  await signInForAccounts(page);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  await page.locator("#account-create-username").fill("new-administrator");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await page.getByLabel("Current password").fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: "Confirm credential issuance" }).click();
+  await expectTerminalAccountsAuthorizationDenial(
+    page,
+    requests,
+    sessionProbes,
+    accountReads,
+    creates,
+  );
+  expect(assurances, "credential assurance was not retried").toHaveLength(1);
+});
+
+test("an account-reset authorization denial ends Administration without recovery", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+
+  const requests = observeRequests(page);
+  const sessionProbes = { current: 0 };
+  const accountReads: Request[] = [];
+  const assurances: Request[] = [];
+  const resets: Request[] = [];
+
+  await installAuthenticatedLogin(page, sessionProbes);
+  await page.route(`${baseUrl}${ACCOUNTS_LIST_PATH}`, (route) => {
+    accountReads.push(route.request());
+    return fulfilJson(route, 200, accountPage());
+  });
+  await page.route(`${baseUrl}${CREDENTIAL_ISSUANCE_STEP_UP_PATH}`, (route) => {
+    assurances.push(route.request());
+    return fulfilJson(
+      route,
+      200,
+      envelope({ credential_issuance_ticket: CREDENTIAL_ISSUANCE_TICKET }),
+    );
+  });
+  await page.route(`${baseUrl}${ACCOUNTS_RESET_PASSWORD_PATH}`, (route) => {
+    resets.push(route.request());
+    return fulfilJson(route, 403, AUTHORIZATION_DENIAL);
+  });
+
+  await signInForAccounts(page);
+  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  await page.getByRole("button", { name: `Reset password for ${FIXTURE_USERNAME}` }).click();
+  await page.getByLabel("Current password").fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: "Confirm credential issuance" }).click();
+  await expectTerminalAccountsAuthorizationDenial(
+    page,
+    requests,
+    sessionProbes,
+    accountReads,
+    resets,
+  );
+  expect(assurances, "credential assurance was not retried").toHaveLength(1);
 });

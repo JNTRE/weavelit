@@ -7,14 +7,16 @@
 //! matching obligation to persist.
 //!
 //! Milestone 1 needs the Init and Restore completion results, the local
-//! authentication failure result, and the authorization denial result. The
-//! crate is nonetheless the long-term owner of Server-produced operational
-//! telemetry, so each event family lives in its own module.
+//! authentication failure result, the authorization denial result, and the
+//! Audit Log destination unavailability result. The crate is nonetheless the
+//! long-term owner of Server-produced operational telemetry, so each event
+//! family lives in its own module.
 
 #![forbid(unsafe_code)]
 
 mod authentication;
 mod authorization;
+mod dependency;
 mod init;
 mod restore;
 

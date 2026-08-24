@@ -21,9 +21,16 @@ export default defineConfig({
     rollupOptions: {
       input: "index.html",
       output: {
-        codeSplitting: false,
         entryFileNames: "assets/weavelit-application.js",
-        chunkFileNames: "assets/weavelit-application.js",
+        chunkFileNames: (chunk) => {
+          if (chunk.name === "weavelit-groups-workspace") {
+            return "assets/weavelit-groups-workspace.js";
+          }
+          if (chunk.name === "weavelit-configuration-workspace") {
+            return "assets/weavelit-configuration-workspace.js";
+          }
+          return "assets/weavelit-[name].js";
+        },
         assetFileNames: "assets/weavelit-application.[ext]",
       },
     },

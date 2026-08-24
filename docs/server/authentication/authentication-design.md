@@ -87,10 +87,13 @@ An unknown account, an inactive account, an account with no stored verifier, and
 an account whose stored verifier is outside the allowlist are all denied only
 after one real Argon2 verification against a decoy verifier built at the current
 profile. Every denial therefore performs the same verification work as a wrong
-password and is indistinguishable from it. The decoy is a valid PHC string with
-a random salt and a random output, so no submitted password can match it. A
-denial is not reported as an error, so no caller can separate "no such account"
-from "wrong password" by inspecting a failure value.
+password and is indistinguishable from it. An expired temporary credential is
+also denied only after its retained verifier receives that same verification
+work; expiry is evaluated after the verifier result, never as an early return.
+The decoy is a valid PHC string with a random salt and a random output, so no
+submitted password can match it. A denial is not reported as an error, so no
+caller can separate "no such account" from "wrong password" by inspecting a
+failure value.
 
 An account with no stored verifier is a modeled credential state rather than an
 error or a data defect. The password decision represents it explicitly, denies
@@ -108,7 +111,8 @@ elapsed time.
 
 The route layer preserves this indistinguishability at the wire. An unknown
 account, an inactive account, an account with no stored verifier, an account
-whose stored verifier is outside the allowlist, and a wrong password all
+whose stored verifier is outside the allowlist, an expired temporary
+credential, a stale verified credential revision, and a wrong password all
 produce the identical `401` response: the same stable error code, the same
 response body shape, the same absence of any cookie, and no response header
 that varies by cause.
@@ -169,6 +173,13 @@ The stored hash is domain-separated, so a session hash and a CSRF hash of the
 same bytes are different values. Neither a token nor a stored hash renders
 through `Debug` or `Display`; both produce a fixed redacted string instead.
 
+After successful validation, the Server's internal `ValidatedSession` retains
+that stored session hash with the account and issuing Client Module so a
+current-session authorization proof can bind to the exact session. This value
+is not the bearer token, is not added to the Client Module's session-identity
+response, and remains limited to constant-time comparison and fixed redacted
+diagnostics.
+
 The session cookie carries no `Max-Age` or `Expires` attribute, so it is a
 browser-session cookie rather than a persistently stored one. The only place
 an expiry attribute appears anywhere in the cookie contract is the logout
@@ -179,6 +190,251 @@ Application Database locates a candidate session by indexed digest equality,
 which compares stored digests rather than bearer values, and the decision to
 accept that row as the presented session is a constant-time comparison of the
 two digests.
+
+## Account Credential Issuance Writers
+
+The implemented account creation and password reset routes drive the
+transport-independent writers that own temporary credential issuance. Ordinary
+Account authorization and a separate exact-session credential-issuance
+assurance are both required before a workflow returns a temporary-password
+disclosure. The
+[Server API Contract](../api/api-contract-design.md#account-credential-issuance)
+owns the route, body, result, and typed-error shapes.
+
+The authentication crate prepares each temporary credential from exactly 18
+bytes (144 bits) of operating-system randomness encoded as exactly 24 unpadded
+Base64url characters. It accepts no caller-supplied entropy and has no fallback
+for unavailable or unusable randomness. The plaintext remains in zeroizing
+storage, and the prepared value pairs its approved-profile verifier with a
+non-clonable disclosure whose only plaintext transfer consumes it. The bundle
+is completed before a state mutation begins; only its verifier is
+eligible for persistence. The crate exports the fixed 24-hour lifetime as a
+typed duration but does not own an issuance clock, expiry persistence, Account
+state, or response transport.
+
+Account creation creates the account's first verifier and temporary
+credential metadata in the same atomic state mutation that makes the account
+available. It has no prior target sessions to revoke. The successful originating
+internal result owns the generated temporary-password disclosure. The transport
+consumes that value once under the approved wire contract; a lost
+result requires a new explicit administrative action and does not trigger
+automatic re-disclosure.
+
+### Credential Issuance Assurance
+
+Credential issuance has its own assurance profile. It accepts only an ordinary
+current Administration session that has already passed Account authorization.
+The authenticated Administrator re-presents their current password and, when a
+TOTP factor is enrolled, the current six-digit TOTP code. A restricted
+temporary-password session, an inactive actor, a temporary actor credential, a
+wrong password, a missing or unexpected factor code, a disabled TOTP Module,
+or stale actor credential state is denied without a ticket.
+
+Successful password and factor verification creates a private proof bound to
+the exact actor, current session digest, issuing Client Module, actor credential
+revision, and factor observation. For an enrolled factor, the observation
+contains the exact factor and verified TOTP time step. For an unenrolled actor,
+it records the observed absence and TOTP Module state. Before publishing a
+ticket, one Application Database transaction rechecks that exact session,
+actor, revision, factor enrollment, and Module state and, when enrolled,
+advances the replay watermark for the verified step. A stale or replayed result
+publishes no ticket.
+
+The returned ticket contains exactly 256 bits of operating-system randomness
+encoded as 43 canonical unpadded Base64url characters. The process retains only
+its domain-separated digest and proof in a bounded 64-entry memory store. The
+ticket expires exactly five minutes after issuance according to the process's
+monotonic clock; the exact expiry instant is invalid. It is not persisted, so a
+Server restart invalidates every outstanding ticket.
+
+Claim removes the entry before checking any later binding. A malformed,
+unknown, expired, replayed, actor-mismatched, session-mismatched, or
+Client-Module-mismatched ticket therefore authorizes no action, and a live
+ticket presented with the wrong binding is still spent. Only one separately
+authorized `Account(Create)` or `Account(PasswordReset)` action can consume the
+proof. The consumed proof becomes a non-clonable admission whose exact action,
+actor, session, Client Module, expected actor credential revision, and factor
+observation feed the final writer recheck.
+
+This proof is not `MfaStepUpProof`. It neither consumes nor extends that proof,
+and it cannot authorize `MfaPolicy` or `GrantMutation`. Conversely, a current
+five-minute `MfaStepUpProof` cannot substitute for the password reauthentication
+and factor evidence required to disclose a temporary password.
+
+Passwords, TOTP codes, ticket plaintext, and temporary passwords use clearing,
+non-rendering owners at Server-controlled boundaries and are absent from Audit
+and System Log content. Only the ticket's one response and a committed writer's
+originating success response may disclose their respective values. A reported
+denial and an indeterminate transport outcome carry no reason. Neither causes
+automatic assurance, action, or disclosure retry; an explicit later reset
+creates a new credential rather than recovering the earlier plaintext.
+Both secret-bearing success responses emit `Cache-Control: no-store` through
+the closed response effect defined by the
+[Security Model](../../security-model.md#secret-disclosure-cache-control).
+
+### Administration Step-Up Ticket
+
+MFA requirement and enrollment-reset actions use the Administration action
+gate's `MfaPolicy` family, not credential-issuance assurance. The public TOTP
+step-up route accepts an ordinary Administrator session and exactly one
+six-digit code. Server authentication opens that actor's current TOTP factor,
+verifies the code, and asks the Application Database to atomically recheck the
+exact session, active actor, factor ownership, Module enablement, and replay
+watermark. Acceptance advances only the watermark and creates no session.
+
+The resulting private `MfaStepUpProof` carries the exact actor, session digest,
+factor, `MfaPolicy` family, monotonic issuance time, and exact five-minute
+expiry. The browser cannot hold that capability directly, so the Server returns
+a separate opaque ticket with 256 bits of randomness and retains only its
+domain-separated digest and proof in a bounded 64-entry process-memory store.
+A restart invalidates all entries. Ticket lookup does not spend a live proof:
+the same exact-session ticket may authorize more than one matching policy
+action during the fixed window, and every use re-enters the action gate for
+actor, session, family, clock-rollback, and expiry checks.
+
+The policy ticket is not persisted and never enters a cookie, URL, log, Audit
+record, account projection, or credential-issuance workflow. It is distinct
+from credential issuance's single-use password-plus-conditional-TOTP ticket.
+Its originating response emits `Cache-Control: no-store`.
+The route accepts the closed `MfaPolicy` and `GrantMutation` families. Ticket
+digests are domain-separated by family and each retained private proof carries
+that same family. A cross-family, cross-session, expired, rolled-back,
+malformed, or unknown ticket authorizes nothing. `GrantMutation` is exposed
+only for public actions assigned that family, including empty Group deletion.
+
+The final MFA policy writer receives the consumed authorized policy action and
+rechecks the exact issuer session, Client Module, active actor, verified factor,
+and TOTP Module enablement in its business transaction. Resetting the issuer's
+factor or disabling its Module invalidates or revokes that session, so a stale
+ticket cannot outlive the state that justified it.
+
+### Password Reset Writer
+
+1. **Issuance authorization:** An authenticated **[Administrator](../../glossary.md#identities-and-access)** with
+   **[Server Administration Permission](../../glossary.md#identities-and-access)**
+   passes Account authorization and the separate exact-session
+   credential-issuance check: the current session reauthenticates with the
+   Administrator's current password and, when enrolled, a TOTP code. Init is
+   outside this flow.
+2. **Generate and prepare:** The Server generates a temporary password using
+   the same `PasswordVerifierFactory` as account creation, creates its Argon2
+   verifier, and prepares the typed secret-bearing internal result before any
+   single-use state mutation. The plaintext and response buffer use zeroizing,
+   non-rendering owners; only the verifier is eligible for persistence.
+3. **Audit sequencing:** The workflow requires a ready active recovery drain,
+   preflights the exact current Audit generation, receives durable
+   acknowledgement for a secret-free Attempt, and prepares every possible
+   terminal obligation before mutation.
+4. **Atomic mutation:** One compare-and-set transaction rechecks the exact
+   issuer session, ordinary actor credential revision and state, current factor
+   enrollment and Module enablement, and the verified TOTP replay step when
+   enrolled. It then checks the expected
+   account credential revision, writes or replaces the verifier, increments or
+   replaces the revision, sets `must_change_password`, records the fixed
+   24-hour absolute expiry, revokes the target's active sessions, and persists
+   exactly the selected opaque Audit terminal. A stale concurrent request
+   commits no credential and returns one stable, secret-free conflict result.
+5. **One-response disclosure:** Only a committed successful mutation receives
+   ownership of the plaintext temporary-password disclosure. Conflict, stale,
+   denied, Audit-failure, and cancelled paths drop it. The value is never
+   reconstructed or returned by a later lookup. An indeterminate or lost
+   result is not automatically retried; a new reset creates a new credential
+   and supersedes the old one.
+
+### Temporary Credential Consumption
+
+The Server implements temporary-credential consumption as an internal,
+route-independent workflow. Account-create and password-reset transport is
+owned by the Server API contract above. Password-change and forced-change
+request and response envelopes, cookie mapping, client presentation, and public
+identifier encoding remain separate from this consumption workflow.
+
+1. **Temporary-password sign-in:** Before expiry, direct, TOTP, and required
+   enrollment authentication paths may issue a session after all required MFA
+   work completes. The Application Database derives that session's private
+   `PasswordChangeRequired` posture from live Account state in the same
+   transaction that validates and touches the session. The posture is not
+   stored in the session row or exposed through the existing session response.
+2. **Forced-change gate:** The private `ValidatedSession` proof retains the
+   derived posture. Both ordinary authorization families accept only
+   `Ordinary`; logout accepts either posture. Optional session-based MFA
+   enrollment remains unavailable while password change is required.
+3. **Password preparation:** The internal workflow consumes the exact
+   restricted `ValidatedSession` by value and accepts one zeroizing non-empty
+   replacement of at most 1,024 bytes. It rejects a replacement that verifies
+   against the current temporary verifier, then creates only an approved-profile
+   replacement verifier. It requests neither the temporary password nor a new
+   TOTP code and does not advance an MFA replay watermark.
+4. **Password change:** After the active Audit recovery sequence is ready, the
+   workflow preflights the exact current Audit destination, obtains durable
+   acknowledgement for a secret-free `authentication.password.changed`
+   Attempt, and prepares success and denied terminals. One final transaction
+   rechecks the exact session digest, actor, Client Module, lifetime, active
+   Account, credential revision, `must_change_password`, unexpired temporary
+   metadata, and current verifier. Success advances the revision, replaces the
+   verifier, clears temporary state, revokes every old session, inserts one
+   fresh ordinary session and CSRF pair, and stores only the success terminal.
+   Any stale final state stores only the denied terminal. Audit persistence and
+   fresh-session collisions roll back every business effect.
+5. **Postcommit recovery:** A pending terminal after commit preserves both the
+   committed password change and its fresh session result for the caller while
+   leaving the exact terminal available to the bounded recovery drain.
+
+The workflow adds no password-change continuation ticket. A future design that
+adds one must specify it as a separate contract, must not confuse it with the
+existing in-memory MFA continuation, and must not infer authority to persist it
+from this internal workflow.
+
+The session-validation response reports the live `password_change_required`
+posture to the authenticated client. When it is true, the Web UI presents only
+the replacement-password form and withholds ordinary User and Administration
+workspaces. The browser sends the replacement once, clears its local input on
+every outcome, and never retries an unreadable or timed-out request because the
+transaction may already have committed. It may manually revalidate the session;
+only a newly ordinary session unlocks the ordinary workspace.
+
+**MFA-Ordering Invariant:** The forced-change gate MUST sit AFTER the MFA
+step-up gate in an atomic transaction. This ensures that if MFA is required, the
+user must complete MFA before reaching the password-change route, preventing
+unauthorized password changes by actors with only the temporary password.
+
+**State Semantics:** The `must_change_password` flag, temporary expiry, and
+credential revision are stable Account properties and survive Server restarts
+through the current Application Database schema. Creation creates no
+prior sessions; reset revokes existing sessions. Any stale pre-reset password
+verification or future password-change continuation cannot issue a session.
+Changing the password clears the temporary metadata and flag and produces a
+fresh session after required MFA. A missing or lost originating response has no
+automatic retry or re-disclosure path; it requires a new reset. A self-reset
+whose result is lost or expires can lock the Administrator out and, if that is
+the last Administrator, make the deployment inaccessible through supported
+interfaces. This is an accepted fail-closed risk; expiry recovery requires a
+new Administrator reset and remains an operator responsibility.
+
+### Account Disable And Re-enable
+
+An authorized **[Administrator](../../glossary.md#identities-and-access)** may
+disable or re-enable any local **[Human User](../../glossary.md#identities-and-access)**,
+including themselves, through ordinary Account authorization. These status
+operations do not issue a credential and therefore do not perform the
+credential-issuance password reauthentication, TOTP verification, or an MFA
+step-up. The final writer still rechecks the exact authorized session and active
+actor before committing.
+
+Disablement atomically marks the account inactive, advances its credential
+revision, revokes every target session, and persists its selected Audit
+terminal. Re-enablement marks the account active while preserving that advanced
+revision and creates no session. The verifier, temporary-credential metadata,
+MFA requirement and factors, and replay watermarks are preserved through both
+operations.
+
+Direct, TOTP, and enrollment session issuance already recheck active state and
+the credential revision in the transaction that would issue a session. An
+issuance prepared before disablement is therefore rejected while the account is
+inactive and remains stale after re-enablement. Only authentication prepared
+against the post-disable revision can issue a new session. This does not cancel
+an unrelated request whose business operation already executed before the
+disable transaction committed.
 
 ## Session Storage And Lifetime
 
@@ -307,7 +563,8 @@ provisioning URI construction are defined in the
 
 Provisioning data is generated exactly once, when an enrollment is opened, and
 is returned in that one response only; the Server never returns it again for
-the same or a later enrollment. It is also never stored in a retrievable form:
+the same or a later enrollment. That response emits
+`Cache-Control: no-store`. It is also never stored in a retrievable form:
 the secret and its `otpauth://` URI exist only in memory, held by the
 continuation ticket described below, until a code proves the caller holds
 them. Only then is the factor written, and what is written is the sealed
@@ -405,6 +662,7 @@ deliberate: the user must sign in again to obtain a fresh continuation and a
 fresh attempt, rather than being allowed unlimited retries against one verified
 password. A continuation also expires five minutes after it is issued, so a
 verified password that is never followed up cannot be resumed indefinitely.
+Its originating response emits `Cache-Control: no-store`.
 
 That five-minute lifetime is measured against a monotonic clock rather than
 against the wall clock. Continuations are held only in the Server's memory and
@@ -527,19 +785,26 @@ every login for that user. A user who is required to use MFA but is not yet
 enrolled receives no application session; the Server fails closed with an
 enrollment prompt, and only when the required Module is enabled.
 
-Changing enablement is a preview-then-act decision, implemented as
-`AuthenticationRuntime::enrolled_accounts` and
-`AuthenticationRuntime::set_module_enabled`. An Administrator first previews how
-many accounts currently hold a TOTP factor; disabling the Module then names
-that same previewed count. The count, the enabled-state write, and the session
-revocation described below are one atomic operation: the count is recomputed
-and checked against the previewed value inside that same operation, and a count
-that no longer matches writes nothing and reports the current count instead, so
-a concurrent enrollment cannot change what an Administrator's decision actually
-disables. This satisfies the
+Changing enablement is a preview-then-act decision owned by the Server's
+transport-independent TOTP administration workflow. It borrows an
+`AuthorizedAdministrationAction` only for the exact
+`ComponentEnablementChange(MfaModule, "totp", desired_state)` target when it
+creates the preview, then consumes that action and the target-bound preview when
+applying. The preview reports the number of distinct Human Users currently
+holding a TOTP factor. The transaction recounts those Human Users and selects
+either the prebuilt success Audit terminal or the payload-free conflict terminal.
+A changed count commits only the conflict obligation, changes no enablement or
+session state, and reports the current count. This satisfies the
 [Security Model](../../security-model.md#multifactor-authentication-security-profile)'s
 requirement to report the number of affected Human Users before disabling a
 Module with dependent enrollments.
+
+The TOTP Module's one mutable enablement authority is the generic component
+entry whose component is `totp` and whose key is `mfa-module.enabled`. Init
+explicitly seeds it disabled. Restore normalization emits exactly that entry,
+and the SQLite compatibility migration maps and removes the former
+`mfa.totp` / `enabled` entry. Enrollment, verification, direct-session issuance,
+preview, and mutation therefore read or write the same canonical state.
 
 Disabling the Module also revokes the live session of every account holding a
 TOTP factor, in that same atomic operation, because those sessions were
@@ -556,10 +821,27 @@ factor is denied under the
 [Second-Factor Admission](#second-factor-admission) table above rather than
 admitted without one.
 
-These two operations are Server-core primitives; no Administration Plane route
-composes them yet, so the Security Model's enablement requirement is satisfied
-at the runtime layer and remains to be exposed through an administration
-route.
+Before the transaction, the workflow requires the active Audit recovery
+sequence to be ready, resolves and retains the exact current Audit configuration
+generation, obtains the Administrator's typed Audit Reference, and waits for
+durable Attempt acknowledgement. It prebuilds the applied and conflict terminal
+obligations, then commits the selected obligation with recount, enablement, and
+disablement session revocation in one transaction. After commit it invokes the
+bounded active-then-late recovery drain and reports terminal delivery as
+acknowledged or pending. A pending terminal never changes an applied result into
+a rejection internally. The public
+[TOTP Module Enablement Administration contract](../api/api-contract-design.md#totp-module-enablement-administration)
+exposes it only through a specialized preview and apply pair. That pair uses an
+ordinary Administration action so a disabled TOTP Module can be re-enabled; it
+does not request or accept an `MfaPolicy`, `GrantMutation`, or
+credential-issuance proof. The process retains the exact preview behind a
+single-claim, digest-only, actor-, session-, Client Module-, and desired-state
+bound credential. A public apply whose business change committed while terminal
+delivery remains pending returns the ordinary safe committed `200` result. It
+does not expose Audit delivery state or invite an automatic retry; Audit
+recovery remains internal.
+The preview response emits `Cache-Control: no-store`; the applied result does
+not carry the secret-disclosure effect.
 
 ## Related Documents
 
@@ -569,5 +851,6 @@ route.
 - [Server API Contract](../api/api-contract-design.md)
 - [Server Restore Design](../lifecycle/restore/restore-design.md)
 - [Authentication-Failure System Log Record](../observability/authentication-failure-record-design.md)
+- [Temporary Password Disclosure Decision](temporary-password-disclosure-decision.md)
 - [TOTP Module Design](../../mfa-modules/totp-module-design.md)
 - [Glossary](../../glossary.md)

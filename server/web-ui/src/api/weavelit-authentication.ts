@@ -14,6 +14,9 @@ export const AUTH_LOGIN_PATH = "/api/v1/auth/login";
 /** The route that reports the identity a presented session authenticates. */
 export const AUTH_SESSION_PATH = "/api/v1/auth/session";
 
+/** The route that replaces a restricted session's temporary password. */
+export const AUTH_PASSWORD_CHANGE_PATH = "/api/v1/auth/password/change";
+
 /** The route that submits a second-factor code against a login continuation. */
 export const AUTH_MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify";
 
@@ -44,6 +47,18 @@ const PRE_SESSION_CSRF_VALUE = "1";
 /** The closed shape of an issued opaque token, matching the cookie contract. */
 const OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,48}$/;
 
+/** The canonical public identifier shape returned by the session route. */
+const PUBLIC_ID_PATTERN = /^[A-Za-z0-9_-]{21}[AQgw]$/;
+
+/** The reserved all-zero value is never an Account Public Identifier. */
+const ZERO_PUBLIC_ID = "AAAAAAAAAAAAAAAAAAAAAA";
+
+/** The legacy account identifier remains a bounded lowercase hexadecimal value. */
+const ACCOUNT_ID_PATTERN = /^[0-9a-f]{1,64}$/;
+
+/** The canonical correlation identifier shape shared by typed Server responses. */
+const CORRELATION_PATTERN = /^[a-z0-9-]{1,64}$/;
+
 /**
  * The closed shape of a disclosed provisioning URI.
  *
@@ -59,14 +74,42 @@ const UNAUTHORIZED_STATUS = 401;
 /** The status a login that verified a password but issued no session answers with. */
 const CONTINUATION_STATUS = 202;
 
-/** The status the listener returns when a request handler outlives its deadline. */
-const GATEWAY_TIMEOUT_STATUS = 504;
-
 /** The stable error code the listener returns with a gateway timeout. */
 const GATEWAY_TIMEOUT_CODE = "gateway_timeout";
 
-/** The closed shape of a stable, dependency-neutral Server error code. */
-const STABLE_ERROR_CODE_PATTERN = /^[a-z0-9_]{1,48}$/;
+const RESULT_ENVELOPE_FIELDS = new Set(["result", "correlation_id"]);
+const ERROR_ENVELOPE_FIELDS = new Set(["error", "correlation_id"]);
+const SESSION_ESTABLISHED_FIELDS = new Set(["authenticated"]);
+const LOGIN_CONTINUATION_FIELDS = new Set(["mfa", "continuation"]);
+const ENROLLMENT_OPENED_FIELDS = new Set(["secret", "provisioning_uri", "enrollment"]);
+const SESSION_IDENTITY_FIELDS = new Set([
+  "account_id",
+  "public_id",
+  "client_module",
+  "password_change_required",
+]);
+
+const LOGIN_REPORTED_ERRORS = new Map<number, ReadonlySet<string>>([
+  [400, new Set(["bad_request"])],
+  [401, new Set(["authentication_failed"])],
+  [403, new Set(["request_origin_denied"])],
+  [405, new Set(["method_not_allowed"])],
+  [503, new Set(["service_unavailable"])],
+  [504, new Set([GATEWAY_TIMEOUT_CODE])],
+]);
+
+const SESSION_REPORTED_ERRORS = new Map<number, ReadonlySet<string>>([
+  [401, new Set(["session_invalid"])],
+]);
+
+const PASSWORD_CHANGE_REPORTED_ERRORS = new Map<number, ReadonlySet<string>>([
+  [400, new Set(["bad_request"])],
+  [401, new Set(["session_invalid"])],
+  [403, new Set(["request_origin_denied"])],
+  [405, new Set(["method_not_allowed"])],
+  [503, new Set(["service_unavailable"])],
+  [504, new Set([GATEWAY_TIMEOUT_CODE])],
+]);
 
 /** The stage naming a login that must present an already enrolled factor. */
 export const MFA_REQUIRED_STAGE = "mfa_required";
@@ -109,6 +152,22 @@ export class IndeterminateAuthenticationError extends Error {
   }
 }
 
+/** A refused password replacement whose cause must remain opaque. */
+export class PasswordChangeFailedError extends Error {
+  constructor() {
+    super("password_change_failed");
+    this.name = "PasswordChangeFailedError";
+  }
+}
+
+/** A canonical session invalidation while replacing a restricted-session password. */
+export class PasswordChangeSessionInvalidError extends PasswordChangeFailedError {
+  constructor() {
+    super();
+    this.name = "PasswordChangeSessionInvalidError";
+  }
+}
+
 /**
  * What a session probe found, which is a fact about the served surface rather
  * than about any credential.
@@ -118,9 +177,18 @@ export class IndeterminateAuthenticationError extends Error {
  * like. It is never used to explain a denied login.
  */
 export type SessionProbe =
-  | { readonly kind: "authenticated" }
+  | {
+      readonly kind: "authenticated";
+      readonly publicId: string;
+      readonly passwordChangeRequired: boolean;
+    }
   | { readonly kind: "unauthenticated" }
   | { readonly kind: "absent" };
+
+interface SessionIdentity {
+  readonly publicId: string;
+  readonly passwordChangeRequired: boolean;
+}
 
 /**
  * What a verified password was admitted to.
@@ -159,31 +227,54 @@ function objectPayload(payload: unknown): Record<string, unknown> | null {
   return payload as Record<string, unknown>;
 }
 
+function hasExactFields(value: Record<string, unknown>, fields: ReadonlySet<string>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === fields.size && keys.every((key) => fields.has(key));
+}
+
 function typedResult(payload: unknown): Record<string, unknown> | null {
-  return objectPayload(objectPayload(payload)?.result);
+  const envelope = objectPayload(payload);
+  return envelope !== null &&
+    hasExactFields(envelope, RESULT_ENVELOPE_FIELDS) &&
+    typeof envelope.correlation_id === "string" &&
+    CORRELATION_PATTERN.test(envelope.correlation_id)
+    ? objectPayload(envelope.result)
+    : null;
 }
 
-/** Returns a documented stable error code, or `null` for any other body. */
-function reportedStableErrorCode(payload: unknown): string | null {
-  const error = objectPayload(payload)?.error;
-  return typeof error === "string" && STABLE_ERROR_CODE_PATTERN.test(error) ? error : null;
-}
-
-/** Reports whether the listener's stable timeout envelope leaves a commit unknown. */
-async function isGatewayTimeout(response: Response): Promise<boolean> {
-  if (response.status !== GATEWAY_TIMEOUT_STATUS) {
-    return false;
-  }
+/** Returns a documented status/code pair from a canonical error envelope. */
+async function reportedErrorCode(
+  response: Response,
+  documented: ReadonlyMap<number, ReadonlySet<string>>,
+): Promise<string | null> {
+  const allowedCodes = documented.get(response.status);
+  if (allowedCodes === undefined) return null;
   try {
-    return reportedStableErrorCode(await response.json()) === GATEWAY_TIMEOUT_CODE;
+    const envelope = objectPayload(await response.json());
+    if (
+      envelope === null ||
+      !hasExactFields(envelope, ERROR_ENVELOPE_FIELDS) ||
+      typeof envelope.error !== "string" ||
+      !allowedCodes.has(envelope.error) ||
+      typeof envelope.correlation_id !== "string" ||
+      !CORRELATION_PATTERN.test(envelope.correlation_id)
+    ) {
+      return null;
+    }
+    return envelope.error;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /** Reports whether a `200` envelope is the documented established-session one. */
 export function isSessionEstablished(payload: unknown): boolean {
-  return typedResult(payload)?.authenticated === true;
+  const result = typedResult(payload);
+  return (
+    result !== null &&
+    hasExactFields(result, SESSION_ESTABLISHED_FIELDS) &&
+    result.authenticated === true
+  );
 }
 
 function opaqueToken(value: unknown): string | null {
@@ -198,7 +289,7 @@ function opaqueToken(value: unknown): string | null {
  */
 export function readLoginContinuation(payload: unknown): LoginOutcome | null {
   const result = typedResult(payload);
-  if (result === null) {
+  if (result === null || !hasExactFields(result, LOGIN_CONTINUATION_FIELDS)) {
     return null;
   }
   const continuation = opaqueToken(result.continuation);
@@ -217,7 +308,7 @@ export function readLoginContinuation(payload: unknown): LoginOutcome | null {
 /** Reads the documented opened-enrollment envelope, or `null` for anything else. */
 export function readEnrollmentOpened(payload: unknown): EnrollmentOpened | null {
   const result = typedResult(payload);
-  if (result === null) {
+  if (result === null || !hasExactFields(result, ENROLLMENT_OPENED_FIELDS)) {
     return null;
   }
   const secret = opaqueToken(result.secret);
@@ -242,18 +333,35 @@ export function readEnrollmentOpened(payload: unknown): EnrollmentOpened | null 
  * any further than this check.
  */
 export function isSessionIdentity(payload: unknown): boolean {
+  return readSessionIdentity(payload) !== null;
+}
+
+/** Returns the documented restricted-session posture, or `null` for an invalid envelope. */
+export function sessionPasswordChangeRequired(payload: unknown): boolean | null {
+  return readSessionIdentity(payload)?.passwordChangeRequired ?? null;
+}
+
+/** Returns the validated identity fields the browser needs, or `null`. */
+function readSessionIdentity(payload: unknown): SessionIdentity | null {
   const result = typedResult(payload);
-  if (result === null) {
-    return false;
+  if (result === null || !hasExactFields(result, SESSION_IDENTITY_FIELDS)) {
+    return null;
   }
   const account = result.account_id;
+  const publicId = result.public_id;
   const clientModule = result.client_module;
-  return (
+  if (
     typeof account === "string" &&
-    account.length > 0 &&
-    typeof clientModule === "string" &&
-    clientModule.length > 0
-  );
+    ACCOUNT_ID_PATTERN.test(account) &&
+    typeof publicId === "string" &&
+    PUBLIC_ID_PATTERN.test(publicId) &&
+    publicId !== ZERO_PUBLIC_ID &&
+    clientModule === CLIENT_MODULE &&
+    typeof result.password_change_required === "boolean"
+  ) {
+    return { publicId, passwordChangeRequired: result.password_change_required };
+  }
+  return null;
 }
 
 /**
@@ -292,7 +400,7 @@ export function readCsrfToken(): string | null {
  * than `session` means no session exists yet.
  *
  * A transport failure, the listener's documented gateway timeout, or an
- * unreadable or invalid session-establishing `200` rejects with
+ * unreadable or invalid session-establishing response rejects with
  * {@link IndeterminateAuthenticationError}; callers reconcile only through
  * {@link probeSession}. Every reported stable rejection remains a
  * {@link LoginFailedError}.
@@ -319,7 +427,8 @@ export async function submitLogin(username: string, password: string): Promise<L
   }
 
   if (response.status !== 200 && response.status !== CONTINUATION_STATUS) {
-    if (await isGatewayTimeout(response)) {
+    const error = await reportedErrorCode(response, LOGIN_REPORTED_ERRORS);
+    if (error === GATEWAY_TIMEOUT_CODE || error === null) {
       throw new IndeterminateAuthenticationError();
     }
     throw new LoginFailedError();
@@ -329,13 +438,13 @@ export async function submitLogin(username: string, password: string): Promise<L
   try {
     payload = await response.json();
   } catch {
-    throw response.status === 200 ? new IndeterminateAuthenticationError() : new LoginFailedError();
+    throw new IndeterminateAuthenticationError();
   }
 
   if (response.status === CONTINUATION_STATUS) {
     const outcome = readLoginContinuation(payload);
     if (outcome === null) {
-      throw new LoginFailedError();
+      throw new IndeterminateAuthenticationError();
     }
     return outcome;
   }
@@ -377,7 +486,8 @@ async function submitContinuation(
   }
 
   if (response.status !== 200) {
-    if (await isGatewayTimeout(response)) {
+    const error = await reportedErrorCode(response, LOGIN_REPORTED_ERRORS);
+    if (error === GATEWAY_TIMEOUT_CODE || error === null) {
       throw new IndeterminateAuthenticationError();
     }
     throw new LoginFailedError();
@@ -460,6 +570,56 @@ export async function confirmEnrollment(enrollment: string, code: string): Promi
 }
 
 /**
+ * Submits one replacement password for the current restricted session.
+ *
+ * The browser never retries this request because the Server might have committed
+ * the replacement before an unreadable response or timeout. An indeterminate
+ * result must be reconciled through {@link probeSession}.
+ */
+export async function submitPasswordChange(password: string): Promise<void> {
+  const csrf = readCsrfToken();
+  if (csrf === null) {
+    throw new PasswordChangeFailedError();
+  }
+  let response: Response;
+  try {
+    response = await fetch(AUTH_PASSWORD_CHANGE_PATH, {
+      method: "PUT",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        [CSRF_HEADER_NAME]: csrf,
+      },
+      body: JSON.stringify({ password }),
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+    });
+  } catch {
+    throw new IndeterminateAuthenticationError();
+  }
+  if (response.status !== 200) {
+    const error = await reportedErrorCode(response, PASSWORD_CHANGE_REPORTED_ERRORS);
+    if (error === GATEWAY_TIMEOUT_CODE || error === null) {
+      throw new IndeterminateAuthenticationError();
+    }
+    if (error === "session_invalid") {
+      throw new PasswordChangeSessionInvalidError();
+    }
+    throw new PasswordChangeFailedError();
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new IndeterminateAuthenticationError();
+  }
+  if (!isSessionEstablished(payload)) {
+    throw new IndeterminateAuthenticationError();
+  }
+}
+
+/**
  * Asks the Server whether the cookies this browser already holds authenticate.
  *
  * This is how a session that outlived a Server restart is recognised: the
@@ -485,7 +645,9 @@ export async function probeSession(): Promise<SessionProbe> {
   }
 
   if (response.status === UNAUTHORIZED_STATUS) {
-    return { kind: "unauthenticated" };
+    return (await reportedErrorCode(response, SESSION_REPORTED_ERRORS)) === "session_invalid"
+      ? { kind: "unauthenticated" }
+      : { kind: "absent" };
   }
   if (response.status !== 200) {
     return { kind: "absent" };
@@ -498,5 +660,6 @@ export async function probeSession(): Promise<SessionProbe> {
     return { kind: "absent" };
   }
 
-  return isSessionIdentity(payload) ? { kind: "authenticated" } : { kind: "absent" };
+  const identity = readSessionIdentity(payload);
+  return identity === null ? { kind: "absent" } : { kind: "authenticated", ...identity };
 }

@@ -48,7 +48,18 @@ because they precede authenticated application actions.
 consequential authenticated application action. It identifies the authenticated
 principal, **[Responsible Owner](#identities-and-access)** when applicable,
 action or **[Operation](#applications-and-interfaces)**, target, time, result,
-and correlation identifier. Init and Restore actions are not Audit Logs.
+and correlation identifier. A correlated Audit record set carries the final
+result; an individual pre-commit attempt may omit it when a correlated
+completion or correction records the authoritative outcome. The
+[Logging And Accountability](spec.md#logging-and-accountability) requirements
+define this result-set relationship. Init and Restore actions are not Audit
+Logs.
+
+**Audit Reference Identifier** - An internal, pseudonymous, independently
+random identifier that lets Audit Logs refer consistently to an application
+entity without recording its name or Application Database state identifier. It
+is linkable across records and therefore not anonymous, but it is neither a
+secret nor a public API identifier.
 
 **Weavelit CLI** - The separately packaged command-line client for the
 **[Weavelit Server](#applications-and-interfaces)**. It uses the Weavelit CLI

@@ -18,6 +18,22 @@ name = "record-identity"
 path = "src/record_identity.rs"
 
 [[bin]]
+name = "attempt-record-identity"
+path = "src/attempt_record_identity.rs"
+
+[[bin]]
+name = "audit-record"
+path = "src/audit_record.rs"
+
+[[bin]]
+name = "audit-completion-phase"
+path = "src/audit_completion_phase.rs"
+
+[[bin]]
+name = "audit-correction-phase"
+path = "src/audit_correction_phase.rs"
+
+[[bin]]
 name = "context"
 path = "src/context.rs"
 

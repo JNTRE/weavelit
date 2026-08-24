@@ -3,13 +3,32 @@
 mod support;
 
 use base64::Engine as _;
-use support::{FIXTURE_TOTP_SECRET, committed, committed_text, components};
-use weavelit_server_database::MAX_NAME_LENGTH;
+use support::{
+    FIXTURE_TOTP_SECRET, account_public_identifier_persistence, committed, committed_text,
+    components, group_public_identifier_persistence, persistence,
+};
+use weavelit_server_database::{CredentialRevision, MAX_NAME_LENGTH};
 use weavelit_server_restore::{
     Account, AvailableComponents, BACKUP_CONTENT_FORMAT_VERSION, BackendIdentifier, ContentError,
     GroupGrant, LogSettingsFormat, MAX_COLLECTION_ENTRIES, MAX_LOG_MODULE_SETTINGS,
-    MAX_SENSITIVE_VALUE_BYTES, Name, NormalizedBackup, RestoreError, SensitiveBytes, normalize,
+    MAX_SENSITIVE_VALUE_BYTES, Name, NormalizedBackup, RestoreError, SensitiveBytes,
+    normalize as normalize_with_persistence,
 };
+
+fn normalize(
+    plaintext: &[u8],
+    selected_backend: &BackendIdentifier,
+    available_components: &AvailableComponents,
+) -> Result<NormalizedBackup, ContentError> {
+    normalize_with_persistence(
+        plaintext,
+        selected_backend,
+        &account_public_identifier_persistence(),
+        &group_public_identifier_persistence(),
+        &persistence(),
+        available_components,
+    )
+}
 
 fn sqlite() -> BackendIdentifier {
     BackendIdentifier::new("sqlite").expect("the backend identifier is valid")
@@ -17,6 +36,27 @@ fn sqlite() -> BackendIdentifier {
 
 fn plaintext() -> String {
     committed_text("valid-plaintext.json")
+}
+
+const FIXTURE_ACCOUNT_PUBLIC_ID: &str = "kpOUlZaXmJmam5ydnp-goQ";
+const FIXTURE_GROUP_PUBLIC_ID: &str = "MTExMTExMTExMTExMTExMQ";
+
+fn persisted_public_id(backup: &NormalizedBackup) -> [u8; 16] {
+    account_public_identifier_persistence()
+        .encode(&backup.account_public_identities()[0].public_identifier())
+}
+
+fn persisted_group_public_id(backup: &NormalizedBackup) -> [u8; 16] {
+    group_public_identifier_persistence()
+        .encode(&backup.group_public_identities()[0].public_identifier())
+}
+
+fn decoded_public_id(value: &str) -> [u8; 16] {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .unwrap()
+        .try_into()
+        .unwrap()
 }
 
 fn replaced(from: &str, to: &str) -> String {
@@ -45,8 +85,408 @@ fn accounts(added: &[(&str, &str)]) -> String {
 
 #[test]
 fn the_committed_plaintext_normalizes() {
-    normalize(&committed("valid-plaintext.json"), &sqlite(), &components())
+    let backup = normalize(&committed("valid-plaintext.json"), &sqlite(), &components())
         .expect("the committed plaintext is valid content");
+
+    let account_reference = backup.account_audit_references()[0]
+        .audit_reference()
+        .to_string();
+    let group_reference = backup.group_audit_references()[0]
+        .audit_reference()
+        .to_string();
+    let configuration_reference = backup.log_configuration_audit_references()[0]
+        .audit_reference()
+        .to_string();
+    assert!(account_reference.starts_with("ar-"));
+    assert!(group_reference.starts_with("ar-"));
+    assert!(configuration_reference.starts_with("ar-"));
+    assert_ne!(account_reference, group_reference);
+    assert_ne!(account_reference, configuration_reference);
+    assert_ne!(group_reference, configuration_reference);
+    assert!(!account_reference.contains(backup.accounts()[0].username.as_str()));
+    assert!(!group_reference.contains(backup.groups()[0].name.as_str()));
+    assert_eq!(
+        backup.accounts()[0].credential_revision,
+        CredentialRevision::INITIAL
+    );
+    assert!(!backup.accounts()[0].must_change_password);
+    assert_eq!(backup.accounts()[0].temporary_credential_expiration, None);
+}
+
+#[test]
+fn supplied_temporary_credential_metadata_survives_normalization() {
+    let document = replaced(
+        "\"active\":true}",
+        "\"active\":true,\"credential_revision\":18446744073709551615,\
+         \"must_change_password\":true,\
+         \"temporary_credential_expires_at_milliseconds\":9223372036854775807}",
+    );
+
+    let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
+    let account = &backup.accounts()[0];
+    assert_eq!(
+        account.credential_revision,
+        CredentialRevision::from_value(u64::MAX).unwrap()
+    );
+    assert!(account.must_change_password);
+    assert_eq!(
+        account
+            .temporary_credential_expiration
+            .unwrap()
+            .as_unix_milliseconds(),
+        i64::MAX
+    );
+}
+
+#[test]
+fn invalid_temporary_credential_metadata_is_uniformly_backup_invalid() {
+    let mutations = [
+        (
+            "zero revision",
+            "\"active\":true,\"credential_revision\":0}",
+        ),
+        (
+            "malformed revision",
+            "\"active\":true,\"credential_revision\":\"secret-revision\"}",
+        ),
+        (
+            "negative expiration",
+            "\"active\":true,\"must_change_password\":true,\
+             \"temporary_credential_expires_at_milliseconds\":-1}",
+        ),
+        (
+            "flag without expiration",
+            "\"active\":true,\"must_change_password\":true}",
+        ),
+        (
+            "expiration without flag",
+            "\"active\":true,\
+             \"temporary_credential_expires_at_milliseconds\":1}",
+        ),
+    ];
+
+    for (label, replacement) in mutations {
+        let document = replaced("\"active\":true}", replacement);
+        let error = reject(&document);
+        assert_eq!(
+            RestoreError::from(error).category_reason(),
+            ("backup_invalid", "backup_invalid"),
+            "{label}"
+        );
+        assert!(!error.to_string().contains("secret-revision"), "{label}");
+    }
+
+    let temporary_without_verifier = replaced(
+        "\"active\":true}",
+        "\"active\":true,\"must_change_password\":true,\
+         \"temporary_credential_expires_at_milliseconds\":1}",
+    )
+    .replace(
+        "\"password_verifiers\":[{\"account\":\"AgMEBQYHCAkKCwwNDg8QEQ\",\"verifier\":\"$argon2id$v=19$m=65536,t=3,p=1$sbKztLW2t7i5uru8vb6/wA$gyw90gCqVs5nwE+ZFbfoD7UW6DPxegGqJR5JSFbObDQ\"}]",
+        "\"password_verifiers\":[]",
+    );
+    let error = reject(&temporary_without_verifier);
+    assert_eq!(
+        RestoreError::from(error).category_reason(),
+        ("backup_invalid", "backup_invalid")
+    );
+}
+
+#[test]
+fn supplied_account_public_id_survives_normalization_exactly() {
+    let backup = normalize(plaintext().as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_eq!(backup.account_public_identities().len(), 1);
+    assert_eq!(
+        backup.account_public_identities()[0].account(),
+        backup.accounts()[0].identifier
+    );
+    assert_eq!(
+        persisted_public_id(&backup),
+        decoded_public_id(FIXTURE_ACCOUNT_PUBLIC_ID)
+    );
+}
+
+#[test]
+fn omitted_account_public_id_generates_a_fresh_nonzero_value() {
+    let legacy = replaced(
+        &format!("\"public_id\":\"{FIXTURE_ACCOUNT_PUBLIC_ID}\","),
+        "",
+    );
+    let first = normalize(legacy.as_bytes(), &sqlite(), &components()).unwrap();
+    let second = normalize(legacy.as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_ne!(persisted_public_id(&first), [0; 16]);
+    assert_ne!(persisted_public_id(&second), [0; 16]);
+    assert_ne!(persisted_public_id(&first), persisted_public_id(&second));
+}
+
+#[test]
+fn invalid_supplied_account_public_ids_are_rejected_without_payloads() {
+    let wrong_length = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x51_u8; 15]);
+    for (candidate, expected) in [
+        ("not_base64url", ContentError::EncodingInvalid),
+        ("kpOUlZaXmJmam5ydnp-goQ=", ContentError::Malformed),
+        (wrong_length.as_str(), ContentError::EncodingInvalid),
+        ("AAAAAAAAAAAAAAAAAAAAAA", ContentError::DomainInvalid),
+    ] {
+        let document = replaced(FIXTURE_ACCOUNT_PUBLIC_ID, candidate);
+        let error = reject(&document);
+        assert_eq!(error, expected);
+        assert!(!error.to_string().contains(candidate));
+        assert_eq!(
+            RestoreError::from(error).category_reason(),
+            ("backup_invalid", "backup_invalid")
+        );
+    }
+
+    let explicit_null = replaced(
+        &format!("\"public_id\":\"{FIXTURE_ACCOUNT_PUBLIC_ID}\""),
+        "\"public_id\":null",
+    );
+    assert_eq!(reject(&explicit_null), ContentError::Malformed);
+}
+
+#[test]
+fn duplicate_account_public_ids_are_rejected() {
+    let duplicate = format!(
+        "{{\"identifier\":\"AAAAAAAAAAAAAAAAAAAAAQ\",\"public_id\":\"{FIXTURE_ACCOUNT_PUBLIC_ID}\",\"username\":\"second\",\"display_name\":null,\"active\":true}},"
+    );
+    let document = replaced("\"accounts\":[", &format!("\"accounts\":[{duplicate}"));
+
+    assert_eq!(reject(&document), ContentError::DuplicateEntry);
+}
+
+#[test]
+fn supplied_group_public_id_survives_normalization_exactly() {
+    let document = replaced(
+        "\"name\":\"Administrators\"",
+        &format!("\"public_id\":\"{FIXTURE_GROUP_PUBLIC_ID}\",\"name\":\"Administrators\""),
+    );
+    let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_eq!(backup.group_public_identities().len(), 1);
+    assert_eq!(
+        backup.group_public_identities()[0].group(),
+        backup.groups()[0].identifier
+    );
+    assert_eq!(
+        persisted_group_public_id(&backup),
+        decoded_public_id(FIXTURE_GROUP_PUBLIC_ID)
+    );
+}
+
+#[test]
+fn omitted_group_public_id_generates_a_fresh_nonzero_value() {
+    let first = normalize(plaintext().as_bytes(), &sqlite(), &components()).unwrap();
+    let second = normalize(plaintext().as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_ne!(persisted_group_public_id(&first), [0; 16]);
+    assert_ne!(persisted_group_public_id(&second), [0; 16]);
+    assert_ne!(
+        persisted_group_public_id(&first),
+        persisted_group_public_id(&second)
+    );
+}
+
+#[test]
+fn invalid_supplied_group_public_ids_are_rejected_without_payloads() {
+    let wrong_length = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x51_u8; 15]);
+    for (candidate, expected) in [
+        ("not_base64url", ContentError::EncodingInvalid),
+        ("MTExMTExMTExMTExMTExMQ=", ContentError::Malformed),
+        (wrong_length.as_str(), ContentError::EncodingInvalid),
+        ("AAAAAAAAAAAAAAAAAAAAAA", ContentError::DomainInvalid),
+    ] {
+        let document = replaced(
+            "\"name\":\"Administrators\"",
+            &format!("\"public_id\":\"{candidate}\",\"name\":\"Administrators\""),
+        );
+        let error = reject(&document);
+        assert_eq!(error, expected);
+        assert!(!error.to_string().contains(candidate));
+        assert_eq!(
+            RestoreError::from(error).category_reason(),
+            ("backup_invalid", "backup_invalid")
+        );
+    }
+
+    let explicit_null = replaced(
+        "\"name\":\"Administrators\"",
+        "\"public_id\":null,\"name\":\"Administrators\"",
+    );
+    assert_eq!(reject(&explicit_null), ContentError::Malformed);
+}
+
+#[test]
+fn duplicate_group_public_ids_are_rejected() {
+    let duplicate = format!(
+        "{{\"identifier\":\"AAAAAAAAAAAAAAAAAAAAAQ\",\"public_id\":\"{FIXTURE_GROUP_PUBLIC_ID}\",\"name\":\"Operators\",\"description\":null}},"
+    );
+    let document = replaced("\"groups\":[", &format!("\"groups\":[{duplicate}"));
+    let document = document.replace(
+        "\"name\":\"Administrators\"",
+        &format!("\"public_id\":\"{FIXTURE_GROUP_PUBLIC_ID}\",\"name\":\"Administrators\""),
+    );
+
+    assert_eq!(reject(&document), ContentError::DuplicateEntry);
+}
+
+#[test]
+fn totp_enablement_normalizes_to_one_canonical_entry() {
+    for (entries, expected) in [
+        (
+            r#"{"component":"mfa.totp","key":"enabled","value":"true"}"#,
+            "true",
+        ),
+        (
+            r#"{"component":"mfa.totp","key":"enabled","value":"false"}"#,
+            "false",
+        ),
+        (
+            r#"{"component":"mfa.totp","key":"enabled","value":"yes"}"#,
+            "false",
+        ),
+        (
+            r#"{"component":"totp","key":"mfa-module.enabled","value":"true"}"#,
+            "true",
+        ),
+        (
+            r#"{"component":"totp","key":"mfa-module.enabled","value":"false"}"#,
+            "false",
+        ),
+        (
+            r#"{"component":"mfa.totp","key":"enabled","value":"false"},{"component":"totp","key":"mfa-module.enabled","value":"true"}"#,
+            "false",
+        ),
+        ("", "false"),
+    ] {
+        let document = replaced(
+            r#"{"component":"weavelit-server","key":"site-name","value":"Example"}"#,
+            &format!(
+                r#"{{"component":"weavelit-server","key":"site-name","value":"Example"}}{}{}"#,
+                if entries.is_empty() { "" } else { "," },
+                entries
+            ),
+        );
+
+        let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
+        let totp = backup
+            .configuration()
+            .iter()
+            .filter(|entry| {
+                entry.component.as_str() == "totp" && entry.key.as_str() == "mfa-module.enabled"
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(totp.len(), 1);
+        assert_eq!(totp[0].value.as_str(), expected);
+        assert!(!backup.configuration().iter().any(|entry| {
+            entry.component.as_str() == "mfa.totp" && entry.key.as_str() == "enabled"
+        }));
+    }
+}
+
+#[test]
+fn supplied_audit_references_survive_normalization_exactly() {
+    const ACCOUNT_REFERENCE: &str = "ar-11111111111111111111111111111111";
+    const GROUP_REFERENCE: &str = "ar-22222222222222222222222222222222";
+    const CONFIGURATION_REFERENCE: &str = "ar-44444444444444444444444444444444";
+    let document = replaced(
+        "\"username\":\"administrator\"",
+        &format!("\"audit_reference\":\"{ACCOUNT_REFERENCE}\",\"username\":\"administrator\""),
+    );
+    let document = document.replace(
+        "\"name\":\"Administrators\"",
+        &format!("\"audit_reference\":\"{GROUP_REFERENCE}\",\"name\":\"Administrators\""),
+    );
+    let document = document.replace(
+        "\"module\":\"sqlite\"",
+        &format!("\"audit_reference\":\"{CONFIGURATION_REFERENCE}\",\"module\":\"sqlite\""),
+    );
+
+    let backup = normalize(document.as_bytes(), &sqlite(), &components()).unwrap();
+
+    assert_eq!(
+        backup.account_audit_references()[0]
+            .audit_reference()
+            .to_string(),
+        ACCOUNT_REFERENCE
+    );
+    assert_eq!(
+        backup.group_audit_references()[0]
+            .audit_reference()
+            .to_string(),
+        GROUP_REFERENCE
+    );
+    assert_eq!(
+        backup.log_configuration_audit_references()[0]
+            .audit_reference()
+            .to_string(),
+        CONFIGURATION_REFERENCE
+    );
+}
+
+#[test]
+fn malformed_or_reused_supplied_audit_references_are_invalid() {
+    let malformed = replaced(
+        "\"username\":\"administrator\"",
+        "\"audit_reference\":\"ar-00000000000000000000000000000000\",\"username\":\"administrator\"",
+    );
+    assert_eq!(reject(&malformed), ContentError::DomainInvalid);
+
+    let malformed_configuration = replaced(
+        "\"module\":\"sqlite\"",
+        "\"audit_reference\":\"ar-00000000000000000000000000000000\",\"module\":\"sqlite\"",
+    );
+    assert_eq!(
+        reject(&malformed_configuration),
+        ContentError::DomainInvalid
+    );
+
+    const SHARED: &str = "ar-33333333333333333333333333333333";
+    let duplicate = replaced(
+        "\"username\":\"administrator\"",
+        &format!("\"audit_reference\":\"{SHARED}\",\"username\":\"administrator\""),
+    );
+    let duplicate = duplicate.replace(
+        "\"name\":\"Administrators\"",
+        &format!("\"audit_reference\":\"{SHARED}\",\"name\":\"Administrators\""),
+    );
+    assert_eq!(reject(&duplicate), ContentError::DuplicateEntry);
+
+    let cross_kind = replaced(
+        "\"username\":\"administrator\"",
+        &format!("\"audit_reference\":\"{SHARED}\",\"username\":\"administrator\""),
+    );
+    let cross_kind = cross_kind.replace(
+        "\"module\":\"sqlite\"",
+        &format!("\"audit_reference\":\"{SHARED}\",\"module\":\"sqlite\""),
+    );
+    assert_eq!(reject(&cross_kind), ContentError::DuplicateEntry);
+}
+
+#[test]
+fn explicit_null_audit_references_are_rejected_while_legacy_omission_is_accepted() {
+    normalize(plaintext().as_bytes(), &sqlite(), &components())
+        .expect("a legacy omission generates independent references");
+
+    for document in [
+        replaced(
+            "\"username\":\"administrator\"",
+            "\"audit_reference\":null,\"username\":\"administrator\"",
+        ),
+        replaced(
+            "\"name\":\"Administrators\"",
+            "\"audit_reference\":null,\"name\":\"Administrators\"",
+        ),
+        replaced(
+            "\"module\":\"sqlite\"",
+            "\"audit_reference\":null,\"module\":\"sqlite\"",
+        ),
+    ] {
+        assert_eq!(reject(&document), ContentError::Malformed);
+    }
 }
 
 #[test]
@@ -628,6 +1068,7 @@ fn content_failures_render_uniformly() {
         ContentError::AssignmentInvalid,
         ContentError::FactorDataInvalid,
         ContentError::SettingUnsupported,
+        ContentError::RandomnessUnavailable,
     ]
     .iter()
     .map(|error| error.to_string())

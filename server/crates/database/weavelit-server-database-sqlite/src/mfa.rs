@@ -1,10 +1,14 @@
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use weavelit_server_database::{
-    COMPONENT_ENABLED_VALUE, DatabaseError, MfaAcceptance, MfaDirectSession, MfaEnablementOutcome,
+    AccountCredentialIssuanceFactor, AccountCredentialIssuanceRecheck, COMPONENT_ENABLED_VALUE,
+    ComponentKind, CredentialIssuanceStepUpAcceptance, DatabaseError, MfaAcceptance,
+    MfaAdministrationStepUpAcceptance, MfaAdministrationStepUpRecheck, MfaDirectSession,
+    MfaEnablementAuditTerminalWrites, MfaEnablementOutcome, MfaEnablementPreviewState,
     MfaEnrollment, MfaFactor, MfaModuleTarget, MfaStore, MfaTimeStep, NewSession, StateIdentifier,
 };
 
 use crate::SqliteDatabase;
+use crate::audit_recovery;
 use crate::error::{ErrorContext, map_sqlite_error};
 use crate::session;
 
@@ -36,6 +40,7 @@ const SELECT_ACCOUNT_FACTOR: &str = "SELECT EXISTS \
      (SELECT 1 FROM weavelit_mfa_factor WHERE account_id = ?1 AND module = ?2)";
 const SELECT_ACCOUNT_REQUIREMENT: &str =
     "SELECT mfa_required FROM weavelit_account WHERE account_id = ?1";
+const SELECT_ACCOUNT_ACTIVE: &str = "SELECT active FROM weavelit_account WHERE account_id = ?1";
 const SELECT_ENABLEMENT: &str = "SELECT setting_value FROM weavelit_configuration \
      WHERE component = ?1 AND setting_key = ?2";
 const SET_ENABLEMENT: &str = "INSERT INTO weavelit_configuration \
@@ -44,12 +49,6 @@ const SET_ENABLEMENT: &str = "INSERT INTO weavelit_configuration \
 /// Removes the live sessions of every account enrolled in one module.
 const REVOKE_ENROLLED_SESSIONS: &str = "DELETE FROM weavelit_session WHERE account_id IN \
      (SELECT account_id FROM weavelit_mfa_factor WHERE module = ?1)";
-
-/// The configuration key one MFA Module's enabled state is stored under.
-///
-/// The key is owned by the module's own configuration component, so the entry
-/// that disables the TOTP Module belongs to `mfa.totp`.
-const MODULE_ENABLED_KEY: &str = "enabled";
 
 /// The stored value that leaves an MFA Module disabled.
 ///
@@ -71,6 +70,28 @@ pub(super) fn clear(connection: &Connection) -> Result<(), DatabaseError> {
 }
 
 impl MfaStore for SqliteDatabase {
+    fn enrolled_accounts(&mut self, target: &MfaModuleTarget) -> Result<usize, DatabaseError> {
+        enrolled_account_count(&self.connection, target)
+    }
+
+    fn enablement_preview(
+        &mut self,
+        target: &MfaModuleTarget,
+    ) -> Result<MfaEnablementPreviewState, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        let preview = MfaEnablementPreviewState::new(
+            enabled(&transaction, target)?,
+            enrolled_account_count(&transaction, target)?,
+        );
+        transaction
+            .commit()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        Ok(preview)
+    }
+
     fn accepted_step(
         &mut self,
         factor: StateIdentifier,
@@ -111,17 +132,15 @@ impl MfaStore for SqliteDatabase {
         // disablement's own revocation could not have reached: that revocation
         // removes the sessions that exist when it commits, and this one would
         // not have existed yet.
+        if !session::account_allows_issuance(&transaction, session)? {
+            return Ok(MfaAcceptance::Rejected);
+        }
         if !enabled(&transaction, target)? {
             return Ok(MfaAcceptance::ModuleDisabled);
         }
-        let written = transaction
-            .execute(
-                ADVANCE_WATERMARK,
-                params![factor.as_bytes().as_slice(), step.as_stored()],
-            )
-            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        let written = advance_watermark(&transaction, factor, step)?;
         // Rolled back rather than committed, so a replayed code issues nothing.
-        if written == 0 {
+        if !written {
             return Ok(MfaAcceptance::Replayed);
         }
         session::insert(&transaction, session)?;
@@ -132,10 +151,80 @@ impl MfaStore for SqliteDatabase {
         Ok(MfaAcceptance::Accepted)
     }
 
+    fn accept_administration_step_up(
+        &mut self,
+        target: &MfaModuleTarget,
+        factor: StateIdentifier,
+        step: MfaTimeStep,
+        recheck: &MfaAdministrationStepUpRecheck,
+    ) -> Result<MfaAdministrationStepUpAcceptance, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        let Some(stored_session) = session::load(&transaction, recheck.session())? else {
+            return Ok(MfaAdministrationStepUpAcceptance::Rejected);
+        };
+        if stored_session.account() != recheck.actor()
+            || stored_session.client_module() != recheck.client_module()
+            || stored_session.rejection_at(recheck.now()).is_some()
+        {
+            return Ok(MfaAdministrationStepUpAcceptance::Rejected);
+        }
+        let active = transaction
+            .query_row(
+                SELECT_ACCOUNT_ACTIVE,
+                [recheck.actor().as_bytes().as_slice()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        if active != Some(1)
+            || factor_for_account(&transaction, recheck.actor(), target)? != Some(factor)
+        {
+            return Ok(MfaAdministrationStepUpAcceptance::Rejected);
+        }
+        if !enabled(&transaction, target)? {
+            return Ok(MfaAdministrationStepUpAcceptance::ModuleDisabled);
+        }
+        if !advance_watermark(&transaction, factor, step)? {
+            return Ok(MfaAdministrationStepUpAcceptance::Replayed);
+        }
+        transaction
+            .commit()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        Ok(MfaAdministrationStepUpAcceptance::Accepted)
+    }
+
+    fn accept_credential_issuance_step_up(
+        &mut self,
+        recheck: &AccountCredentialIssuanceRecheck,
+    ) -> Result<CredentialIssuanceStepUpAcceptance, DatabaseError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        if !crate::account_writer::credential_issuance_step_up_matches(&transaction, recheck)? {
+            return Ok(CredentialIssuanceStepUpAcceptance::Rejected);
+        }
+        if let AccountCredentialIssuanceFactor::Totp {
+            factor,
+            verified_step,
+            ..
+        } = recheck.factor()
+            && !advance_watermark(&transaction, *factor, *verified_step)?
+        {
+            return Ok(CredentialIssuanceStepUpAcceptance::Replayed);
+        }
+        transaction
+            .commit()
+            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+        Ok(CredentialIssuanceStepUpAcceptance::Accepted)
+    }
+
     fn issue_direct_session(
         &mut self,
         target: &MfaModuleTarget,
-        account: StateIdentifier,
         session: &NewSession,
     ) -> Result<MfaDirectSession, DatabaseError> {
         let transaction = self
@@ -151,6 +240,10 @@ impl MfaStore for SqliteDatabase {
         //
         // An account this transaction no longer finds is admitted to nothing,
         // for the same reason a required account whose Module is disabled is.
+        if !session::account_allows_issuance(&transaction, session)? {
+            return Ok(MfaDirectSession::Denied);
+        }
+        let account = session.account();
         let Some(required) = requirement(&transaction, account)? else {
             return Ok(MfaDirectSession::Denied);
         };
@@ -192,6 +285,11 @@ impl MfaStore for SqliteDatabase {
         // issued behind one.
         //
         // Every refusal below returns without committing, so it writes nothing.
+        if factor.account != session.account()
+            || !session::account_allows_issuance(&transaction, session)?
+        {
+            return Ok(MfaEnrollment::Rejected);
+        }
         if !enabled(&transaction, target)? {
             return Ok(MfaEnrollment::ModuleDisabled);
         }
@@ -233,22 +331,24 @@ impl MfaStore for SqliteDatabase {
         target: &MfaModuleTarget,
         enabled: bool,
         expected_enrolled: usize,
+        audit_terminals: &MfaEnablementAuditTerminalWrites<'_>,
     ) -> Result<MfaEnablementOutcome, DatabaseError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-        let enrolled: i64 = transaction
-            .query_row(
-                COUNT_ENROLLED_ACCOUNTS,
-                params![target.module.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
-        let enrolled = usize::try_from(enrolled).map_err(|_| DatabaseError::IntegrityFailure)?;
-        // Rolled back rather than committed, so a stale preview writes nothing.
+        let enrolled = enrolled_account_count(&transaction, target)?;
         if enrolled != expected_enrolled {
-            return Ok(MfaEnablementOutcome::EnrolledCountChanged { enrolled });
+            audit_recovery::persist_in_transaction(
+                &transaction,
+                audit_terminals.enrolled_count_changed(),
+            )?;
+            transaction
+                .commit()
+                .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+            return Ok(MfaEnablementOutcome::EnrolledCountChanged {
+                current_affected_users: enrolled,
+            });
         }
 
         let value = if enabled {
@@ -259,7 +359,11 @@ impl MfaStore for SqliteDatabase {
         transaction
             .execute(
                 SET_ENABLEMENT,
-                params![target.component.as_str(), MODULE_ENABLED_KEY, value],
+                params![
+                    target.component.as_str(),
+                    ComponentKind::MfaModule.enablement_key(),
+                    value
+                ],
             )
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
         let revoked_sessions = if enabled {
@@ -269,12 +373,27 @@ impl MfaStore for SqliteDatabase {
                 .execute(REVOKE_ENROLLED_SESSIONS, params![target.module.as_str()])
                 .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?
         };
+        audit_recovery::persist_in_transaction(&transaction, audit_terminals.applied())?;
         transaction
             .commit()
             .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
 
         Ok(MfaEnablementOutcome::Applied { revoked_sessions })
     }
+}
+
+fn enrolled_account_count(
+    connection: &Connection,
+    target: &MfaModuleTarget,
+) -> Result<usize, DatabaseError> {
+    let enrolled: i64 = connection
+        .query_row(
+            COUNT_ENROLLED_ACCOUNTS,
+            params![target.module.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+    usize::try_from(enrolled).map_err(|_| DatabaseError::IntegrityFailure)
 }
 
 fn step(stored: i64) -> Result<MfaTimeStep, DatabaseError> {
@@ -287,17 +406,76 @@ fn step(stored: i64) -> Result<MfaTimeStep, DatabaseError> {
 ///
 /// Any value other than the exact enabled one, and a missing entry, leaves the
 /// module disabled.
-fn enabled(transaction: &Transaction<'_>, target: &MfaModuleTarget) -> Result<bool, DatabaseError> {
+pub(super) fn enabled(
+    transaction: &Transaction<'_>,
+    target: &MfaModuleTarget,
+) -> Result<bool, DatabaseError> {
     let stored: Option<String> = transaction
         .query_row(
             SELECT_ENABLEMENT,
-            params![target.component.as_str(), MODULE_ENABLED_KEY],
+            params![
+                target.component.as_str(),
+                ComponentKind::MfaModule.enablement_key()
+            ],
             |row| row.get(0),
         )
         .optional()
         .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
 
     Ok(stored.as_deref() == Some(COMPONENT_ENABLED_VALUE))
+}
+
+pub(super) fn factor_for_account(
+    transaction: &Transaction<'_>,
+    account: StateIdentifier,
+    target: &MfaModuleTarget,
+) -> Result<Option<StateIdentifier>, DatabaseError> {
+    let stored: Option<Vec<u8>> = transaction
+        .query_row(
+            "SELECT factor_id FROM weavelit_mfa_factor WHERE account_id = ?1 AND module = ?2",
+            params![account.as_bytes().as_slice(), target.module.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+    stored
+        .map(|stored| {
+            let stored: [u8; 16] = stored
+                .try_into()
+                .map_err(|_| DatabaseError::IntegrityFailure)?;
+            StateIdentifier::from_bytes(stored).map_err(|_| DatabaseError::IntegrityFailure)
+        })
+        .transpose()
+}
+
+pub(super) fn watermark_matches(
+    transaction: &Transaction<'_>,
+    factor: StateIdentifier,
+    expected: MfaTimeStep,
+) -> Result<bool, DatabaseError> {
+    let stored: Option<i64> = transaction
+        .query_row(
+            SELECT_WATERMARK,
+            params![factor.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))?;
+    Ok(stored.map(step).transpose()? == Some(expected))
+}
+
+pub(super) fn advance_watermark(
+    transaction: &Transaction<'_>,
+    factor: StateIdentifier,
+    step: MfaTimeStep,
+) -> Result<bool, DatabaseError> {
+    transaction
+        .execute(
+            ADVANCE_WATERMARK,
+            params![factor.as_bytes().as_slice(), step.as_stored()],
+        )
+        .map(|written| written == 1)
+        .map_err(|error| map_sqlite_error(error, ErrorContext::Mfa))
 }
 
 /// Reports whether one account holds a factor for one MFA Module, inside the

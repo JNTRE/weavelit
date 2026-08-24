@@ -20,6 +20,15 @@ function mockFetch(response: () => Promise<Response>) {
 
 describe("reconcileLifecycle", () => {
   it("submits the capability only in the exact same-origin JSON request body", async () => {
+    globalThis.localStorage.clear();
+    globalThis.sessionStorage.clear();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    globalThis.sessionStorage.setItem("sanity-check", "safe-value");
+    expect(setItemSpy).toHaveBeenCalledWith("sanity-check", "safe-value");
+    expect(globalThis.sessionStorage.length).toBe(1);
+    globalThis.sessionStorage.clear();
+    setItemSpy.mockClear();
+
     const fetchMock = mockFetch(() =>
       Promise.resolve(jsonResponse({ result: "reconciliation_confirmed" }, 200)),
     );
@@ -44,6 +53,8 @@ describe("reconcileLifecycle", () => {
     expect(globalThis.localStorage.length).toBe(0);
     expect(globalThis.sessionStorage.length).toBe(0);
     expect(document.cookie).not.toContain(CAPABILITY);
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 
   it("reports a matching fixed confirmation", async () => {

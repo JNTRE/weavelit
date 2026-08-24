@@ -6,9 +6,15 @@ tickets; its supported Operations must remain deliberately named, validated,
 authorized, auditable, and implemented through its one documented Service
 Connection type.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns Zendesk-specific provider integration and supported Operations.
 - It does not own shared Service Module guidance, caller authorization, client request translation, or the Weavelit CLI application.
@@ -16,29 +22,17 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
+## Working Rules
 
-- `AGENTS.md`: Local routing, inventory, and Zendesk Service Module crate-boundary rules.
+- MUST follow [Contribution Guidelines](../../../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../../../docs/glossary.md), formatting them as bold links on first substantive use.
 
-## Usage Guidance
+- Before editing, agents MUST read this `AGENTS.md`, then each parent `AGENTS.md` upward to the repository root.
+- MUST read `../../../../../docs/service-modules/zendesk/`, `../../../../../docs/service-modules/`, and the canonical product and security documents before changing Zendesk behavior.
+- MUST keep Zendesk provider authentication, request construction, error mapping, retry, rate-limit, and duplicate-protection behavior in this crate.
+- MUST add controlled-fake or recorded-fixture tests for Zendesk request construction and failure behavior, following `../../../../../docs/testing.md`.
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
-
-- Before editing, read this `AGENTS.md`, then each parent `AGENTS.md` upward to the repository root.
-- Read `../../../../../docs/service-modules/zendesk/`, `../../../../../docs/service-modules/`, and the canonical product and security documents before changing Zendesk behavior.
-- Keep Zendesk provider authentication, request construction, error mapping, retry, rate-limit, and duplicate-protection behavior in this crate.
-- Add controlled-fake or recorded-fixture tests for Zendesk request construction and failure behavior, following `../../../../../docs/testing.md`.
-
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep provider credentials in the trusted Server environment and out of source control, client applications, returned errors, and logs.
-- Do not contact Zendesk for invalid, unauthorized, duplicated, or otherwise rejected requests.
-- Preserve Zendesk-specific design in `../../../../../docs/service-modules/zendesk/` rather than duplicating it here.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- MUST keep provider credentials in the trusted Server environment and out of source control, client applications, returned errors, and logs.
+- Agents MUST NOT contact Zendesk for invalid, unauthorized, duplicated, or otherwise rejected requests.
+- MUST preserve Zendesk-specific design in `../../../../../docs/service-modules/zendesk/` rather than duplicating it here.

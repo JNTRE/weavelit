@@ -15,6 +15,7 @@ rustix.workspace = true
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 weavelit-server-database = { path = "../../database/weavelit-server-database" }
+weavelit-server-database-authority = { path = "../../database/weavelit-server-database-authority" }
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

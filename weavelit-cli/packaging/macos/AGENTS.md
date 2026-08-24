@@ -5,9 +5,15 @@ artifact for macOS 26 and later on Apple Silicon (`arm64`). The installed client
 must work without Rust, source code, or provider credentials and authenticate to
 a compatible installed Weavelit Server through its versioned HTTPS interface.
 
-## Purpose and Scope
+## Instruction Precedence
 
-Use this section to understand what this directory owns, what it does not own, and where child paths own detailed rules.
+Apply instructions in this order:
+
+1. Nearest folder-level `AGENTS.md` in the path being edited.
+2. Repository root `AGENTS.md`.
+3. Tool-specific overlays for runtime behavior only.
+
+## Purpose and Scope
 
 - This directory owns macOS `arm64` Weavelit CLI packaging and installation behavior.
 - It does not own Weavelit CLI source, Server packaging, provider credentials, or Server configuration and initialization.
@@ -15,29 +21,17 @@ Use this section to understand what this directory owns, what it does not own, a
 
 ## Asset Inventory
 
-Use this section as the source of truth for what assets belong in this directory and what each asset is for.
+## Working Rules
 
-- `AGENTS.md`: Local routing, inventory, and macOS Weavelit CLI packaging-boundary rules.
+- MUST follow [Contribution Guidelines](../../../CONTRIBUTING.md) for branch, commit, and pull-request workflow, naming, and message requirements.
+- For changes under [`docs/`](../../../docs/), application documentation MUST comply with the [Documentation Standards](../../../docs/documentation-standards.md); use exact canonical terms from [the glossary](../../../docs/glossary.md), formatting them as bold links on first substantive use.
 
-## Usage Guidance
+- Before editing, agents MUST read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
+- MUST read the authoritative [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8) and the Weavelit CLI requirements before changing macOS release behavior.
+- MUST keep macOS installation behavior here and verify an installed artifact against an installed compatible Server when this workflow is introduced.
+- MUST record macOS build, installation, verification, and troubleshooting instructions with the release workflow.
 
-Follow this section for workflow, sequencing, and decision order when making changes in this directory.
-
-- Before editing, read this `AGENTS.md`, then `../AGENTS.md`, `../../AGENTS.md`, and the repository-root `AGENTS.md`.
-- Read the authoritative [GitHub Milestone 8](https://github.com/JNTRE/weavelit/milestone/8) and the Weavelit CLI requirements before changing macOS release behavior.
-- Keep macOS installation behavior here and verify an installed artifact against an installed compatible Server when this workflow is introduced.
-- Record macOS build, installation, verification, and troubleshooting instructions with the release workflow.
-
-## Standards and Conventions
-
-Treat every rule in this section as mandatory for formatting, naming, scope boundaries, and consistency.
-
-- Update this `AGENTS.md` asset inventory whenever relevant directory assets change.
-- Documentation is AI-maintained: agents must keep it accurate, complete, logically structured, and located in the appropriate documentation boundary.
-- Every change must include an update to its relevant documentation under `docs/` in the same change.
-- Reorganize, move, add, or remove documentation as needed when a change makes the current structure unclear, duplicates information, or places information outside its owning document.
-- Keep documentation focused and navigable. When a document grows broad, difficult to navigate, or mixes distinct concerns, split it into focused, appropriately named documents and organize them within `docs/`.
-- The preceding documentation-maintenance requirement must appear verbatim in every `AGENTS.md` in this repository.
-- Keep this artifact limited to macOS 26 and later on Apple Silicon (`arm64`) until support for another platform is recorded.
-- Do not require Rust, source code, or provider credentials to install the released CLI artifact.
-- Verify installed-client authentication and permitted Operation invocation against the versioned Server interface when packaging is introduced.
+- MUST update this `AGENTS.md` asset inventory whenever relevant directory assets change.
+- MUST keep this artifact limited to macOS 26 and later on Apple Silicon (`arm64`) until support for another platform is recorded.
+- Agents MUST NOT require Rust, source code, or provider credentials to install the released CLI artifact.
+- MUST verify installed-client authentication and permitted Operation invocation against the versioned Server interface when packaging is introduced.

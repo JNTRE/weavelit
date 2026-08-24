@@ -61,8 +61,14 @@ const AUTHENTICATED_FIELD: &str = "authenticated";
 /// The result field carrying the authenticated account identifier.
 const ACCOUNT_FIELD: &str = "account_id";
 
+/// The result field carrying the authenticated account's public identifier.
+const PUBLIC_ID_FIELD: &str = "public_id";
+
 /// The result field carrying the session's issuing Client Module.
 const CLIENT_MODULE_FIELD: &str = "client_module";
+
+/// The result field reporting whether the session must change its password.
+const PASSWORD_CHANGE_REQUIRED_FIELD: &str = "password_change_required";
 
 /// The result field reporting a revoked session.
 const SESSION_FIELD: &str = "session";
@@ -120,8 +126,12 @@ pub struct SessionEstablished {
 pub struct SessionIdentity {
     /// The authenticated account, rendered as lowercase hexadecimal.
     pub account_id: String,
+    /// The authenticated account's public opaque identifier.
+    pub public_id: String,
     /// The Client Module the session was issued to.
     pub client_module: String,
+    /// Whether this validated session is restricted to changing its password.
+    pub password_change_required: bool,
 }
 
 /// What the Server core decided a submitted password entitles the request to.
@@ -676,15 +686,23 @@ pub(crate) fn session_established_response(
 /// Renders the identity a validated session authenticates.
 fn session_identity_response(identity: &SessionIdentity, correlation_id: &str) -> Response {
     let unavailable = AuthenticationRejection::ServiceUnavailable;
-    let (Some(account), Some(module)) = (
+    let (Some(account), Some(public_id), Some(module)) = (
         StableCode::new(&identity.account_id),
+        OpaqueToken::new(&identity.public_id),
         OpaqueToken::new(&identity.client_module),
     ) else {
         return unavailable.response(correlation_id);
     };
     let Some(result) = typed_field(ACCOUNT_FIELD, TypedValue::Code(account)).and_then(|result| {
-        let name = StableCode::new(CLIENT_MODULE_FIELD)?;
-        result.with_field(name, TypedValue::Token(module))
+        let public_id_name = StableCode::new(PUBLIC_ID_FIELD)?;
+        let result = result.with_field(public_id_name, TypedValue::Token(public_id))?;
+        let module_name = StableCode::new(CLIENT_MODULE_FIELD)?;
+        let result = result.with_field(module_name, TypedValue::Token(module))?;
+        let password_change_name = StableCode::new(PASSWORD_CHANGE_REQUIRED_FIELD)?;
+        result.with_field(
+            password_change_name,
+            TypedValue::Boolean(identity.password_change_required),
+        )
     }) else {
         return unavailable.response(correlation_id);
     };
@@ -824,7 +842,9 @@ mod tests {
                     drop(submission);
                     identity.map(|(account_id, client_module)| SessionIdentity {
                         account_id: account_id.to_owned(),
+                        public_id: "MTExMTExMTExMTExMTExMQ".to_owned(),
                         client_module: client_module.to_owned(),
+                        password_change_required: false,
                     })
                 })
             }),
@@ -1007,7 +1027,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_validated_session_reports_only_its_account_and_client_module() {
+    async fn a_validated_session_reports_its_internal_and_public_account_identifiers() {
         let harness = harness(
             Err(AuthenticationRejection::AuthenticationFailed),
             Ok(("0123456789abcdef0123456789abcdef", "web-ui")),
@@ -1025,7 +1045,9 @@ mod tests {
         assert_eq!(
             envelope(response).await,
             "{\"result\":{\"account_id\":\"0123456789abcdef0123456789abcdef\",\
-             \"client_module\":\"web-ui\"},\"correlation_id\":\"correlation-0123456789\"}"
+                    \"public_id\":\"MTExMTExMTExMTExMTExMQ\",\"client_module\":\"web-ui\",\
+                    \"password_change_required\":false},\
+               \"correlation_id\":\"correlation-0123456789\"}"
         );
         assert_eq!(harness.recorder.validations.load(Ordering::Relaxed), 1);
     }

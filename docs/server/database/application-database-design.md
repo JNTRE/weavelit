@@ -12,6 +12,17 @@ contract: Server domain types, the persistence operations available to the
 Server, and storage-neutral typed errors. It contains no backend selection,
 driver, connection, query, transaction, migration, or backup implementation.
 
+`weavelit-server-database-authority` is the dependency-free, unpublished
+capability crate that gates persisted Audit Reference decoding, immutable Log
+Module configuration-generation materialization, and opaque Audit terminal
+recovery decoding. Its privately represented `ServerDatabaseAuthority` is not
+reexported by the database contract or lifecycle crate. Lifecycle is the sole
+production authority that constructs a selected database binding. The database
+contract declares the capability only as a persistence-capability factory's
+input, and direct persistence test support declares its own reviewable dev
+dependency rather than obtaining authority through the public backend-neutral
+contract.
+
 Each supported backend is a dedicated compiled-in implementation crate. The
 MVP SQLite implementation is `weavelit-server-database-sqlite`. It implements
 the shared contract and owns all SQLite-specific behavior. An Application
@@ -70,6 +81,10 @@ lifecycle boundary serializes workflow mutation and decides where blocking
 storage calls execute when it composes the backend. This keeps runtime and
 executor dependencies out of the persistence contract while allowing a future
 backend to implement the same operations with its own connection model.
+Implementing the trait grants no decoder-issuance method. Persisted reads that
+can decode an Audit Reference instead require an explicit borrowed
+`AuditReferencePersistence`, while backend factories continue to create only a
+raw backend-neutral trait object.
 
 `DeploymentIdentifier` is an opaque 16-byte value. The lifecycle boundary
 generates it cryptographically, and the contract rejects the reserved all-zero
@@ -136,20 +151,295 @@ about, migrate, and integrity-check individual entities. `ApplicationState`
 covers component configuration, protected component secrets, local accounts,
 password verifiers, Groups, Group memberships, Group grants, protected MFA
 factor data, Service Connection credentials, the persisted recovery public key,
-non-secret Log Module configuration and settings, System Log and Audit Log
-assignments, and the workflow completion obligation.
+non-secret Log Module configuration and settings, typed Audit Reference
+projections for every account, Group, and Log Module configuration, System Log
+and Audit Log assignments, and the workflow completion obligation.
 
-The aggregate has no session, Log Module destination data, or Log Module
-credential member. Active sessions, System Logs and Audit Logs, other Log Module
-destination data, and Log Module authentication or connection credentials
+The aggregate has no session, Log Module destination data, immutable Log Module
+configuration-generation history, normal-operation Audit terminal recovery
+obligation, or Log Module credential member. Active sessions, System Logs and
+Audit Logs, other Log Module destination data, generation history, live terminal
+recovery obligations, and Log Module authentication or connection credentials
 therefore cannot enter persisted application state through this contract.
 
 Live sessions are still stored in the Application Database, through the separate
 `SessionStore` contract described in [Live Session Storage](#live-session-storage).
 They are live operational data rather than restorable state: they survive an
 ordinary restart, they never appear in normalized state or in a backup, and a
-Restore clears them. A backend has no schema in which to record log records, Log
-Module destination data, or Log Module credentials at all.
+Restore clears them. The same separation applies to normal-operation Audit
+terminal recovery obligations described below. A backend has no schema in
+which to act as a Log Module destination or store Log Module credentials.
+
+### Immutable Log Module Configuration Generations
+
+The backend-neutral contract defines an internal immutable generation key as
+the existing Log Module configuration `StateIdentifier` plus a nonzero
+`LogConfigurationVersion`. Version `1` is `INITIAL`. The key has no text codec,
+Serde representation, random generation identifier, or public API identifier;
+its diagnostic representation exposes neither the state identifier nor the
+version.
+
+Each `LogConfigurationGeneration` is a non-secret immutable snapshot containing
+that exact key, the committed Log Module and configuration name, enabled state,
+canonically ordered non-secret settings, and canonically ordered Log Type
+membership. Settings and memberships must be unique. The snapshot carries no
+credential, protected setting, destination handle, Log-owned binding, or Log
+authority. `LogConfigurationGenerationPersistence`, issued only from
+`ServerDatabaseAuthority`, is the only public construction path for keys and
+persisted snapshots; ordinary contract consumers cannot forge either value.
+
+`LogConfigurationGenerationStore` is read-only. It can load the generation
+currently assigned to Audit Logs or one exact historical generation by key. It
+does not expose enumeration, mutation, version allocation, supersession, route,
+or public-identifier behavior. `ApplicationDatabase::log_configuration_generations`
+defaults to `None` as an explicit staged backend decision: existing backends
+remain source-compatible, and a caller requiring generation reconstruction
+must treat absence as unavailable rather than fall back to mutable state.
+
+`LogConfigurationMutationStore` is the separate optional internal mutation
+surface. A backend atomically prepares a canonical request from its current
+configuration rows, settings, complete assignments, immutable generations, and
+current pointers. An exact no-op returns `Unchanged` before an Audit Attempt or
+write. A prepared change carries each affected configuration's exact expected
+generation and one next-version candidate, the complete expected and desired
+assignment topologies, and every resultant current generation needed for
+Server-owned validation and destination preflight. Moving an assignment
+advances both its old and new configuration exactly once, even when the primary
+configuration also changes settings or enabled state.
+
+Commit rechecks the exact affected generations and complete expected assignment
+topology in one serialized backend transaction. A mismatch commits only the
+prevalidated stale terminal obligation and no configuration, generation,
+assignment, or pointer change. A match atomically appends all candidate
+generations, updates current application state and assignments, persists only
+the applied terminal obligation, and advances every affected current pointer
+last. The contract does not expose public routes, wire identifiers, destination
+credentials, generation deletion, or terminal supersession.
+
+The MVP SQLite backend implements this store through deployment-local
+operational tables. Migration and checkpoint completion seed version `1` from
+the current restorable Log Module configuration, settings, and assignments.
+The store preserves immutable history across ordinary restart, validates the
+current Audit pointer and snapshot against current application state, and
+fails closed on malformed or inconsistent rows. Exact historical reads do not
+fall back to mutable state or another generation. This persistence does not
+change the Audit terminal recovery contract or make the Application Database
+depend on Log or logging-authority types.
+
+Generation history and its current pointers are not members of
+`ApplicationState`, backup content, or normalized Restore input. A replacement
+deployment receives only the restored current non-secret configuration and
+assignments, then creates its own version `1` snapshots in the same transaction
+that completes Restore. Source-deployment history is neither imported nor
+merged, and this operational persistence does not change the backup format or
+version.
+
+### Live Audit Terminal Recovery
+
+The **[Application Database](../../glossary.md#applications-and-interfaces)**
+recovery contract owns only bounded opaque storage values. It has no dependency
+on the Log contract, logging authority, a Log Module, or any Log-owned recovery,
+binding, disposition, or acknowledgement type. A backend implementation must
+not parse or materialize Audit fields, mint logging authority, become an Audit
+Log destination, or store queryable Audit records.
+
+Each stored obligation has a nonzero 16-byte opaque identity, a projection of
+1 to 50,176 uninterpreted bytes, and a separately stored binding made of a nonzero
+16-byte opaque identity and nonzero `u64` version. An append-only supersession
+has a disposition of 1 to 1,024 uninterpreted bytes plus separately stored exact
+original and replacement bindings. The projection and disposition types expose
+no field or semantic accessors. Diagnostic representations and contract errors
+are payload-free.
+
+`AuditTerminalRecoveryPersistence` is issued only from
+`ServerDatabaseAuthority`. It gates persisted-row decoding and the private-field
+validated write, supersession, and acknowledgement-proof wrappers. Server Audit
+uses that capability to convert its already validated terminal projection and
+binding into a database write, to import opaque database rows for semantic
+validation, to convert its validated fixed disposition into a supersession
+write, and to convert exact destination acknowledgement into database proof.
+The database contract cannot construct any of those facts from Log authority
+and never accepts a Log-owned value.
+
+`AuditTerminalRecoveryTransaction` is available only inside a consequential
+application-state mutation transaction. That transaction persists the
+authoritative mutation and its immutable validated-write wrapper together, or
+commits neither. The backend-neutral contract deliberately exposes no
+standalone enqueue operation that could add an obligation after a mutation had
+already become durable. Repeating the exact identity, projection bytes, and
+binding is idempotent; reusing an identity with any byte or binding difference
+returns `InvalidState` without mutation.
+
+`AuditTerminalRecoveryStore` exposes separate bounded oldest-first sequences for
+active pending obligations and superseded originals retained for late delivery.
+It acknowledges only the exact oldest eligible identity in the applicable
+sequence; an absent, repeated, or out-of-order acknowledgement returns
+`InvalidState`. Server Audit first imports and semantically validates the opaque
+projection, requires its embedded identity and binding to equal the separately
+stored columns, resolves the trusted binding-and-destination pair, and converts
+the destination's exact acknowledgement into the private database proof. A
+malformed projection, changed binding, delivery failure, import failure, or
+acknowledgement failure leaves the obligation pending. A runtime encountering
+an opaque bounded row that Server Audit cannot import enters the owning
+`RecoveryRequired` failure path rather than asking the backend to interpret or
+repair it.
+
+`AuditTerminalSupersession` retains the exact Server Audit-validated original
+obligation bytes and separately stored binding together with the opaque
+Server Audit-validated disposition, exact original and replacement bindings,
+and distinct replacement validated write. The backend compares only those
+opaque bytes and separate columns. It accepts the write only when the exact
+stored original is the oldest active obligation and no disposition exists;
+matching identity alone is insufficient. It atomically appends the disposition
+and replacement obligation in the same transaction where the owning
+configuration workflow applies the replacement assignment. An exact repeat is
+idempotent. Any byte or binding mismatch, partial prior state, duplicate with
+different content, or non-oldest request returns `InvalidState` without
+mutation. The original remains immutable and moves only to the late-delivery
+sequence.
+
+These obligations are defined as live operational data that a conforming store
+must preserve across ordinary restart. They are not members of
+`ApplicationState` and cannot enter Application Database backups or normalized
+Restore input. Restore therefore imports no source-deployment obligation; a
+replacement deployment begins with none inherited from the backup. This
+contract defines no in-place Restore clearing operation. Obligations are also
+absent from every Log Module destination backup unless and until that
+destination has acknowledged the replayed record.
+
+### Account Credential Writers
+
+Every account record carries a nonzero monotonically increasing credential
+revision, a `must_change_password` flag, and an optional nonnegative absolute
+temporary-credential expiry instant. Revision `1` is the initial and legacy
+default. The flag is true exactly when the expiry is present, and temporary
+metadata is valid only for an account that has a password verifier. An ordinary
+credential has a false flag and no expiry. The aggregate carries no temporary
+password, response content, delivery content, or continuation bearer.
+
+`AccountCredentialWriterStore` implements transport-independent account create
+and password-reset mutations. A reset-target preparation read resolves one
+exact Account Public Identifier, internal account, credential revision, and
+typed Audit Reference in one backend snapshot. Each final mutation receives a
+non-clonable exact-session recheck, the prepared verifier and 24-hour metadata,
+and prevalidated opaque Audit terminal alternatives.
+
+The credential-issuance ticket, its digest, lifetime, and claim state never
+reach the backend. Server authentication claims the process-memory ticket and
+translates its bound proof into the non-clonable
+`AccountCredentialIssuanceRecheck` that the writer receives. Ticket issuance
+also uses the backend's atomic MFA acceptance operation before the ticket is
+published; that operation and the final credential writer remain separate
+transactions, with the final writer rechecking the exact bound state rather
+than trusting ticket publication as current authority.
+
+The final transaction rechecks exact session ownership, Client Module, and
+liveness; active ordinary actor credential state and revision; current factor
+identity and Module enablement; and the verified TOTP replay step when
+enrolled. Create writes revision `1`, active optional-MFA state, independently
+generated internal, public, and Audit identities, and no Group, grant, factor,
+watermark, or session. Reset compare-and-sets the target revision, replaces or
+creates its verifier, preserves its other Account state, and revokes every
+target session. Each outcome commits exactly one selected opaque Audit terminal
+with the business decision or rolls back both.
+
+The contract adds no route, response encoding, or request-idempotency store.
+The Application Database remains separate from the Audit Log destination. Refer to the
+[Authentication Design](../authentication/authentication-design.md#account-credential-issuance-writers)
+for expiry, disclosure, session, and reauthentication policy.
+
+### Password Change Writer
+
+`PasswordChangeWriterStore` owns the atomic replacement of one temporary
+credential through its exact restricted session. Its prepared mutation carries
+the account, session digest, issuing Client Module, expected credential
+revision, exact current verifier, replacement verifier, decision instant, and
+one fresh session and CSRF digest pair bound to the checked successor revision.
+It carries no plaintext password, temporary credential, TOTP code, factor,
+watermark, public identifier, response envelope, or cookie.
+
+The final transaction rechecks the exact session's ownership, Client Module,
+and lifetime together with the active Account, expected revision,
+`must_change_password`, unexpired temporary metadata, and exact current
+verifier. A match advances the revision, replaces the verifier, clears the
+temporary flag and expiry, revokes every account session including the proof
+session, inserts exactly the prepared fresh session, and stores only the
+selected success Audit terminal. A missing, revoked, stale, expired, disabled,
+ordinary, or verifier-mismatched state performs no credential or session
+mutation and stores only the selected denied terminal. A session-digest or
+Audit-terminal collision fails the transaction and commits nothing.
+
+This writer neither verifies a password nor advances an MFA replay watermark.
+The Server authentication boundary owns the non-forgeable restricted-session
+proof, same-password refusal, approved verifier preparation, fresh bearer
+ownership, and postcommit result. The writer adds no schema, migration, backup
+field, route, or public identifier contract.
+
+### Account Status Writers
+
+`AccountStatusWriterStore` implements transport-independent disable and
+re-enable mutations for a local **[Human User](../../glossary.md#identities-and-access)**.
+A preparation read resolves one exact Account Public Identifier, internal
+account identifier, typed Audit Reference, active state, and credential
+revision in one backend snapshot. An exact desired-state match is an unchanged
+result before an Audit Attempt or writer call. Preparing disablement computes
+the checked next credential revision; exhaustion is a stable pre-commit
+rejection. Preparing re-enablement retains the current revision.
+
+The final transaction first rechecks the issuing **[Administrator](../../glossary.md#identities-and-access)**'s
+exact session digest, actor, Client Module, lifetime, and active state. It then
+compare-and-sets the target's public identity, active state, and credential
+revision. Disablement writes inactive state, advances the revision, and deletes
+every target session. Re-enablement writes active state only and neither changes
+the revision nor creates or restores a session. Self-disablement is valid: the
+issuer recheck completes before target-session deletion removes that same
+session.
+
+Success selects one prevalidated success Audit terminal. A stale target or
+final issuer denial selects one payload-free denied terminal and performs no
+business mutation. The selected opaque terminal and all business effects commit
+together or roll back together. The writer does not change the verifier,
+temporary-credential metadata, MFA requirement, factor enrollment, replay
+watermark, Group membership, grant, public identifier, or Audit Reference.
+Status and revision remain ordinary restorable account state, while sessions
+remain live operational data that Restore clears.
+
+### Account MFA Policy Writers
+
+`MfaPolicyWriterStore` implements transport-independent MFA requirement and
+TOTP enrollment-reset mutations. A preparation read resolves one exact Account
+Public Identifier, internal account, typed Audit Reference, MFA-required state,
+and current factor for the named MFA Module in one backend snapshot. An
+unchanged requirement or reset without a current enrollment is an unchanged
+result before an Audit Attempt or writer call.
+
+The final mutation receives a non-clonable recheck containing the issuing
+Administrator, exact session digest, Client Module, TOTP Module target, exact
+factor that established step-up, and decision instant. It also receives the
+prepared target snapshot and prevalidated success and denied Audit terminal
+alternatives. It contains no TOTP code, ticket, proof timing, factor data,
+password, response value, or caller-supplied actor state.
+
+One immediate transaction rechecks the issuer session ownership, Client Module,
+lifetime, active actor, exact factor ownership, and canonical TOTP Module
+enablement. It then rechecks the target's public identity, requirement, and
+factor snapshot. A denied issuer or stale target persists only the denied
+terminal and changes no policy, factor, watermark, or session state.
+
+A requirement change updates only `mfa_required`. Becoming required revokes
+every target session in that transaction; becoming optional preserves target
+sessions. Enrollment reset deletes the exact factor, explicitly deletes its
+live replay watermark, preserves `mfa_required` and all password state, and
+revokes every target session. The selected success terminal and all business
+effects commit together or roll back together. No schema migration is needed:
+the writer composes the existing account, factor, watermark, session, public
+identity, Audit Reference, and terminal-obligation tables.
+
+The process-memory MFA policy ticket and private `MfaStepUpProof` never reach
+the backend. The Server action gate checks their exact session, family, and
+five-minute monotonic expiry before constructing this writer's recheck; the
+transaction independently establishes that the persisted session, factor, and
+Module state still match.
 
 ## Live Session Storage
 
@@ -181,7 +471,14 @@ lifetime. A session refused for a backwards clock is not destroyed, because the
 clock rather than the session is what is wrong.
 
 The contract provides atomic `create`, `validate_and_touch`, `rotate_csrf`,
-`revoke`, and `revoke_for_account` operations.
+`revoke`, and `revoke_for_account` operations. A new session carries the exact
+credential revision its caller verified. Before `create` writes, the store
+checks in the same transaction that the account still exists, is active, still
+has that revision, and has no temporary-credential expiry at or before the
+session issue instant. Every ineligible state returns the same reason-free
+rejection and writes no session. The direct, second-factor, and enrollment
+session operations apply the same check before any session, replay watermark,
+or factor write.
 `validate_and_touch` and `rotate_csrf` remove a session they find expired.
 `validate_and_touch` takes the presented CSRF digest and compares it inside the
 same transaction that resolves the session, and it advances the recorded
@@ -211,6 +508,87 @@ identifier is an opaque 16-byte value that rejects the reserved all-zero
 representation. A password verifier is a bounded ASCII PHC string, and the
 recovery public key is the canonical lowercase `age1` recipient encoding
 defined by the [Server Restore Design](../lifecycle/restore/restore-design.md).
+
+Every account carries exactly one Account Public Identifier in normalized
+application state. It is an independently generated, nonzero 16-byte value
+that remains stable when application state is persisted or restored. It is
+distinct from the account's `StateIdentifier`, username, and Audit Reference
+Identifier and has no conversion from those values or ordinary raw-byte
+accessor. Its diagnostic representation and errors expose no identifier value.
+The identifier's public representation is canonical unpadded Base64url; the
+[Server API Contract](../api/api-contract-design.md#account-administration-reads)
+owns where that representation is returned or accepted, while persistence
+continues to decode only through database authority.
+
+The Application Database contract generates new Account Public Identifiers
+from operating-system randomness through the same exact-pinned `getrandom`
+dependency and bounded eight-attempt all-zero rejection used for Audit
+Reference Identifier entropy. Persisted encoding and decoding require a
+separate `AccountPublicIdentifierPersistence` capability issued from
+`ServerDatabaseAuthority`. The checked aggregate requires exact account
+coverage and global Account Public Identifier uniqueness. The database contract
+exposes an optional `AccountAdministrationStore` for deterministic list reads
+and one exact typed public-identifier lookup. Both return only an
+`AccountAdministrationProjection` containing the Account Public Identifier,
+username, optional display name, active state, and MFA-required state. The
+projection fields are private and have no extension field. It carries no state
+identifier, Audit Reference Identifier, password verifier, MFA factor, session,
+temporary credential value, or temporary credential metadata.
+
+Every list or exact lookup validates complete account-to-public-identifier
+coverage and every stored identifier before returning output. Invalid coverage,
+malformed values, or duplicate identifiers fail with a payload-free database
+integrity error rather than omitting an account or substituting an internal
+identifier. An unknown valid typed public identifier returns absence. The
+store contract defines no mutation, string parsing, public route, response,
+cursor, or pagination behavior.
+
+Every account, Group, and Log Module configuration carries exactly one
+**[Audit Reference Identifier](../../glossary.md#applications-and-interfaces)**
+in normalized application state. This identifier is an independent random,
+nonzero 128-bit value rendered only as `ar-` followed by 32 lowercase
+hexadecimal characters. Its representation is private, with no conversion from
+a `StateIdentifier`, name, user string, or caller-provided bytes and no raw-byte
+accessor. Diagnostic formatting and validation errors are payload-free. The
+identifier is internal pseudonymous data: it is linkable and not secret, but it
+is not a public API identifier.
+
+The Application Database contract generates each new value from operating-
+system randomness through exact-pinned `getrandom = "=0.4.3"`, with default
+features disabled. An unavailable random source stops construction without a
+device-path read, deterministic derivation, or lower-quality fallback. This
+remains backend-neutral domain construction: the contract chooses only the
+identifier's entropy and representation, while each backend still owns its
+storage, transaction, locator, and path policy.
+
+The reserved all-zero output is retried through the same operating-system
+source at most eight times. Eight consecutive reserved values stop generation
+as randomness unavailable rather than looping without a bound or substituting
+a fallback.
+
+Canonical persisted-value decoding stays private to the identifier type. An
+opaque private-field `AuditReferencePersistence` capability has one issuer,
+`AuditReferencePersistence::from_server_authority`, which requires a borrowed
+`ServerDatabaseAuthority`. `ApplicationDatabase` has no required, default, or
+hidden issuance method. After successful selection or reopening, lifecycle
+uses a crate-private constructor to build `SelectedDatabase` with private fields
+containing the raw backend and that decoder. SQLite's initialized-state and
+typed Audit Reference reads require a borrowed decoder; lifecycle supplies the
+selected value and carries it to Restore. Ordinary callers receive no selected
+binding constructor, arbitrary-string constructor, `From`, `TryFrom`,
+`FromStr`, or raw-byte accessor. The capability exposes only canonical nonzero
+decoding and keeps its `Debug` representation redacted.
+
+The checked aggregate requires exact account, Group, and Log Module
+configuration coverage and rejects an Audit Reference Identifier reused by any
+of those entity kinds. The database contract exposes typed
+`AccountAuditReference`, `GroupAuditReference`, and
+`LogConfigurationAuditReference` projections, looked up by the entity's
+`StateIdentifier`, so later Audit construction never accepts an arbitrary
+reference string. Service Connections and Automation Identities use the same
+identifier type when their owning state and audit integration are implemented;
+this contract does not create placeholder entities or references for absent
+state.
 
 Reversibly encrypted values are modeled as opaque protected byte payloads. The
 Application Database stores and returns those bytes exactly. It never accepts
@@ -315,15 +693,115 @@ well as the factor: the store reads that component's enabled setting, refuses
 the enrollment when the Module is not enabled, and otherwise writes the factor,
 its confirming watermark, and the session, all in one transaction. It reports
 whether the factor was enrolled, was already present, or was refused because the
-Module was disabled. Changing enabled state is atomic with recounting the
-enrolled accounts an Administrator previewed and with revoking the sessions of
-accounts holding a factor.
+Module was disabled. The store also exposes one target-scoped preview snapshot
+that reads the canonical current enablement and count of distinct enrolled
+Human Users in the same database transaction. A client therefore cannot combine
+an enablement value and affected-user count observed from different states.
+
+Changing enabled state accepts the expected enrolled-Human-User count and two
+opaque, Server Audit-validated terminal writes: applied and count-changed. One
+transaction recounts enrolled Human Users, selects exactly one terminal, and
+persists that obligation. A matching count writes the canonical component
+enablement and, on disablement, revokes every session belonging to an enrolled
+Human User before committing the applied terminal. A changed count commits only
+the count-changed terminal and returns the current affected-Human-User count.
+Any state, session, or obligation failure rolls the whole transaction back.
+The backend neither parses the terminal nor accepts a standalone enqueue.
+
+The canonical TOTP entry is component `totp`, key `mfa-module.enabled`. Init
+seeds it to a disabled value. Restore normalization removes the former
+`mfa.totp` / `enabled` entry and emits exactly one canonical entry, preserving
+an exact canonical value when no legacy entry is present and otherwise deriving
+the canonical value from the legacy entry. No second mutable authority remains.
+
+The same store accepts a current-session administration step-up for one exact
+TOTP factor. It atomically rechecks the live session, actor activity, factor
+ownership, and canonical TOTP enablement, then advances only the factor's replay
+watermark when the presented time step is new. It neither creates nor rotates a
+session. The Server converts the accepted store result into a five-minute,
+exact-session Administration proof; no rejected result creates a proof.
 
 A watermark is live operational data in the same sense as a session: it belongs
 to the running deployment rather than to the restorable aggregate. It is not a
 member of `ApplicationState`, it never reaches a backup, and completing a state
 replacement clears every watermark inside the same atomic replacement that
 clears every session.
+
+## Group Public Identity And Administration Storage
+
+Every **[Group](../../glossary.md#identities-and-access)** carries exactly one
+Group Public Identifier in normalized application state. It is an independent
+random nonzero 128-bit value with a private binary representation and canonical
+22-character unpadded Base64url public representation. Its type and selected-
+database persistence capability are distinct from Account Public Identifiers,
+state identifiers, Audit Reference Identifiers, names, generations, and every
+other identity type. Aggregate validation requires exact Group coverage and
+rejects duplicate values.
+
+`GroupAdministrationStore` lists projections in ascending unique-name order,
+loads one exact typed public identifier, and prepares an exact target carrying
+the Group Audit Reference and public projection. Every read validates complete
+reciprocal Group identity coverage and every stored value before returning any
+output. The projection contains only public identifier, name, and nullable
+description.
+
+The same store exposes two bounded association reads by exact Group Public
+Identifier. A member read returns `None` for a missing Group or the existing
+safe Account administration projections in deterministic username and Account
+Public Identifier order. A grant read returns `None` for a missing Group or
+canonical typed direct grants in deterministic order. Both run in one database
+snapshot, validate complete reciprocal public-identity coverage before
+returning output, and expose no internal state identifier, Audit Reference,
+credential, factor, session, count, or association provenance. An existing
+Group with no members or direct grants returns an empty collection.
+
+Creation receives independently generated state, public, and Audit identities
+and creates no membership or grant. Update compare-and-sets the complete
+prepared target and replaces name and nullable description. An exact no-op is
+rejected before Audit construction. Delete compare-and-sets the complete target
+and succeeds only when no membership and no direct grant references the Group.
+Each writer rechecks the issuer's exact session, Client Module, lifetime, and
+active state and commits exactly one prevalidated success, conflict, or denied
+Audit terminal with the business result. A nonempty result carries no count or
+association kind. Terminal persistence failure rolls back every business write.
+
+## Existing-Group Mutation Storage
+
+The Application Database exposes a prepared-target and commit boundary for
+membership and direct-grant changes on existing Groups. Preparation resolves
+the exact Group, Account Public Identifier or canonical grant, persisted Audit
+References, and association presence from one consistent snapshot; an absent
+target remains absent and a desired no-op is reported before an Audit Attempt.
+
+Commit accepts the exact issuer session recheck, prepared target, desired
+presence, and opaque prevalidated terminal alternatives. One atomic transaction
+rechecks issuer liveness and activity, Client Module, target associations, and
+expected association state. For a removal it computes active effective Server
+Administration Permission after the proposed change. It selects exactly one of
+the success, generic-denied, or last-administrator-denied terminal obligations,
+and commits that selected obligation with the row mutation or neither. The
+backend never parses or invents an Audit terminal. A committed membership or
+grant change becomes visible through the existing live authorization projection
+on the next request; it does not change a session or populate an authorization
+cache.
+
+## Log Configuration Generation Storage
+
+The Application Database exposes immutable Log Module configuration generation
+reads and optimistic mutation storage separately from restorable
+`ApplicationState`. A complete current read returns every logical
+configuration's current generation in ascending unique configuration-name
+order. The backend validates exact current pointers, immutable snapshots,
+ordered settings, Log Type membership, and the complete System and Audit
+assignment topology in one snapshot before returning anything. It also supports
+the narrower current Audit generation and exact historical generation reads
+needed by terminal recovery.
+
+The current list is the only persistence input to the public safe Log
+configuration projection. Internal state identifiers and generation versions
+remain private. The existing immutable-generation and assignment state is
+sufficient for these reads; the public list and view contract introduces no new
+persisted identifier, table, or migration.
 
 ## Deployment Record, Locator, And Operational State
 
@@ -400,14 +878,57 @@ A backup includes the application configuration and state needed to restore
 operational status, including local accounts, password verifiers, Groups and
 their grants, enabled-module state, protected MFA factor data, Service
 Connection credentials, and other application configuration. It excludes active
-sessions, which are invalidated on restore, and the live lifecycle
-reconciliation digest, which is not application state: each completed Init or
-Restore atomically writes its own digest outside `ApplicationState`, so a
-Restore's replacement digest always reflects that exact Restore rather than
-backup content. For Log Modules, it includes only
-non-secret configuration and assignments. System Logs and Audit Logs, other Log
-Module destination data, and Log Module authentication or connection credentials
-are outside this Application Database backup contract.
+sessions, which are invalidated on restore, live normal-operation Audit terminal
+recovery obligations, immutable Log Module configuration-generation history,
+and the live lifecycle reconciliation digest. None of these operational stores
+is application state: each completed Init or Restore
+atomically writes its own reconciliation digest outside `ApplicationState`, and
+normalized Restore input carries no source-deployment terminal obligation. A
+replacement deployment therefore starts with no obligation inherited from the
+backup and creates fresh version `1` Log Module configuration snapshots from
+the restored current configuration. For Log Modules, a backup includes only
+non-secret configuration and assignments. Generation history, System Logs and
+Audit Logs, other Log Module destination data, and Log Module authentication or
+connection credentials are outside this Application Database backup contract.
+
+Account credential revisions, `must_change_password` flags, and temporary
+credential expiry instants are restorable application state. The version-1
+Restore reader accepts these fields additively: omission means revision `1`, a
+false flag, and no expiry. Supplied temporary metadata must be paired and must
+belong to an account with a supplied password verifier; zero revisions,
+negative expiries, malformed values, and inconsistent combinations are invalid
+backup content. This compatibility does not change the backup format version.
+
+Account Public Identifiers are restorable application state. The current
+forward contract for a future backup writer stores each value in its account's
+`public_id` field as canonical unpadded URL-safe Base64 for the exact 16 bytes.
+The Restore reader preserves each valid supplied value exactly through the
+lifecycle-selected Application Database's persistence decoder and rejects
+malformed, all-zero, or duplicate values without exposing them. A compatible
+version-1 backup written before this field existed remains accepted when the
+field is omitted; an explicitly present JSON `null` is malformed. Restore
+generates a fresh independent value for each omission during normalization and
+does not change the backup format version.
+
+Group Public Identifiers use the same version-1 compatibility rule in each
+Group entry's `public_id` field. Restore preserves a supplied canonical nonzero
+value exactly through the selected database's Group persistence decoder,
+rejects malformed, zero, explicit-null, or duplicate values, and generates a
+fresh independent random value for each omitted legacy field. It does not
+derive a Group value from any restored identifier, Audit Reference, name,
+membership, grant, or generation.
+
+Account, Group, and Log Module configuration Audit Reference Identifiers are
+restorable application state. The current forward contract for a future backup
+writer carries their canonical rendered values. The Restore reader preserves
+each valid supplied value exactly through the lifecycle-selected Application
+Database's persistence decoder. A compatible version-1 backup written before
+these fields existed remains accepted when the field is omitted; an explicitly
+present JSON `null` is malformed rather than a legacy omission. Restore assigns
+fresh independent random values to omitted fields during normalization, before
+the state can be used or persisted, and never derives them from names or
+`StateIdentifier` values. This reader compatibility does not change the backup
+format version.
 
 **[Restore](../../glossary.md#states-and-requests)** is exposed through a
 Restore-capable Client Module after the shared lifecycle contract selects and
@@ -444,3 +965,6 @@ backend.
 - [SQLite Application Database Design](sqlite/sqlite-application-database-design.md)
 - [Log Module Design](../../log-modules/log-module-design.md)
 - [Testing and Validation Policy](../../testing.md)
+- [Authentication Design](../authentication/authentication-design.md)
+- [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)
+- [Audit Terminal Binding Retention And Supersession Decision](../../log-modules/audit-terminal-binding-retention-decision.md)
