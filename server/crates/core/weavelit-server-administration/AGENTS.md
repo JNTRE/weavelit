@@ -50,7 +50,7 @@ Apply instructions in this order:
 - MUST keep every step-up field and constructor private. Only a direct dependency on
   the authority package may bind a validated session or mint a proof after MFA
   verification.
-- MUST keep `MfaPolicy` and `GrantMutation` as the complete step-up-required set;
+- MUST keep `MfaPolicy`, `GrantMutation`, and `BackupCreate` as the complete step-up-required set;
   `Account`, `ComponentOperation`, and `ComponentEnablementChange` actions do not
   require step-up.
 - MUST read `ComponentEnablement` through the source on every `ComponentOperation`

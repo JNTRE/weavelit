@@ -257,7 +257,7 @@ actor, session, Client Module, expected actor credential revision, and factor
 observation feed the final writer recheck.
 
 This proof is not `MfaStepUpProof`. It neither consumes nor extends that proof,
-and it cannot authorize `MfaPolicy` or `GrantMutation`. Conversely, a current
+and it cannot authorize `MfaPolicy`, `GrantMutation`, or `BackupCreate`. Conversely, a current
 five-minute `MfaStepUpProof` cannot substitute for the password reauthentication
 and factor evidence required to disclose a temporary password.
 
@@ -275,15 +275,16 @@ the closed response effect defined by the
 ### Administration Step-Up Ticket
 
 MFA requirement and enrollment-reset actions use the Administration action
-gate's `MfaPolicy` family, not credential-issuance assurance. The public TOTP
-step-up route accepts an ordinary Administrator session and exactly one
+gate's `MfaPolicy` family, and the encrypted Application Database backup route
+uses its `BackupCreate` family; neither uses credential-issuance assurance. The
+public TOTP step-up route accepts an ordinary Administrator session and exactly one
 six-digit code. Server authentication opens that actor's current TOTP factor,
 verifies the code, and asks the Application Database to atomically recheck the
 exact session, active actor, factor ownership, Module enablement, and replay
 watermark. Acceptance advances only the watermark and creates no session.
 
 The resulting private `MfaStepUpProof` carries the exact actor, session digest,
-factor, `MfaPolicy` family, monotonic issuance time, and exact five-minute
+factor, selected `MfaPolicy`, `GrantMutation`, or `BackupCreate` family, monotonic issuance time, and exact five-minute
 expiry. The browser cannot hold that capability directly, so the Server returns
 a separate opaque ticket with 256 bits of randomness and retains only its
 domain-separated digest and proof in a bounded 64-entry process-memory store.
@@ -292,15 +293,16 @@ the same exact-session ticket may authorize more than one matching policy
 action during the fixed window, and every use re-enters the action gate for
 actor, session, family, clock-rollback, and expiry checks.
 
-The policy ticket is not persisted and never enters a cookie, URL, log, Audit
+The step-up ticket is not persisted and never enters a cookie, URL, log, Audit
 record, account projection, or credential-issuance workflow. It is distinct
 from credential issuance's single-use password-plus-conditional-TOTP ticket.
 Its originating response emits `Cache-Control: no-store`.
-The route accepts the closed `MfaPolicy` and `GrantMutation` families. Ticket
+The route accepts the closed `MfaPolicy`, `GrantMutation`, and `BackupCreate` families. Ticket
 digests are domain-separated by family and each retained private proof carries
 that same family. A cross-family, cross-session, expired, rolled-back,
 malformed, or unknown ticket authorizes nothing. `GrantMutation` is exposed
 only for public actions assigned that family, including empty Group deletion.
+`BackupCreate` is exposed only for the encrypted Application Database backup route.
 
 The final MFA policy writer receives the consumed authorized policy action and
 rechecks the exact issuer session, Client Module, active actor, verified factor,
