@@ -728,6 +728,12 @@ indeterminate outcome. It may make a fresh explicit request, which is a
 distinct backup creation and may create another backup. Version 1 provides no
 later backup-retrieval route.
 
+Raw encrypted bytes avoid JSON/base64 encoding while retaining a direct bounded
+binary contract. Artifact tokens, identifiers, URLs, idempotency, retry,
+resume, reconciliation, and later retrieval would require retained-artifact and
+lifecycle commitments, so they are outside this contract and reserved to the
+later #156 lifecycle scope. No retention or lifecycle mechanism is selected.
+
 This is an additive `/api/v1/` route. Its route, request, response, status,
 header, retry, and error semantics are subject to the version-1 compatibility
 rule; an incompatible change requires `/api/v2/`.

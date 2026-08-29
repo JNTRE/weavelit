@@ -1,11 +1,9 @@
 # Web UI Administration Backup Capability
 
 This document declares the normal-operation Administration Plane backup-download
-capability of the Web UI Client Module. It defines the Client Module and browser
-responsibilities for the settled Server API contract; the [API Contract
-Design](../../server/api/api-contract-design.md#application-database-backup-download)
-and [Security Model](../../security-model.md#secret-disclosure-cache-control)
-remain authoritative for the route and response security profile.
+capability of the Web UI Client Module and its browser responsibilities under
+the settled Server API contract. [API Contract Design](../../server/api/api-contract-design.md#application-database-backup-download) and
+[Security Model](../../security-model.md#secret-disclosure-cache-control) remain authoritative for the route and response security profile.
 
 ## Represented Areas
 
