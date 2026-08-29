@@ -863,9 +863,10 @@ renders module-loader or transport diagnostics and does not change or persist
 the page URL. Groups remains independently lazy and selecting either workspace
 does not fetch the other.
 
-The workspace contains only specialized TOTP enablement and existing Log
-configuration controls. It has no generic component or Operation control,
-configuration create or delete, Log Module replacement, destination credential
+The workspace contains only specialized TOTP enablement, backup-download, and
+existing Log configuration controls. It has no generic component or Operation
+control, configuration create or delete, Log Module replacement, backup
+destination setting, restore control, provider control, destination credential
 or path input, Log record browsing, retention or purge control, or Audit
 terminal supersession control.
 
@@ -898,6 +899,87 @@ An authenticated result returns to idle; an unauthenticated result, including
 self-disable session revocation, withdraws the administration workspace and
 returns to sign-in without another mutation; an absent or unreadable probe
 remains indeterminate.
+
+### Backup Download
+
+An authenticated Administrator explicitly starts a backup download from this
+workspace. A client-only confirmation appears before the sensitive action. It
+states only the established sensitivity and download outcome, sends neither
+confirmation text nor a confirmation member, and reveals no backup, Server, or
+other secret detail.
+
+After confirmation, one form accepts exactly one six-digit TOTP code and no
+password. Its one submission requests the `backup_create` family through the
+existing Administration step-up route with exactly:
+
+```json
+{"family":"backup_create","code":"123456"}
+```
+
+The component clears the code as step-up starts. On a valid step-up result, the
+opaque ticket exists only in private mounted-component memory. It is never
+rendered or placed in the DOM, a URL, cookie, log, telemetry, browser storage,
+or queue. Cancellation, denial, unmount, state supersession, and an
+unmount-delivered step-up result clear it and start no backup request. For the
+selected action, the component uses the ticket to form exactly one request,
+clears its private reference before that request starts, and never reuses it
+after an attempted request. This one-attempt client behavior does not classify
+the Server ticket as single-use; ticket expiry, binding, and reuse remain owned
+by the [Server Authorization Design](../../server/authorization/authorization-design.md#current-session-step-up-proof).
+
+The one backup request is `PUT /api/v1/administration/backups/create` with the
+session `X-Weavelit-CSRF` value, `credentials: same-origin`, exactly
+`Content-Type: application/json`, and either no `Accept` header or exactly
+`Accept: application/octet-stream`. Its strict JSON body is exactly:
+
+```json
+{"backup_create_step_up_ticket":"<43-character canonical Base64url>"}
+```
+
+The application sets neither `Host` nor `Origin` and sends no password, TOTP
+code, identity, Client Module, grant, permission, confirmation, extra body
+member, independent step-up flag, arbitrary request field, or arbitrary header.
+The [Web UI Administration Backup Capability](../../client-modules/web-ui/administration-backup-design.md)
+and [Server API Contract](../../server/api/api-contract-design.md#application-database-backup-download)
+remain authoritative for the browser and wire contracts.
+
+Only a completely readable `200 OK` attachment whose bytes exactly match its
+advertised `Content-Length` is a completed download. The application passes
+that attachment to the browser download handling required by the Server
+attachment contract, releases the response bytes and ticket, and may present
+only `Backup download was received.` That presentation proves receipt of the
+complete response, not file persistence, later recovery, or any Server-side
+backup detail.
+
+A reported typed refusal renders only `Backup download was not completed.` A
+short, unreadable, malformed, or length-mismatched `200 OK` body renders only
+`Backup download was incomplete. Start a new backup download to try again.`
+Listener loss, timeout, or an unreadable non-`200` response renders only
+`The backup download outcome is unknown. Start a new backup download to try again.`
+Neither outcome exposes a Server code, status, header, response detail,
+transport diagnostic, backup identifier, artifact plaintext, or secret. The
+application does not automatically retry, resume, reconcile, retrieve, refresh
+or probe to infer success, or start a new step-up. Any later download is a new
+explicit workflow requiring a new code and ticket.
+
+An exact canonical `authorization_denied` result from either the
+`backup_create` step-up or backup request withdraws the complete Administration
+presentation to the neutral blank sign-in control. It bypasses the refusal,
+incomplete, and unknown presentations and does not retry, probe, or retain any
+ticket or bytes. An exact canonical `session_invalid` result follows the
+existing session-loss handling; it is not classified as terminal authorization
+loss. A near-match, different HTTP status, additive error envelope, or other
+error code follows the applicable refusal or unknown presentation rather than
+this access-loss behavior.
+
+Implementation validation for this control MUST cover the complete positive and
+negative workflow; client-only confirmation; exact step-up and backup request
+bodies; sensitive-value absence from rendered, persisted, logged, telemetry,
+and queued surfaces; no automatic retry, resume, reconciliation, retrieval, or
+outcome-inference request; completed and incomplete binary responses; and exact
+authorization and session-loss handling. It MUST trace the UI behavior against
+the settled API, authorization, and Client Module contracts without selecting
+backup writer, snapshot, resource, retention, or retrieval behavior.
 
 Log configurations load through the existing cursor pattern, append `Load
 more` pages, refresh from the first page, and view only unique configuration
