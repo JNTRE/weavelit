@@ -62,17 +62,20 @@ validation, and authorization authority.
 
 ## Download And Failure Handling
 
-On a fully received `200 OK`, the browser handles the raw binary response as
-the API contract's attachment named `weavelit-backup.wlitbackup`. It honors the
+On a `200 OK`, the browser MUST treat the download as successful only when it
+can completely read the raw binary response and its body contains exactly the
+advertised `Content-Length` bytes. It then handles the binary response as the
+API contract's attachment named `weavelit-backup.wlitbackup`. It honors the
 Server-defined `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`
 response profile. The browser does not receive or construct an artifact URL,
 identifier, storage location, resume mechanism, retry mechanism,
 reconciliation mechanism, or later-retrieval capability.
 
-The browser MUST NOT interpret a listener loss, timeout, unreadable response,
-or incomplete binary attachment as success. It MUST NOT automatically retry,
-resume, reconcile, or retrieve an artifact after such an indeterminate result.
-A later explicit request is a distinct backup creation under the API contract.
+The browser MUST treat a listener loss, timeout, short, unreadable, malformed,
+or length-mismatched binary response as incomplete, not successful. It MUST
+NOT automatically retry, resume, reconcile, or retrieve an artifact after an
+indeterminate or incomplete result. A later explicit request is a distinct
+backup creation under the API contract.
 
 Every non-success response remains the API contract's typed JSON error response
 with a Server-generated correlation identifier. The browser may use that
@@ -84,11 +87,16 @@ beyond the contract's stable error result.
 
 Implementation of this declaration MUST preserve the shared route's exact
 request, successful binary attachment, typed-error, correlation, and
-indeterminate-outcome semantics. Focused Client Module and API contract tests
-MUST cover the accepted request profile, rejected request variants, Server-side
-authorization independence, the closed binary response headers, typed redacted
-errors, and the rule that only a fully received `200 OK` proves success, as
-required by the [Testing and Validation Policy](../../testing.md).
+indeterminate-outcome semantics. Focused Client Module, API contract, and
+browser binary-download handling tests MUST cover the accepted request profile,
+rejected request variants, Server-side authorization independence, the closed
+binary response headers, and header/body completion: only a completely readable
+`200 OK` body with exactly its advertised `Content-Length` proves success. They
+MUST also cover short, unreadable, malformed, and length-mismatched responses
+as incomplete rather than successful, including the absence of automatic retry,
+resume, reconciliation, or retrieval and the requirement for a fresh explicit
+request. Tests MUST cover typed redacted errors, as required by the
+[Testing and Validation Policy](../../testing.md).
 
 ## Related Documents
 

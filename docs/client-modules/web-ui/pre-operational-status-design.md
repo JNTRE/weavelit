@@ -22,7 +22,10 @@ capability defined by the
 [Web UI Pre-Operational Database Selection Surface](pre-operational-database-selection-design.md).
 The Server runtime owns direct TLS, listener and route composition, and
 lifecycle gating; the lifecycle boundary owns the typed status value. This
-module declares no User Plane or Administration Plane in this foundation.
+Pre-Operational Surface exposes no normal **[User Plane](../../glossary.md#applications-and-interfaces)**
+or **[Administration Plane](../../glossary.md#applications-and-interfaces)**
+routes. The independent [Web UI Administration Backup Capability](administration-backup-design.md)
+is normal-operation-only and is not part of this status surface.
 
 The **[Weavelit CLI](../../glossary.md#applications-and-interfaces)** has no
 pre-operational status surface. A later decision is required before any Init,
@@ -170,6 +173,7 @@ check`.
 
 ## Related Documents
 
+- [Web UI Administration Backup Capability](administration-backup-design.md)
 - [Web UI Pre-Operational Database Selection Surface](pre-operational-database-selection-design.md)
 - [Web UI Pre-Operational Restore Surface](pre-operational-restore-design.md)
 - [Embedded Asset Delivery Design](embedded-asset-delivery-design.md)
