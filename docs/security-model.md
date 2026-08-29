@@ -406,12 +406,17 @@ approved response shapes are:
 - the Init recovery key, delivery nonce, and reconciliation capability; and
 - the Restore ticket and reconciliation capability.
 
-The response profile must represent this as a closed internal effect whose
-only wire rendering is the fixed directive above. A route must not supply a
+The encrypted **[Application Database](glossary.md#applications-and-interfaces)**
+backup download is a separate closed binary response class. It MUST emit
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`; those header
+names and values are Server-defined and are not caller-controlled.
+
+The response profile must represent the secret-disclosure effect and the backup
+download response class as closed internal effects. A route must not supply a
 header name, header value, or generic response-header collection. Ordinary
 typed results, errors, fixed JSON responses, and cookie-only session responses
-do not carry this effect. Embedded Web UI assets retain their independently
-approved `Cache-Control: no-store` security profile.
+do not carry the secret-disclosure effect. Embedded Web UI assets retain their
+independently approved `Cache-Control: no-store` security profile.
 
 Normal-operation Audit terminal projections and supersession dispositions are
 integrity metadata, not authentication or destination-configuration storage.
