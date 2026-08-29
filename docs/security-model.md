@@ -406,6 +406,12 @@ approved response shapes are:
 - the Init recovery key, delivery nonce, and reconciliation capability; and
 - the Restore ticket and reconciliation capability.
 
+An encrypted **[Application Database](glossary.md#applications-and-interfaces)**
+backup carries protected application state and MUST require an authorized
+`BackupCreate` Administration Action and current-session
+**[Time-Based One-Time Password (TOTP)](glossary.md#identities-and-access)** MFA
+step-up at its creation/download boundary.
+
 The encrypted **[Application Database](glossary.md#applications-and-interfaces)**
 backup download uses the `backup-binary` closed binary response profile. It MUST emit
 the raw encrypted bytes directly and MUST NOT exceed `268435456` (256 MiB).

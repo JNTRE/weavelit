@@ -675,6 +675,10 @@ including configuration, accounts, Groups, grants, password verifiers,
 protected MFA factor data, and Service Connection credentials. The Server MUST
 encrypt every backup for the retained public recovery key and MUST NOT store or
 redisplay the private recovery key.
+Before backup creation or download, the Server MUST require an authorized
+`BackupCreate` Administration Action and current-session
+**[Time-Based One-Time Password (TOTP)](glossary.md#identities-and-access)** MFA
+step-up.
 
 A person MUST be able to use a Restore-capable Client Module to import a
 compatible backup into a replacement Server after selecting and configuring its
