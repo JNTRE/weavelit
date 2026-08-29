@@ -18,6 +18,7 @@ Apply instructions in this order:
 
 ## Asset Inventory
 
+- `administration-backup-design.md`: Normal-operation Administration Plane backup-download capability declaration for the Web UI Client Module, including its browser request, binary-response, error, and indeterminate-outcome responsibilities under the shared API contract.
 - `pre-operational-status-design.md`: Versioned status-only pre-operational transport contract and Web UI Client Module boundary for Milestone 1.
 - `pre-operational-database-selection-design.md`: Versioned pre-operational Application Database selection transport contract, request schema, same-origin and CSRF preconditions, and rejection contract for the Web UI Client Module.
 - `pre-operational-restore-design.md`: Versioned pre-operational two-request Restore submission transport contract, the one-time submission ticket, request schemas, artifact bounds, same-origin and CSRF preconditions, and rejection contract for the Web UI Client Module.
