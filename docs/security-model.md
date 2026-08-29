@@ -408,8 +408,21 @@ approved response shapes are:
 
 The encrypted **[Application Database](glossary.md#applications-and-interfaces)**
 backup download is a separate closed binary response class. It MUST emit
-`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`; those header
-names and values are Server-defined and are not caller-controlled.
+the raw encrypted bytes directly and MUST NOT exceed `268435456` (256 MiB).
+Its complete header set is exactly:
+
+| Header | Value |
+| --- | --- |
+| `Content-Type` | `application/octet-stream` |
+| `Content-Disposition` | `attachment; filename="weavelit-backup.wlitbackup"` |
+| `Cache-Control` | `no-store` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Weavelit-Correlation-Id` | Server-generated correlation identifier |
+| `Content-Length` | Exactly one value equal to the emitted raw encrypted byte count. |
+
+It MUST NOT emit `Transfer-Encoding` or `Trailer`. Every header name and value
+is Server-defined. No caller input, route value, or generic response-header
+collection may control or add a header.
 
 The response profile must represent the secret-disclosure effect and the backup
 download response class as closed internal effects. A route must not supply a
@@ -509,5 +522,6 @@ requests.
 - [Server Lifecycle Design](server/lifecycle/lifecycle-design.md)
 - [Server Init Design](server/lifecycle/init/init-design.md)
 - [Server Restore Design](server/lifecycle/restore/restore-design.md)
+- [Web UI Administration Backup Capability](client-modules/web-ui/administration-backup-design.md)
 - [Testing and Validation Policy](testing.md)
 - [Audit Terminal Binding Retention And Supersession Decision](log-modules/audit-terminal-binding-retention-decision.md)
