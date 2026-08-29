@@ -665,6 +665,73 @@ The stable rejection contract is:
 | Unknown assignment name, invalid or stale topology, generation exhaustion, or stale preparation | `409 Conflict`, `conflict` |
 | Catalog, preflight, pre-commit Audit delivery, persistence, integrity, or trusted composition unavailable | `503 Service Unavailable`, `service_unavailable` |
 
+### Application Database Backup Download
+
+The normal operational **[Administration Plane](../../glossary.md#applications-and-interfaces)**
+contains exactly one encrypted **[Application Database](../../glossary.md#applications-and-interfaces)**
+backup route:
+
+| Route | Method | Result |
+| --- | --- | --- |
+| `/api/v1/administration/backups/create` | `PUT` | One downloaded encrypted backup artifact. |
+
+The route requires an ordinary validated session, exact same-origin `Origin`
+and `Host`, the session's `X-Weavelit-CSRF` value, a live
+**[Client Module](../../glossary.md#applications-and-interfaces)** that
+declares the Administration Plane, a grant to that Client Module, and the
+effective **[Server Administration Permission](../../glossary.md#identities-and-access)**.
+The Server evaluates the Client Module grant and authorization from the
+authenticated session and live Server state; the request supplies no identity,
+Client Module, grant, or permission claim. The route is not mounted on a
+Pre-Operational Surface.
+
+The request has no body and MUST NOT carry `Content-Type`. `Accept` MAY be
+absent or MUST be exactly `application/octet-stream`. It accepts no
+`Idempotency-Key` or other request field.
+
+On success, the Server returns `200 OK` with raw encrypted backup bytes, not a
+JSON envelope. It sends exactly these response headers in addition to normal
+HTTP framing:
+
+| Header | Value |
+| --- | --- |
+| `Content-Type` | `application/octet-stream` |
+| `Content-Disposition` | `attachment; filename="weavelit-backup.wlitbackup"` |
+| `Cache-Control` | `no-store` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Weavelit-Correlation-Id` | Server-generated correlation identifier |
+
+The success response sets no cookie, sends no CORS header, supplies no
+artifact URL or resource identifier, and makes no `Content-Length` promise.
+It exposes no backup identifier or artifact detail. A successful creation
+records `lifecycle.backup.created` through the existing accountability
+semantics using the same correlation identifier; this route does not define
+the backup's creation, snapshot, encryption, storage, or cleanup behavior.
+
+The binary success exception does not change the typed error profile. Every
+failure carries the existing typed JSON error envelope and a Server-generated
+correlation identifier, with only these route-specific outcomes:
+
+| Condition | Response |
+| --- | --- |
+| Malformed headers, a body, `Content-Type`, or unacceptable `Accept` | `400 Bad Request`, `bad_request` |
+| Missing, malformed, unknown, expired, mismatched, or restricted session | `401 Unauthorized`, `session_invalid` |
+| Failed exact origin or host check, or missing or mismatched `X-Weavelit-CSRF` | `403 Forbidden`, `request_origin_denied` |
+| Any live Administration Plane authorization denial | `403 Forbidden`, `authorization_denied` |
+| Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
+| Required service unavailable | `503 Service Unavailable`, `service_unavailable` |
+
+Listener loss, timeout, or an unreadable response is indeterminate. Only a
+fully received `200 OK` artifact proves success. A client MUST NOT
+automatically retry, resume, reconcile, or retrieve a prior artifact after an
+indeterminate outcome. It may make a fresh explicit request, which is a
+distinct backup creation and may create another backup. Version 1 provides no
+later backup-retrieval route.
+
+This is an additive `/api/v1/` route. Its route, request, response, status,
+header, retry, and error semantics are subject to the version-1 compatibility
+rule; an incompatible change requires `/api/v2/`.
+
 ### Account Credential Issuance
 
 The account credential-issuance surface contains exactly three routes:
@@ -922,10 +989,13 @@ The fixed profile serves the frozen pre-operational lifecycle routes. It emits
 only compile-time response bodies drawn from an allowlist, sets no cookies, and
 bounds bodies far below any dynamic payload. It remains unchanged.
 
-The typed profile serves every other route. It serializes structured results,
-carries correlation identifiers, and is the only profile permitted to emit the
-approved session and cross-site request forgery cookies. Both profiles enforce
-their own bounds; neither can emit a body the other is responsible for.
+The typed profile serves every other route, except for the encrypted backup
+route's explicitly defined binary `200 OK` success. It serializes structured
+results, carries correlation identifiers, and is the only profile permitted to
+emit the approved session and cross-site request forgery cookies. The backup
+route's failures remain typed-profile JSON errors with correlation identifiers.
+Both profiles enforce their own bounds; neither can emit a body the other is
+responsible for.
 
 The typed profile's bound is derived from the envelope's own maxima rather than
 inherited from the fixed profile: a stable code, a correlation identifier at its
