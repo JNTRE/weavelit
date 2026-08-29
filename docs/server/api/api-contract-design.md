@@ -689,9 +689,10 @@ The request has no body and MUST NOT carry `Content-Type`. `Accept` MAY be
 absent or MUST be exactly `application/octet-stream`. It accepts no
 `Idempotency-Key` or other request field.
 
-On success, the Server returns `200 OK` with raw encrypted backup bytes, not a
-JSON envelope. It sends exactly these response headers in addition to normal
-HTTP framing:
+On success, the Server returns the `backup-binary` response profile: `200 OK`
+with raw encrypted backup bytes, not a JSON envelope. The raw encrypted bytes
+MUST NOT exceed `268435456` (256 MiB) bytes. The complete response
+header set is exactly:
 
 | Header | Value |
 | --- | --- |
@@ -700,13 +701,16 @@ HTTP framing:
 | `Cache-Control` | `no-store` |
 | `X-Content-Type-Options` | `nosniff` |
 | `X-Weavelit-Correlation-Id` | Server-generated correlation identifier |
+| `Content-Length` | Exactly one value equal to the emitted raw encrypted byte count. |
 
-The success response sets no cookie, sends no CORS header, supplies no
-artifact URL or resource identifier, and makes no `Content-Length` promise.
-It exposes no backup identifier or artifact detail. A successful creation
-records `lifecycle.backup.created` through the existing accountability
-semantics using the same correlation identifier; this route does not define
-the backup's creation, snapshot, encryption, storage, or cleanup behavior.
+Every success-header name and value is Server-defined; no caller request,
+route value, or other caller input controls one. The response sends no
+`Transfer-Encoding` or `Trailer`, sets no cookie, sends no CORS header, and
+supplies no artifact URL or resource identifier. It exposes no backup
+identifier or artifact detail. A successful creation follows the existing
+accountable record set with a final outcome and uses the same correlation
+identifier; this route does not define the backup's creation, snapshot,
+encryption, storage, or cleanup behavior.
 
 The binary success exception does not change the typed error profile. Every
 failure carries the existing typed JSON error envelope and a Server-generated
@@ -721,18 +725,21 @@ correlation identifier, with only these route-specific outcomes:
 | Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
 | Required service unavailable | `503 Service Unavailable`, `service_unavailable` |
 
-Listener loss, timeout, or an unreadable response is indeterminate. Only a
-fully received `200 OK` artifact proves success. A client MUST NOT
+Listener loss, timeout, or an unreadable response is indeterminate. A short,
+unreadable, malformed, or length-mismatched `200 OK` body is incomplete and
+MUST NOT be treated as success. Only a fully received `200 OK` artifact whose
+body matches its `Content-Length` proves success. A client MUST NOT
 automatically retry, resume, reconcile, or retrieve a prior artifact after an
-indeterminate outcome. It may make a fresh explicit request, which is a
-distinct backup creation and may create another backup. Version 1 provides no
-later backup-retrieval route.
+indeterminate or incomplete outcome. It may make only a fresh explicit
+request, which is a distinct backup creation and may create another backup.
+Version 1 provides no later backup-retrieval route.
 
 Raw encrypted bytes avoid JSON/base64 encoding while retaining a direct bounded
 binary contract. Artifact tokens, identifiers, URLs, idempotency, retry,
 resume, reconciliation, and later retrieval would require retained-artifact and
-lifecycle commitments, so they are outside this contract and reserved to the
-later #156 lifecycle scope. No retention or lifecycle mechanism is selected.
+lifecycle commitments, so they are outside this contract and reserved to a
+future Server-owned backup lifecycle design. No retention or lifecycle
+mechanism is selected.
 
 This is an additive `/api/v1/` route. Its route, request, response, status,
 header, retry, and error semantics are subject to the version-1 compatibility
@@ -989,19 +996,24 @@ alternatives for one request.
 
 ### Response Profiles
 
-The Server uses two response profiles.
+The Server uses fixed, typed, and `backup-binary` response profiles.
 
 The fixed profile serves the frozen pre-operational lifecycle routes. It emits
 only compile-time response bodies drawn from an allowlist, sets no cookies, and
 bounds bodies far below any dynamic payload. It remains unchanged.
 
-The typed profile serves every other route, except for the encrypted backup
-route's explicitly defined binary `200 OK` success. It serializes structured
-results, carries correlation identifiers, and is the only profile permitted to
-emit the approved session and cross-site request forgery cookies. The backup
-route's failures remain typed-profile JSON errors with correlation identifiers.
-Both profiles enforce their own bounds; neither can emit a body the other is
-responsible for.
+The typed profile serves every route except the fixed-profile routes and the
+encrypted backup route's explicitly defined `backup-binary` `200 OK` success.
+It serializes structured results, carries correlation identifiers, and is the
+only profile permitted to emit the approved session and cross-site request
+forgery cookies. The backup route's failures remain typed-profile JSON errors
+with correlation identifiers.
+
+The `backup-binary` profile serves only the encrypted backup route's `200 OK`
+success. Its closed header set, fixed byte framing, byte cap, and completion
+semantics are defined in [Application Database Backup Download](#application-database-backup-download).
+All three profiles enforce their own bounds; no profile can emit a body another
+profile is responsible for.
 
 The typed profile's bound is derived from the envelope's own maxima rather than
 inherited from the fixed profile: a stable code, a correlation identifier at its
@@ -1152,5 +1164,6 @@ for this purpose.
 - [Web UI Pre-Operational Database Selection Surface](../../client-modules/web-ui/pre-operational-database-selection-design.md)
 - [Web UI Pre-Operational Init Surface](../../client-modules/web-ui/pre-operational-init-design.md)
 - [Web UI Pre-Operational Restore Surface](../../client-modules/web-ui/pre-operational-restore-design.md)
+- [Web UI Administration Backup Capability](../../client-modules/web-ui/administration-backup-design.md)
 - [Glossary](../../glossary.md)
 - [Temporary Password Disclosure Decision](../authentication/temporary-password-disclosure-decision.md)
