@@ -919,7 +919,7 @@ read may replace, and a stale read cannot replace a committed change projection.
 
 ## Same-Origin Requests
 
-The application issues exactly twenty-seven outbound request kinds, all same-origin,
+The application issues exactly twenty-nine outbound request kinds, all same-origin,
 all with `cache: no-store` and `redirect: error`:
 
 - `GET /api/v1/status` with `Accept: application/json` and `credentials: omit`;
@@ -981,6 +981,14 @@ all with `cache: no-store` and `redirect: error`:
 - `PUT /api/v1/administration/step-up/totp` with the session's CSRF value,
   `credentials: same-origin`, and exactly the `mfa_policy` family and submitted
   six-digit code in the JSON body;
+- `PUT /api/v1/administration/step-up/totp` with the session's CSRF value,
+  `credentials: same-origin`, and the strict JSON body
+  `{"family":"backup_create","code":"123456"}`;
+- `PUT /api/v1/administration/backups/create` with the session's CSRF value,
+  `credentials: same-origin`, the ticket body
+  `{"backup_create_step_up_ticket":"<43-character canonical Base64url>"}`,
+  `Content-Type: application/json`, and absent or exactly
+  `Accept: application/octet-stream`;
 - `PUT /api/v1/administration/accounts/mfa-requirement` with the session's CSRF
   value, `credentials: same-origin`, and exactly the target Account Public
   Identifier, desired required state, and one TOTP step-up ticket in the JSON
@@ -1006,7 +1014,7 @@ use `credentials: same-origin` so the cookies a completed step issues are
 stored. This application does not issue the session-bearing self-enrollment
 request the Server also serves.
 
-Only the last twenty request kinds use `credentials: same-origin`; the first
+Only the last twenty-two request kinds use `credentials: same-origin`; the first
 seven use `credentials: omit` because no session exists yet to send or receive
 while the pre-operational or submission-bound reconciliation surface is in use.
 
