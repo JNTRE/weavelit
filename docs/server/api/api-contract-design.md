@@ -414,12 +414,17 @@ The TOTP step-up body is exactly one of:
 {"family":"grant_mutation","code":"123456"}
 ```
 
-`code` is exactly six decimal digits. `mfa_policy` and `grant_mutation` are the
-two public families in this contract. `mfa_policy` is consumed only by account
-MFA-requirement and enrollment-reset actions. `grant_mutation` is consumed only
-by existing-Group membership and direct-grant changes and empty Group deletion.
-Any other family is `bad_request` and exposes no family-specific route or
-denial detail.
+```json
+{"family":"backup_create","code":"123456"}
+```
+
+`code` is exactly six decimal digits. `mfa_policy`, `grant_mutation`, and
+`backup_create` are the three public families in this contract. `mfa_policy` is
+consumed only by account MFA-requirement and enrollment-reset actions.
+`grant_mutation` is consumed only by existing-Group membership and direct-grant
+changes and empty Group deletion. `backup_create` is consumed only by the
+encrypted Application Database backup route. Any other family is `bad_request`
+and exposes no family-specific route or denial detail.
 The Server verifies the code only for the exact authenticated session and its
 current enrolled TOTP factor. Verification atomically rechecks session
 liveness, actor activity, factor ownership, TOTP Module enablement, and replay
@@ -685,9 +690,25 @@ authenticated session and live Server state; the request supplies no identity,
 Client Module, grant, or permission claim. The route is not mounted on a
 Pre-Operational Surface.
 
-The request has no body and MUST NOT carry `Content-Type`. `Accept` MAY be
-absent or MUST be exactly `application/octet-stream`. It accepts no
-`Idempotency-Key` or other request field.
+The request body is strict JSON with exactly one member:
+
+```json
+{"backup_create_step_up_ticket":"<43-character canonical Base64url>"}
+```
+
+`backup_create_step_up_ticket` is exactly 43 canonical Base64url characters.
+The request MUST carry exactly `Content-Type: application/json`. `Accept` MAY
+be absent or MUST be exactly `application/octet-stream`. It accepts no
+`Idempotency-Key`, password, TOTP code, independent step-up flag, or other
+request field.
+
+The **[Web UI](../../glossary.md#applications-and-interfaces)** requests the
+existing Administration MFA step-up for `backup_create`, receives the opaque
+ticket, and provides it only in this request. The
+[Server Authorization Design](../authorization/authorization-design.md#current-session-step-up-proof)
+validates the ticket and produces only `BackupCreate`; its exact
+`AuthorizedAdministrationAction` is consumed by value once. The ticket itself
+remains reusable for matching actions until its exact five-minute expiry.
 
 On success, the Server returns the `backup-binary` response profile: `200 OK`
 with raw encrypted backup bytes, not a JSON envelope. The raw encrypted bytes
@@ -718,12 +739,15 @@ correlation identifier, with only these route-specific outcomes:
 
 | Condition | Response |
 | --- | --- |
-| Malformed headers, a body, `Content-Type`, or unacceptable `Accept` | `400 Bad Request`, `bad_request` |
+| Missing, malformed, duplicate, or wrong `Content-Type`; missing, malformed, extra, wrong-encoded, or otherwise schema-invalid JSON body; or unacceptable `Accept` | `400 Bad Request`, `bad_request` |
 | Missing, malformed, unknown, expired, mismatched, or restricted session | `401 Unauthorized`, `session_invalid` |
 | Failed exact origin or host check, or missing or mismatched `X-Weavelit-CSRF` | `403 Forbidden`, `request_origin_denied` |
-| Any live Administration Plane authorization denial | `403 Forbidden`, `authorization_denied` |
+| Any live Administration Plane authorization denial; or a valid-shaped ticket with no retained proof, expired proof, or a family, session, actor, Client Module, or accepted-factor mismatch | `403 Forbidden`, `authorization_denied` |
 | Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
 | Required service unavailable | `503 Service Unavailable`, `service_unavailable` |
+
+The `authorization_denied` body exposes no ticket, family, binding, or expiry
+detail.
 
 Listener loss, timeout, or an unreadable response is indeterminate. A short,
 unreadable, malformed, or length-mismatched `200 OK` body is incomplete and

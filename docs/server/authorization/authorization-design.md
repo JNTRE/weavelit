@@ -234,6 +234,7 @@ weaker rule.
 | `Account(StatusChange { target: AccountPublicIdentifier, desired: Active \| Disabled })` | Not required | Admits one account status writer. The gate performs no database read, credential reauthentication, or MFA step-up. |
 | `MfaPolicy` | Required, scoped to `MfaPolicy` | Covers MFA requirement and enrollment-reset administration. An MFA reset is policy-sensitive rather than an ordinary account action. |
 | `GrantMutation` | Required, scoped to `GrantMutation` | Covers existing-Group membership, direct Client Module, Service Module, named Operation, and Server Administration Permission grant changes, and deletion of an existing Group. |
+| `BackupCreate` | Required, scoped to `BackupCreate` | Admits one encrypted Application Database backup creation and download. The gate performs no backup processing work. |
 | `ComponentOperation` | Not required | The named Client Module, Service Module, MFA Module, or **[Operation](../../glossary.md#applications-and-interfaces)** must be enabled in a live persisted projection. |
 | `ComponentEnablementChange` | Not required | The exact kind and name must identify a compiled-in Client Module, Service Module, MFA Module, or Operation. The descriptor retains the requested enabled state without reading current enablement. |
 | `LogConfigurationChange` | Not required | Carries one existing primary Log Module configuration, optional enabled state and complete non-secret settings, and canonically ordered assignment changes. The gate performs no configuration read or mutation. |
@@ -291,7 +292,7 @@ mutation decision; this action family does not add a route or client contract.
 
 `MfaStepUpProof` is a private-field, non-clonable capability containing the
 authenticated account, the stored digest of the current session bearer, the
-exact TOTP factor that was accepted, exactly one of the two bounded step-up
+exact TOTP factor that was accepted, exactly one of the three bounded step-up
 action families, its issuer-observed monotonic time, and an expiry derived
 exactly five minutes later. No public API accepts a
 boolean, actor, session, issuance time, or expiry from a caller when minting the
@@ -316,17 +317,36 @@ Its one transaction rechecks the exact session's liveness, account activity,
 factor ownership, and TOTP Module enablement before advancing the replay
 watermark. It issues no session and changes no session value. A replay, stale
 factor, inactive actor, disabled Module, or different session mints no proof.
-The MFA-policy and Group-mutation contracts borrow the resulting proof through
-`AdministrationRequest`; ordinary account contracts do not request one.
+The MFA-policy, Group-mutation, and backup-create contracts borrow the resulting
+proof through `AdministrationRequest`; ordinary account contracts do not request
+one.
 
 The public `/api/v1/administration/step-up/totp` route exposes the closed
-`MfaPolicy` and `GrantMutation` families. Because the private proof cannot cross
-the Client Module boundary, the Server retains it behind a bounded opaque
-process-memory ticket. Ticket digests are domain-separated by family and each
-retained proof is bound to the exact actor, session, Client Module, factor, and
-five-minute monotonic window. Every use re-enters this gate. A ticket from one
-family cannot authorize the other and neither can substitute for the separate
-credential-issuance proof.
+`MfaPolicy`, `GrantMutation`, and `BackupCreate` families, selected respectively
+by `mfa_policy`, `grant_mutation`, and `backup_create`. Because the private proof
+cannot cross the Client Module boundary, the Server retains it behind a bounded
+opaque process-memory ticket. A ticket is exactly 43 canonical Base64url
+characters and is scoped to its selected family. Ticket digests are
+domain-separated by family and each retained proof is bound to the authenticated
+actor, exact session digest, Client Module, accepted TOTP factor, and a
+five-minute monotonic window; the exact expiry instant denies. A ticket is
+reusable for matching actions until expiry, and every use re-enters this gate.
+
+Only a matching `backup_create` ticket may produce `BackupCreate`. An
+`mfa_policy`, `grant_mutation`, or credential-issuance ticket, password, TOTP
+code, or caller-controlled step-up flag cannot substitute. A missing retained
+ticket, expired ticket, or ticket mismatched by family, actor, session, Client
+Module, or factor returns the existing generic `AuthorizationDenied` result.
+The gate consumes the validated `AuthorizedAdministrationAdmission` to produce
+one private `AuthorizedAdministrationAction`; the backup workflow consumes that
+action by value exactly once. This does not consume the ticket, which remains
+reusable until expiry. The authorization boundary owns family selection and
+proof validation; the backup workflow owns neither the ticket lifecycle nor a
+new route, and this classification selects no backup implementation behavior.
+
+Focused authorization validation MUST cover matching `backup_create` admission,
+each family and binding mismatch, expiry, ticket reuse within the valid window,
+and one-time consumption of each resulting `BackupCreate` action.
 
 ### Existing-Group Membership, Grant, And Deletion Mutations
 
