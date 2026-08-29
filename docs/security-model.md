@@ -407,7 +407,7 @@ approved response shapes are:
 - the Restore ticket and reconciliation capability.
 
 The encrypted **[Application Database](glossary.md#applications-and-interfaces)**
-backup download is a separate closed binary response class. It MUST emit
+backup download uses the `backup-binary` closed binary response profile. It MUST emit
 the raw encrypted bytes directly and MUST NOT exceed `268435456` (256 MiB).
 Its complete header set is exactly:
 
