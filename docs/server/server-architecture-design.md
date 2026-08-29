@@ -759,6 +759,27 @@ request line whose oversized method token never yields a bounded target is
 classified before dispatch; that path has no route context and answers with the
 fixed `405` and `Allow: GET`.
 
+### Response Profiles
+
+The listener composes exactly three response profiles: `fixed`, `typed`, and
+`backup-binary`. A route cannot select a profile outside this closed set.
+
+The `fixed` profile serves frozen pre-operational lifecycle responses. The
+`typed` profile serves every other result except the encrypted Application
+Database backup route's `200 OK` success; that route's failures remain typed
+JSON errors. Only the typed profile may carry a listener-owned post-write
+action.
+
+The `backup-binary` profile serves only that `200 OK` success as a direct,
+bounded raw encrypted response. Its body MUST NOT exceed `268435456` (256 MiB)
+bytes, and it MUST carry exactly one `Content-Length` equal to the emitted byte
+count. It MUST NOT carry `Transfer-Encoding` or `Trailer`. Its complete header
+set is closed to `Content-Type`, `Content-Disposition`, `Cache-Control`,
+`X-Content-Type-Options`, `X-Weavelit-Correlation-Id`, and `Content-Length`;
+the [Application Database Backup Download](api/api-contract-design.md#application-database-backup-download)
+defines their values and the route's public wire contract. This profile
+composition does not select how the backup artifact is created or retained.
+
 ### Allowed-Method Representation
 
 A bounded response carries an optional allowed method drawn from a closed
@@ -1539,6 +1560,7 @@ impact, and validation performed.
 - [Technical Specification](../spec.md)
 - [Security Model](../security-model.md)
 - [Glossary](../glossary.md)
+- [Application Database Backup Download](api/api-contract-design.md#application-database-backup-download)
 - [Server Lifecycle Design](lifecycle/lifecycle-design.md)
 - [Lifecycle Anchor Protection And Serialization Profile](lifecycle/lifecycle-anchor-profile-decision.md)
 - [Server Init Design](lifecycle/init/init-design.md)
