@@ -900,6 +900,26 @@ self-disable session revocation, withdraws the administration workspace and
 returns to sign-in without another mutation; an absent or unreadable probe
 remains indeterminate.
 
+### Log Configuration
+
+Log configurations load through the existing cursor pattern, append `Load
+more` pages, refresh from the first page, and view only unique configuration
+name, module, enabled state, ordered module-declared non-secret non-path
+settings, and assigned Log Types. The edit form changes enabled state, the
+complete settings collection, and complete System and Audit assignments by
+configuration name. It never receives an internal identifier or generation.
+Save sends one request and never retries automatically. A reported conflict
+requires refresh; a reported refusal and an indeterminate outcome use distinct
+fixed text without Server code, status, response detail, field path, Audit
+state, or dependency diagnostic. Every exact safe `200` change projection is a
+committed success; the client neither receives nor retains internal Audit
+recovery state. The changed row and open detail retain that authoritative
+projection, including its canonically ordered assigned Log Types. The submitted
+complete System and Audit mapping reconciles only every other already loaded
+row; a later cursor page preserves its own returned projections. Collection
+reads and saves are mutually exclusive: controls cannot save from assignments a
+read may replace, and a stale read cannot replace a committed change projection.
+
 ### Backup Download
 
 An authenticated Administrator explicitly starts a backup download from this
@@ -980,24 +1000,6 @@ outcome-inference request; completed and incomplete binary responses; and exact
 authorization and session-loss handling. It MUST trace the UI behavior against
 the settled API, authorization, and Client Module contracts without selecting
 backup writer, snapshot, resource, retention, or retrieval behavior.
-
-Log configurations load through the existing cursor pattern, append `Load
-more` pages, refresh from the first page, and view only unique configuration
-name, module, enabled state, ordered module-declared non-secret non-path
-settings, and assigned Log Types. The edit form changes enabled state, the
-complete settings collection, and complete System and Audit assignments by
-configuration name. It never receives an internal identifier or generation.
-Save sends one request and never retries automatically. A reported conflict
-requires refresh; a reported refusal and an indeterminate outcome use distinct
-fixed text without Server code, status, response detail, field path, Audit
-state, or dependency diagnostic. Every exact safe `200` change projection is a
-committed success; the client neither receives nor retains internal Audit
-recovery state. The changed row and open detail retain that authoritative
-projection, including its canonically ordered assigned Log Types. The submitted
-complete System and Audit mapping reconciles only every other already loaded
-row; a later cursor page preserves its own returned projections. Collection
-reads and saves are mutually exclusive: controls cannot save from assignments a
-read may replace, and a stale read cannot replace a committed change projection.
 
 ## Same-Origin Requests
 
