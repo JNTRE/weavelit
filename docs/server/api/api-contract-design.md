@@ -733,6 +733,11 @@ accountable record set with a final outcome and uses the same correlation
 identifier; this route does not define the backup's creation, snapshot,
 encryption, storage, or cleanup behavior.
 
+Before committing a `200 OK` response, the Server MUST reject a complete
+encrypted backup candidate that would exceed `268435456` bytes. It MUST NOT
+emit a binary success header, `Content-Length`, or body for that candidate,
+and MUST NOT truncate or emit a partial body.
+
 The binary success exception does not change the typed error profile. Every
 failure carries the existing typed JSON error envelope and a Server-generated
 correlation identifier, with only these route-specific outcomes:
@@ -744,10 +749,12 @@ correlation identifier, with only these route-specific outcomes:
 | Failed exact origin or host check, or missing or mismatched `X-Weavelit-CSRF` | `403 Forbidden`, `request_origin_denied` |
 | Any live Administration Plane authorization denial; or a valid-shaped ticket with no retained proof, expired proof, or a family, session, actor, Client Module, or accepted-factor mismatch | `403 Forbidden`, `authorization_denied` |
 | Method other than `PUT` | `405 Method Not Allowed`, `Allow: PUT`, `method_not_allowed` |
+| Complete encrypted backup candidate would exceed `268435456` bytes | `422 Unprocessable Content`, `backup_output_too_large` |
 | Required service unavailable | `503 Service Unavailable`, `service_unavailable` |
 
 The `authorization_denied` body exposes no ticket, family, binding, or expiry
-detail.
+detail. The `backup_output_too_large` body exposes no measured size, candidate
+content, artifact identifier, or implementation detail.
 
 Listener loss, timeout, or an unreadable response is indeterminate. A short,
 unreadable, malformed, or length-mismatched `200 OK` body is incomplete and
