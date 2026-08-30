@@ -430,6 +430,15 @@ It MUST NOT emit `Transfer-Encoding` or `Trailer`. Every header name and value
 is Server-defined. No caller input, route value, or generic response-header
 collection may control or add a header.
 
+As a cross-contract listener constraint, `backup-binary` has a 120-second
+response-write deadline measured from completion of the `200 OK` headers through
+all declared response bytes and TLS close. Its small request remains subject to
+the default request-read and handler budgets and competes for the existing 15
+normal connection slots; it has no dedicated backup admission permit or lane.
+Graceful listener shutdown allows 145 seconds to drain response writes. A
+response timeout or peer loss leaves the download incomplete and indeterminate;
+the client must not retry, resume, reconcile, or retrieve that output.
+
 The response profile must represent the secret-disclosure effect and the backup
 download response class as closed internal effects. A route must not supply a
 header name, header value, or generic response-header collection. Ordinary

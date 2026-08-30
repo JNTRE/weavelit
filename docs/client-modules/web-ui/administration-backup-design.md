@@ -93,6 +93,10 @@ exposes ticket, binding, factor, family, expiry, or other sensitive detail.
 
 ## Download And Failure Handling
 
+The Server reserves a 120-second `backup-binary` response-write window, from
+completed `200 OK` headers through all declared bytes and TLS close. This does
+not provide a browser recovery or retrieval capability.
+
 On a `200 OK`, the browser MUST treat the download as successful only when it
 can completely read the raw binary response and its body contains exactly the
 advertised `Content-Length` bytes. It then handles the binary response as the

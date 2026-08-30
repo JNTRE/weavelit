@@ -578,7 +578,7 @@ A signalled shutdown runs in a fixed order:
 Each stage has a separate failure policy, because a request that will not
 finish must not consume the allowance the database close needs, and a
 transition that must not be interrupted must not be cut short by whatever a
-client is doing to a connection. Draining is allowed 25 seconds. A lifecycle
+client is doing to a connection. Draining is allowed 145 seconds. A lifecycle
 transition still holding its gate at 300 seconds and a database close still
 running at five seconds each cross an overrun reporting threshold; shutdown
 records that result but continues waiting for the same transition or close to
@@ -586,14 +586,14 @@ finish. Draining and threshold observation run concurrently, but an admitted
 lifecycle transition or database close makes the graceful-stop duration
 unbounded.
 
-The drain budget deliberately exceeds the longest an ordinary connection may
-occupy the listener, which is the TLS handshake, request-read, and processing
-budgets in sequence, so a request admitted just before the signal can still
-finish inside it; that relationship is asserted at compile time rather than
-restated as a convention. It says nothing about a lifecycle transition, which
-the gate allows to finish even after its reporting threshold. Whatever the drain
-does not finish is terminated before the close begins, so a request that will
-not end cannot delay the database close behind it.
+The response-write drain budget is 145 seconds. It deliberately exceeds the
+longest ordinary connection occupancy and accommodates the registered
+`backup-binary` response-write deadline, so a request admitted just before the
+signal can still finish inside it; that relationship is asserted at compile time
+rather than restated as a convention. It says nothing about a lifecycle
+transition, which the gate allows to finish even after its reporting threshold.
+Whatever the drain does not finish is terminated before the close begins, so a
+request that will not end cannot delay the database close behind it.
 
 The database close runs on a blocking thread because checkpointing and close
 are synchronous backend work. Shutdown retains that task through the
@@ -779,6 +779,14 @@ set is closed to `Content-Type`, `Content-Disposition`, `Cache-Control`,
 the [Application Database Backup Download](api/api-contract-design.md#application-database-backup-download)
 defines their values and the route's public wire contract. This profile
 composition does not select how the backup artifact is created or retained.
+
+Its response-write deadline is 120 seconds, measured from completion of the
+listener-written `200 OK` headers through all declared bytes and TLS close. The
+route's small request remains on the default 1 KiB body, request-read, and
+handler budgets. It competes for the existing 15 normal connection slots and
+has no dedicated backup admission permit or lane. This exception applies only
+to the binary response write; it does not select backup generation, resource,
+or retention behavior.
 
 ### Allowed-Method Representation
 

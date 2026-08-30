@@ -444,8 +444,8 @@ bounded 64-entry memory store. The ticket is reusable for matching actions in
 its selected family until the proof's exact five-minute monotonic expiry; the
 exact expiry instant is invalid. It is bound to the issuing actor, session,
 Client Module, factor, and selected public family. A restart invalidates it. A
-ticket for one public family cannot authorize the other family, and neither can
-substitute for the single-use credential-issuance ticket.
+ticket for one public family cannot authorize another public family, and none
+can substitute for the single-use credential-issuance ticket.
 
 The requirement body is exactly:
 
@@ -733,6 +733,15 @@ accountable record set with a final outcome and uses the same correlation
 identifier; this route does not define the backup's creation, snapshot,
 encryption, storage, or cleanup behavior.
 
+The registered `backup-binary` profile gives this response a 120-second
+response-write deadline, measured from the listener's completed `200 OK`
+headers through all declared bytes and TLS close. This response-only exception
+does not lengthen the small request's default request-read or handler budgets,
+and it uses the existing 15 normal connection slots without a dedicated backup
+admission permit or lane. The listener's corresponding 145-second graceful
+shutdown drain is defined in the
+[Server Architecture Design](../server-architecture-design.md#signalled-shutdown).
+
 Before committing a `200 OK` response, the Server MUST reject a complete
 encrypted backup candidate that would exceed `268435456` bytes. It MUST NOT
 emit a binary success header, `Content-Length`, or body for that candidate,
@@ -756,10 +765,12 @@ The `authorization_denied` body exposes no ticket, family, binding, or expiry
 detail. The `backup_output_too_large` body exposes no measured size, candidate
 content, artifact identifier, or implementation detail.
 
-Listener loss, timeout, or an unreadable response is indeterminate. A short,
-unreadable, malformed, or length-mismatched `200 OK` body is incomplete and
-MUST NOT be treated as success. Only a fully received `200 OK` artifact whose
-body matches its `Content-Length` proves success. A client MUST NOT
+Listener loss, expiry of the response-write deadline, or an unreadable response
+is indeterminate. Once the listener has begun the binary `200 OK` headers, it
+cannot send a JSON error. A short, unreadable, malformed, or length-mismatched
+`200 OK` body is incomplete and MUST NOT be treated as success. Only a fully
+received `200 OK` artifact whose body matches its `Content-Length` proves
+success. A client MUST NOT
 automatically retry, resume, reconcile, or retrieve a prior artifact after an
 indeterminate or incomplete outcome. It may make only a fresh explicit
 request, which is a distinct backup creation and may create another backup.
