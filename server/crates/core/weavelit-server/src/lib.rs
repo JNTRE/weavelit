@@ -87,7 +87,9 @@ use operational::{
     ActiveDatabase, OperationalComposer, OperationalDatabase, OperationalMount, OperationalRuntime,
 };
 use transport::{HeadRead, MountedSurface, ProcessingDeadline, TransportCapability};
-use typed_json::{MAX_TYPED_JSON_BODY_BYTES, TypedJsonEnvelope, has_secret_disclosure_effect};
+use typed_json::{
+    MAX_TYPED_JSON_BODY_BYTES, ResponseCorrelation, TypedJsonEnvelope, has_secret_disclosure_effect,
+};
 
 const STATE_ROOT_ENV: &str = "WEAVELIT_STATE_ROOT";
 const HTTPS_LISTENER_ADDRESS_ENV: &str = "WEAVELIT_HTTPS_LISTENER_ADDRESS";
@@ -100,6 +102,8 @@ const MAX_REJECTION_CONNECTIONS: usize = 1;
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_BACKUP_BINARY_BODY_BYTES: usize = 256 * 1024 * 1024;
+const BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a signalled shutdown may spend finishing accepted requests.
 ///
 /// It covers the ordinary transport stages only: the handshake, read, and
@@ -107,7 +111,7 @@ const REQUEST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
 /// can still finish inside it. It says nothing about a lifecycle transition,
 /// whose irreversible region runs outside any connection future and is bounded
 /// separately by [`SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD`].
-const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(25);
+const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(145);
 /// How long a signalled shutdown observes an irreversible lifecycle transition
 /// before reporting an overrun.
 ///
@@ -128,6 +132,10 @@ const _: () = assert!(
             + REQUEST_READ_TIMEOUT.as_secs()
             + REQUEST_PROCESSING_TIMEOUT.as_secs(),
     "draining must outlast the longest ordinary connection the listener admits"
+);
+const _: () = assert!(
+    SHUTDOWN_DRAIN_BUDGET.as_secs() > BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT.as_secs(),
+    "draining must outlast the backup-binary response write deadline"
 );
 const _: () = assert!(
     SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD.as_secs() >= TOTAL_REQUEST_DEADLINE.as_secs(),
@@ -270,7 +278,7 @@ impl RateLimiter {
 /// the body bound. A separately typed secret-disclosure effect can add only its
 /// fixed no-store line. Nothing is taken from the request, a file extension,
 /// or the body contents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ResponseProfile {
     /// Compile-time bodies drawn from the fixed allowlist, used by the frozen
     /// pre-operational lifecycle routes.
@@ -283,26 +291,29 @@ enum ResponseProfile {
     GroupAdministrationJson,
     /// Bounded TOTP and Log configuration administration result envelopes.
     ConfigurationAdministrationJson,
+    /// One closed Server-composed encrypted backup download response.
+    BackupBinary(ResponseCorrelation),
     Html,
     JavaScript,
     Css,
 }
 
 impl ResponseProfile {
-    const fn media_type(self) -> &'static str {
+    const fn media_type(&self) -> &'static str {
         match self {
             Self::Json
             | Self::TypedJson
             | Self::AccountAdministrationJson
             | Self::GroupAdministrationJson
             | Self::ConfigurationAdministrationJson => "application/json; charset=utf-8",
+            Self::BackupBinary(_) => "application/octet-stream",
             Self::Html => "text/html; charset=utf-8",
             Self::JavaScript => "text/javascript; charset=utf-8",
             Self::Css => "text/css; charset=utf-8",
         }
     }
 
-    const fn max_body_bytes(self) -> usize {
+    const fn max_body_bytes(&self) -> usize {
         match self {
             Self::Json => MAX_JSON_BODY_BYTES,
             Self::TypedJson => MAX_TYPED_JSON_BODY_BYTES,
@@ -311,19 +322,21 @@ impl ResponseProfile {
             Self::ConfigurationAdministrationJson => {
                 MAX_CONFIGURATION_ADMINISTRATION_RESPONSE_BYTES
             }
+            Self::BackupBinary(_) => MAX_BACKUP_BINARY_BODY_BYTES,
             Self::Html => MAX_HTML_BODY_BYTES,
             Self::JavaScript => MAX_JAVASCRIPT_BODY_BYTES,
             Self::Css => MAX_CSS_BODY_BYTES,
         }
     }
 
-    const fn security_headers(self) -> &'static str {
+    const fn security_headers(&self) -> &'static str {
         match self {
             Self::Json
             | Self::TypedJson
             | Self::AccountAdministrationJson
             | Self::GroupAdministrationJson
-            | Self::ConfigurationAdministrationJson => "",
+            | Self::ConfigurationAdministrationJson
+            | Self::BackupBinary(_) => "",
             Self::Html | Self::JavaScript | Self::Css => ASSET_SECURITY_HEADERS,
         }
     }
@@ -340,6 +353,23 @@ impl ResponseProfile {
             b"text/css; charset=utf-8" => Some(Self::Css),
             _ => None,
         }
+    }
+
+    fn is_backup_binary(&self) -> bool {
+        matches!(self, Self::BackupBinary(_))
+    }
+}
+
+/// Closed Server-only effect that requests the binary backup response profile.
+#[derive(Clone)]
+pub(crate) struct BackupBinaryEffect {
+    correlation: ResponseCorrelation,
+}
+
+impl BackupBinaryEffect {
+    #[cfg(test)]
+    pub(crate) fn new(correlation: ResponseCorrelation) -> Self {
+        Self { correlation }
     }
 }
 
@@ -2106,6 +2136,13 @@ fn header_value_range(
 }
 
 async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
+    bounded_response_from_axum_with_backup_body_bound(response, MAX_BACKUP_BINARY_BODY_BYTES).await
+}
+
+async fn bounded_response_from_axum_with_backup_body_bound(
+    response: Response,
+    backup_body_bound: usize,
+) -> BoundedResponse {
     let status = response.status();
     let allow = response
         .headers()
@@ -2122,6 +2159,44 @@ async fn bounded_response_from_axum(response: Response) -> BoundedResponse {
         .extensions()
         .get::<ResponseWriteAcknowledgement>()
         .cloned();
+    let backup_binary = response.extensions().get::<BackupBinaryEffect>().cloned();
+    if let Some(effect) = backup_binary {
+        let has_envelope = response
+            .extensions()
+            .get::<AccountAdministrationEnvelope>()
+            .is_some()
+            || response
+                .extensions()
+                .get::<GroupAdministrationEnvelope>()
+                .is_some()
+            || response
+                .extensions()
+                .get::<ConfigurationAdministrationEnvelope>()
+                .is_some()
+            || response.extensions().get::<TypedJsonEnvelope>().is_some();
+        if status != StatusCode::OK
+            || !response.headers().is_empty()
+            || allow.is_some()
+            || cookie_effect.is_some()
+            || secret_disclosure
+            || acknowledgement.is_some()
+            || has_envelope
+        {
+            return redacted_response(status, allow);
+        }
+        let Ok(body) = to_bytes(response.into_body(), backup_body_bound).await else {
+            return redacted_response(status, allow);
+        };
+        return BoundedResponse {
+            status,
+            profile: ResponseProfile::BackupBinary(effect.correlation),
+            body,
+            allow: None,
+            cookies: None,
+            secret_disclosure: false,
+            acknowledgement: None,
+        };
+    }
     // The typed profile serializes the route's envelope itself and ignores the
     // response body and every header the route set, so it can emit no
     // cross-origin header, message, path, trace, or dependency detail.
@@ -2307,6 +2382,104 @@ fn redacted_response(status: StatusCode, allow: Option<AllowedMethod>) -> Bounde
     }
 }
 
+fn render_bounded_response(
+    response: BoundedResponse,
+    #[cfg(test)] head_observer: Option<WipedResponseBytesDropObserver>,
+) -> (Bytes, Bytes) {
+    let BoundedResponse {
+        status,
+        profile,
+        body,
+        allow,
+        cookies,
+        secret_disclosure,
+        acknowledgement: _,
+    } = response;
+    let rendered_head = match profile {
+        ResponseProfile::BackupBinary(correlation) => {
+            let body_length = body.len().to_string();
+            let head_length = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n".len()
+                + "Content-Disposition: attachment; filename=\"weavelit-backup.wlitbackup\"\r\n".len()
+                + "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n".len()
+                + "X-Weavelit-Correlation-Id: ".len()
+                + correlation.as_str().len()
+                + "\r\nContent-Length: ".len()
+                + body_length.len()
+                + "\r\n\r\n".len();
+            let mut rendered_head = Zeroizing::new(String::with_capacity(head_length));
+            rendered_head.push_str("HTTP/1.1 200 OK\r\n");
+            rendered_head.push_str("Content-Type: application/octet-stream\r\n");
+            rendered_head.push_str(
+                "Content-Disposition: attachment; filename=\"weavelit-backup.wlitbackup\"\r\n",
+            );
+            rendered_head.push_str("Cache-Control: no-store\r\n");
+            rendered_head.push_str("X-Content-Type-Options: nosniff\r\n");
+            rendered_head.push_str("X-Weavelit-Correlation-Id: ");
+            rendered_head.push_str(correlation.as_str());
+            rendered_head.push_str("\r\nContent-Length: ");
+            rendered_head.push_str(&body_length);
+            rendered_head.push_str("\r\n\r\n");
+            debug_assert_eq!(rendered_head.len(), head_length);
+            rendered_head
+        }
+        profile => {
+            let allow = allow.map_or("", AllowedMethod::allow_header);
+            let cookies = cookies.as_ref().map_or("", CookieLines::as_str);
+            let secret_disclosure = if secret_disclosure {
+                SECRET_DISCLOSURE_HEADERS
+            } else {
+                ""
+            };
+            let status = status.as_str();
+            let media_type = profile.media_type();
+            let security_headers = profile.security_headers();
+            let head_length = "HTTP/1.1 ".len()
+                + status.len()
+                + " \r\nContent-Type: ".len()
+                + media_type.len()
+                + "\r\n".len()
+                + allow.len()
+                + cookies.len()
+                + secret_disclosure.len()
+                + security_headers.len()
+                + "\r\n".len();
+            let mut rendered_head = Zeroizing::new(String::with_capacity(head_length));
+            rendered_head.push_str("HTTP/1.1 ");
+            rendered_head.push_str(status);
+            rendered_head.push_str(" \r\nContent-Type: ");
+            rendered_head.push_str(media_type);
+            rendered_head.push_str("\r\n");
+            rendered_head.push_str(allow);
+            rendered_head.push_str(cookies);
+            rendered_head.push_str(secret_disclosure);
+            rendered_head.push_str(security_headers);
+            rendered_head.push_str("\r\n");
+            debug_assert_eq!(rendered_head.len(), head_length);
+            rendered_head
+        }
+    };
+    let head_owner = WipedResponseBytes::from_text(rendered_head);
+    #[cfg(test)]
+    let head_owner = match head_observer {
+        Some(observer) => head_owner.with_drop_observer(observer),
+        None => head_owner,
+    };
+    (Bytes::from_owner(head_owner), body)
+}
+
+async fn write_rendered_bounded_response<S>(
+    stream: &mut S,
+    head: Bytes,
+    body: Bytes,
+) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    stream.write_all(&head).await?;
+    stream.write_all(&body).await?;
+    stream.shutdown().await
+}
+
 async fn write_bounded_response<S>(stream: &mut S, response: BoundedResponse) -> std::io::Result<()>
 where
     S: AsyncWrite + Unpin,
@@ -2328,48 +2501,12 @@ async fn write_bounded_response_inner<S>(
 where
     S: AsyncWrite + Unpin,
 {
-    let allow = response.allow.map_or("", AllowedMethod::allow_header);
-    let cookies = response.cookies.as_ref().map_or("", CookieLines::as_str);
-    let secret_disclosure = if response.secret_disclosure {
-        SECRET_DISCLOSURE_HEADERS
-    } else {
-        ""
-    };
-    let status = response.status.as_str();
-    let media_type = response.profile.media_type();
-    let security_headers = response.profile.security_headers();
-    let head_length = "HTTP/1.1 ".len()
-        + status.len()
-        + " \r\nContent-Type: ".len()
-        + media_type.len()
-        + "\r\n".len()
-        + allow.len()
-        + cookies.len()
-        + secret_disclosure.len()
-        + security_headers.len()
-        + "\r\n".len();
-    let mut rendered_head = Zeroizing::new(String::with_capacity(head_length));
-    rendered_head.push_str("HTTP/1.1 ");
-    rendered_head.push_str(status);
-    rendered_head.push_str(" \r\nContent-Type: ");
-    rendered_head.push_str(media_type);
-    rendered_head.push_str("\r\n");
-    rendered_head.push_str(allow);
-    rendered_head.push_str(cookies);
-    rendered_head.push_str(secret_disclosure);
-    rendered_head.push_str(security_headers);
-    rendered_head.push_str("\r\n");
-    debug_assert_eq!(rendered_head.len(), head_length);
-    let head_owner = WipedResponseBytes::from_text(rendered_head);
-    #[cfg(test)]
-    let head_owner = match head_observer {
-        Some(observer) => head_owner.with_drop_observer(observer),
-        None => head_owner,
-    };
-    let head = Bytes::from_owner(head_owner);
-    stream.write_all(&head).await?;
-    stream.write_all(&response.body).await?;
-    stream.shutdown().await
+    let (head, body) = render_bounded_response(
+        response,
+        #[cfg(test)]
+        head_observer,
+    );
+    write_rendered_bounded_response(stream, head, body).await
 }
 
 #[cfg(test)]
@@ -2400,10 +2537,26 @@ async fn write_response_and_acknowledge<S>(
     S: AsyncWrite + Unpin,
 {
     let acknowledgement = response.acknowledgement.take();
-    let written = matches!(
-        timeout(write_timeout, write_bounded_response(stream, response)).await,
-        Ok(Ok(()))
-    );
+    let written = if response.profile.is_backup_binary() {
+        let (head, body) = render_bounded_response(
+            response,
+            #[cfg(test)]
+            None,
+        );
+        matches!(
+            timeout(
+                BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT,
+                write_rendered_bounded_response(stream, head, body),
+            )
+            .await,
+            Ok(Ok(()))
+        )
+    } else {
+        matches!(
+            timeout(write_timeout, write_bounded_response(stream, response)).await,
+            Ok(Ok(()))
+        )
+    };
     if written && let Some(acknowledgement) = acknowledgement {
         acknowledgement.run();
     }
@@ -3061,7 +3214,7 @@ pub(crate) mod tests {
     use axum::{
         Router,
         body::Body,
-        http::{HeaderValue, Method, Request, StatusCode, header::CONTENT_TYPE},
+        http::{HeaderValue, Method, Request, StatusCode, header::{ALLOW, CONTENT_TYPE}},
         response::{Html, Response},
         routing::any,
     };
@@ -3126,17 +3279,20 @@ pub(crate) mod tests {
     use super::{
         APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse, Bytes,
         ConnectionSlots, ConnectionTimeouts, DatabaseError, Deadline, LifecycleTransitionGate,
-        MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
+        BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT, MAX_BACKUP_BINARY_BODY_BYTES, MAX_JSON_BODY_BYTES,
+        MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
         RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
         RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
         RestrictedStartup, SECRET_DISCLOSURE_HEADERS, SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
-        SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode, ServingModeSwitch, ShutdownBudget,
-        ShutdownSignal, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedRequestHead,
+        SHUTDOWN_DRAIN_BUDGET, SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode,
+        ServingModeSwitch, ShutdownBudget, ShutdownSignal, StartupError, StartupOutcome,
+        TLS_HANDSHAKE_TIMEOUT, WipedRequestHead,
         WipedRequestHeadDropObserver, WipedResponseBytes, WipedResponseBytesDropObserver,
         WorkflowArbiter, accept_and_drain_connections,
         administration::{MfaModuleEnablementDelivery, MfaModuleEnablementError},
-        bounded_response_from_axum, classify_restricted_startup, close_active_database,
-        fallback_router, gateway_timeout_response,
+        BackupBinaryEffect, bounded_response_from_axum,
+        bounded_response_from_axum_with_backup_body_bound, classify_restricted_startup,
+        close_active_database, fallback_router, gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
@@ -11696,6 +11852,112 @@ pub(crate) mod tests {
         }
     }
 
+    fn backup_binary_response(body: &'static [u8]) -> BoundedResponse {
+        BoundedResponse {
+            status: StatusCode::OK,
+            profile: ResponseProfile::BackupBinary(
+                ResponseCorrelation::new("backup-create-0123456789").unwrap(),
+            ),
+            body: Bytes::from_static(body),
+            allow: None,
+            cookies: None,
+            secret_disclosure: false,
+            acknowledgement: None,
+        }
+    }
+
+    fn marked_backup_binary_response(status: StatusCode, body: &'static [u8]) -> Response {
+        let mut response = Response::builder().status(status).body(Body::from(body)).unwrap();
+        response.extensions_mut().insert(BackupBinaryEffect {
+            correlation: ResponseCorrelation::new("backup-create-0123456789").unwrap(),
+        });
+        response
+    }
+
+    async fn assert_backup_binary_redacted(response: Response) {
+        let bounded = bounded_response_from_axum(response).await;
+        assert_eq!(bounded.profile, ResponseProfile::Json);
+        assert_eq!(bounded.body.as_ref(), b"{\"error\":\"gateway_timeout\"}");
+        assert!(bounded.acknowledgement.is_none());
+    }
+
+    #[tokio::test]
+    async fn backup_binary_conversion_is_closed_and_unmarked_binary_never_selects_it() {
+        assert!(ResponseProfile::from_media_type(&HeaderValue::from_static(
+            "application/octet-stream"
+        ))
+        .is_none());
+
+        let unmarked = Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from("encrypted"))
+            .unwrap();
+        assert_backup_binary_redacted(unmarked).await;
+
+        assert_backup_binary_redacted(marked_backup_binary_response(
+            StatusCode::ACCEPTED,
+            b"encrypted",
+        ))
+        .await;
+
+        let mut source_header = marked_backup_binary_response(StatusCode::OK, b"encrypted");
+        source_header
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+        assert_backup_binary_redacted(source_header).await;
+
+        let mut allow = marked_backup_binary_response(StatusCode::OK, b"encrypted");
+        allow
+            .headers_mut()
+            .insert(ALLOW, HeaderValue::from_static("PUT"));
+        assert_backup_binary_redacted(allow).await;
+
+        let (acknowledgement, _) = counting_acknowledgement();
+        let mut acknowledgement_response =
+            marked_backup_binary_response(StatusCode::OK, b"encrypted");
+        acknowledgement_response.extensions_mut().insert(acknowledgement);
+        assert_backup_binary_redacted(acknowledgement_response).await;
+
+        let mut typed = typed_json_response(StatusCode::OK, typed_envelope());
+        typed.extensions_mut().insert(BackupBinaryEffect::new(
+            ResponseCorrelation::new("backup-create-0123456789").unwrap(),
+        ));
+        assert_backup_binary_redacted(typed).await;
+
+        let over_bound = bounded_response_from_axum_with_backup_body_bound(
+            marked_backup_binary_response(StatusCode::OK, b"encrypted"),
+            1,
+        )
+        .await;
+        assert_eq!(over_bound.profile, ResponseProfile::Json);
+        assert_eq!(over_bound.body.as_ref(), b"{\"error\":\"gateway_timeout\"}");
+    }
+
+    #[tokio::test]
+    async fn backup_binary_conversion_accepts_only_a_small_closed_success() {
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from("encrypted"))
+            .unwrap();
+        response.extensions_mut().insert(BackupBinaryEffect::new(
+            ResponseCorrelation::new("backup-create-0123456789").unwrap(),
+        ));
+        let bounded = bounded_response_from_axum(response).await;
+        assert_eq!(bounded.status, StatusCode::OK);
+        assert_eq!(
+            bounded.profile,
+            ResponseProfile::BackupBinary(
+                ResponseCorrelation::new("backup-create-0123456789").unwrap()
+            )
+        );
+        assert_eq!(bounded.body.as_ref(), b"encrypted");
+        assert!(bounded.allow.is_none());
+        assert!(bounded.cookies.is_none());
+        assert!(!bounded.secret_disclosure);
+        assert!(bounded.acknowledgement.is_none());
+    }
+
     /// The listener serializes the envelope itself and discards whatever the
     /// route put in its body and headers.
     #[tokio::test]
@@ -11962,6 +12224,58 @@ pub(crate) mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum BackupBinaryStall {
+        Head,
+        Body,
+        Close,
+    }
+
+    struct BackupBinaryStalledWriter {
+        stall: BackupBinaryStall,
+        bytes: Vec<u8>,
+        writes: usize,
+    }
+
+    impl BackupBinaryStalledWriter {
+        fn new(stall: BackupBinaryStall) -> Self {
+            Self {
+                stall,
+                bytes: Vec::new(),
+                writes: 0,
+            }
+        }
+    }
+
+    impl AsyncWrite for BackupBinaryStalledWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if matches!(self.stall, BackupBinaryStall::Head)
+                || (matches!(self.stall, BackupBinaryStall::Body) && self.writes > 0)
+            {
+                return Poll::Pending;
+            }
+            self.bytes.extend_from_slice(buffer);
+            self.writes += 1;
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            if matches!(self.stall, BackupBinaryStall::Close) {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+
     /// Never yields a byte, so the head reader remains pending until cancelled.
     struct StalledReader;
 
@@ -12097,6 +12411,106 @@ pub(crate) mod tests {
         .unwrap();
 
         assert!(observed.try_recv().unwrap());
+    }
+
+    #[tokio::test]
+    async fn backup_binary_response_emits_only_its_six_fixed_headers_and_body() {
+        let mut writer = CapturingWriter::default();
+
+        write_bounded_response(&mut writer, backup_binary_response(b"encrypted"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            writer.bytes,
+            b"HTTP/1.1 200 OK\r\n\
+              Content-Type: application/octet-stream\r\n\
+              Content-Disposition: attachment; filename=\"weavelit-backup.wlitbackup\"\r\n\
+              Cache-Control: no-store\r\n\
+              X-Content-Type-Options: nosniff\r\n\
+              X-Weavelit-Correlation-Id: backup-create-0123456789\r\n\
+              Content-Length: 9\r\n\
+              \r\n\
+              encrypted"
+        );
+        let rendered = String::from_utf8(writer.bytes).unwrap();
+        for forbidden in [
+            "Set-Cookie:",
+            "Access-Control-",
+            "Transfer-Encoding:",
+            "Trailer:",
+            "application/json",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "backup-binary response must not contain {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn backup_binary_uses_its_dedicated_write_deadline_instead_of_the_default() {
+        let ordinary = tokio::time::timeout(
+            Duration::from_secs(11),
+            write_response_and_acknowledge(
+                &mut StalledWriter,
+                BoundedResponse::json(StatusCode::OK, "{\"error\":\"not_found\"}"),
+                REQUEST_PROCESSING_TIMEOUT,
+            ),
+        )
+        .await;
+        assert!(ordinary.is_ok());
+
+        let binary = tokio::time::timeout(
+            Duration::from_secs(119),
+            write_response_and_acknowledge(
+                &mut StalledWriter,
+                backup_binary_response(b"encrypted"),
+                REQUEST_PROCESSING_TIMEOUT,
+            ),
+        )
+        .await;
+        assert!(binary.is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_backup_binary_head_body_and_close_remain_incomplete_without_json() {
+        for stall in [
+            BackupBinaryStall::Head,
+            BackupBinaryStall::Body,
+            BackupBinaryStall::Close,
+        ] {
+            let mut writer = BackupBinaryStalledWriter::new(stall);
+            let timed = tokio::time::timeout(
+                Duration::from_secs(119),
+                write_response_and_acknowledge(
+                    &mut writer,
+                    backup_binary_response(b"encrypted"),
+                    REQUEST_PROCESSING_TIMEOUT,
+                ),
+            )
+            .await;
+
+            assert!(timed.is_err());
+            match stall {
+                BackupBinaryStall::Head => assert!(writer.bytes.is_empty()),
+                BackupBinaryStall::Body => {
+                    assert!(writer.bytes.ends_with(b"\r\n\r\n"));
+                    assert!(!writer.bytes.ends_with(b"encrypted"));
+                }
+                BackupBinaryStall::Close => assert!(writer.bytes.ends_with(b"encrypted")),
+            }
+            assert!(!String::from_utf8_lossy(&writer.bytes).contains("gateway_timeout"));
+            assert!(!String::from_utf8_lossy(&writer.bytes).contains("application/json"));
+        }
+    }
+
+    #[test]
+    fn backup_binary_limits_and_shutdown_drain_have_the_approved_relationship() {
+        assert_eq!(MAX_BACKUP_BINARY_BODY_BYTES, 256 * 1024 * 1024);
+        assert_eq!(BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT, Duration::from_secs(120));
+        assert_eq!(SHUTDOWN_DRAIN_BUDGET, Duration::from_secs(145));
+        assert!(SHUTDOWN_DRAIN_BUDGET > BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT);
     }
 
     #[tokio::test]

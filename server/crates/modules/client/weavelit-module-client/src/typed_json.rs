@@ -263,7 +263,8 @@ impl ResponseCorrelation {
         Some(Self(value.to_owned()))
     }
 
-    fn as_str(&self) -> &str {
+    /// Borrows the trusted Server-controlled value for correlation-header rendering.
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -555,6 +556,12 @@ mod tests {
     #[test]
     fn correlation_identifiers_accept_only_the_closed_character_set() {
         assert!(ResponseCorrelation::new("restore-0123456789").is_some());
+        assert_eq!(
+            ResponseCorrelation::new("backup-create-0123456789")
+                .unwrap()
+                .as_str(),
+            "backup-create-0123456789"
+        );
         assert_eq!(correlation().as_str().len(), MAX_RESPONSE_CORRELATION_BYTES);
         for rejected in [
             "",
