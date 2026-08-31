@@ -369,7 +369,15 @@ fn tls_material() -> (tempfile::TempDir, PathBuf, PathBuf) {
     fs::write(&private_key_path, certificate.signing_key.serialize_pem()).unwrap();
     fs::set_permissions(&certificate_path, fs::Permissions::from_mode(0o644)).unwrap();
     fs::set_permissions(&private_key_path, fs::Permissions::from_mode(0o600)).unwrap();
-    (directory, certificate_path, private_key_path)
+    let material_directory = directory
+        .path()
+        .canonicalize()
+        .expect("temporary TLS fixture directory must canonicalize");
+    (
+        directory,
+        material_directory.join("certificate.pem"),
+        material_directory.join("private-key.pem"),
+    )
 }
 
 fn assert_tls_validation_error(
