@@ -47,6 +47,7 @@ weavelit-module-mfa-totp = { path = "../../modules/mfa/weavelit-module-mfa-totp"
 [dev-dependencies]
 rcgen = "=0.14.8"
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
 weavelit-server-database-authority = { path = "../../database/weavelit-server-database-authority" }
