@@ -7825,7 +7825,11 @@ pub(crate) mod tests {
         for (name, peer, trusted) in [
             ("IPv4 localhost", IpAddr::V4(Ipv4Addr::LOCALHOST), true),
             ("IPv6 localhost", IpAddr::V6(Ipv6Addr::LOCALHOST), true),
-            ("other IPv4 loopback", IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), false),
+            (
+                "other IPv4 loopback",
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                false,
+            ),
             (
                 "other IPv6 loopback",
                 IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2)),
@@ -7833,14 +7837,22 @@ pub(crate) mod tests {
             ),
             ("unspecified IPv4", IpAddr::V4(Ipv4Addr::UNSPECIFIED), false),
             ("unspecified IPv6", IpAddr::V6(Ipv6Addr::UNSPECIFIED), false),
-            ("non-loopback IPv4", IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), false),
+            (
+                "non-loopback IPv4",
+                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                false,
+            ),
             (
                 "non-loopback IPv6",
                 IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
                 false,
             ),
         ] {
-            assert_eq!(super::is_trusted_loopback_peer(peer), trusted, "{name}: {peer}");
+            assert_eq!(
+                super::is_trusted_loopback_peer(peer),
+                trusted,
+                "{name}: {peer}"
+            );
         }
     }
 
@@ -7853,9 +7865,9 @@ pub(crate) mod tests {
             let listener = match TcpListener::bind(listener_address).await {
                 Ok(listener) => listener,
                 Err(error) if error.kind() == io::ErrorKind::AddrNotAvailable => continue,
-                Err(error) => panic!(
-                    "the exact loopback listener must bind: {listener_address}: {error}"
-                ),
+                Err(error) => {
+                    panic!("the exact loopback listener must bind: {listener_address}: {error}")
+                }
             };
             available_families += 1;
             let address = listener.local_addr().unwrap();
