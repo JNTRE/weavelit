@@ -780,9 +780,9 @@ the [Application Database Backup Download](api/api-contract-design.md#applicatio
 defines their values and the route's public wire contract. This profile
 composition does not select how the backup artifact is created or retained.
 
-Its response-write deadline is 120 seconds, measured from completion of the
-listener-written `200 OK` headers through all declared bytes and TLS close. The
-route's small request remains on the default 1 KiB body, request-read, and
+The 120-second `backup-binary` response-write deadline starts immediately
+before the listener writes the closed `200 OK` header block and covers header
+completion, all declared response bytes, and TLS close. The route's small request remains on the default 1 KiB body, request-read, and
 handler budgets. It competes for the existing 15 normal connection slots and
 has no dedicated backup admission permit or lane. This exception applies only
 to the binary response write; it does not select backup generation, resource,

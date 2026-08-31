@@ -733,9 +733,9 @@ accountable record set with a final outcome and uses the same correlation
 identifier; this route does not define the backup's creation, snapshot,
 encryption, storage, or cleanup behavior.
 
-The registered `backup-binary` profile gives this response a 120-second
-response-write deadline, measured from the listener's completed `200 OK`
-headers through all declared bytes and TLS close. This response-only exception
+The 120-second `backup-binary` response-write deadline starts immediately
+before the listener writes the closed `200 OK` header block and covers header
+completion, all declared response bytes, and TLS close. This response-only exception
 does not lengthen the small request's default request-read or handler budgets,
 and it uses the existing 15 normal connection slots without a dedicated backup
 admission permit or lane. The listener's corresponding 145-second graceful

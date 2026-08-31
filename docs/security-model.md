@@ -430,9 +430,9 @@ It MUST NOT emit `Transfer-Encoding` or `Trailer`. Every header name and value
 is Server-defined. No caller input, route value, or generic response-header
 collection may control or add a header.
 
-As a cross-contract listener constraint, `backup-binary` has a 120-second
-response-write deadline measured from completion of the `200 OK` headers through
-all declared response bytes and TLS close. Its small request remains subject to
+The 120-second `backup-binary` response-write deadline starts immediately
+before the listener writes the closed `200 OK` header block and covers header
+completion, all declared response bytes, and TLS close. Its small request remains subject to
 the default request-read and handler budgets and competes for the existing 15
 normal connection slots; it has no dedicated backup admission permit or lane.
 Graceful listener shutdown allows 145 seconds to drain response writes. A
