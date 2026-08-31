@@ -3231,7 +3231,7 @@ pub(crate) mod tests {
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
-        net::{TcpListener, TcpStream},
+        net::{TcpListener, TcpSocket, TcpStream},
         sync::{Notify, Semaphore, mpsc, oneshot, watch},
         task::JoinHandle,
     };
@@ -7893,6 +7893,44 @@ pub(crate) mod tests {
             available_families > 0,
             "at least one exact loopback address must be locally bindable"
         );
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rejects_nonexact_loopback_peer_when_source_alias_is_available() {
+        let (server_config, client_config) = tls_configs();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve_restricted_https_listener(
+            listener,
+            server_config,
+            StartupOutcome::UninitializedWithoutDatabase,
+        ));
+
+        let socket = TcpSocket::new_v4().unwrap();
+        if let Err(error) = socket.bind("127.0.0.2:0".parse().unwrap()) {
+            server.abort();
+            if error.kind() == io::ErrorKind::AddrNotAvailable {
+                return;
+            }
+            panic!("the nonexact loopback source alias must bind: {error}");
+        }
+
+        let stream = socket.connect(address).await.unwrap();
+        let handshake = tokio::time::timeout(
+            TLS_HANDSHAKE_TIMEOUT,
+            TlsConnector::from(client_config).connect(
+                ServerName::try_from("localhost").unwrap().to_owned(),
+                stream,
+            ),
+        )
+        .await;
+        server.abort();
+
+        match handshake {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("a nonexact loopback peer completed the TLS handshake"),
+            Err(_) => panic!("the nonexact loopback peer handshake timed out"),
+        }
     }
 
     #[tokio::test]

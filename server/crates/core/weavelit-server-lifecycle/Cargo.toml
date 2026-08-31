@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 base64 = { version = "=0.23.0", default-features = false, features = ["alloc"] }
+# Preserve the audited unyanked 0.10.2 resolution for detached no-lockfile fixtures.
 chacha20.workspace = true
 chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 getrandom = { version = "=0.4.3", default-features = false }

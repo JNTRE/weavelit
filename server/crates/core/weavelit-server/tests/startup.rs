@@ -510,15 +510,18 @@ fn invalid_listener_address_is_rejected() {
 
 #[test]
 fn missing_unsafe_malformed_and_mismatched_tls_material_are_rejected() {
-    let (directory, certificate_path, private_key_path) = tls_material();
-    let missing_path = directory.path().join("missing.pem");
+    let (_directory, certificate_path, private_key_path) = tls_material();
+    let material_directory = certificate_path
+        .parent()
+        .expect("canonical TLS certificate path has a parent directory");
+    let missing_path = material_directory.join("missing.pem");
     assert_tls_validation_error(validate_trusted_https_listener(
         "127.0.0.1:8443",
         &missing_path,
         &private_key_path,
     ));
 
-    let unreadable_path = directory.path().join("unreadable.pem");
+    let unreadable_path = material_directory.join("unreadable.pem");
     fs::copy(&private_key_path, &unreadable_path).unwrap();
     fs::set_permissions(&unreadable_path, fs::Permissions::from_mode(0o000)).unwrap();
     assert_tls_validation_error(validate_trusted_https_listener(
@@ -527,7 +530,7 @@ fn missing_unsafe_malformed_and_mismatched_tls_material_are_rejected() {
         &unreadable_path,
     ));
 
-    let symlink_path = directory.path().join("certificate-link.pem");
+    let symlink_path = material_directory.join("certificate-link.pem");
     symlink(&certificate_path, &symlink_path).unwrap();
     assert_tls_validation_error(validate_trusted_https_listener(
         "127.0.0.1:8443",
@@ -535,7 +538,7 @@ fn missing_unsafe_malformed_and_mismatched_tls_material_are_rejected() {
         &private_key_path,
     ));
 
-    let hard_link_path = directory.path().join("certificate-hard-link.pem");
+    let hard_link_path = material_directory.join("certificate-hard-link.pem");
     fs::hard_link(&certificate_path, &hard_link_path).unwrap();
     assert_tls_validation_error(validate_trusted_https_listener(
         "127.0.0.1:8443",
@@ -543,7 +546,7 @@ fn missing_unsafe_malformed_and_mismatched_tls_material_are_rejected() {
         &private_key_path,
     ));
 
-    let malformed_path = directory.path().join("malformed.pem");
+    let malformed_path = material_directory.join("malformed.pem");
     fs::write(&malformed_path, "not PEM").unwrap();
     fs::set_permissions(&malformed_path, fs::Permissions::from_mode(0o600)).unwrap();
     assert_tls_validation_error(validate_trusted_https_listener(
