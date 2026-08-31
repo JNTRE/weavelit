@@ -102,9 +102,8 @@ fn audit_generation_resolver_remains_server_private() {
     let error_messages = stdout
         .lines()
         .map(|line| {
-            serde_json::from_str::<Value>(line).unwrap_or_else(|error| {
-                panic!("Cargo must emit JSON messages: {error}; {context}")
-            })
+            serde_json::from_str::<Value>(line)
+                .unwrap_or_else(|error| panic!("Cargo must emit JSON messages: {error}; {context}"))
         })
         .filter(|message| {
             message["reason"] == "compiler-message" && message["message"]["level"] == "error"
@@ -115,7 +114,7 @@ fn audit_generation_resolver_remains_server_private() {
         1,
         "the fixture must fail only because the resolver module is private; {context}"
     );
-        let error = &error_messages[0];
+    let error = &error_messages[0];
     assert_eq!(
         error["message"]["code"]["code"].as_str(),
         Some("E0603"),

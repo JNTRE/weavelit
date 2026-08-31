@@ -3199,7 +3199,7 @@ pub(crate) mod tests {
         ffi::OsString,
         future::pending,
         io,
-        net::SocketAddr,
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
         os::unix::fs::{MetadataExt, PermissionsExt},
         path::{Path, PathBuf},
         pin::Pin,
@@ -3231,7 +3231,7 @@ pub(crate) mod tests {
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
-        net::{TcpListener, TcpSocket, TcpStream},
+        net::{TcpListener, TcpStream},
         sync::{Notify, Semaphore, mpsc, oneshot, watch},
         task::JoinHandle,
     };
@@ -7820,12 +7820,44 @@ pub(crate) mod tests {
         server.abort();
     }
 
+    #[test]
+    fn trusted_loopback_peer_requires_exact_loopback_addresses() {
+        for (name, peer, trusted) in [
+            ("IPv4 localhost", IpAddr::V4(Ipv4Addr::LOCALHOST), true),
+            ("IPv6 localhost", IpAddr::V6(Ipv6Addr::LOCALHOST), true),
+            ("other IPv4 loopback", IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), false),
+            (
+                "other IPv6 loopback",
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2)),
+                false,
+            ),
+            ("unspecified IPv4", IpAddr::V4(Ipv4Addr::UNSPECIFIED), false),
+            ("unspecified IPv6", IpAddr::V6(Ipv6Addr::UNSPECIFIED), false),
+            ("non-loopback IPv4", IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), false),
+            (
+                "non-loopback IPv6",
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+                false,
+            ),
+        ] {
+            assert_eq!(super::is_trusted_loopback_peer(peer), trusted, "{name}: {peer}");
+        }
+    }
+
     #[tokio::test]
     async fn direct_tls_admits_only_exact_loopback_peers() {
         let (server_config, client_config) = tls_configs();
+        let mut available_families = 0;
 
         for listener_address in ["127.0.0.1:0", "[::1]:0"] {
-            let listener = TcpListener::bind(listener_address).await.unwrap();
+            let listener = match TcpListener::bind(listener_address).await {
+                Ok(listener) => listener,
+                Err(error) if error.kind() == io::ErrorKind::AddrNotAvailable => continue,
+                Err(error) => panic!(
+                    "the exact loopback listener must bind: {listener_address}: {error}"
+                ),
+            };
+            available_families += 1;
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(serve_restricted_https_listener(
                 listener,
@@ -7845,27 +7877,10 @@ pub(crate) mod tests {
             server.abort();
         }
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(serve_restricted_https_listener(
-            listener,
-            server_config,
-            StartupOutcome::UninitializedWithoutDatabase,
-        ));
-        let socket = TcpSocket::new_v4().unwrap();
-        socket.bind("127.0.0.2:0".parse().unwrap()).unwrap();
-        let stream = socket.connect(address).await.unwrap();
-        let rejection = tokio::time::timeout(
-            Duration::from_secs(1),
-            TlsConnector::from(client_config).connect(
-                ServerName::try_from("localhost").unwrap().to_owned(),
-                stream,
-            ),
-        )
-        .await;
-        assert!(matches!(rejection, Ok(Err(_))));
-
-        server.abort();
+        assert!(
+            available_families > 0,
+            "at least one exact loopback address must be locally bindable"
+        );
     }
 
     #[tokio::test]
