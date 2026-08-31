@@ -2399,7 +2399,8 @@ fn render_bounded_response(
         ResponseProfile::BackupBinary(correlation) => {
             let body_length = body.len().to_string();
             let head_length = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n".len()
-                + "Content-Disposition: attachment; filename=\"weavelit-backup.wlitbackup\"\r\n".len()
+                + "Content-Disposition: attachment; filename=\"weavelit-backup.wlitbackup\"\r\n"
+                    .len()
                 + "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n".len()
                 + "X-Weavelit-Correlation-Id: ".len()
                 + correlation.as_str().len()
@@ -3214,7 +3215,10 @@ pub(crate) mod tests {
     use axum::{
         Router,
         body::Body,
-        http::{HeaderValue, Method, Request, StatusCode, header::{ALLOW, CONTENT_TYPE}},
+        http::{
+            HeaderValue, Method, Request, StatusCode,
+            header::{ALLOW, CONTENT_TYPE},
+        },
         response::{Html, Response},
         routing::any,
     };
@@ -3277,22 +3281,22 @@ pub(crate) mod tests {
     use zeroize::Zeroizing;
 
     use super::{
-        APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod, BoundedResponse, Bytes,
+        APPLICATION_DATABASE_FILE, ASSET_SECURITY_HEADERS, AllowedMethod,
+        BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT, BackupBinaryEffect, BoundedResponse, Bytes,
         ConnectionSlots, ConnectionTimeouts, DatabaseError, Deadline, LifecycleTransitionGate,
-        BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT, MAX_BACKUP_BINARY_BODY_BYTES, MAX_JSON_BODY_BYTES,
-        MAX_REQUEST_BODY_BYTES, MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST,
-        RATE_LIMIT_REQUESTS_PER_MINUTE, REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT,
-        RateLimiter, RequestReadError, ResponseProfile, ResponseWriteAcknowledgement,
-        RestrictedStartup, SECRET_DISCLOSURE_HEADERS, SHUTDOWN_DATABASE_CLOSE_THRESHOLD,
-        SHUTDOWN_DRAIN_BUDGET, SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode,
-        ServingModeSwitch, ShutdownBudget, ShutdownSignal, StartupError, StartupOutcome,
-        TLS_HANDSHAKE_TIMEOUT, WipedRequestHead,
+        MAX_BACKUP_BINARY_BODY_BYTES, MAX_JSON_BODY_BYTES, MAX_REQUEST_BODY_BYTES,
+        MAX_TYPED_JSON_BODY_BYTES, RATE_LIMIT_BURST, RATE_LIMIT_REQUESTS_PER_MINUTE,
+        REQUEST_PROCESSING_TIMEOUT, REQUEST_READ_TIMEOUT, RateLimiter, RequestReadError,
+        ResponseProfile, ResponseWriteAcknowledgement, RestrictedStartup,
+        SECRET_DISCLOSURE_HEADERS, SHUTDOWN_DATABASE_CLOSE_THRESHOLD, SHUTDOWN_DRAIN_BUDGET,
+        SHUTDOWN_LIFECYCLE_TRANSITION_THRESHOLD, ServingMode, ServingModeSwitch, ShutdownBudget,
+        ShutdownSignal, StartupError, StartupOutcome, TLS_HANDSHAKE_TIMEOUT, WipedRequestHead,
         WipedRequestHeadDropObserver, WipedResponseBytes, WipedResponseBytesDropObserver,
         WorkflowArbiter, accept_and_drain_connections,
         administration::{MfaModuleEnablementDelivery, MfaModuleEnablementError},
-        BackupBinaryEffect, bounded_response_from_axum,
-        bounded_response_from_axum_with_backup_body_bound, classify_restricted_startup,
-        close_active_database, fallback_router, gateway_timeout_response,
+        bounded_response_from_axum, bounded_response_from_axum_with_backup_body_bound,
+        classify_restricted_startup, close_active_database, fallback_router,
+        gateway_timeout_response,
         operational::{
             ActiveDatabase, OperationalComposer, OperationalMount, OperationalRuntime, test_support,
         },
@@ -11867,7 +11871,10 @@ pub(crate) mod tests {
     }
 
     fn marked_backup_binary_response(status: StatusCode, body: &'static [u8]) -> Response {
-        let mut response = Response::builder().status(status).body(Body::from(body)).unwrap();
+        let mut response = Response::builder()
+            .status(status)
+            .body(Body::from(body))
+            .unwrap();
         response.extensions_mut().insert(BackupBinaryEffect {
             correlation: ResponseCorrelation::new("backup-create-0123456789").unwrap(),
         });
@@ -11883,10 +11890,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn backup_binary_conversion_is_closed_and_unmarked_binary_never_selects_it() {
-        assert!(ResponseProfile::from_media_type(&HeaderValue::from_static(
-            "application/octet-stream"
-        ))
-        .is_none());
+        assert!(
+            ResponseProfile::from_media_type(&HeaderValue::from_static("application/octet-stream"))
+                .is_none()
+        );
 
         let unmarked = Response::builder()
             .status(StatusCode::OK)
@@ -11902,9 +11909,10 @@ pub(crate) mod tests {
         .await;
 
         let mut source_header = marked_backup_binary_response(StatusCode::OK, b"encrypted");
-        source_header
-            .headers_mut()
-            .insert(CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+        source_header.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
         assert_backup_binary_redacted(source_header).await;
 
         let mut allow = marked_backup_binary_response(StatusCode::OK, b"encrypted");
@@ -11916,7 +11924,9 @@ pub(crate) mod tests {
         let (acknowledgement, _) = counting_acknowledgement();
         let mut acknowledgement_response =
             marked_backup_binary_response(StatusCode::OK, b"encrypted");
-        acknowledgement_response.extensions_mut().insert(acknowledgement);
+        acknowledgement_response
+            .extensions_mut()
+            .insert(acknowledgement);
         assert_backup_binary_redacted(acknowledgement_response).await;
 
         let mut typed = typed_json_response(StatusCode::OK, typed_envelope());
@@ -12508,7 +12518,10 @@ pub(crate) mod tests {
     #[test]
     fn backup_binary_limits_and_shutdown_drain_have_the_approved_relationship() {
         assert_eq!(MAX_BACKUP_BINARY_BODY_BYTES, 256 * 1024 * 1024);
-        assert_eq!(BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT, Duration::from_secs(120));
+        assert_eq!(
+            BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT,
+            Duration::from_secs(120)
+        );
         assert_eq!(SHUTDOWN_DRAIN_BUDGET, Duration::from_secs(145));
         assert!(SHUTDOWN_DRAIN_BUDGET > BACKUP_BINARY_RESPONSE_WRITE_TIMEOUT);
     }
